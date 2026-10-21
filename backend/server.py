@@ -100,11 +100,18 @@ from lib import wa_facts  # noqa: E402
 from lib import attendance  # noqa: E402
 from lib import project_report  # noqa: E402
 from lib import progress_report  # noqa: E402
+from lib import report_image  # noqa: E402
+from lib import progress_report_render  # noqa: E402
+from lib import report_regulatory  # noqa: E402
+from lib import schedule_import  # noqa: E402
+from lib import schedule_plan  # noqa: E402
 from lib import wa_photos  # noqa: E402
 from lib import send_retry  # noqa: E402
 from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
+from lib import status_history as status_hist  # noqa: E402
 from lib import dot_sync  # noqa: E402
+from lib import dob_site_bins  # noqa: E402
 from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
@@ -34096,6 +34103,7 @@ async def get_activity_chips(
     than let the CP assume the app knows.
     """
     from app.scheduling.sequence_ranking import rank_activities
+    from app.scheduling.trade_taxonomy_v1 import trades_for_roster
 
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
@@ -34128,7 +34136,45 @@ async def get_activity_chips(
         remembered_other_labels=project.get(PROJECT_OTHER_ACTIVITIES_FIELD) or [],
         trade=trade,
     )
+    # THE CREW'S OWN HISTORY, ITS TRADE'S SEQUENCE AND THE CONFIRMED SCHEDULE
+    # (app/scheduling/crew_history.py, trade_sequence.py, schedule_hints.py).
+    # The ranking above keys off the project's single latest day and a fixed rule
+    # table. A crew that was away a week is ranked from where IT left off: after
+    # under-slab MEP, MEP rough-in; after framing, its next stage. A confirmed
+    # schedule's activities planned for the date lift too, in the file's own words.
+    # Only with a `trade` and only with history or a schedule hit; it reorders and
+    # labels, never selects, removes or blocks (Other last); and a read that fails
+    # leaves the ranking exactly as it was.
+    personalized, history_days = False, 0
+    if trade and trades_for_roster(trade):
+        try:
+            from app.scheduling.crew_history import crew_days, personalize
+            from app.scheduling.schedule_hints import hints_for
+            from app.scheduling.sequence_rules_v1 import build_sequence_rules_v1, successors_by_id
+            from app.scheduling.trade_sequence import stages_for
+            from app.scheduling.trade_taxonomy_v1 import NEW_NODES
+            resolved = trades_for_roster(trade)
+            wanted = set(resolved)
+            recent_logs = await db.logbooks.find(prior_query).sort([("date", -1)]).limit(60).to_list(60)
+            days = crew_days(recent_logs, lambda r: bool(wanted & set(trades_for_roster(r.get("trade")))), day)
+            history_days = len(days)
+            hints: dict = {}
+            sched = await db[PROJECT_SCHEDULES].find_one(
+                {"company_id": _company_id_filter(project.get("company_id")), "project_id": str(project_id),
+                 "status": "confirmed"})
+            if sched:
+                hints = hints_for((sched.get("doc") or {}).get("activities") or [], day, ranking.chips)
+            if days or hints:
+                _graph = build_sequence_rules_v1()
+                ranking = personalize(ranking, days, successors_by_id(_graph),
+                                      {n.id: getattr(n, "scope", n.id) for n in list(_graph.nodes) + list(NEW_NODES)},
+                                      stages=stages_for(resolved), scheduled=hints)
+                personalized = True
+        except Exception as e:  # pragma: no cover - a ranking must never fail a day's log
+            logger.warning(f"[activity_chips] crew history skipped: {type(e).__name__}")
     out = ranking.model_dump()
+    out["personalized"] = personalized
+    out["history_days"] = history_days
     # Which day the suggestions were derived from, so the UI can be honest about
     # a stale or absent prior instead of implying the ranking is about today.
     out["prior_date"] = (prior or {}).get("date")
@@ -40842,6 +40888,65 @@ def _cofo_borough_label(nyc_bin: str, project_address: str = "") -> Optional[str
     return None
 
 
+# DEFECT MEASURED (2026 audit): several endpoints in _query_dob_apis asked for
+# `$limit 50` with NO `$order` (DOB NOW Safety 855j-jady, BIS 3h2n-5cm9, job
+# filings, ...), so on a busy building Socrata returned an ARBITRARY 50 rows and
+# the NEWEST records could be silently absent from the project. RULE: every
+# endpoint is ordered newest-first on its issue/filing date, and an ordered
+# endpoint whose first page comes back FULL is read one more page ($offset),
+# capped at DOB_MAX_PAGES pages so a pathological building cannot turn one sync
+# into dozens of requests. The common case (fewer rows than the limit) is still
+# exactly one request per endpoint. WHY paging needs the order: an $offset over
+# an unordered result is not a stable window.
+DOB_MAX_PAGES = 2
+
+
+async def _dob_get_records(http_client, ep: Dict[str, Any]):
+    """GET one endpoint -> (status_code, records_or_None, complete).
+
+    `complete` is False when a needed extra page failed (the caller must not
+    count the source as fully answered - lib/source_sync).
+
+    An `$order` column we guessed wrong makes Socrata answer HTTP 400 for the
+    WHOLE request (the pkdm-hqz6 incident: zero CofO records for months). So a
+    400 on an ordered request is retried ONCE without `$order` - the previous
+    (unordered) behaviour - and logged, rather than losing the source."""
+    params = dict(ep["params"])
+    resp = await http_client.get(ep["url"], params=params)
+    if resp.status_code == 400 and "$order" in params:
+        logger.warning(
+            f"DOB API {ep['url']} rejected $order={params['$order']!r} (400); "
+            f"retrying unordered")
+        params.pop("$order", None)
+        resp = await http_client.get(ep["url"], params=params)
+    if resp.status_code != 200:
+        return resp.status_code, None, False
+    records = resp.json()
+    if not isinstance(records, list):
+        return 200, records, True
+    try:
+        limit = int(params.get("$limit") or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    pages, page = 1, records
+    while ("$order" in params and limit and len(page) >= limit
+           and pages < DOB_MAX_PAGES):
+        more = await http_client.get(
+            ep["url"], params={**params, "$offset": str(limit * pages)})
+        if more.status_code != 200:
+            return 200, records, False
+        page = more.json()
+        if not isinstance(page, list):
+            return 200, records, False
+        records = records + page
+        pages += 1
+    if limit and len(page) >= limit:
+        logger.warning(
+            f"DOB API {ep['url']} still full after {pages} page(s) "
+            f"(limit {limit}); older records not fetched")
+    return 200, records, True
+
+
 async def _query_dob_apis(nyc_bin: str, project_address: str = "",
                           answered: Optional[Dict[str, bool]] = None) -> list:
     """Query NYC Open Data Socrata endpoints by BIN and/or address.
@@ -40868,14 +40973,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/w9ak-ipjd.json",
-            "params": {"bin": nyc_bin, "$limit": "50"},
+            "params": {"bin": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
             "record_type": "job_status",
             "id_field": "job_filing_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/w9ak-ipjd.json",
-            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "50"},
+            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "100", "$order": "filing_date DESC"},
             "record_type": "job_status",
             "id_field": "job_filing_number",
         })
@@ -40884,14 +40989,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/855j-jady.json",
-            "params": {"bin": nyc_bin, "$limit": "50"},
+            "params": {"bin": nyc_bin, "$limit": "250", "$order": "violation_issue_date DESC"},
             "record_type": "violation",
             "id_field": "violation_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/855j-jady.json",
-            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "50"},
+            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "250", "$order": "violation_issue_date DESC"},
             "record_type": "violation",
             "id_field": "violation_number",
         })
@@ -40900,14 +41005,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
-            "params": {"bin": nyc_bin, "$limit": "50"},
+            "params": {"bin": nyc_bin, "$limit": "250", "$order": "issue_date DESC"},
             "record_type": "violation",
             "id_field": "isn_dob_bis_viol",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
-            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "50"},
+            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "250", "$order": "issue_date DESC"},
             "record_type": "violation",
             "id_field": "isn_dob_bis_viol",
         })
@@ -40916,7 +41021,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/6bgk-3dad.json",
-            "params": {"bin": nyc_bin, "$limit": "100", "$order": "issue_date DESC"},
+            "params": {"bin": nyc_bin, "$limit": "250", "$order": "issue_date DESC"},
             "record_type": "violation",
             "id_field": "ecb_violation_number",
         })
@@ -40999,14 +41104,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/eabe-havv.json",
-            "params": {"bin": nyc_bin, "$limit": "50", "$order": "date_entered DESC"},
+            "params": {"bin": nyc_bin, "$limit": "250", "$order": "date_entered DESC"},
             "record_type": "complaint",
             "id_field": "complaint_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/eabe-havv.json",
-            "params": {"house_number": house_num, "$where": f"upper(house_street) like '%{street_name}%'", "$limit": "50", "$order": "date_entered DESC"},
+            "params": {"house_number": house_num, "$where": f"upper(house_street) like '%{street_name}%'", "$limit": "250", "$order": "date_entered DESC"},
             "record_type": "complaint",
             "id_field": "complaint_number",
         })
@@ -41027,7 +41132,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/3usq-5cid.json",
-            "params": {"bin": nyc_bin, "$limit": "50", "$order": "issue_date DESC"},
+            "params": {"bin": nyc_bin, "$limit": "100", "$order": "issue_date DESC"},
             "record_type": "swo",
             "id_field": "stop_work_order_number",
         })
@@ -41037,7 +41142,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
             "params": {
                 "house_number": house_num,
                 "$where": f"upper(street_name) like '%{street_name}%'",
-                "$limit": "50",
+                "$limit": "100",
                 "$order": "issue_date DESC",
             },
             "record_type": "swo",
@@ -41132,7 +41237,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/xubg-57si.json",
-            "params": {"bin": nyc_bin, "$limit": "50", "$order": "filing_date DESC"},
+            "params": {"bin": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
             "record_type": "facade_fisp",
             "id_field": "filing_number",
         })
@@ -41142,7 +41247,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
             "params": {
                 "house_number": house_num,
                 "$where": f"upper(street_name) like '%{street_name}%'",
-                "$limit": "50",
+                "$limit": "100",
                 "$order": "filing_date DESC",
             },
             "record_type": "facade_fisp",
@@ -41154,7 +41259,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/52dp-yji6.json",
-            "params": {"bin_number": nyc_bin, "$limit": "50", "$order": "report_filing_date DESC"},
+            "params": {"bin_number": nyc_bin, "$limit": "100", "$order": "report_filing_date DESC"},
             "record_type": "boiler",
             "id_field": "tracking_number",
         })
@@ -41185,10 +41290,10 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
             kept_after_dedup = 0
             ok = False
             try:
-                resp = await http_client.get(ep["url"], params=ep["params"])
-                if resp.status_code == 200:
-                    records = resp.json()
-                    ok = isinstance(records, list)
+                status_code, records, complete = await _dob_get_records(
+                    http_client, ep)
+                if status_code == 200:
+                    ok = isinstance(records, list) and complete
                     if not isinstance(records, list):
                         records = []
                     raw_returned = len(records)
@@ -41272,7 +41377,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
                                 rec["_record_type"] = "swo"
                         all_records.append(rec)
                 else:
-                    logger.warning(f"DOB API {ep['url']} returned {resp.status_code}")
+                    logger.warning(f"DOB API {ep['url']} returned {status_code}")
             except Exception as e:
                 ok = False
                 logger.error(f"DOB API error {ep['url']}: {e}")
@@ -41866,8 +41971,14 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
         # existing row entirely (no update-in-place); now status
         # transitions (Open → In Progress → Closed) become activity-feed
         # events without losing the prior history.
+        #
+        # DEFECT MEASURED (2026 audit): this lookup was
+        # `{"raw_dob_id": raw_dob_id}` with no project scope. Two projects on
+        # one BBL/address share 311 unique_keys, so the second project found the
+        # first project's row, saw "status unchanged" and silently got no row of
+        # its own. RULE: the lookup is scoped by project_id (as the DOB sync's).
         existing = await db.dob_logs.find_one(
-            {"raw_dob_id": raw_dob_id},
+            {"project_id": project_id, "raw_dob_id": raw_dob_id},
             sort=[("detected_at", -1)],
         )
 
@@ -41898,6 +42009,14 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
             existing.get("current_status") if existing else None
         )
         doc["status_changed_at"] = now
+        # status_history: same contract as the DOB path (lib/status_history).
+        # 311 keeps its new-row-per-change timeline; each new row carries the
+        # prior row's history plus this change so one reader works for all.
+        doc["status_history"] = (
+            status_hist.refreshed_history(
+                existing, current_status, now, changed=True, in_place=False)[0]
+            if existing else status_hist.new_row_history(current_status, now)
+        )
 
         # MR.14 commit 4a — stamp is_seed_transition on every 311
         # dob_log write. Same discriminator + reasoning as DOB-side
@@ -42246,6 +42365,27 @@ def _normalize_dob_date_to_iso(raw):
     return None
 
 
+_CLOSED_RESOLUTION_STATES = ("certified", "dismissed", "paid", "resolved")
+
+
+def _swo_resolution_state(rec: dict) -> str:
+    """resolution_state of a 3usq-5cid Stop Work Order record.
+
+    DEFECT MEASURED (2026 audit): this dataset's extractor stored NO
+    resolution_state, and _determine_severity read `current_status` /
+    `violation_category` (fields this dataset does not have; its state is
+    `status`), so a rescinded SWO was 'Action' and 'open' forever. RULE: the
+    status text names a closed outcome (RESCINDED / LIFTED / CLOSED / RESOLVED /
+    DISMISSED ...; whole words, negation-aware - wa_alerts.status_is_closed, the
+    same vocabulary the alerts use) -> 'resolved', the closed class the dashboard
+    counts and the signal classifier already understand; otherwise the generic
+    violation classifier decides (hearing dates etc.), 'open' by default."""
+    status = rec.get("status") or rec.get("current_status") or ""
+    if wa_alerts.status_is_closed(status):
+        return "resolved"
+    return _classify_resolution_state({**rec, "current_status": status})
+
+
 def _extract_swo_fields(rec: dict) -> dict:
     """MR.14 (commit 2b) — extract from the 3usq-5cid Stop Work
     Orders dataset. Status field on this dataset is the SWO's
@@ -42260,6 +42400,7 @@ def _extract_swo_fields(rec: dict) -> dict:
             if "PARTIAL" in str(rec.get("description") or "").upper()
             else "SWO_FULL"
         ),
+        "resolution_state": _swo_resolution_state(rec),
     }
 
 
@@ -42763,6 +42904,20 @@ def _determine_severity(rec: dict, record_type: str) -> str:
             return "Good"
         if any(word in status for word in ["RESOLVED", "DISMISSED", "CLOSED", "CERTIFIED"]):
             return "Good"
+        # DEFECT MEASURED (2026 audit): the two checks above never saw the
+        # fields where these records actually carry their outcome - 855j-jady's
+        # `violation_status` ("Resolved" / "Cured" / "Disputed Successfully")
+        # and the 3usq-5cid SWO's `status` ("rescinded") - so a rescinded SWO
+        # or a resolved DOB NOW violation stayed 'Action' (and was alerted as
+        # critical). RULE: severity agrees with resolution_state, computed by
+        # the same classifiers the extractors store, so the two cannot
+        # diverge: a closed-class state is 'Good'.
+        if record_type == "swo" and rec.get("stop_work_order_number"):
+            state = _swo_resolution_state(rec)
+        else:
+            state = _classify_resolution_state(rec)
+        if state in _CLOSED_RESOLUTION_STATES:
+            return "Good"
         return "Action"
 
     if record_type == "inspection":
@@ -43123,6 +43278,79 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
     return _bis_bin_overview_url(bin_val)
 
 
+# Keys of a freshly built dob_log that an in-place refresh must NOT overwrite:
+# identity, ownership, creation facts and the state the refresh itself stamps.
+_IN_PLACE_KEEP = frozenset({
+    "project_id", "company_id", "nyc_bin", "record_type", "raw_dob_id",
+    "detected_at", "created_at", "updated_at", "is_deleted", "read_by_user",
+    "previous_status", "status_changed_at", "is_seed_transition",
+    "status_history",
+})
+
+
+def _plan_in_place_refresh(existing: dict, dob_log: dict, now: datetime):
+    """What to write when a NON-PERMIT record that already has a row is seen
+    again: (update_fields, changed, legacy). Pure - no database.
+
+    `dob_log` is the document the insert path just built from the API record,
+    so every status-bearing field (resolution_state, status, closed_date,
+    disposition_*, hearing_date, penalty_amount, compliance_deadline,
+    severity, signal_kind, ...) comes from the SAME extractors and classifiers
+    the insert uses and cannot diverge from them.
+
+      changed  the normalised status differs from the stored current_status
+               (the comparator the permit/311 paths already use).
+      legacy   the row has no status_history (pre-dates the field).
+
+    On a change: previous_status / status_changed_at / current_status are set
+    and ONE status_history entry is appended ('sync', or 'legacy_first_refresh'
+    for a legacy row, whose history is first synthesised as
+    [first_seen: stored status @ detected_at]). A legacy change also stamps
+    is_seed_transition=True (see the alert-safety note at the call site); a
+    genuine change stamps False, so a row once seeded surfaces in the activity
+    feed again when something real happens to it. Only fields that differ are
+    written; an empty dict means nothing to do."""
+    current_status = dob_log.get("current_status")
+    changed = existing.get("current_status") != current_status
+    history, legacy = status_hist.refreshed_history(
+        existing, current_status, now, changed=changed, in_place=True)
+    update = {k: v for k, v in dob_log.items()
+              if k not in _IN_PLACE_KEEP and existing.get(k) != v}
+    if changed:
+        update["previous_status"] = existing.get("current_status")
+        update["status_changed_at"] = now
+        update["is_seed_transition"] = legacy
+    if changed or legacy:
+        update["status_history"] = history
+    if update:
+        update["updated_at"] = now
+    return update, changed, legacy
+
+
+async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
+                          answered: Optional[Dict[str, bool]] = None) -> list:
+    """`records` plus everything filed under the job site's OTHER building BINs
+    (lib/dob_site_bins). A BIN counts only when one of its jobs is also a job
+    under the project's BIN; a neighbour's BIN is never fetched. Never raises: a
+    failure leaves the sync exactly as it was."""
+    try:
+        if not nyc_bin or _is_placeholder_bin(nyc_bin):
+            return records
+        added: list = []
+        for cand in dob_site_bins.candidate_bins(records, nyc_bin):
+            found = await _query_dob_apis(cand, "", answered)
+            if dob_site_bins.shares_job(records, nyc_bin, found, cand):
+                added += dob_site_bins.new_records(list(records) + added, found)
+                logger.info(f"[dob-sync] project {project_id}: BIN {cand} is part of the site "
+                            f"(shares a job with BIN {nyc_bin}); {len(found)} records")
+            else:
+                logger.info(f"[dob-sync] project {project_id}: BIN {cand} shares no job with BIN {nyc_bin}; not fetched")
+        return list(records) + added
+    except Exception as e:
+        logger.warning(f"[dob-sync] site BINs skipped for project {project_id}: {type(e).__name__}")
+        return records
+
+
 async def run_dob_sync_for_project(project: dict) -> list:
     """Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual.
 
@@ -43190,6 +43418,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
             & set(source_sync.DOB_SOURCES))
 
     raw_records = await _query_dob_apis(nyc_bin, project_address, answered)
+    raw_records = await _with_site_bins(project_id, nyc_bin, raw_records, answered)
 
     # --- BIN auto-heal ---
     # Scan returned records for a real BIN. DOB's datasets expose the
@@ -43338,12 +43567,18 @@ async def run_dob_sync_for_project(project: dict) -> list:
             else:
                 work_suffix = rec.get("work_type") or rec.get("permit_type") or rec.get("permit_sequence__") or ""
                 raw_id = f"{raw_id}:{work_suffix}" if work_suffix else raw_id
-        # NOTE: we don't skip on existing_ids for permits here — the
-        # update path below refreshes status/expiration from the newest
-        # filing. Only skip for non-permit types where the record is
-        # immutable.
-        if rec.get("_record_type") != "permit" and raw_id in existing_ids:
-            continue
+        # DEFECT MEASURED (2026 audit): this used to read
+        #     if rec.get("_record_type") != "permit" and raw_id in existing_ids:
+        #         continue
+        # i.e. every non-permit record (violation, DOB complaint, SWO,
+        # job_status, cofo, boiler, elevator, facade) was INSERT-ONCE and its
+        # status a first-sight snapshot: a rescinded Stop Work Order stayed
+        # 'open', a dismissed violation 'active', hearing outcomes never
+        # refreshed. RULE: an already-known non-permit record now goes through
+        # the loop below and is refreshed IN PLACE (one row per record, so every
+        # existing consumer stays correct) with its status_history extended -
+        # see _plan_in_place_refresh. Permits and 311 keep their
+        # new-row-per-change timeline.
         new_records.append((raw_id, rec))
  
     if not new_records:
@@ -43443,11 +43678,49 @@ async def run_dob_sync_for_project(project: dict) -> list:
             #   • Status unchanged → update mutable fields on the
             #     existing row (severity / summary / next_action may
             #     have shifted even when status didn't).
-            existing = await db.dob_logs.find_one(
-                {"raw_dob_id": raw_id},
-                sort=[("detected_at", -1)],
-            )
-            if existing and existing.get("current_status") == current_status:
+            #
+            # DEFECT MEASURED (2026 audit): this lookup was
+            # `{"raw_dob_id": raw_id}` - NOT scoped by project. Two projects on
+            # the same BIN/address share raw ids, so the second project found the
+            # FIRST project's row, took the "unchanged" branch, and silently got
+            # no row of its own. RULE: look up inside THIS project (the same
+            # scope as existing_ids above). A non-permit id absent from
+            # existing_ids cannot exist, so it skips the query (no extra round
+            # trip over the old insert-once cost for new records).
+            existing = None
+            if record_type == "permit" or raw_id in existing_ids:
+                existing = await db.dob_logs.find_one(
+                    {"project_id": project_id, "raw_dob_id": raw_id},
+                    sort=[("detected_at", -1)],
+                )
+            if existing and record_type != "permit":
+                # ── NON-PERMIT, ALREADY KNOWN: refresh in place ──
+                if existing.get("is_deleted") is True:
+                    continue   # a deleted row stays deleted (old insert-once rule)
+                update, changed, legacy = _plan_in_place_refresh(
+                    existing, dob_log, now)
+                if update:
+                    await db.dob_logs.update_one(
+                        {"_id": existing["_id"]}, {"$set": update})
+                # ALERT SAFETY. Only a GENUINE change alerts: the row already
+                # had status_history, so its stored status was the product of
+                # this system's own earlier observation and the difference is
+                # new. A LEGACY row's first refresh (`legacy`) is stamped
+                # is_seed_transition and is SILENT: it was a never-refreshed
+                # first-sight snapshot, the change may be months old, and
+                # alerting on the whole backlog at deploy is the ~80-duplicate
+                # incident (2026-05-03) again. A status that did not change
+                # never alerts here (field refreshes are silent). Closed
+                # outcomes (rescinded / resolved / dismissed) are severity
+                # 'Good' and never email as critical. The throttled wrapper
+                # still applies initial-scan suppression and the 24h per-record
+                # dedupe.
+                if changed and not legacy and severity == "Action":
+                    await _send_critical_dob_alert_throttled(
+                        project,
+                        {**existing, **update, "id": str(existing["_id"])},
+                        source="dob")
+            elif existing and existing.get("current_status") == current_status:
                 # No status change — refresh mutable fields. Don't
                 # insert a duplicate.
                 update_fields = {
@@ -43458,6 +43731,13 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     "updated_at": now,
                     **extra_fields,
                 }
+                if not isinstance(existing.get("status_history"), list) \
+                        or not existing.get("status_history"):
+                    # A legacy permit row gains its history on this write (no
+                    # change, so just the synthesised first_seen entry).
+                    update_fields["status_history"] = status_hist.refreshed_history(
+                        existing, current_status, now,
+                        changed=False, in_place=False)[0]
                 await db.dob_logs.update_one(
                     {"_id": existing["_id"]},
                     {"$set": update_fields},
@@ -43478,6 +43758,21 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     existing.get("current_status") if existing else None
                 )
                 dob_log["status_changed_at"] = now
+                # status_history: a brand-new record starts with one
+                # first_seen entry; a permit diff row carries the prior row's
+                # history (synthesised if that row is legacy) plus this change,
+                # so the LATEST row alone answers "status as of" (lib/
+                # status_history). A permit's stored status was refreshed on
+                # every sync, so its change is a real event ('sync'), never a
+                # legacy_first_refresh seed - the is_seed_transition rule below
+                # is unchanged.
+                dob_log["status_history"] = (
+                    status_hist.refreshed_history(
+                        existing, current_status, now,
+                        changed=True, in_place=False)[0]
+                    if existing else
+                    status_hist.new_row_history(current_status, now)
+                )
                 # MR.14 commit 4a — stamp is_seed_transition on the
                 # doc itself. Replaces the time-window-env-var
                 # heuristic from commit 2b/3 with a durable, stored
@@ -47755,7 +48050,17 @@ async def _dot_fetch(dataset: str, params: dict) -> Optional[list]:
 
 async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
                      now: datetime) -> str:
-    """'new' | 'changed' | 'same'."""
+    """'new' | 'changed' | 'same'.
+
+    status_history (lib/status_history): DEFECT MEASURED (2026 audit) - a
+    dot_logs row kept only its latest status plus previous_status, overwritten
+    on every 2h sync, so what a summons/permit said on an earlier date was
+    unrecoverable. A new row starts with one first_seen entry; a changed status
+    appends one ('sync'); a LEGACY row (no history) first gets
+    [first_seen: stored status @ detected_at] and, if it changed,
+    'legacy_first_refresh'. No alert path reads a DOT status change (the GC
+    alerts post once per record and permit threshold, from the latest row), so
+    no seed flag is needed: nothing here can alert."""
     existing = await db.dot_logs.find_one(
         {"project_id": project_id, "raw_id": log["raw_id"]})
     if not existing:
@@ -47763,10 +48068,25 @@ async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
             **log, "raw_id": log["raw_id"],
             "project_id": project_id, "company_id": company_id,
             "matched_by": how, "previous_status": None,
+            "status_history": status_hist.new_row_history(log.get("status"), now),
             "detected_at": now, "created_at": now, "updated_at": now})
         return "new"
     fields = {**log, "matched_by": how, "updated_at": now}
-    if (log.get("status") or None) != (existing.get("status") or None):
+    changed = (log.get("status") or None) != (existing.get("status") or None)
+    had_history = isinstance(existing.get("status_history"), list) \
+        and bool(existing.get("status_history"))
+    history, legacy = status_hist.refreshed_history(
+        existing, log.get("status"), now, changed=changed, in_place=True)
+    if changed:
+        # A case-only difference is a change to the old comparator but not to
+        # the normalised status: keep the timeline free of look-alike entries.
+        if (status_hist.norm_status(log.get("status"))
+                == status_hist.norm_status(existing.get("status"))
+                and history and history[-1].get("source") != status_hist.FIRST_SEEN):
+            history.pop()
+    if changed or not had_history:
+        fields["status_history"] = history
+    if changed:
         fields["previous_status"] = existing.get("status")
         fields["status_changed_at"] = now
         await db.dot_logs.update_one({"_id": existing["_id"]}, {"$set": fields})
@@ -47790,7 +48110,7 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
         only = {"_id": {"$in": [to_query_id(i) for i in project_ids]}} if project_ids else {}
         projects = await db.projects.find(
             await unattended_project_filter({**ACTIVE_PROJECT_FILTER, **only}),
-            {"address": 1, "nyc_bin": 1, "bbl": 1, "nyc_bbl": 1,
+            {"address": 1, "nyc_bin": 1, "bbl": 1, "nyc_bbl": 1, "street_aliases": 1,
              "company_id": 1}).to_list(5000)
         projects = [p for p in projects if str(p.get("company_id") or "").strip()]
     except Exception as e:
@@ -51167,7 +51487,9 @@ async def _brief_log(uid: str, company_id: Any, day: str, status: str, *,
 
 async def _send_failed_alert(kind: str, key: str, *, company_id: Any, user_id: Any = None,
                              error: Optional[str], first_at: Optional[datetime],
-                             attempts: int, now: Optional[datetime] = None) -> None:
+                             attempts: int, now: Optional[datetime] = None,
+                             what: str = "A scheduled WhatsApp message failed to send and will not be retried."
+                             ) -> None:
     """A scheduled send that failed for good: an ERROR line ("[send-failed]",
     for a log alert), a row the owner portal lists, and one email to the
     platform operators (once per send: the notification id dedupes)."""
@@ -51185,7 +51507,7 @@ async def _send_failed_alert(kind: str, key: str, *, company_id: Any, user_id: A
         logger.warning(f"[send-failed] row not saved: {type(e).__name__}")
     from lib.notifications import send_notification
     when = _fmt_ny(first_at or now)
-    text = (f"A scheduled WhatsApp message failed to send and will not be retried.\n\n"
+    text = (f"{what}\n\n"
             f"What: {kind}\nFirst failure: {when}\nTries: {attempts}\nLast error: {err}\n\n"
             f"Run scripts/diag_morning_brief.py for a brief, or check the WaAPI instance.")
     for recipient in await _waapi_monitor_recipients():
@@ -51193,7 +51515,8 @@ async def _send_failed_alert(kind: str, key: str, *, company_id: Any, user_id: A
             await send_notification(
                 db, permit_renewal_id=f"send_failed:{kind}:{key}",
                 trigger_type="scheduled_send_failed", recipient=recipient,
-                subject=f"WhatsApp {kind.replace('_', ' ')} failed to send",
+                subject=("WhatsApp " if what.startswith("A scheduled WhatsApp") else "")
+                + f"{kind.replace('_', ' ')} failed to send",
                 html="<p>" + text.replace("\n\n", "</p><p>").replace("\n", "<br>") + "</p>",
                 text=text, metadata={"kind": kind, "attempts": attempts})
         except Exception as e:
@@ -51442,20 +51765,35 @@ async def _whatsapp_brief_job() -> None:
 # ── PROJECT REPORTS (lib/project_report.py) ─────────────────────────────────
 #
 # A period's report for a job (or all of a person's jobs): a PDF stored in
-# R2, the short WhatsApp message it goes with, and a no-login link that works for 30
-# days (the temp-media token: opaque, single object, expires). On request in
-# the DM ("send me a report for 588 for the last 2 weeks", "monthly report
-# 588", "report all jobs September"), from the app (Project → Reports), and
-# on a per-job schedule (off / bi-weekly Monday 8 AM / monthly 1st 8 AM) to
-# the company's admins and the PMs chosen -- through the Shabbos queue and
-# the shared retry policy. Every statement is built from the job's records
-# (lib/progress_report.compute: check-ins, filed daily logs, group chat,
-# photos, DOB/DOT, commitments, punch, upcoming); phone numbers never appear.
+# R2, the short WhatsApp message it goes with, and a no-login link that works
+# for 30 days (the temp-media token: opaque, single object, expires). On
+# request in the DM ("send me a report for 588 for the last 2 weeks",
+# "monthly report 588", "report all jobs September"), from the app (Project →
+# Reports), and on a per-job schedule (weekly Monday / bi-weekly / monthly
+# 1st / quarterly, 8 AM, with a catch-up window for a missed run) to the
+# company's admins and the PMs chosen -- through the Shabbos queue and the
+# shared retry policy.
+#
+# ONE REPORT, from records only (lib/progress_report.compute): site check-ins
+# and filed daily logs for the period AND the previous period of the same
+# length, the daily logs as AMENDED (the chain head, the same pick the daily
+# report makes), DOB/DOT records read as of the period (lib/report_regulatory),
+# an imported project schedule when a person confirmed one, and financial
+# figures only when a person confirmed them. NOT chat, commitments, punch
+# items or any WhatsApp content: those are the GC's internal operation, and
+# nothing in this report is sent to a language model. Phone numbers never
+# appear. The facts printed are stored WITH the report (`snapshot`), so a
+# report can be audited as it was sent.
 # The PDF goes as the WhatsApp attachment; the link only when it can't.
 
 PROJECT_REPORTS = "project_reports"
 PROJECT_REPORT_SETTINGS = "project_report_settings"
 REPORT_DM_KIND = "project_report"
+PROJECT_SCHEDULES = "project_schedules"
+PROJECT_FINANCIALS = "project_financials"
+#: A scheduled report whose PDF could not be made is rebuilt on each tick
+#: (every 15 minutes) this many times; then an operator is told.
+REPORT_PDF_ATTEMPTS = 6
 
 
 class ReportSourceUnavailable(Exception):
@@ -51465,12 +51803,46 @@ class ReportSourceUnavailable(Exception):
 REPORT_UNAVAILABLE = "I couldn't read the job's records just now, so I didn't make the report. Try again in a few minutes."
 
 
+def _report_sync(project: dict, state: Optional[dict]) -> dict:
+    """What the regulatory section needs to know about the feed: whether the
+    project is tracked at all, when its DOB records were last fully checked
+    (`last_dob_sync_at`, written on every successful sync) and whether every
+    DOB source has a completed sync, and when DOT was."""
+    srcs = (state or {}).get("sources") or {}
+
+    def at(name: str):
+        return source_sync.as_utc((srcs.get(name) or {}).get("synced_at"))
+    dob_names = (source_sync.DOB_VIOLATIONS, source_sync.DOB_COMPLAINTS, source_sync.DOB_PERMITS)
+    rolling = source_sync.as_utc(project.get("last_dob_sync_at"))
+    per_source = [at(n) for n in dob_names]
+    dob = rolling or (min(a for a in per_source if a) if any(per_source) else None)
+    dot_at = [a for a in (at(source_sync.DOT_OATH), at(source_sync.DOT_PERMITS)) if a]
+    return {"tracking": bool(project.get("track_dob_status")), "dob": dob,
+            "dob_complete": all(per_source) if srcs else True,
+            "dot": min(dot_at) if dot_at else None}
+
+
+def _confirmed_by_name(rec: dict) -> str:
+    return str(rec.get("confirmed_by_name") or "")
+
+
 async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
                        now: datetime) -> dict:
-    """Everything one job's report counts, read for that job only."""
+    """Everything one job's report reads, for that job only: the period AND
+    the previous period of the same length (the comparison is computed from
+    the same rows), the daily logs resolved to their chain heads, the DOB/DOT
+    rows whole (their status is read as of the period, so history before it
+    matters), the city events, the confirmed schedule and financials, and the
+    sync state."""
     pid = str(project.get("_id"))
+    # Defence in depth: every caller has scoped the project to the company
+    # already; a report never reads another company's job whatever called it.
+    if str(project.get("company_id") or "") != str(company_id or ""):
+        logger.error("[report] refused: project is not this company's")
+        raise ReportSourceUnavailable("project")
     length = (end - start).days + 1
-    lo = datetime.combine(start - timedelta(days=length + 1), datetime.min.time(), tzinfo=timezone.utc)
+    prev_start = start - timedelta(days=length)
+    lo = datetime.combine(prev_start - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
     hi = datetime.combine(end + timedelta(days=2), datetime.min.time(), tzinfo=timezone.utc)
     cf = _company_id_filter(company_id)
 
@@ -51482,44 +51854,79 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
         except Exception as e:
             logger.warning(f"[report] read failed: {type(e).__name__}")
             raise ReportSourceUnavailable(getattr(coll, "name", "records")) from e
+
     checkins = await _q(db.checkins, {"project_id": pid, "is_deleted": {"$ne": True},
                                       "check_in_time": {"$gte": lo, "$lt": hi}},
                         projection={"worker_id": 1, "worker_phone": 1, "worker_name": 1,
                                     "worker_company": 1, "company": 1, "company_name": 1,
-                                    "check_in_time": 1, "sst_status": 1})
-    in_period = [r for r in checkins if attendance.local_day(r.get("check_in_time")) and
-                 start <= attendance.local_day(r["check_in_time"]) <= end]
-    window = {"$gte": datetime.combine(start - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc),
-              "$lt": hi}
-    records = (await _q(db.dob_logs, {"project_id": pid, "detected_at": window})
-               + await _q(db.dot_logs, {"project_id": pid, "detected_at": window}))
-    events = await _q(db.upcoming_events, {"company_id": cf, "project_id": pid, "status": "open",
-                                           "date": {"$gte": start.isoformat()}}, 2000)
-    # Punch items are counted once, in Punch: never their attention mirrors.
-    items = await _q(db.attention_items, {"company_id": cf, "project_id": pid, **ATTENTION_NOT_PUNCH},
-                     5000)
-    punch_rows = await _q(db[punch.COLLECTION], {"company_id": cf, "project_id": pid}, 5000)
-    # The filed daily_jobsite logbooks -- the record the CP signs -- as filed:
-    # each crew's work description, locations and photos (the adapter keeps
-    # only one joined line).
-    # One filed log a day: the longest period asked for (401 days) is read
-    # whole (Codex on #803).
-    logbooks = await _q(db.logbooks, daily_jobsite_filter(pid, start=start.isoformat(),
-                                                          end=end.isoformat()), length + 31,
-                        projection={"date": 1, "data.activities": 1, "data.observations": 1,
-                                    "data.general_description": 1})
-    # The job's group chat: what people wrote (the bot's own lines and
-    # skipped / unreadable voice notes are left out by the engine).
-    chat = await _q(db.whatsapp_messages,
-                    {"project_id": pid, "company_id": cf, "sender": {"$ne": "bot"},
-                     "timestamp": {"$gte": lo + timedelta(days=length), "$lt": hi}}, 5000,
-                    projection={"sender": 1, "sender_name": 1, "body": 1, "timestamp": 1,
-                                "created_at": 1, "skipped": 1, "voice.transcript": 1,
-                                "voice.review": 1, "voice.flagged": 1})
-    # The report's photos are the daily logs' (in `logbooks`); the group
-    # chat's photos are kept for the search and the media log, never here.
-    return {"checkins": in_period, "records": records, "events": events, "commitments": items,
-            "punch_items": punch_rows, "logbooks": logbooks, "chat": chat}
+                                    "check_in_time": 1})
+    in_window = [r for r in checkins if attendance.local_day(r.get("check_in_time")) and
+                 prev_start <= attendance.local_day(r["check_in_time"]) <= end]
+    # The first day anything was recorded on the job: working days count from
+    # it (lib/report_calendar), not from before the job began.
+    firsts = []
+    try:
+        first_ck = await db.checkins.find({"project_id": pid, "is_deleted": {"$ne": True}},
+                                          {"check_in_time": 1}).sort([("check_in_time", 1)]).to_list(1)
+        first_lg = await db.logbooks.find({"project_id": pid, "log_type": "daily_jobsite",
+                                           "status": "submitted", "is_deleted": {"$ne": True}},
+                                          {"date": 1}).sort([("date", 1)]).to_list(1)
+    except Exception as e:
+        logger.warning(f"[report] read failed: {type(e).__name__}")
+        raise ReportSourceUnavailable("records") from e
+    for r in first_ck:
+        d = attendance.local_day(r.get("check_in_time"))
+        if d:
+            firsts.append(d)
+    for r in first_lg:
+        d = project_report._d(r.get("date"))
+        if d:
+            firsts.append(d)
+    # EVERY daily_jobsite document of the window -- originals, amendments,
+    # drafts, withdrawn -- then the SAME chain resolution the daily report and
+    # the inspector's list use (collapse_amendment_chains -> _filed_log): the
+    # original until an amendment is signed and filed, then the amendment; a
+    # withdrawn or unsigned one never wins. The old filter excluded every
+    # amendment, so the report printed what the CP had formally corrected.
+    log_rows = await _q(db.logbooks, {"project_id": pid, "log_type": "daily_jobsite",
+                                      "is_deleted": {"$ne": True},
+                                      "date": {"$gte": prev_start.isoformat(), "$lte": end.isoformat()}},
+                        2 * length + 200,
+                        projection={"date": 1, "data.activities": 1, "data.checklist_items": 1,
+                                    "is_amendment": 1, "parent_logbook_id": 1, "amendment_reason": 1,
+                                    "status": 1, "is_locked": 1, "log_type": 1, "created_at": 1,
+                                    "updated_at": 1})
+    heads = []
+    for chain in collapse_amendment_chains(log_rows):
+        head = chain["head"]
+        if not logbook_is_filed(head) or logbook_is_withdrawn(head):
+            continue                     # a day with only a draft is a day with no filed log
+        h = dict(head)
+        h["_chain_length"] = chain["length"]
+        h["_competing"] = len(chain["competing"])
+        h["_amendment_reason"] = head.get("amendment_reason") if head.get("is_amendment") else None
+        heads.append(h)
+    dob_rows = await _q(db.dob_logs, {"project_id": pid, "is_deleted": {"$ne": True}}, 5000)
+    dot_rows = await _q(db.dot_logs, {"project_id": pid}, 5000)
+    # City dates only: a date a model read out of a chat message is a guess an
+    # owner would take for a commitment.
+    events = await _q(db.upcoming_events, {"company_id": cf, "project_id": pid, "source": "city"}, 2000)
+    state = (await _q(db[SOURCE_SYNC_STATE], {"_id": pid}, 1) or [None])[0]
+    sched = (await _q(db[PROJECT_SCHEDULES], {"company_id": cf, "project_id": pid, "status": "confirmed"}, 1)
+             or [None])[0]
+    fin = (await _q(db[PROJECT_FINANCIALS], {"_id": pid, "company_id": cf}, 1) or [None])[0]
+    return {"checkins": in_window, "logbooks": heads, "dob_rows": dob_rows, "dot_rows": dot_rows,
+            "events": events, "sync": _report_sync(project, state),
+            # The building(s) this job is: its own BIN plus any a person added.
+            # DOB records for another BIN are left out of the report (and listed
+            # for review): the address search can return a neighbour's.
+            "project_bins": [b for b in [project.get("nyc_bin"), *(project.get("additional_bins") or [])] if b],
+            "first_activity": min(firsts) if firsts else None,
+            "schedule": (sched or {}).get("doc"),
+            "schedule_meta": ({"source_name": sched.get("source_name"),
+                               "confirmed_by": _confirmed_by_name(sched),
+                               "schedule_id": str(sched["_id"])} if sched else None),
+            "financials": fin}
 
 
 def _report_pdf(html_text: str) -> bytes:
@@ -51534,7 +51941,7 @@ def _report_pdf(html_text: str) -> bytes:
 
 REPORT_PHOTO_VERDICTS = "report_photo_verdicts"
 #: Photos sent to vision per report (each is one call, cached by photo).
-REPORT_JUDGE_MAX = 40
+REPORT_JUDGE_MAX = 30
 REPORT_JUDGE_AT_ONCE = 4
 
 
@@ -51563,7 +51970,7 @@ async def _photo_verdict(raw: bytes, project_id: Any, endpoint: str) -> Optional
             resp = await client.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
-                json={"model": QWEN_MODEL, "max_tokens": 80, "temperature": 0,
+                json={"model": QWEN_MODEL, "max_tokens": 200, "temperature": 0,
                       "messages": [{"role": "user", "content": [
                           {"type": "image_url", "image_url": {
                               "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
@@ -51591,8 +51998,12 @@ async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
     kind, score, caption}. None (and nothing cached) when it can't be read
     or judged -- such a photo is never shown."""
     key = c["key"]
+    # A verdict is cached under the JUDGE'S VERSION: the group-photo flow shares
+    # this collection with another prompt and shape, and an older report verdict
+    # (progress / other only) would pass a photo of stacked materials.
+    ckey = f"report-v3:{key}"
     try:
-        cached = await db[REPORT_PHOTO_VERDICTS].find_one({"_id": key})
+        cached = await db[REPORT_PHOTO_VERDICTS].find_one({"_id": ckey})
     except Exception:
         cached = None
     if cached:
@@ -51605,7 +52016,7 @@ async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
         return None
     v = await _photo_verdict(raw, project_id, VISION_REPORT_PHOTO)
     if v is not None:
-        await _photo_verdict_cache(key, v)
+        await _photo_verdict_cache(ckey, v)
     return v
 
 
@@ -51700,7 +52111,9 @@ async def _report_photos(rep: dict, project_id: str) -> List[dict]:
             if v:
                 verdicts[c["key"]] = v
     await asyncio.gather(*(one(c) for c in todo))
-    return progress_report.pick_photos(todo, verdicts)
+    chosen = progress_report.pick_photos(todo, verdicts)
+    rep["photo_review"] = progress_report.photo_review(todo, verdicts, chosen)
+    return chosen
 
 
 def _report_image(c: dict) -> Optional[str]:
@@ -51712,6 +52125,7 @@ def _report_image(c: dict) -> Optional[str]:
         from PIL import Image, ImageOps
         with Image.open(io.BytesIO(raw)) as im:
             im = ImageOps.exif_transpose(im).convert("RGB")
+            im = report_image.trim_black_bars(im)       # padding, never picture
             im.thumbnail((900, 900))
             out = io.BytesIO()
             im.save(out, "JPEG", quality=78)
@@ -51720,57 +52134,27 @@ def _report_image(c: dict) -> Optional[str]:
         return None
 
 
-async def _report_summary(rep: dict, company_id: Optional[str] = None) -> str:
-    """The summary: the model writes it from the report's facts; it goes out
-    only when every number and name in it is in them, else the summary
-    written from the records alone. A company on the DM brain: written by
-    dm_brain.ESCALATE_MODEL on DeepInfra."""
-    if company_id and await _dm_brain_on({"company_id": company_id, "user_id": ""}):
-        try:
-            resp = await _dm_brain_client().chat.completions.create(
-                model=dm_brain.ESCALATE_MODEL, temperature=0.2, max_tokens=600,
-                messages=[{"role": "system", "content": progress_report.SUMMARY_PROMPT},
-                          {"role": "user", "content": f"Job: {rep['job']}. Period: {rep['period']}.\n"
-                                                      + "\n".join(progress_report.facts(rep))}])
-            text = dm_brain.final_text(resp.choices[0].message.content)
-            if text and progress_report.check_summary(text, rep):
-                return " ".join(text.split())
-            logger.info("[report] model summary failed the check; the records' summary is used")
-        except Exception as e:
-            logger.warning(f"[report] summary call failed: {type(e).__name__}")
-        return progress_report.summary_fallback(rep)
-    if OPENAI_API_KEY:
-        try:
-            async with ServerHttpClient(timeout=40) as client_http:
-                resp = await client_http.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 450,
-                          "messages": [
-                              {"role": "system", "content": progress_report.SUMMARY_PROMPT},
-                              {"role": "user", "content": f"Job: {rep['job']}. Period: {rep['period']}.\n"
-                                                          + "\n".join(progress_report.facts(rep))}]},
-                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
-                             "Content-Type": "application/json"})
-            text = str(resp.json()["choices"][0]["message"]["content"]).strip()
-            if progress_report.check_summary(text, rep):
-                return " ".join(text.split())
-            logger.info("[report] model summary failed the check; the records' summary is used")
-        except Exception as e:
-            logger.warning(f"[report] summary call failed: {type(e).__name__}")
-    return progress_report.summary_fallback(rep)
-
-
 async def build_project_report(company_id: str, projects: List[dict], start: _Date, end: _Date, *,
                                now: Optional[datetime] = None, by: str = "",
                                source: str = "app", key: Optional[str] = None,
-                               kind: str = "") -> dict:
+                               kind: str = "", dry_run: bool = False) -> dict:
     """Compute, render, store and link one report (one job, or several).
-    `key`: a scheduled report's once-only key -- the same period's report is
-    reused, never built twice."""
+
+    `dry_run`: read, compute and render only -- nothing is stored, uploaded,
+    linked or sent; the result is {"pdf", "html", "snapshot", "title", "photos"}.
+    It is how a report is checked against a database without touching it.
+
+    `key`: a scheduled report's once-only key. A report already built under it
+    WITH ITS PDF is returned, never built twice. One whose PDF could not be
+    made is NOT: the old code returned that PDF-less document on every later
+    tick, so a transient R2 or WeasyPrint failure lost the period's report for
+    good. It is rebuilt in place (same id and key, `attempts` counted) until
+    it has a PDF."""
     now = now or datetime.now(timezone.utc)
+    old = None
     if key:
         old = await db[PROJECT_REPORTS].find_one({"key": key})
-        if old:
+        if old and old.get("r2_key"):
             return old
     gc = await _punch_link_gc_name(company_id) or ""
     reps = []
@@ -51778,9 +52162,8 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
         rows = await _report_rows(p, company_id, start, end, now)
         rep = progress_report.compute(
             job=wa_assistant.street_label(p), address=str(p.get("address") or ""), gc=gc,
-            start=start, end=end, now=now, **rows)
+            start=start, end=end, now=now, kind=kind, **rows)
         rep["photos"] = await _report_photos(rep, str(p.get("_id")))
-        rep["summary"] = await _report_summary(rep, company_id)
         reps.append(rep)
     images = {}
     for rep in reps:
@@ -51788,27 +52171,63 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
             uri = await asyncio.to_thread(_report_image, ph)
             if uri:
                 images[ph["key"]] = uri
-    title = progress_report.title_for(reps)
-    html_text = progress_report.render_html(reps, gc=gc, title=title, now=now, images=images)
-    rid = str(uuid.uuid4())
+        # A photo that could not be read is not in the report: the section
+        # shows what was fetched, never a hole.
+        rep["photos"] = [ph for ph in rep["photos"] if ph["key"] in images]
+    title = progress_report_render.title_for(reps)
+    rid = str((old or {}).get("_id") or uuid.uuid4())
+    html_text = progress_report_render.render_html(reps, gc=gc, title=title, now=now, images=images,
+                                                   report_id=rid)
+    if dry_run:
+        try:
+            pdf_bytes = await asyncio.to_thread(_report_pdf, html_text)
+        except (ImportError, OSError) as e:       # WeasyPrint's native libraries are missing (Windows)
+            logger.warning(f"[report] dry run: no PDF engine here ({type(e).__name__})")
+            pdf_bytes = None
+        return {"pdf": pdf_bytes, "html": html_text, "title": title,
+                "snapshot": [progress_report.snapshot(r) for r in reps],
+                "photos": [{k: v for k, v in ph.items() if k != "key"} for r in reps for ph in r["photos"]],
+                "photo_review": [x for r in reps for x in r.get("photo_review") or []],
+                "reports": reps}
     r2_key = f"reports/{company_id}/{rid}.pdf"
-    stored = False
+    stored, error = False, None
     try:
         pdf = await asyncio.to_thread(_report_pdf, html_text)
         stored = bool(await asyncio.to_thread(_upload_to_r2, pdf, r2_key, "application/pdf"))
+        if not stored:
+            error = "PDF not stored"
     except Exception as e:
-        logger.error(f"[report] PDF failed: {type(e).__name__}: {e}")
+        error = f"{type(e).__name__}: {e}"[:200]
+        logger.error(f"[report] PDF failed: {error}")
     token = await _mint_temp_media_token(r2_key, "application/pdf",
                                          ttl_seconds=project_report.LINK_DAYS * 86400) if stored else None
     heads = [progress_report.whatsapp_message(r, attached=False) for r in reps[:4]]
-    doc = {"_id": rid, "company_id": str(company_id), "project_ids": [str(p.get("_id")) for p in projects],
-           "start": start.isoformat(), "end": end.isoformat(), "title": title,
-           "summary": "\n\n".join(heads).splitlines(), "narrative": [r["summary"] for r in reps],
-           "r2_key": r2_key if stored else None, "link": _public_temp_media_url(token) if token else None,
-           "link_expires": now + timedelta(days=project_report.LINK_DAYS), "created_at": now,
-           "created_by": by, "source": source, "key": key, "kind": kind or None,
-           "filename": re.sub(r"[^A-Za-z0-9 ._-]+", "", title).strip()[:80] + ".pdf"}
-    await db[PROJECT_REPORTS].insert_one(doc)
+    fields = {"company_id": str(company_id), "project_ids": [str(p.get("_id")) for p in projects],
+              "start": start.isoformat(), "end": end.isoformat(), "title": title,
+              "summary": "\n\n".join(heads).splitlines(),
+              "r2_key": r2_key if stored else None, "link": _public_temp_media_url(token) if token else None,
+              "link_expires": now + timedelta(days=project_report.LINK_DAYS),
+              "created_by": by, "source": source, "key": key, "kind": kind or None,
+              "filename": re.sub(r"[^A-Za-z0-9 ._-]+", "", title).strip()[:80] + ".pdf",
+              # What was printed and what it rests on, kept with the report: its
+              # inputs change (a violation is resolved, a log is amended) and a
+              # regenerated report would not match the one that was sent.
+              "engine": progress_report.ENGINE_VERSION, "generated_at": now,
+              "snapshot": [progress_report.snapshot(r) for r in reps],
+              "status": "ok" if stored else "failed", "pdf_error": None if stored else error,
+              "attempts": int((old or {}).get("attempts") or 0) + 1}
+    if old:
+        await db[PROJECT_REPORTS].update_one({"_id": rid}, {"$set": fields})
+        doc = {**old, **fields}
+    else:
+        doc = {"_id": rid, "created_at": now, **fields}
+        try:
+            await db[PROJECT_REPORTS].insert_one(doc)
+        except Exception as e:
+            from pymongo.errors import DuplicateKeyError
+            if isinstance(e, DuplicateKeyError) and key:        # another instance built it first
+                return await db[PROJECT_REPORTS].find_one({"key": key}) or doc
+            raise
     logger.info(f"[report] {rid} {title} source={source} stored={stored} photos={len(images)}")
     return doc
 
@@ -51874,14 +52293,18 @@ async def _dm_report_turn(ident: dict, dm_chat: str, text: str, now: datetime) -
         elif len(jobs) == 1:
             picked = [jobs[0]["project"]]
         else:
-            named = re.search(r"\b\d{2,5}\b|\bfor\s+([A-Za-z][\w ]{2,30})", text)
-            if named and not attendance.parse_range(text, now)[0]:
+            if project_report.names_a_job(text):
                 await send_whatsapp_message(
                     dm_chat, "I don't see that job. Your jobs: "
                     + ", ".join(j["label"] for j in jobs[:8]) + ". Or say \"report all jobs\".")
                 return True
             picked = [j["project"] for j in jobs]
     start, end, _label = project_report.period_for(text, now)
+    try:
+        await _shared_limit("report", str(ident.get("user_id") or ""), REPORT_LIMIT)
+    except HTTPException:
+        await send_whatsapp_message(dm_chat, "That's a lot of reports in a short time -- give it a few minutes.")
+        return True
     try:
         doc = await build_project_report(ident["company_id"], picked, start, end, now=now,
                                          by=str(ident.get("user_id") or ""), source="dm")
@@ -51992,32 +52415,54 @@ async def _report_deliver(spec: dict) -> Any:
 
 
 async def _report_schedule_tick(now: Optional[datetime] = None) -> dict:
-    """Every scheduled progress report that is due now -- weekly, bi-weekly,
+    """Every scheduled progress report that is due -- weekly, bi-weekly,
     monthly, quarterly, any combination per job: built once per job, kind and
     period, sent once to each recipient by WhatsApp (the ledger; held over
     Shabbos / Yom Tov, retried on the shared schedule when WhatsApp fails)
     and / or by email (send_notification's ledger). The daily report goes
-    with the daily report email (check_and_send_reports)."""
+    with the daily report email (check_and_send_reports).
+
+    DUE MEANS DUE SINCE 8 AM on its due day and for a few days after
+    (project_report.CATCH_UP_DAYS): a server that was down across the 8 AM
+    hour builds the report on its next tick, and the once-per-period key keeps
+    it to one. One job's failure never reaches another's: each is isolated,
+    counted and logged."""
     now = now or datetime.now(timezone.utc)
     report = {"due": 0, "built": 0, "sent": 0, "queued": 0, "retrying": 0, "skipped": 0,
-              "emailed": 0}
+              "emailed": 0, "failed": 0, "unavailable": 0, "pdf_failed": 0}
     rows = await db[PROJECT_REPORT_SETTINGS].find(
         {"$or": [{"schedule": {"$in": ["biweekly", "monthly"]}},
                  {"schedules": {"$in": list(project_report.PERIODIC)}}]}).to_list(2000)
     for row in rows:
-        settings = project_report.settings_from(row)
-        pid, cid = str(row["_id"]), str(row.get("company_id") or "")
-        for kind in settings["schedules"]:
-            if kind not in project_report.PERIODIC:
+        try:
+            await _report_schedule_one(row, now, report)
+        except Exception as e:
+            report["failed"] += 1
+            logger.error(f"[report] schedule for {row.get('_id')} failed: {type(e).__name__}: {e}")
+    if report["due"]:
+        logger.info(f"[report] schedule {report}")
+    return report
+
+
+async def _report_schedule_one(row: dict, now: datetime, report: dict) -> None:
+    settings = project_report.settings_from(row)
+    pid, cid = str(row["_id"]), str(row.get("company_id") or "")
+    changed = source_sync.as_utc(row.get("updated_at"))
+    project = None
+    for kind in settings["schedules"]:
+        if kind not in project_report.PERIODIC:
+            continue
+        for start, end, due_day in project_report.due_periods(kind, now):
+            # A schedule switched on after a report fell due is not owed that
+            # report: only one that was already on at its 8 AM.
+            due_at = datetime.combine(due_day, datetime.min.time().replace(hour=project_report.SEND_HOUR),
+                                      tzinfo=project_report.NY).astimezone(timezone.utc)
+            if changed is not None and changed > due_at:
                 continue
-            period = project_report.scheduled_period(kind, now)
-            if not period:
-                continue
-            project = await _bot_project_scope(cid, pid)
+            project = project or await _bot_project_scope(cid, pid)
             if not project or project.get("is_deleted"):
-                break
+                return
             report["due"] += 1
-            start, end = period
             # Bi-weekly and monthly keep the key they had: a period built
             # before this change is not built again.
             key = (f"sched:{pid}:{start.isoformat()}:{end.isoformat()}"
@@ -52027,17 +52472,26 @@ async def _report_schedule_tick(now: Optional[datetime] = None) -> dict:
                 doc = await build_project_report(cid, [project], start, end, now=now, source="schedule",
                                                  key=key, kind=kind)
             except ReportSourceUnavailable:
-                report["unavailable"] = report.get("unavailable", 0) + 1
+                report["unavailable"] += 1
                 continue                     # nothing stored: the next tick tries again
+            if not doc.get("r2_key"):
+                # No PDF: nothing is sent, and the next tick rebuilds it. After
+                # REPORT_PDF_ATTEMPTS an operator is told, once.
+                report["pdf_failed"] += 1
+                tries = int(doc.get("attempts") or 1)
+                if tries >= REPORT_PDF_ATTEMPTS and not doc.get("alerted"):
+                    await _send_failed_alert(
+                        "report_pdf", key, company_id=cid, error=doc.get("pdf_error") or "PDF not made",
+                        first_at=doc.get("created_at"), attempts=tries, now=now,
+                        what="A scheduled progress report could not be made into a PDF and was not sent.")
+                    await db[PROJECT_REPORTS].update_one({"_id": doc["_id"]}, {"$set": {"alerted": True}})
+                continue
             report["built"] += 1
             people = await _report_recipients(cid, pid, settings)
             if settings["delivery"].get("email"):
                 report["emailed"] += await _report_email(doc, people)
             if settings["delivery"].get("whatsapp"):
                 await _report_whatsapp(doc, people, cid, pid, start, end, now, report)
-    if report["due"]:
-        logger.info(f"[report] schedule {report}")
-    return report
 
 
 async def _report_whatsapp(doc: dict, people: List[dict], cid: str, pid: str, start: _Date,
@@ -52110,7 +52564,7 @@ class ProjectReportSettingsIn(BaseModel):
 REPORT_SOURCE_WORDS = {"schedule": "Scheduled", "dm": "Asked in WhatsApp", "app": "Made in the app"}
 
 
-def _report_view(doc: dict, names: Optional[Dict[str, str]] = None) -> dict:
+def _report_view(doc: dict, names: Optional[Dict[str, str]] = None, *, show_summary: bool = True) -> dict:
     exp = doc.get("link_expires")
     live = isinstance(exp, datetime) and (exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)) \
         > datetime.now(timezone.utc)
@@ -52123,12 +52577,15 @@ def _report_view(doc: dict, names: Optional[Dict[str, str]] = None) -> dict:
     return {"id": doc["_id"], "title": doc.get("title"), "start": doc.get("start"), "end": doc.get("end"),
             "period": period, "kind": doc.get("kind"),
             "kind_label": project_report.KIND_LABELS.get(doc.get("kind") or "", ""),
-            "summary": doc.get("summary") or [], "source": doc.get("source"),
+            # A multi-job report's summary lines name every job in it: only
+            # someone who can see all of them gets them.
+            "summary": (doc.get("summary") or []) if show_summary else [], "source": doc.get("source"),
             "source_label": REPORT_SOURCE_WORDS.get(doc.get("source"), ""),
             # Who asked: a person, or the schedule.
             "requested_by": who if doc.get("source") != "schedule" else "Schedule",
             "created_at": _iso_utc(doc["created_at"]) if isinstance(doc.get("created_at"), datetime) else None,
-            "link": doc.get("link") if live else None, "has_pdf": bool(doc.get("r2_key"))}
+            "link": doc.get("link") if live else None, "has_pdf": bool(doc.get("r2_key")),
+            "status": doc.get("status") or ("ok" if doc.get("r2_key") else "failed")}
 
 
 async def _report_names(docs: List[dict]) -> Dict[str, str]:
@@ -52143,6 +52600,42 @@ async def _report_names(docs: List[dict]) -> Dict[str, str]:
     return out
 
 
+# ── A LIMIT THAT HOLDS ACROSS INSTANCES ──────────────────────────────────────
+#
+# lib/rate_limits.py counts in process memory: with N backend instances the
+# real ceiling is N times the number written. A report is a database sweep, a
+# PDF render and an R2 upload, so the routes that make one (and the schedule
+# import, which parses a file of up to 20 MB) are ALSO counted in the
+# database, where every instance sees the same number. One row per hit, a TTL
+# on it, a count of the person's rows inside the window: insert-then-count
+# can only over-count a race (two instances both see each other), never
+# under-count it. If the database cannot answer, the in-process limit above
+# still stands and the request is let through -- a limiter that blocks
+# everyone when Mongo is slow is worse than the abuse it guards against.
+
+RATE_WINDOWS = "rate_limit_hits"
+REPORT_LIMIT = (6, 600)          # reports a person may ask for, per 10 minutes
+SCHEDULE_IMPORT_LIMIT = (10, 600)
+
+
+async def _shared_limit(bucket: str, who: str, limit: Tuple[int, int]) -> None:
+    """Raise 429 when `who` has made `limit[0]` `bucket` requests in the last
+    `limit[1]` seconds, counting every instance."""
+    n, window = limit
+    now = datetime.now(timezone.utc)
+    key = f"{bucket}:{who}"
+    try:
+        await db[RATE_WINDOWS].insert_one({"_id": str(uuid.uuid4()), "key": key, "at": now,
+                                           "expires_at": now + timedelta(seconds=window)})
+        seen = await db[RATE_WINDOWS].count_documents({"key": key, "at": {"$gte": now - timedelta(seconds=window)}})
+    except Exception as e:
+        logger.warning(f"[rate] shared counter unavailable: {type(e).__name__}")
+        return
+    if seen > n:
+        raise HTTPException(status_code=429, headers={"Retry-After": str(window)},
+                            detail="That's a lot of reports in a short time -- wait a few minutes and try again.")
+
+
 @api_router.get("/projects/{project_id}/project-reports",
                 dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def list_project_reports(project_id: str, current_user=Depends(get_current_user)):
@@ -52154,7 +52647,9 @@ async def list_project_reports(project_id: str, current_user=Depends(get_current
     rows.sort(key=lambda r: r.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     rows = rows[:200]
     names = await _report_names(rows)
-    return {"reports": [_report_view(r, names) for r in rows],
+    admin = is_company_admin(current_user)
+    return {"reports": [_report_view(r, names, show_summary=admin or len(r.get("project_ids") or []) <= 1)
+                        for r in rows],
             "settings": await _report_settings(project_id),
             "presets": [{"key": k, "label": project_report.PRESET_LABELS[k]} for k in project_report.PRESETS]}
 
@@ -52173,6 +52668,7 @@ async def create_project_report(project_id: str, body: ProjectReportRequest,
     """Generate now: a preset (last 7 days, last 2 weeks, this month, last
     month, this quarter, the whole project), a custom range, or words."""
     company_id = await _memory_project(project_id, current_user)
+    await _shared_limit("report", str(current_user.get("id") or current_user.get("_id") or ""), REPORT_LIMIT)
     project = await _bot_project_scope(company_id, project_id)
     now = datetime.now(timezone.utc)
     if body.start and body.end:
@@ -52196,7 +52692,8 @@ async def create_project_report(project_id: str, body: ProjectReportRequest,
         doc = await build_project_report(company_id, [project], start, end, now=now, by=by, source="app")
     except ReportSourceUnavailable:
         raise HTTPException(status_code=503, detail=REPORT_UNAVAILABLE)
-    return _report_view(doc, await _report_names([doc]))
+    return _report_view(doc, await _report_names([doc]),
+                        show_summary=is_company_admin(current_user) or len(doc.get("project_ids") or []) <= 1)
 
 
 @api_router.get("/project-reports/{report_id}/pdf", dependencies=[Depends(require_approved)])
@@ -52211,6 +52708,21 @@ async def get_project_report_pdf(report_id: str, current_user=Depends(get_curren
     obj = await asyncio.to_thread(_r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=doc["r2_key"])
     return Response(content=obj["Body"].read(), media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="{doc.get("filename") or "report.pdf"}"'})
+
+
+@api_router.get("/project-reports/{report_id}/snapshot", dependencies=[Depends(require_approved)])
+async def get_project_report_snapshot(report_id: str, current_user=Depends(get_current_user)):
+    """The facts a report printed and the evidence they rest on, as stored when
+    it was made (admins, and PMs on every job in it). A report regenerated
+    later reads changed records; this is what was sent."""
+    doc = await db[PROJECT_REPORTS].find_one({"_id": report_id})
+    if not doc or str(doc.get("company_id")) != str(get_user_company_id(current_user)):
+        raise HTTPException(status_code=404, detail="Report not found")
+    for pid in doc.get("project_ids") or []:
+        await _memory_project(pid, current_user)
+    return {"id": doc["_id"], "engine": doc.get("engine"), "generated_at": _iso_utc(doc.get("generated_at"))
+            if isinstance(doc.get("generated_at"), datetime) else None,
+            "start": doc.get("start"), "end": doc.get("end"), "snapshot": doc.get("snapshot") or []}
 
 
 @api_router.get("/projects/{project_id}/project-report-settings",
@@ -52295,6 +52807,221 @@ async def put_project_report_settings(project_id: str, body: ProjectReportSettin
                     str(project_id), {"schedules": schedules, "recipient_ids": recipient_ids,
                                       "delivery": delivery})
     return await get_project_report_settings(project_id, current_user)
+
+
+# ── THE PROJECT SCHEDULE (lib/schedule_import.py, lib/schedule_plan.py) ─────
+#
+# The progress report says nothing about schedule or completion unless a
+# person imported a schedule and CONFIRMED what was read from it. The import
+# is one step away from files the GC already has: a Primavera P6 export (.xer),
+# an MS Project XML, an Excel / CSV table, or a text-based PDF schedule -- by
+# upload, or straight from the project's Dropbox-synced files (`candidates`
+# lists the ones whose names look like a schedule; one tap imports it). The
+# parse is a DRAFT: the admin sees what was found (activities, milestones,
+# data date, what could not be read) and confirms it, and only then does the
+# report use it. A new confirmation supersedes the last; discarding stops the
+# report using it. The original file is kept in R2 beside the parsed copy.
+#
+# Nothing here estimates anything: lib/schedule_plan reports dates, actuals
+# and a percent complete ONLY as the file states them.
+
+SCHEDULE_NAME_RE = re.compile(r"schedule|gantt|cpm|p6|baseline|programme|look-?ahead", re.IGNORECASE)
+SCHEDULE_EXTS = (".xlsx", ".xlsm", ".csv", ".tsv", ".xer", ".xml", ".pdf")
+MAX_SCHEDULE_DOC_BYTES = 12 * 1024 * 1024
+
+
+class ScheduleImportFile(BaseModel):
+    file_id: str
+
+
+class ScheduleConfirm(BaseModel):
+    reviewed: bool = False
+    #: Required when a confirmed schedule exists: an import never replaces
+    #: what a person confirmed unless a person says so.
+    replace_confirmed: bool = False
+
+
+def _schedule_view(rec: dict, *, detail: bool = False) -> dict:
+    doc = rec.get("doc") or {}
+    acts = doc.get("activities") or []
+    out = {"id": str(rec["_id"]), "status": rec.get("status"), "format": doc.get("format"),
+           "source_name": rec.get("source_name"), "data_date": doc.get("data_date"),
+           "project_name": doc.get("project_name"), "confidence": doc.get("confidence"),
+           "activities": sum(1 for a in acts if a.get("kind") != "summary"),
+           "milestones": sum(1 for a in acts if a.get("kind") == "milestone"),
+           "warnings": (doc.get("warnings") or [])[:12],
+           "imported_at": _iso_utc(rec["imported_at"]) if isinstance(rec.get("imported_at"), datetime) else None,
+           "confirmed_by": rec.get("confirmed_by_name") or None,
+           "confirmed_at": _iso_utc(rec["confirmed_at"]) if isinstance(rec.get("confirmed_at"), datetime) else None}
+    if detail and acts:
+        today = datetime.now(timezone.utc).astimezone(project_report.NY).date()
+        try:
+            a = schedule_plan.assess(doc, period_start=today - timedelta(days=13), period_end=today, today=today)
+            out["preview"] = schedule_plan.to_jsonable({
+                "usable": a["usable"], "counts": a["counts"], "project": a["project"],
+                "milestones": {k: [m.get("name") for m in v][:5] for k, v in a["milestones"].items()},
+                "limitations": a["limitations"]})
+        except Exception:
+            out["preview"] = None
+    return out
+
+
+async def _schedule_store_draft(project: dict, company_id: str, name: str, data: bytes,
+                                current_user: dict) -> dict:
+    """Parse an uploaded or Dropbox-synced schedule file into a DRAFT."""
+    if not data or len(data) > schedule_import.MAX_BYTES:
+        raise HTTPException(status_code=400, detail="That file is empty or larger than 20 MB.")
+    try:
+        doc = await asyncio.to_thread(schedule_import.parse_schedule, name, data)
+    except schedule_import.ScheduleImportError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if len(json.dumps(doc, default=str)) > MAX_SCHEDULE_DOC_BYTES:
+        raise HTTPException(status_code=413, detail="That schedule is too large to import.")
+    pid, cf = str(project["_id"]), _company_id_filter(company_id)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:80]
+    r2_key = f"schedules/{company_id}/{pid}/{doc['sha256'][:16]}-{safe}"
+    stored = bool(_r2_client and await asyncio.to_thread(_upload_to_r2, data, r2_key, "application/octet-stream"))
+    await db[PROJECT_SCHEDULES].update_many({"company_id": cf, "project_id": pid, "status": "draft"},
+                                            {"$set": {"status": "discarded"}})
+    now = datetime.now(timezone.utc)
+    rec = {"_id": str(uuid.uuid4()), "company_id": str(company_id), "project_id": pid, "status": "draft",
+           "doc": doc, "source_name": name[:120], "sha256": doc["sha256"], "r2_key": r2_key if stored else None,
+           "imported_by": str(current_user.get("id") or current_user.get("_id") or ""),
+           "imported_at": now}
+    await db[PROJECT_SCHEDULES].insert_one(rec)
+    await audit_log("project_schedule_import", rec["imported_by"], "project", pid,
+                    {"schedule_id": rec["_id"], "format": doc.get("format"), "source": name[:120]})
+    return rec
+
+
+@api_router.get("/projects/{project_id}/baseline-schedule",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_baseline_schedule(project_id: str, current_user=Depends(get_current_user)):
+    """The project's confirmed schedule, the draft waiting for confirmation,
+    and the synced files that look like schedules."""
+    company_id = await _memory_project(project_id, current_user)
+    cf = _company_id_filter(company_id)
+    recs = await db[PROJECT_SCHEDULES].find({"company_id": cf, "project_id": str(project_id),
+                                             "status": {"$in": ["confirmed", "draft"]}}).to_list(20)
+    files = await db.project_files.find({"project_id": str(project_id), "is_deleted": {"$ne": True}},
+                                        {"name": 1, "r2_key": 1}).to_list(1000)
+    cands = [{"id": str(f["_id"]), "name": f["name"]} for f in files
+             if f.get("r2_key") and SCHEDULE_NAME_RE.search(str(f.get("name") or ""))
+             and str(f.get("name") or "").lower().endswith(SCHEDULE_EXTS)]
+    newest = lambda st: max((r for r in recs if r.get("status") == st),  # noqa: E731
+                            key=lambda r: r.get("imported_at") or datetime.min.replace(tzinfo=timezone.utc),
+                            default=None)
+    confirmed, draft = newest("confirmed"), newest("draft")
+    return {"confirmed": _schedule_view(confirmed) if confirmed else None,
+            "draft": _schedule_view(draft, detail=True) if draft else None,
+            "candidates": cands[:20], "can_edit": is_company_admin(current_user),
+            "formats": ["Primavera P6 (.xer)", "MS Project XML (.xml)", "Excel (.xlsx)", "CSV", "PDF table"]}
+
+
+@api_router.post("/projects/{project_id}/baseline-schedule/from-file",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def import_baseline_schedule_from_file(project_id: str, body: ScheduleImportFile,
+                                             current_user=Depends(get_current_user)):
+    """Parse a file already synced to this project (Dropbox) into a draft."""
+    company_id = await _memory_project(project_id, current_user)
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admins import the schedule")
+    await _shared_limit("schedule", str(current_user.get("id") or current_user.get("_id") or ""), SCHEDULE_IMPORT_LIMIT)
+    project = await _bot_project_scope(company_id, project_id)
+    f = await db.project_files.find_one({"_id": to_query_id(body.file_id), "project_id": str(project_id),
+                                         "is_deleted": {"$ne": True}})
+    if not project or not f or not f.get("r2_key"):
+        raise HTTPException(status_code=404, detail="File not found")
+    name = str(f.get("name") or "schedule")
+    if not name.lower().endswith(SCHEDULE_EXTS):
+        raise HTTPException(status_code=400, detail="Not a schedule format Levelog can read")
+    data = await asyncio.to_thread(_r2_bytes, f["r2_key"])
+    if not data:
+        raise HTTPException(status_code=502, detail="The file could not be read from storage")
+    rec = await _schedule_store_draft(project, company_id, name, data, current_user)
+    return _schedule_view(rec, detail=True)
+
+
+@api_router.post("/projects/{project_id}/baseline-schedule/upload",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def upload_baseline_schedule(project_id: str, file: UploadFile = File(...),
+                                   current_user=Depends(get_current_user)):
+    """Parse an uploaded schedule file into a draft."""
+    company_id = await _memory_project(project_id, current_user)
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admins import the schedule")
+    await _shared_limit("schedule", str(current_user.get("id") or current_user.get("_id") or ""), SCHEDULE_IMPORT_LIMIT)
+    project = await _bot_project_scope(company_id, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    name = _sanitize_upload_filename(file.filename or "schedule")
+    if not name.lower().endswith(SCHEDULE_EXTS):
+        raise HTTPException(status_code=400, detail="Upload an .xer, .xml, .xlsx, .csv or .pdf schedule")
+    data = await file.read()
+    rec = await _schedule_store_draft(project, company_id, name, data, current_user)
+    return _schedule_view(rec, detail=True)
+
+
+@api_router.post("/projects/{project_id}/baseline-schedule/{schedule_id}/confirm",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def confirm_baseline_schedule(project_id: str, schedule_id: str, body: ScheduleConfirm,
+                                    current_user=Depends(get_current_user)):
+    """Confirm a draft: the report uses it from now on, and the one it
+    replaces is kept as superseded."""
+    company_id = await _memory_project(project_id, current_user)
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admins confirm the schedule")
+    if not body.reviewed:
+        raise HTTPException(status_code=400, detail="Confirm that you reviewed what was read from the file")
+    cf, pid = _company_id_filter(company_id), str(project_id)
+    rec = await db[PROJECT_SCHEDULES].find_one({"_id": schedule_id, "company_id": cf, "project_id": pid,
+                                                "status": "draft"})
+    if not rec:
+        raise HTTPException(status_code=404, detail="No draft schedule to confirm")
+    try:
+        today = datetime.now(timezone.utc).astimezone(project_report.NY).date()
+        usable = schedule_plan.assess(rec.get("doc") or {}, period_start=today - timedelta(days=13),
+                                      period_end=today, today=today)["usable"]
+    except Exception:
+        usable = False
+    if not usable:
+        raise HTTPException(status_code=422, detail="No dated activities could be read from that file, "
+                                                    "so it cannot be confirmed")
+    current = await db[PROJECT_SCHEDULES].find_one({"company_id": cf, "project_id": pid, "status": "confirmed"})
+    if current and not body.replace_confirmed:
+        raise HTTPException(status_code=409, detail=(
+            "A schedule is already confirmed (" + str(current.get("source_name") or "schedule")
+            + "). Confirm again with replace_confirmed to replace it; it is kept as superseded."))
+    now = datetime.now(timezone.utc)
+    await db[PROJECT_SCHEDULES].update_many({"company_id": cf, "project_id": pid, "status": "confirmed"},
+                                            {"$set": {"status": "superseded"}})
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    name = current_user.get("full_name") or current_user.get("name") or ""
+    await db[PROJECT_SCHEDULES].update_one(
+        {"_id": schedule_id}, {"$set": {"status": "confirmed", "confirmed_by": uid,
+                                        "confirmed_by_name": name, "confirmed_at": now}})
+    await audit_log("project_schedule_confirm", uid, "project", pid, {"schedule_id": schedule_id})
+    return _schedule_view({**rec, "status": "confirmed", "confirmed_by_name": name, "confirmed_at": now})
+
+
+@api_router.delete("/projects/{project_id}/baseline-schedule/{schedule_id}",
+                   dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def discard_baseline_schedule(project_id: str, schedule_id: str,
+                                    current_user=Depends(get_current_user)):
+    """Discard a draft, or stop using the confirmed schedule (the report then
+    says no schedule is on file)."""
+    company_id = await _memory_project(project_id, current_user)
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admins manage the schedule")
+    cf, pid = _company_id_filter(company_id), str(project_id)
+    res = await db[PROJECT_SCHEDULES].update_one(
+        {"_id": schedule_id, "company_id": cf, "project_id": pid, "status": {"$in": ["draft", "confirmed"]}},
+        {"$set": {"status": "discarded"}})
+    if not res.modified_count:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    await audit_log("project_schedule_discard", str(current_user.get("id") or ""), "project", pid,
+                    {"schedule_id": schedule_id})
+    return {"ok": True}
 
 
 # ── UPCOMING v1 (lib/upcoming.py) ─────────────────────────────────────────
@@ -56238,22 +56965,44 @@ def _dm_is_asker(jid: str, person: Optional[dict]) -> bool:
     return len(digits) == 10 and digits in {str(p)[-10:] for p in asker.get("phones") or [] if p}
 
 
-async def _wa_typing(chat_id: str, on: bool = True) -> bool:
-    """WaAPI send-typing / send-stop-typing {chatId}. Never raises."""
+async def _wa_chat_action(chat_id: str, action: str) -> bool:
+    """One WaAPI chat action (send-seen / send-typing / send-stop-typing,
+    body {chatId}). Never raises; a failure is logged with the action and
+    status only -- never the chat id (it holds their phone number)."""
     if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and chat_id):
         return False
-    action = "send-typing" if on else "send-stop-typing"
     url = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/{action}"
     code, _body, exc = await _waapi_post_raw(
         url, {"chatId": chat_id}, {"Authorization": f"Bearer {WAAPI_TOKEN}",
                                    "Content-Type": "application/json"})
-    return exc is None and code is not None and code < 400
+    ok = exc is None and code is not None and code < 400
+    inner = _body.get("data") if isinstance(_body, dict) else None
+    if ok and isinstance(inner, dict) and inner.get("status") == "error":
+        ok = False                                   # WaAPI's 200 that did not happen
+    if not ok:
+        # waapi_error scrubs numbers out of what WaAPI said.
+        logger.warning(f"[dm-brain] WaAPI {action} failed: "
+                       f"{send_retry.waapi_error(action, code, _body, exc)}")
+    return ok
+
+
+async def _wa_typing(chat_id: str, on: bool = True) -> bool:
+    """WaAPI send-typing / send-stop-typing {chatId}."""
+    return await _wa_chat_action(chat_id, "send-typing" if on else "send-stop-typing")
+
+
+async def _wa_seen(chat_id: str) -> bool:
+    """WaAPI send-seen {chatId}: their messages read (blue ticks when both
+    sides have read receipts on), the way a person opens the chat."""
+    return await _wa_chat_action(chat_id, "send-seen")
 
 
 async def _dm_typing_while(chat_id: str, done: asyncio.Event) -> None:
-    """"typing…" in their chat until `done`, sent again every
-    DM_TYPING_EVERY_SECONDS (WhatsApp drops it after a while)."""
+    """What a person does: open the chat (read ticks), then "typing…" until
+    `done`, sent again every DM_TYPING_EVERY_SECONDS (WhatsApp drops it
+    after a while)."""
     try:
+        await _wa_seen(chat_id)
         while not done.is_set():
             await _wa_typing(chat_id, True)
             try:
@@ -56404,17 +57153,18 @@ def _dm_brain_client():
 
 
 async def _dm_brain_on(ident: Optional[dict]) -> bool:
-    """The brain answers this person: their company (or they) has the flag,
-    and the model can be reached."""
+    """The brain answers this person: on for everyone by default, unless
+    their company (or they) is on the off switch (flag dm_brain_off), or
+    the model can't be reached (no key)."""
     if not ident or not DM_BRAIN_API_KEY:
         return False
     try:
-        return await feature_flags.is_feature_enabled(
-            db, dm_brain.FLAG, company_id=str(ident.get("company_id") or ""),
+        return not await feature_flags.is_feature_enabled(
+            db, dm_brain.OFF_FLAG, company_id=str(ident.get("company_id") or ""),
             user_id=str(ident.get("user_id") or ""))
     except Exception as e:
-        logger.warning(f"[dm-brain] flag read failed: {type(e).__name__}")
-        return False
+        logger.warning(f"[dm-brain] off-switch read failed: {type(e).__name__}")
+        return True                                  # the brain is the default
 
 
 async def _dm_brain_history(dm_chat: str, now: datetime, before: Optional[datetime] = None) -> list:
@@ -56523,6 +57273,10 @@ async def _dm_brain_headcount(ctx: dict, job: dict, args: dict) -> str:
         "people_on_site": [{"name": w["name"], "sub": w["company"], "in_at": wa_headcount.clock(w["at"])}
                            for w in data["workers"]],
         "since": label or None,
+        # The count itself, not just the list: a model that counts the names
+        # writes a figure no tool holds, and the evidence check re-asks
+        # (Oct 21 eval: "12" re-asked 3 of 8 cases, ~3s each).
+        "came_in_since_count": len(data.get("added") or []) if since else None,
         "came_in_since": ([{"name": w["name"], "sub": w["company"], "in_at": wa_headcount.clock(w["at"])}
                            for w in data.get("added") or []] if since else None),
         "checked_in_today_and_left": data.get("checked_out") or 0,
@@ -59884,6 +60638,10 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db["scheduler_leases"], keys=[("expires_at", 1)],
         name="scheduler_leases_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[RATE_WINDOWS], keys=[("expires_at", 1)], name="rate_limit_hits_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[RATE_WINDOWS], keys=[("key", 1), ("at", 1)], name="rate_limit_hits_key_at")
     await _ensure_index_resilient(
         db[WA_DM_WINDOWS], keys=[("expires_at", 1)],
         name="whatsapp_dm_reply_windows_ttl", expireAfterSeconds=0)
@@ -72042,7 +72800,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
             await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
             return
-        # The DM brain answers this person (flag dm_brain_v2, per company).
+        # The DM brain answers this person (everyone, unless dm_brain_off).
         dm_brain_on = await _dm_brain_on(ident)
 
         # Transcribe audio if present.
@@ -80251,6 +81009,27 @@ async def startup_event():
         name="worker_project_trades_worker_project_unique",
         unique=True,
     )
+
+    # Project reports: one report per scheduled period (the key), and the
+    # list a job's Reports screen reads.
+    await _ensure_index_resilient(
+        db[PROJECT_REPORTS],
+        keys=[("key", 1)],
+        name="project_reports_key_unique",
+        unique=True,
+        partialFilterExpression={"key": {"$type": "string"}},
+    )
+    await _ensure_index_resilient(
+        db[PROJECT_REPORTS],
+        keys=[("company_id", 1), ("project_ids", 1), ("created_at", -1)],
+        name="project_reports_company_project_created",
+    )
+    await _ensure_index_resilient(
+        db[PROJECT_SCHEDULES],
+        keys=[("company_id", 1), ("project_id", 1), ("status", 1)],
+        name="project_schedules_company_project_status",
+    )
+
 
     # Phase B1a — digest_dispatcher cron. 15-minute cadence, same
     # interval as the DOB nightly_dob_scan so digest-eligible items

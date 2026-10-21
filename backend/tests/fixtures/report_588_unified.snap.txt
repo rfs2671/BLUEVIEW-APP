@@ -1,0 +1,37 @@
+OVERVIEW
+4 subcontractors worked on site on 10 of 10 working days, averaging 25 workers a day with a peak of 37 on Thu Oct 15. The average was up from 11.9 in the previous period.
+Reported work — Arkon Builders: framing on floors 1–4; Quality Plumbing: riser install on floors 1–3; Power Direct: electrical rough-in on floors 1–2; J&G Scaffolding: scaffolding on Front facade.
+Regulatory — 1 DOB/DOT violation or complaint open and 2 records issued in the period.
+Schedule — per the project schedule dated Oct 14, 2026: 3 of 11 scheduled activities complete and forecast finish Mar 12, 2027 against an original Feb 26, 2027.
+
+CHANGES
+[R] Stop Work Order SWO-2026-0041 was lifted on Oct 6, 2026.
+[R] 1 new DOB/DOT violation or order issued: DOB violation 35123456.
+[R] 1 violation resolved: DOB violation 29887711.
+[G] Average workforce rose to 25 workers a day from 11.9 in the previous period.
+[G] Quality Plumbing and Power Direct mobilized this period (not on site in the previous one).
+[G] Metro Demolition no longer on site (none this period).
+
+RISKS
+[high/R] 1 DOB/DOT violation or complaint open: DOB violation 35123456.
+[watch/R] Permit expiring within 30 days: DOB permit B00123456-I1 (Nov 10, 2026).
+[watch/S] The schedule's forecast finish is 14 days after its original finish.
+
+UPCOMING
+2026-10-20 [S] Milestone: Rough plumbing inspection
+2026-10-28 [R] OATH hearing, violation 35123456
+2026-11-05 [S] Milestone: Framing complete, floors 1-4
+2026-11-10 [R] DOB permit B00123456-I1 expires
+
+DATA NOTES
+Daily logs were filed for 9 of the 10 days with site activity (no filed log on Oct 7).
+Working days exclude Columbus Day (Oct 12).
+
+LIMITATIONS
+No confirmed financial data is on file: budget, change-order, cost and draw information is not reported.
+Progress is as reported in the daily logs and site check-ins. It is not independently verified, and no percent complete is derived from headcount, log wording or photographs.
+Photographs are supplied in the filed daily logs; their location and date are as filed and are not independently verified.
+Internal GC coordination (messages, reminders, punch-list assignments, free-text site observations) and individual worker information are not included in this report.
+
+STATUS
+Watch: Based on site check-ins, filed daily logs and DOB/DOT records.

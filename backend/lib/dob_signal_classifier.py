@@ -129,6 +129,16 @@ def _classify_swo(log: dict) -> str:
     Either way, we discriminate full vs. partial via violation_subtype
     or description text.
     """
+    # A rescinded / lifted / resolved order is no longer a stop-work signal.
+    # DEFECT MEASURED (2026 audit): SWO rows were insert-once so this never
+    # saw a closed state; now that the sync refreshes them in place, a
+    # rescinded order must stop classifying as stop_work_* (which drives the
+    # red "Action Needed" template). It reuses `violation_resolved` - the
+    # existing closed-outcome kind with a template - rather than inventing a
+    # kind the templates/frontend do not know.
+    if (log.get("resolution_state") or "").lower() in {
+            "certified", "dismissed", "paid", "resolved"}:
+        return "violation_resolved"
     subtype = (log.get("violation_subtype") or "").upper()
     description = (log.get("description") or "").upper()
     if subtype == "SWO_PARTIAL" or "PARTIAL" in description:

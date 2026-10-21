@@ -40,7 +40,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from lib import dot_sync, source_sync, wa_gc
+from lib import dot_sync, source_sync, wa_alerts, wa_gc
 
 try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
     from zoneinfo import ZoneInfo
@@ -104,9 +104,6 @@ NEW_ISSUED_WITHIN_DAYS = 30
 RANK_REGULATORY = 1
 RANK_PERMIT = 2
 
-_CLOSED = ("certified", "dismissed", "paid", "resolved", "closed", "rescinded",
-           "resolve", "close")
-
 _NEW_KINDS = {
     "violation": ("violation", "violation_number", "violation_date", "issued"),
     "complaint": ("complaint", "complaint_number", "complaint_date", "filed"),
@@ -166,8 +163,9 @@ def _status(r: Dict[str, Any]) -> str:
 
 def _is_closed(r: Dict[str, Any]) -> bool:
     for k in ("resolution_state", "complaint_status", "status", "current_status"):
-        v = _text(r.get(k)).lower()
-        if v and any(v.startswith(c) for c in _CLOSED):
+        # Whole words, negation-aware (wa_alerts.status_is_closed): UNPAID and
+        # NOT CERTIFIED are OPEN states, which a prefix test read as closed.
+        if wa_alerts.status_is_closed(r.get(k)):
             return True
     return bool(_text(r.get("closed_date")))
 
@@ -266,12 +264,17 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
         # stop-work order rescinded, or any change DOB marks as needing action
         before = _text(latest.get("previous_status"))
         after = _text(latest.get("current_status"))
-        if (len(hist) > 1 and before and after and before != after
+        # A permit changes by a NEW row; a violation or stop-work order is
+        # refreshed IN PLACE (one row, its status_history grows) -- so a
+        # change is either more than one row or more than one history entry.
+        changed_row = len(hist) > 1 or len(latest.get("status_history") or []) > 1
+        if (changed_row and before and after and before != after
                 and not latest.get("is_seed_transition") and _stamp(latest) > cutoff):
             up = after.upper()
             permit_change = rt == "permit" and any(
                 w in up for w in ("ISSUED", "EXPIRED", "REVOKED"))
-            rescinded = rt == "swo" and ("RESCIND" in up or "LIFTED" in up)
+            rescinded = rt == "swo" and (("RESCIND" in up or "LIFTED" in up)
+                                         or wa_alerts.status_is_closed(after))
             action = (_text(latest.get("severity")) == "Action"
                       and not _is_closed(latest))
             if permit_change or rescinded or action:

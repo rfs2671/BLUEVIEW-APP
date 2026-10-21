@@ -140,10 +140,12 @@ class NothingThatResolvedBeforeResolvesDifferently(unittest.TestCase):
 
     # Captured from the map as it stood before the plurals were added.
     BEFORE = {
-        "concrete": ["Foundation / Concrete"],
+        # CHANGED ON PURPOSE (operator, 2026-10): a concrete / foundation crew does
+        # the foundation phase too -- see ROSTER_TRADE_MAP. Formwork and rebar did not.
+        "concrete": ["Foundation / Concrete", "Excavation", "Shoring / underpinning", "Piles / caissons"],
         "formwork": ["Foundation / Concrete"],
         "rebar": ["Foundation / Concrete"],
-        "foundation": ["Foundation / Concrete"],
+        "foundation": ["Foundation / Concrete", "Excavation", "Shoring / underpinning", "Piles / caissons"],
         "electrical": ["Electrical"],
         "electric": ["Electrical"],
         "electrician": ["Electrical"],

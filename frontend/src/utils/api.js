@@ -1953,6 +1953,45 @@ export const projectReportsAPI = {
 };
 
 /**
+ * Project schedule import: a draft is read from a file and only used by the
+ * progress report once an admin confirms it.
+ */
+export const projectScheduleAPI = {
+  // { confirmed, draft, candidates: [{ id, name }], can_edit, formats }
+  get: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/baseline-schedule`);
+    return response.data;
+  },
+  // formData: multipart with `file`. Same web / native header rule as dropboxAPI.uploadFile.
+  upload: async (projectId, formData) => {
+    const isWeb = typeof window !== 'undefined' && !!window.document;
+    const headers = isWeb ? { 'Content-Type': undefined } : { 'Content-Type': 'multipart/form-data' };
+    const response = await apiClient.post(`/api/projects/${projectId}/baseline-schedule/upload`, formData, {
+      timeout: 120000,
+      headers,
+      transformRequest: (data) => data,
+    });
+    return response.data;
+  },
+  fromFile: async (projectId, fileId) => {
+    const response = await apiClient.post(`/api/projects/${projectId}/baseline-schedule/from-file`,
+      { file_id: fileId }, { timeout: 120000 });
+    return response.data;
+  },
+  confirm: async (projectId, scheduleId, replaceConfirmed = false) => {
+    const response = await apiClient.post(
+      `/api/projects/${projectId}/baseline-schedule/${encodeURIComponent(scheduleId)}/confirm`,
+      { reviewed: true, replace_confirmed: !!replaceConfirmed });
+    return response.data;
+  },
+  discard: async (projectId, scheduleId) => {
+    const response = await apiClient.delete(
+      `/api/projects/${projectId}/baseline-schedule/${encodeURIComponent(scheduleId)}`);
+    return response.data;
+  },
+};
+
+/**
  * WhatsApp Integration APIs
  */
 export const whatsappAPI = {

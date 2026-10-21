@@ -16,7 +16,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { ArrowLeft, FileText, Download, Check, Share2, ExternalLink, Mail, Plus, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, FileText, Download, Check, Share2, ExternalLink, Calendar, Mail, Plus, Trash2 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
@@ -33,6 +33,7 @@ import { readCachedProject } from '../../../src/utils/projectCache';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import { useT } from '../../../src/i18n';
 
 // Project → Reports: the job's progress reports (lib/progress_report.py --
 // the same report the WhatsApp one is).
@@ -50,6 +51,7 @@ export default function ProjectReportsScreen() {
   const { id: projectId } = useLocalSearchParams();
   const { colors } = useTheme();
   const toast = useToast();
+  const ts = useT('projectSchedule');
   const [reports, setReports] = useState(null);
   const [settings, setSettings] = useState(null);
   const [preset, setPreset] = useState(PRESETS[1].key);
@@ -332,6 +334,19 @@ export default function ProjectReportsScreen() {
             A progress report of the job for a period — work by sub, actual work from the daily logs,
             photos, site activity, DOB/DOT, open items, what's next — the same report sent in WhatsApp.
           </Text>
+
+          <Pressable onPress={() => router.push(`/projects/${projectId}/schedule`)}
+            accessibilityRole="link" accessibilityLabel={ts('linkTitle')}>
+            <GlassCard style={styles.card}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <Calendar size={18} color={text.color} />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[styles.line, text]}>{ts('linkTitle')}</Text>
+                  <Text style={[styles.hint, muted]}>{ts('linkBody')}</Text>
+                </View>
+              </View>
+            </GlassCard>
+          </Pressable>
 
           <GlassCard style={styles.card}>
             <Text style={[styles.section, text]}>Generate now</Text>

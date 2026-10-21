@@ -137,6 +137,22 @@ class TheTuesdayThree(_Brain):
         log = self.db[server.DM_ANSWERS].rows[-1]
         self.assertEqual((log["path"], log["tool_data"][0]["tool"]), ("brain", "headcount"))
 
+    def test_came_in_since_the_brief_is_counted_for_the_model(self):
+        """Oct 21 eval: the model counted the came-in-since names itself, so
+        its "12" was in no tool result and every such answer was re-asked."""
+        answer = "588: 31 on site. 13 came in since the brief — Arkon Builders, J&G, Power Direct."
+
+        def answer_from(kw):
+            res = json.loads(last_tool_results(kw)[0])
+            self.assertEqual(res["came_in_since_count"], len(res["came_in_since"]))
+            self.assertEqual(res["came_in_since_count"], 13)
+            return resp(text(answer))
+        llm = FakeLLM(resp(use("headcount", {"job": "588"})), answer_from)
+        with _Ctx(db=self.db) as c:
+            out = self.say(c, "How many came in since the brief at 588", llm)
+        self.assertEqual(out, [answer])
+        self.assertEqual(len(llm.calls), 2)                            # no evidence re-ask
+
     def test_dot_and_akron(self):
         """The model reads the subs list and DOT itself; "Akron" is matched
         by the model, not by keywords."""
@@ -337,19 +353,6 @@ class TheLoop(_Brain):
         self.assertEqual((log["model"], log["usage"]["cost_usd"], log["usage"]["input"]),
                          (dm_brain.MODEL, 0.0001, 100))
 
-    def test_report_summary_on_the_stronger_model(self):
-        rep = {"job": "588 Thomas", "period": "Oct 1 – Oct 14"}
-
-        async def on(ident):
-            return True
-        llm = FakeLLM(resp(text("A quiet two weeks at 588 Thomas.")))
-        with patch.object(server, "_dm_brain_on", on), patch.object(server, "_dm_brain_client", lambda: llm), \
-                patch.object(server.progress_report, "facts", lambda r: ["Job 588 Thomas"]), \
-                patch.object(server.progress_report, "check_summary", lambda t, r: True):
-            got = _run(server._report_summary(rep, CO_A))
-        self.assertEqual(got, "A quiet two weeks at 588 Thomas.")
-        self.assertEqual(llm.calls[0]["model"], dm_brain.ESCALATE_MODEL)
-
 
 class TheFlashFixes(_Brain):
     """Eval of Oct 20 (Qwen 3.8 Flash): #37 "*Ark" after 26 s; "from you" on
@@ -461,6 +464,42 @@ class TheFlashFixes(_Brain):
         self.assertGreaterEqual(seen.count(True), 2)                 # refreshed while it worked
         self.assertEqual(seen[-1], False)                            # and stopped
 
+    def test_read_then_typing_like_a_person(self):
+        """Blue ticks first (send-seen), then typing…, then stop -- and a
+        failed action is logged without their number."""
+        posted = []
+
+        async def post(url, payload, headers):
+            posted.append(url.rsplit("/", 1)[-1])
+            return (500, {}, None) if posted[-1] == "send-seen" else (200, {"data": {"status": "success"}}, None)
+        dm = "17185550100@c.us"
+        with _Ctx(db=self.db), patch.object(server, "_waapi_post_raw", post), \
+                patch.object(server, "WAAPI_INSTANCE_ID", "i"), patch.object(server, "WAAPI_TOKEN", "t"), \
+                self.assertLogs("server", "WARNING") as logs:
+            done = asyncio.Event()
+
+            async def run():
+                task = asyncio.ensure_future(server._dm_typing_while(dm, done))
+                await asyncio.sleep(0.01)
+                done.set()
+                await task
+            _run(run())
+        self.assertEqual(posted, ["send-seen", "send-typing", "send-stop-typing"])
+        self.assertIn("send-seen failed: http 500 (send-seen)", logs.output[0])
+        self.assertNotRegex(" ".join(logs.output), r"\d{7,}")          # no phone number logged
+
+    def test_a_200_error_envelope_is_a_failure(self):
+        """Codex on #828: WaAPI answers some failures with HTTP 200 and
+        data.status "error" -- that is not typing, and it is logged."""
+        async def post(url, payload, headers):
+            return 200, {"data": {"status": "error", "message": "chat 17185550100@c.us not found"}}, None
+        with patch.object(server, "_waapi_post_raw", post), \
+                patch.object(server, "WAAPI_INSTANCE_ID", "i"), patch.object(server, "WAAPI_TOKEN", "t"), \
+                self.assertLogs("server", "WARNING") as logs:
+            self.assertFalse(_run(server._wa_typing("17185550100@c.us", True)))
+        self.assertIn("send-typing failed: http 200 (send-typing)", logs.output[0])
+        self.assertNotRegex(" ".join(logs.output), r"\d{7,}")          # the number in WaAPI's text is scrubbed
+
 
 class TheCodexFindings(_Brain):
     """Codex on #824 (9cdc3e6)."""
@@ -557,22 +596,45 @@ class TheEvalMode(unittest.TestCase):
 
 
 class TheFlag(unittest.TestCase):
-    def test_per_company_and_needs_a_key(self):
+    def test_on_for_everyone_unless_switched_off(self):
+        """Oct 21: no trial -- the brain is the default for every company.
+        dm_brain_off switches a company (or everyone) back to the old one."""
         from lib import feature_flags
         db = _db()
-        db.feature_flags.rows.append({"_id": "f1", "flag": dm_brain.FLAG, "enabled_globally": False,
-                                      "enabled_for_companies": [CO_A], "enabled_for_users": [],
-                                      "enabled_percentage": 0})
         mine = {"company_id": CO_A, "user_id": "u_admin"}
         other = {"company_id": "co_other", "user_id": "u_x"}
-        with _Ctx(db=db):
+        with _Ctx(db=db), patch.object(server, "DM_BRAIN_API_KEY", "k"):
             feature_flags.cache_invalidate()
-            with patch.object(server, "DM_BRAIN_API_KEY", "k"):
-                self.assertTrue(_run(server._dm_brain_on(mine)))
-                self.assertFalse(_run(server._dm_brain_on(other)))
-            with patch.object(server, "DM_BRAIN_API_KEY", ""):
-                self.assertFalse(_run(server._dm_brain_on(mine)))      # no key: the old pipeline
+            self.assertTrue(_run(server._dm_brain_on(mine)))           # no flag row: on
+            self.assertTrue(_run(server._dm_brain_on(other)))
+            db.feature_flags.rows.append({"_id": "f1", "flag": dm_brain.OFF_FLAG, "enabled_globally": False,
+                                          "enabled_for_companies": [CO_A], "enabled_for_users": [],
+                                          "enabled_percentage": 0})
             feature_flags.cache_invalidate()
+            self.assertFalse(_run(server._dm_brain_on(mine)))          # switched off for one company
+            self.assertTrue(_run(server._dm_brain_on(other)))
+            db.feature_flags.rows[-1]["enabled_globally"] = True
+            feature_flags.cache_invalidate()
+            self.assertFalse(_run(server._dm_brain_on(other)))         # off for everyone
+            feature_flags.cache_invalidate()
+        with _Ctx(db=_db()), patch.object(server, "DM_BRAIN_API_KEY", ""):
+            self.assertFalse(_run(server._dm_brain_on(mine)))          # no key: the old pipeline
+        feature_flags.cache_invalidate()
+
+
+    def test_the_script_never_says_on_under_the_kill_switch(self):
+        """Codex on #831: with everyone switched off, --on for one company
+        left it off (the global switch wins) but printed ON. Refused now."""
+        from scripts.dm_brain_flag import plan
+        killed = {"enabled_globally": True, "enabled_for_companies": ["co_a"]}
+        off_all, companies, refused = plan(killed, on=True, everyone=False, company="co_a")
+        self.assertIn("--everyone --on", refused)
+        self.assertEqual((off_all, companies), (True, ["co_a"]))          # unchanged
+        self.assertEqual(plan(killed, on=True, everyone=True), (False, ["co_a"], None))
+        self.assertEqual(plan(None, on=False, everyone=False, company="co_a"), (False, ["co_a"], None))
+        self.assertEqual(plan({"enabled_for_companies": ["co_a", "co_b"]}, on=True, everyone=False,
+                              company="co_a"), (False, ["co_b"], None))
+        self.assertEqual(plan(None, on=False, everyone=True), (True, [], None))
 
 
 class TheLib(unittest.TestCase):
