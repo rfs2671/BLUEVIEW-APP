@@ -1431,7 +1431,49 @@ export function composeChipBands({ chips, allChips, resolvedTrades, priorDate })
   return { primary, rest, basis, hidden: rest.length };
 }
 
+/**
+ * TYPE-AHEAD OVER THE WHOLE ACTIVITY CATALOGUE.
+ *
+ * A crew's card offers its own trade's work and nothing else (operator ruling,
+ * see composeChipBands): seventy irrelevant chips was the complaint. The cost
+ * was named in the same comment -- other trades' activities became unreachable
+ * from the card, with free-text "Other" the only way out. The first real
+ * backtest (588 Thomas S Boyland) showed it: a concrete crew logged shoring,
+ * piles, site prep and under-slab MEP, which belong to other trades in the
+ * taxonomy, and the activities ended up as typed words ("Foundation pile",
+ * "Rebar installation") that no ranking or report can use as an activity.
+ *
+ * This restores the reach WITHOUT bringing the clutter back: nothing is shown
+ * until a person types two letters, and it never touches the default four or
+ * the trade's own list. A match is the same chip with the same id, so a chosen
+ * activity is recorded exactly as one picked from the list.
+ *
+ * Pure and total: never throws, [] for anything that is not a query.
+ */
+export function searchChips(allChips, query, exclude = [], limit = 12) {
+  const q = String(query == null ? '' : query).trim().toLowerCase();
+  if (q.length < 2 || !Array.isArray(allChips)) return [];
+  const words = q.split(/\s+/).filter(Boolean);
+  const skip = new Set(Array.isArray(exclude) ? exclude : []);
+  const seen = new Set();
+  const out = [];
+  for (const c of allChips) {
+    if (!c || typeof c !== 'object' || typeof c.id !== 'string' || typeof c.label !== 'string') continue;
+    if (c.id === OTHER_CHIP_ID || String(c.id).startsWith('other:') || skip.has(c.id) || seen.has(c.id)) continue;
+    const label = c.label.toLowerCase();
+    if (!words.every((w) => label.includes(w))) continue;
+    seen.add(c.id);
+    out.push(c);
+  }
+  out.sort((a, b) => (
+    (b.label.toLowerCase().startsWith(words[0]) ? 1 : 0) - (a.label.toLowerCase().startsWith(words[0]) ? 1 : 0)
+    || a.label.length - b.label.length || a.label.localeCompare(b.label)
+  ));
+  return out.slice(0, Math.max(1, Number(limit) || 12));
+}
+
 export default {
+  searchChips,
   rosterKey,
   GATE_SOURCE,
   CP_SOURCE,

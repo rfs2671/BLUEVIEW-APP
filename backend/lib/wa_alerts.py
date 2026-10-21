@@ -78,6 +78,58 @@ def is_critical(it: Dict[str, Any]) -> bool:
 CLOSED_WORDS = ("certified", "dismissed", "paid", "resolved", "closed",
                 "rescind", "lifted", "complied", "withdrawn")
 
+# ── Is a status text a closed one? ──────────────────────────────────────────
+#
+# DEFECT MEASURED (2026 audit): is_closed() did SUBSTRING matching over
+# CLOSED_WORDS, so 'UNPAID' ('paid'), 'UNRESOLVED' ('resolved'), 'NOT CERTIFIED'
+# ('certified') and 'NOT COMPLIED' ('complied') all read as CLOSED. Those are
+# the OPEN states of a violation, so an unpaid/unresolved violation was dropped
+# from the new-violation alerts and from every "open" count built on it.
+#
+# RULE: tokenise the NORMALISED status (upper-case, every non-alphanumeric run is
+# a separator, so 'UN-RESOLVED' -> UN RESOLVED) and look for WHOLE WORDS from the
+# closed vocabulary. A closed word directly preceded by a negator (NOT / NO /
+# NON / UN / NEVER / WITHOUT / NOT-YET) is NOT closed. Words that merely CONTAIN
+# a closed word (UNPAID, UNRESOLVED, UNCERTIFIED, NONCOMPLIED) are different
+# tokens and never match. OPEN / ACTIVE / PENDING carry no closed word and so
+# are open by construction.
+#
+# The vocabulary adds the BARE forms BIS really writes ('V-DOB VIOLATION -
+# RESOLVE' / '... DISMISS': see server._classify_resolution_state), which the
+# old substring test could not match either ('resolved' is not in 'resolve').
+_CLOSED_TOKENS = frozenset({
+    "CERTIFIED", "DISMISSED", "DISMISS", "PAID", "RESOLVED", "RESOLVE",
+    "CLOSED", "CLOSE", "RESCINDED", "RESCIND", "LIFTED", "COMPLIED",
+    "WITHDRAWN",
+})
+_NEGATORS = frozenset({"NOT", "NO", "NON", "UN", "NEVER", "WITHOUT"})
+_TOKEN_SPLIT = re.compile(r"[^A-Z0-9]+")
+
+
+def status_tokens(status: Any) -> List[str]:
+    return [t for t in _TOKEN_SPLIT.split(str(status or "").upper()) if t]
+
+
+def status_is_closed(status: Any) -> bool:
+    """True when the status TEXT names a closed outcome (whole words, with
+    negation handled - see the block comment above).
+
+    "CERTIFICATE ACCEPTED" (a violation's certificate of correction was
+    accepted: it is resolved) is closed; found on a real job, where the report
+    called it OPEN and HIGH. ACCEPTED alone is not a closed word (a filing can
+    be accepted and still be live), so it counts only right after CERT*, and a
+    negator before either word keeps it open ("NOT ACCEPTED", "CERTIFICATE
+    NOT ACCEPTED")."""
+    toks = status_tokens(status)
+    for i, t in enumerate(toks):
+        before = toks[i - 1] if i > 0 else ""
+        if t in _CLOSED_TOKENS and before not in _NEGATORS:
+            return True
+        if t == "ACCEPTED" and before not in _NEGATORS and before.startswith("CERT"):
+            if i < 2 or toks[i - 2] not in _NEGATORS:
+                return True
+    return False
+
 
 def kind_baseline_id(project_id: str, kind: str) -> str:
     return f"gc:{project_id}:baseline:{kind}"
@@ -109,19 +161,28 @@ def latest_per_record(rows: Iterable[Dict[str, Any]], key: str = "raw_dob_id"
 def is_closed(r: Dict[str, Any]) -> bool:
     for k in ("resolution_state", "complaint_status", "status", "current_status",
               "hearing_status"):
-        v = _t(r.get(k)).lower()
-        if v and any(w in v for w in CLOSED_WORDS):
+        if status_is_closed(r.get(k)):
             return True
     return bool(_t(r.get("closed_date")))
 
 
 def record_number(r: Dict[str, Any]) -> str:
+    """The record's own number. The keys are the field names the dob_logs
+    extractors (server._extract_*_fields) STORE - not the dataset's names.
+    DEFECT MEASURED: job_status / cofo / boiler / elevator / facade_fisp fell
+    through to ("number",), which none of them has, so they returned '' and
+    postable() dropped them."""
     rt = _t(r.get("record_type")).lower()
     order = {
         "violation": ("violation_number",),
         "complaint": ("complaint_number",),
         "swo": ("stop_work_order_number", "violation_number"),
         "permit": ("job_number", "permit_number"),
+        "job_status": ("job_filing_number", "job_number"),
+        "cofo": ("co_number",),
+        "boiler": ("tracking_number", "boiler_id", "device_number"),
+        "elevator": ("device_number", "tracking_number"),
+        "facade_fisp": ("filing_number", "tracking_number"),
         "dot_violation": ("number",),
         "dot_permit": ("number",),
     }.get(rt, ("number",))
@@ -139,6 +200,11 @@ def record_issue_date(r: Dict[str, Any]) -> Optional[date]:
         "complaint": ("complaint_date",),
         "swo": ("violation_date",),
         "permit": ("issuance_date", "filing_date"),
+        "job_status": ("filing_date",),
+        "cofo": ("issuance_date",),
+        "boiler": ("filing_date", "inspection_date"),
+        "elevator": ("filing_date", "inspection_date"),
+        "facade_fisp": ("filing_date",),
         "dot_violation": ("issue_date",),
         "dot_permit": ("issue_date",),
     }.get(rt, ("issue_date",))
@@ -151,11 +217,96 @@ def record_issue_date(r: Dict[str, Any]) -> Optional[date]:
 
 def record_status(r: Dict[str, Any]) -> str:
     for k in ("current_status", "status", "complaint_status", "permit_status",
-              "resolution_state"):
+              "filing_status", "resolution_state"):
         v = _t(r.get(k))
         if v:
             return v
     return ""
+
+
+# ── What a record's status WAS on a date ────────────────────────────────────
+#
+# For reports that must say what the regulatory status was on the day they
+# describe, not what it is now. Reads the `status_history` contract of
+# lib/status_history.py; pure, no database.
+
+def _utc(v: Any) -> Optional[datetime]:
+    if not isinstance(v, datetime):
+        return None
+    return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+
+
+def _status_events(rows: List[Dict[str, Any]]) -> List[Any]:
+    """[(at, order, status)] for every dated status fact the rows carry.
+
+    A row WITH status_history contributes each of its entries. A row WITHOUT
+    one (legacy, or a permit/311 diff row written before the field existed)
+    contributes ONE fact: its stored status, dated by detected_at (falling
+    back to status_changed_at). A diff row's status_changed_at equals its
+    detected_at, so for a permit timeline this is "the latest row whose
+    status_changed_at/detected_at <= when". Rows with no usable date add
+    nothing: a status we cannot date is never claimed for a date."""
+    events: List[Any] = []
+    n = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        hist = r.get("status_history")
+        if isinstance(hist, list) and hist:
+            for e in hist:
+                at = _utc(e.get("at")) if isinstance(e, dict) else None
+                if at is not None:
+                    events.append((at, n, e.get("status")))
+                    n += 1
+            continue
+        at = _utc(r.get("detected_at")) or _utc(r.get("status_changed_at"))
+        if at is None:
+            continue
+        stored = r["current_status"] if "current_status" in r else (
+            r.get("status") if "status" in r else r.get("permit_status"))
+        events.append((at, n, stored))
+        n += 1
+    return events
+
+
+def status_as_of(row_or_rows: Any, when_utc: datetime) -> Optional[str]:
+    """The status string a record had at `when_utc`, or None.
+
+    `row_or_rows`: one dob_logs/dot_logs row, or the list of rows that share
+    one raw_dob_id (a permit's diff-row timeline). Result is the status of the
+    LATEST dated fact at or before `when_utc` (an entry stamped exactly at
+    `when_utc` counts; ties go to the later-written fact). Facts are:
+
+      * every `status_history` entry of a row that has one;
+      * for a row without history, its stored current_status (status for
+        dot_logs) dated by detected_at - so a legacy row is believed ONLY
+        from the moment it was first seen: before that, None. Its later
+        (unrecorded) changes are unknowable and are not guessed.
+
+    None means "unknown at that time": the record was not yet seen, or the
+    status then was empty. Naive datetimes (pymongo's default) are UTC.
+    Statuses are returned as stored (history entries are normalised upper
+    case already).
+    """
+    when = _utc(when_utc)
+    if when is None:
+        raise ValueError("when_utc must be a datetime")
+    rows = row_or_rows if isinstance(row_or_rows, (list, tuple)) else [row_or_rows]
+    best = None
+    for at, order, status in _status_events(list(rows)):
+        if at <= when and (best is None or (at, order) >= (best[0], best[1])):
+            best = (at, order, status)
+    if best is None:
+        return None
+    return None if best[2] is None else str(best[2])
+
+
+def closed_as_of(row_or_rows: Any, when_utc: datetime) -> Optional[bool]:
+    """Whether the record was CLOSED at `when_utc` by its status text
+    (status_is_closed). None when the status then is unknown (see
+    status_as_of) - the report layer must say "unknown", not "open"."""
+    st = status_as_of(row_or_rows, when_utc)
+    return None if st is None else status_is_closed(st)
 
 
 # ── What a project has to say now ───────────────────────────────────────────
@@ -200,7 +351,15 @@ def collect(dob_rows: List[Dict[str, Any]], dot_rows: List[Dict[str, Any]],
         if not rid or not row_id:
             continue
         if rt == "violation" and _t(r.get("severity")) == "Action":
-            out.append({"kind": "violation_status", "item": f"{rid}:{row_id}",
+            # A violation is refreshed IN PLACE (one row, status_history grows),
+            # so `rid:row_id` names the row, not the transition: a second real
+            # change on the same row would be swallowed by the once-ever ledger.
+            # From the third history entry on, the entry count is part of the
+            # key; the first change keeps the original key shape so nothing
+            # already posted is posted again.
+            n = len(r.get("status_history") or [])
+            item = f"{rid}:{row_id}" if n <= 2 else f"{rid}:{row_id}:{n}"
+            out.append({"kind": "violation_status", "item": item,
                         "rec": r, "prev": prev})
         elif rt == "permit" and any(w in cur.upper() for w in ("ISSUED", "EXPIRED", "REVOKED")):
             out.append({"kind": "permit_status", "item": f"{rid}:{row_id}",

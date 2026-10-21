@@ -46,18 +46,19 @@ class WhenScheduled(unittest.TestCase):
     def ny(self, y, mo, d, h, mi=5):
         return datetime(y, mo, d, h, mi, tzinfo=NY).astimezone(timezone.utc)
 
-    def test_biweekly_monday_8am_even_weeks(self):
-        self.assertEqual(R.scheduled_period("biweekly", self.ny(2026, 10, 12, 8)),   # ISO week 42
+    def test_biweekly_monday_8am_every_second_week(self):
+        self.assertEqual(R.due_periods("biweekly", self.ny(2026, 10, 12, 8))[0][:2],
                          (date(2026, 9, 28), date(2026, 10, 11)))
-        self.assertIsNone(R.scheduled_period("biweekly", self.ny(2026, 10, 19, 8)))  # week 43
-        self.assertIsNone(R.scheduled_period("biweekly", self.ny(2026, 10, 12, 9)))
-        self.assertIsNone(R.scheduled_period("biweekly", self.ny(2026, 10, 13, 8)))
+        self.assertEqual(R.due_periods("biweekly", self.ny(2026, 10, 19, 8)), [])    # the other Monday
+        self.assertEqual(R.due_periods("biweekly", self.ny(2026, 10, 12, 7)), [])    # before 8 AM
+        self.assertEqual(R.due_periods("biweekly", self.ny(2026, 10, 13, 8))[0][2],
+                         date(2026, 10, 12))                                          # the catch-up window
 
     def test_monthly_first_8am(self):
-        self.assertEqual(R.scheduled_period("monthly", self.ny(2026, 11, 1, 8)),
+        self.assertEqual(R.due_periods("monthly", self.ny(2026, 11, 1, 8))[0][:2],
                          (date(2026, 10, 1), date(2026, 10, 31)))
-        self.assertIsNone(R.scheduled_period("monthly", self.ny(2026, 11, 2, 8)))
-        self.assertIsNone(R.scheduled_period("off", self.ny(2026, 11, 1, 8)))
+        self.assertEqual(R.due_periods("monthly", self.ny(2026, 11, 8, 8)), [])
+        self.assertEqual(R.due_periods("off", self.ny(2026, 11, 1, 8)), [])
 
 
 class _Reports:
@@ -157,19 +158,21 @@ class TheSchedule(_Reports, unittest.TestCase):
 
 class WhatIsRead(_Reports, unittest.TestCase):
 
-    def test_punch_mirrors_are_not_commitments(self):
-        # Codex on #795: a sent punch item has an attention mirror; it is
-        # counted once, in Punch.
+    def test_the_report_reads_no_chat_commitments_or_punch(self):
+        # The GC's internal operation -- group chat, model-extracted
+        # commitments, punch assignments -- is not report material (and chat
+        # no longer goes to a language model). Proven by making every one of
+        # those collections explode: the rows still come back.
         db = _world()
-        db.attention_items.rows[:] = [
-            {"_id": "a1", "company_id": CO_A, "project_id": THOMAS, "status": "open",
-             "kind": "commitment", "created_at": NOW},
-            {"_id": "a2", "company_id": CO_A, "project_id": THOMAS, "status": "open",
-             "tags": ["punch"], "extraction": {"source": "punch"}, "created_at": NOW}]
         project = next(p for p in db.projects.rows if p["_id"] == THOMAS)
-        with _Ctx(db):
+
+        def boom(*a, **k):
+            raise AssertionError("an internal collection was read")
+        with _Ctx(db), patch.object(db.whatsapp_messages, "find", boom), \
+                patch.object(db.attention_items, "find", boom), patch.object(db.punch_items, "find", boom):
             rows = _run(server._report_rows(project, CO_A, date(2026, 10, 1), date(2026, 10, 14), NOW))
-        self.assertEqual([r["_id"] for r in rows["commitments"]], ["a1"])
+        for key in ("chat", "commitments", "punch_items"):
+            self.assertNotIn(key, rows)
 
     def test_a_failed_read_makes_no_report(self):
         # Codex on #795: an unreadable source is never "no records".
@@ -215,7 +218,7 @@ class ReportPhotoBytes(unittest.TestCase):
         # under it.
         import inspect
         src = inspect.getsource(server._report_rows)
-        self.assertIn("length + 31", src)
+        self.assertIn("2 * length + 200", src)
 
 
 class WhoSetsTheSchedule(unittest.TestCase):
@@ -276,7 +279,7 @@ class InTheDm(_Reports, _Harness, unittest.TestCase):
         self.assertEqual(len(self.media), 1)
         caption = self.media[0][2]
         self.assertTrue(caption.startswith("588 Thomas S Boyland · "), caption)
-        self.assertEqual(caption.splitlines()[1:4][0][:20], "- Work this period: ")
+        self.assertEqual(caption.splitlines()[1][:8], "- Site: ")
         self.assertTrue(caption.endswith("Full report (PDF) attached."), caption)
         self.assertIsNone(re.search(r"man-?days|%|https?://", caption), caption)
         doc = db[server.PROJECT_REPORTS].rows[0]
@@ -295,6 +298,27 @@ class InTheDm(_Reports, _Harness, unittest.TestCase):
         self.assertEqual(sorted(doc["project_ids"]), sorted([THOMAS, WALWORTH]))
         self.assertEqual(doc["start"][5:], "09-01")
         self.assertTrue(doc["title"].startswith("Progress report — 2 jobs —"))
+
+    def test_an_unknown_job_with_a_date_range_is_not_every_job(self):
+        # THE BUG: "report for 99 Nowhere St for the last 2 weeks" fell through
+        # to a report on ALL jobs because a date range was in the sentence.
+        for text in ("send me a report for 99 Nowhere St for the last 2 weeks",
+                     "report for the Atlantic Ave job since Oct 1"):
+            reply, db = self.ask(text)
+            self.assertIn("I don't see that job", reply or "", text)
+            self.assertEqual(db[server.PROJECT_REPORTS].rows, [], text)
+            self.assertEqual(self.media, [], text)
+
+    def test_a_date_range_alone_still_means_every_job(self):
+        reply, db = self.ask("send me a report for the last 2 weeks")
+        self.assertEqual(sorted(db[server.PROJECT_REPORTS].rows[0]["project_ids"]), sorted([THOMAS, WALWORTH]))
+
+    def test_names_a_job(self):
+        for text, named in (("report for 588 last 30 days", True), ("monthly report", False),
+                            ("report for September", False), ("report 12/3 to 12/10", False),
+                            ("give me the weekly report from Oct 1 to Oct 9", False),
+                            ("report for Atlantic Ave last week", True)):
+            self.assertEqual(R.names_a_job(text), named, text)
 
     def test_not_a_report_request(self):
         for t in ("daily report for 588", "what did the report say"):

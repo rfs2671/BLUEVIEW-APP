@@ -293,10 +293,30 @@ class TheRosterMapping(unittest.TestCase):
             with self.subTest(trade=t):
                 self.assertTrue(trades_for_roster(t), f"{t} resolved to nothing")
 
-    def test_formwork_folds_into_concrete(self):
+    def test_formwork_folds_into_the_concrete_package_only(self):
+        # A formwork crew sees the concrete package; a CONCRETE crew also does the
+        # foundation phase (site prep, excavation, shoring, piles) -- real 588 data.
         self.assertEqual(trades_for_roster("Formwork"), ["Foundation / Concrete"])
-        self.assertEqual({c.id for c in chips("Formwork")},
-                         {c.id for c in chips("Concrete")})
+        formwork = {c.id for c in chips("Formwork")}
+        concrete = {c.id for c in chips("Concrete")}
+        self.assertTrue(formwork < concrete)
+        self.assertEqual(formwork, {c.id for c in chips("Concrete") if c.id in formwork})
+
+    def test_a_concrete_crew_also_gets_the_foundation_phase_but_never_under_slab_mep(self):
+        ids = {c.id for c in chips("Concrete / Cement")}
+        self.assertTrue({"shoring", "piles", "site_prep", "excavation", "pile_driving", "underpinning"} <= ids)
+        # under-slab MEP is the plumbers' and electricians' work, never foundation
+        self.assertNotIn("under_slab_mep", ids)
+        for crew in ("Plumber", "Electrical"):
+            self.assertIn("under_slab_mep", {c.id for c in chips(crew)})
+
+    def test_framing_is_structural_interior_and_ceiling_drops_with_no_layout_step(self):
+        ids = {c.id for c in chips("Framers")}
+        self.assertTrue({"framing_structural", "interior_framing", "iframe_ceiling_drops"} <= ids)
+        self.assertNotIn("trade_layout", ids)             # marking track and studs is part of framing
+        labels = {c.id: c.label for c in chips("Framers")}
+        self.assertEqual((labels["framing_structural"], labels["interior_framing"], labels["iframe_ceiling_drops"]),
+                         ("structural framing", "interior framing", "ceiling drops"))
 
     def test_a_string_spanning_two_trades_claims_both(self):
         self.assertEqual(trades_for_roster("HVAC / Mechanical"),
@@ -461,8 +481,8 @@ class TestRosterAliasesFromProduction(unittest.TestCase):
 
     def test_every_live_roster_string_that_should_resolve_does(self):
         for typed, expected in [
-            ("Concrete / Cement", ["Foundation / Concrete"]),
-            ("Concrete", ["Foundation / Concrete"]),
+            ("Concrete / Cement", ["Foundation / Concrete", "Excavation", "Shoring / underpinning", "Piles / caissons"]),
+            ("Concrete", ["Foundation / Concrete", "Excavation", "Shoring / underpinning", "Piles / caissons"]),
             ("Formwork", ["Foundation / Concrete"]),
             ("Electrical", ["Electrical"]),
             ("HVAC / Mechanical", ["HVAC", "Mechanical piping"]),
@@ -573,8 +593,9 @@ class TestSeparatorRuleNotSpellings(unittest.TestCase):
         self.assertEqual(trades_for_roster("Cleaning / Operator"), [])
 
     def test_a_split_never_duplicates_a_trade(self):
-        self.assertEqual(trades_for_roster("Concrete / Formwork"),
-                         ["Foundation / Concrete"])
+        got = trades_for_roster("Concrete / Formwork")
+        self.assertEqual(len(got), len(set(got)))                 # Foundation / Concrete is not listed twice
+        self.assertEqual(got[0], "Foundation / Concrete")
 
     def test_it_still_never_raises(self):
         for junk in (None, 123, [], {}, "   ", "/", "///", "&,;+"):

@@ -7,8 +7,9 @@ weekly (Monday 8 AM), bi-weekly (Monday 8 AM, even weeks), monthly (the 1st,
 8 AM) and quarterly (Jan / Apr / Jul / Oct 1st, 8 AM) -- by WhatsApp DM
 and / or email, to the admins and PMs chosen. The report itself -- what
 it says and how it looks -- is lib/progress_report.py; this module is what
-both it and the server share: the period (as said, or as scheduled), DOB/DOT
-records new in a period, upcoming events, and whether a DM is a request.
+both it and the server share: the period (as said, or as scheduled, with the
+catch-up window for a missed run) and whether a DM is a request. DOB/DOT
+records are read as of the period in lib/report_regulatory.py.
 
 Phone numbers are never shown (any digits that look like one are masked).
 
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from lib import attendance as att
@@ -27,8 +28,6 @@ from lib.datefmt import strftime as _fmt
 
 NY = ZoneInfo("America/New_York")
 
-#: The next-two-weeks window of "Upcoming".
-UPCOMING_DAYS = 14
 #: A scheduled report's cadences (a per-job setting: any combination).
 #: "daily" is the daily report (its own PDF, sent at the project's send
 #: time); the rest are progress reports (lib/progress_report.py).
@@ -62,8 +61,13 @@ _PHONE = re.compile(r"(?<![\w*])(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d
                     r"|\+\d[\d\s().-]{8,}\d")
 
 
-def no_phone(text: Any) -> str:
-    return _PHONE.sub("[number]", " ".join(str(text or "").split()))
+def no_phone(text: Any, keep: Iterable[str] = ()) -> str:
+    """`text` with phone numbers replaced. `keep`: numbers that are RECORDS, not
+    phones, and print as filed: a 10-digit OATH summons (0704345557) matches the
+    phone pattern and printed as "[number]" on the first live-DOT report."""
+    kept = {str(k) for k in keep or () if k}
+    return _PHONE.sub(lambda m: m.group(0) if m.group(0) in kept else "[number]",
+                      " ".join(str(text or "").split()))
 
 
 def _d(v: Any) -> Optional[date]:
@@ -121,27 +125,67 @@ def _quarter_start(d: date) -> date:
     return date(d.year, 3 * ((d.month - 1) // 3) + 1, 1)
 
 
-def scheduled_period(kind: str, now: datetime) -> Optional[Tuple[date, date]]:
-    """The period a scheduled report covers when it is due now (New York,
-    8 AM hour), else None. Weekly: Mondays, the week before (Mon-Sun).
-    Bi-weekly: Mondays of even ISO weeks, the 14 days before. Monthly: the
-    1st, the month before. Quarterly: Jan / Apr / Jul / Oct 1st, the quarter
-    before."""
-    local = now.astimezone(NY)
-    if local.hour != SEND_HOUR:
-        return None
-    today = local.date()
-    if kind == "weekly" and today.weekday() == 0:
-        return today - timedelta(days=7), today - timedelta(days=1)
-    if kind == "biweekly" and today.weekday() == 0 and today.isocalendar()[1] % 2 == 0:
-        return today - timedelta(days=14), today - timedelta(days=1)
-    if kind == "monthly" and today.day == 1:
-        end = today - timedelta(days=1)
+#: Mondays that are biweekly runs are counted from this one, so the cadence
+#: is every 14 days with no break at a year's end. (ISO-week parity, used
+#: before, skipped Dec 21-27 in a 53-week year: two odd weeks in a row.)
+BIWEEKLY_ANCHOR = date(2026, 1, 5)
+#: How long after its due moment a report is still built when the server was
+#: not running at 8 AM: a weekly report is a Monday report until Wednesday, a
+#: quarterly one until the 7th. The once-per-period key keeps it to one.
+CATCH_UP_DAYS = {"weekly": 3, "biweekly": 3, "monthly": 5, "quarterly": 7}
+
+
+def is_due_day(kind: str, d: date) -> bool:
+    """Is `d` a day a `kind` report comes due (at 8 AM New York)?"""
+    if kind == "weekly":
+        return d.weekday() == 0
+    if kind == "biweekly":
+        return d.weekday() == 0 and ((d - BIWEEKLY_ANCHOR).days // 7) % 2 == 0
+    if kind == "monthly":
+        return d.day == 1
+    if kind == "quarterly":
+        return d.day == 1 and d.month in (1, 4, 7, 10)
+    return False
+
+
+def period_due_on(kind: str, due: date) -> Tuple[date, date]:
+    """The period a `kind` report due on `due` covers. Weekly: the week before
+    (Mon-Sun). Bi-weekly: the 14 days before. Monthly: the month before.
+    Quarterly: the quarter before."""
+    end = due - timedelta(days=1)
+    if kind == "weekly":
+        return due - timedelta(days=7), end
+    if kind == "biweekly":
+        return due - timedelta(days=14), end
+    if kind == "monthly":
         return end.replace(day=1), end
-    if kind == "quarterly" and today.day == 1 and today.month in (1, 4, 7, 10):
-        end = today - timedelta(days=1)
-        return _quarter_start(end), end
-    return None
+    return _quarter_start(end), end
+
+
+def due_periods(kind: str, now: datetime) -> List[Tuple[date, date, date]]:
+    """Every (start, end, due_day) of a `kind` report that is due and not yet
+    out of its catch-up window, newest first. A report is due from 8 AM New
+    York on its due day; it stays due for CATCH_UP_DAYS afterwards.
+
+    THE OLD RULE built a report only in the 8 AM hour of its due day, with no
+    memory of having missed it: a deploy or an outage across that hour lost
+    the report for good (a quarterly one until the next quarter). Now any
+    tick inside the window finds it, and the once-per-period key in
+    build_project_report keeps it to one."""
+    local = now.astimezone(NY)
+    window = CATCH_UP_DAYS.get(kind)
+    if window is None:
+        return []
+    out = []
+    for back in range(window + 1):
+        day = local.date() - timedelta(days=back)
+        if not is_due_day(kind, day):
+            continue
+        if day == local.date() and local.hour < SEND_HOUR:
+            continue
+        start, end = period_due_on(kind, day)
+        out.append((start, end, day))
+    return out
 
 
 def preset_period(preset: str, now: datetime, project_start: Optional[date] = None
@@ -202,49 +246,6 @@ def schedule_summary(settings: Dict[str, Any]) -> str:
                                                    " — no delivery chosen")
 
 
-# ── COUNTING ─────────────────────────────────────────────────────────────────
-
-def _record_kind(r: dict) -> str:
-    rt = str(r.get("record_type") or "").lower()
-    return {"violation": "DOB violation", "complaint": "DOB complaint", "swo": "Stop Work Order",
-            "permit": "DOB permit", "dot_violation": "DOT summons", "dot_permit": "DOT permit",
-            "job_status": "DOB job status"}.get(rt, rt.replace("_", " ").capitalize() or "Record")
-
-
-def _records(rows: List[dict], start: date, end: date) -> List[Dict[str, Any]]:
-    """New in the period (first seen in it), never a seed of old records."""
-    from lib import wa_alerts
-    out = []
-    for r in rows:
-        if r.get("is_seed_transition"):
-            continue
-        seen = _d(r.get("detected_at") or r.get("created_at"))
-        if not _in(seen, start, end):
-            continue
-        out.append({"kind": _record_kind(r), "number": wa_alerts.record_number(r) or "—",
-                    "status": no_phone(wa_alerts.record_status(r) or ("Closed" if wa_alerts.is_closed(r)
-                                                                        else "Open")),
-                    "date": wa_alerts.record_issue_date(r) or seen,
-                    "open": not wa_alerts.is_closed(r)})
-    out.sort(key=lambda x: (x["date"] or date.min, x["kind"], x["number"]))
-    return out
-
-
-def _events(rows: List[dict], start: date, end: date) -> List[Dict[str, Any]]:
-    out = []
-    for e in rows:
-        d = _d(e.get("date"))
-        if not _in(d, start, end) or e.get("status", "open") != "open":
-            continue
-        out.append({"date": d, "time": str(e.get("time") or ""), "kind": str(e.get("kind") or ""),
-                    "title": no_phone(e.get("title")), "agency": str(e.get("agency") or "")})
-    out.sort(key=lambda x: (x["date"], x["time"]))
-    return out
-
-
-_OPEN = ("open", "rescheduled", "possibly_done", "possibly_resolved")
-
-
 # ── A REQUEST IN THE DM ──────────────────────────────────────────────────────
 
 _REQUEST = re.compile(
@@ -263,6 +264,39 @@ def is_request(text: Any) -> bool:
     588", "report all jobs September"."""
     t = " ".join(str(text or "").split())
     return bool(t) and bool(_REQUEST.search(t)) and not _OTHER_REPORT.search(t)
+
+
+_MONTHS_RE = (r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+              r"sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?")
+_DATE_WORDS = re.compile(
+    r"\b(?:last|past|previous|this|next)\s+(?:\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"twelve|fourteen)?\s*(?:days?|weeks?|months?|quarters?|years?)\b"
+    r"|\b(?:" + _MONTHS_RE + r")\b\.?(?:\s+\d{1,2}(?:st|nd|rd|th)?)?(?:,?\s*\d{4})?"
+    r"|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|\b(?:19|20)\d{2}\b|\b(?:today|yesterday|ytd)\b",
+    re.IGNORECASE)
+_FILLER = frozenset("""send me a an the report reports for on of my monthly weekly biweekly bi weekly project job
+jobs site sites please give get make run pull generate email want need can i have and in at to from since until
+through thru between before after starting quarterly quarter all every each whole entire full progress now
+whatsapp pdf it us about with that this those these""".split())
+
+
+def names_a_job(text: Any) -> bool:
+    """Does a report request name something that is not a date or a filler
+    word -- "report for 588", "send 99 Nowhere St report for last 2 weeks"? A
+    request that names a job we could not find is told so; it never quietly
+    becomes a report on every job (the date range in the same sentence is
+    not a reason to guess)."""
+    t = _DATE_WORDS.sub(" ", " ".join(str(text or "").lower().split()))
+    for w in re.findall(r"[a-z0-9']+", t):
+        if w in _FILLER:
+            continue
+        if w.isdigit():
+            if len(w) >= 2:
+                return True
+            continue
+        if len(w) >= 3:
+            return True
+    return False
 
 
 def wants_all_jobs(text: Any) -> bool:

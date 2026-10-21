@@ -149,6 +149,15 @@ RATE_LIMITS: List[Tuple[str, str, str, str]] = [
     ("PATCH", "/api/projects/{id}", "30/5 minutes", "user"),
     ("DELETE", "/api/projects/{id}", "10/5 minutes", "user"),
 
+    # ── Progress report + schedule import (user-scoped) ───────────
+    # A report is a database sweep, a PDF render and an R2 upload; a
+    # schedule import parses a file of up to 20 MB. A person asks for a few
+    # in a sitting, never dozens: a loop, a double-tap storm or a hostile
+    # token is what these cap. The scheduled run does not pass through here.
+    ("POST", "/api/projects/{id}/project-reports", "6/10 minutes", "user"),
+    ("POST", "/api/projects/{id}/baseline-schedule/upload", "10/10 minutes", "user"),
+    ("POST", "/api/projects/{id}/baseline-schedule/from-file", "10/10 minutes", "user"),
+
     # ── WhatsApp webhook (IP-scoped; WaAPI is the only caller) ────
     #
     # IT WAS NEVER UNLIMITED, AND IT WAS NEVER NAMED EITHER. /api/whatsapp/

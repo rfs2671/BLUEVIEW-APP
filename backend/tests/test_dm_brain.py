@@ -353,19 +353,6 @@ class TheLoop(_Brain):
         self.assertEqual((log["model"], log["usage"]["cost_usd"], log["usage"]["input"]),
                          (dm_brain.MODEL, 0.0001, 100))
 
-    def test_report_summary_on_the_stronger_model(self):
-        rep = {"job": "588 Thomas", "period": "Oct 1 – Oct 14"}
-
-        async def on(ident):
-            return True
-        llm = FakeLLM(resp(text("A quiet two weeks at 588 Thomas.")))
-        with patch.object(server, "_dm_brain_on", on), patch.object(server, "_dm_brain_client", lambda: llm), \
-                patch.object(server.progress_report, "facts", lambda r: ["Job 588 Thomas"]), \
-                patch.object(server.progress_report, "check_summary", lambda t, r: True):
-            got = _run(server._report_summary(rep, CO_A))
-        self.assertEqual(got, "A quiet two weeks at 588 Thomas.")
-        self.assertEqual(llm.calls[0]["model"], dm_brain.ESCALATE_MODEL)
-
 
 class TheFlashFixes(_Brain):
     """Eval of Oct 20 (Qwen 3.8 Flash): #37 "*Ark" after 26 s; "from you" on
