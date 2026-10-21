@@ -145,6 +145,12 @@ class Fixed(unittest.TestCase):
                                              [{"tool": "headcount"}]).values()))
         self.assertFalse(all(ev._case_checks("spanish", "There are 31 on site.",
                                              [{"tool": "headcount"}]).values()))
+        # Arkon already on file as framing: right only after a lookup.
+        said = "Already on file — Arkon Builders is listed as *Framers* on 588. Nothing to change."
+        self.assertTrue(all(ev._case_checks("arkon_framer", said, [{"tool": "list_subs"}]).values()))
+        self.assertFalse(all(ev._case_checks("arkon_framer", said, []).values()))
+        self.assertFalse(all(ev._case_checks("arkon_framer", "I don't have that in the records.",
+                                             [{"tool": "list_subs"}]).values()))
         self.assertFalse(all(ev._case_checks("hvac_days", "Check with the site manager.",
                                              [{"tool": "sub_attendance"}]).values()))
 

@@ -165,11 +165,18 @@ def _case_checks(case_id: str, reply: str, trace: list) -> Dict[str, bool]:
                 "Akron read as Arkon": "arkon" in low or bool({"list_subs", "find_sub"} & set(tools)),
                 "never 'no Dot or Akron sub'": not re.search(r"no\s+dot\s+or\s+akron|no\s+(?:dot|akron)\s+sub", low)}
     if case_id == "arkon_framer":
+        # Either it proposes saving the trade (and asks for yes), or the subs
+        # list already has Arkon as framing and it says so -- after LOOKING
+        # (Oct 21: live data already had Arkon as "Framers").
         st = [t for t in trace if t["tool"] == "set_sub_trade"]
-        return {"set_sub_trade proposed": bool(st),
-                "trade is framing": any(re.search(r"fram", str((t.get("args") or {}).get("trade") or ""), re.I)
-                                        for t in st),
-                "asks for yes": bool(re.search(r"\byes\b|\bconfirm\b", low))}
+        proposed = bool(st) and any(re.search(r"fram", str((t.get("args") or {}).get("trade") or ""), re.I)
+                                    for t in st) and bool(re.search(r"\byes\b|\bconfirm\b", low))
+        looked = bool({"list_subs", "find_sub", "set_sub_trade"} & set(tools))
+        on_file = looked and bool(re.search(r"fram", low)) and bool(
+            re.search(r"already|on file|nothing to change|listed as", low))
+        return {"understood as Arkon's trade (proposed with a yes, or already on file after a lookup)":
+                proposed or on_file,
+                "never 'I don't have that'": not dm_brain.cant_answer(reply)}
     if case_id == "hvac_days":
         return {"sub_attendance called": "sub_attendance" in tools,
                 "never 'check with X'": not dm_brain.refers_elsewhere(reply),
