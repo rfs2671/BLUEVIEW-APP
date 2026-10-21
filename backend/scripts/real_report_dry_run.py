@@ -257,7 +257,7 @@ async def photo_census(server, project, start, end):
     pid = str(project.get("_id"))
     logs = await server.db.logbooks.find({"project_id": pid, "log_type": "daily_jobsite",
                                           "is_deleted": {"$ne": True},
-                                          "date": {"$gte": start, "$lte": end}}).to_list(2000)
+                                          "date": {"$gte": str(start)[:10], "$lte": str(end)[:10]}}).to_list(2000)
     per_sub, lines, other_fields = {}, [], {}
     for lg in sorted(logs, key=lambda x: str(x.get("date"))):
         data = lg.get("data") if isinstance(lg.get("data"), dict) else {}
