@@ -1,4 +1,5 @@
-"""Morning brief v1 — one DM a day to each opted-in Admin / PM.
+"""Morning brief v1 — DMs once a day to each opted-in Admin / PM, one
+message per job, then one for their reminders and quiet jobs.
 
   * Scope: admin → every live job of their company; PM → assigned jobs.
     Another company's records are never read into a brief.
@@ -6,7 +7,7 @@
     Mon–Fri, Saturday only if turned on; once a day (ledger); STOP stops it.
   * What: deterministic lines from stored records with their exact number,
     date and status; inspections only from a real stored date (none exists,
-    so none); at most 7 items; "No action needed today" when nothing.
+    so none); at most 7 items per job; "No action needed today" when nothing.
   * Headcount per job: workers once each, grouped by company, top 5.
 """
 
@@ -103,6 +104,15 @@ def _world():
 
 def _sends(c):
     return [p for p in c.wire.calls if "message" in p]
+
+
+def _texts(c):
+    return [p["message"] for p in _sends(c)]
+
+
+def _compose(now, jobs, own=None):
+    """The brief's messages, their texts only."""
+    return [text for _part, text in wa_brief.compose_messages(now, jobs, own)]
 
 
 def _tick(c, now):
@@ -261,95 +271,139 @@ class TheMessage(unittest.TestCase):
                                          YESTERDAY - timedelta(hours=1), THU_7),
              "headcount": "No check-ins yet."},
         ]
-        self.assertEqual(wa_brief.compose(THU_7, jobs), "\n".join([
-            "*Thu Oct 8*",
-            "",
-            "*8 Walworth St*",
-            "🏛 *DOB / DOT*",
-            "🔴 New violation 35123456, issued Oct 7, open. DOB.",
-            "",
-            "*588 Thomas S Boyland St*",
-            "🏛 *DOB / DOT*",
-            "🟠 Permit B01141294 (General Construction) expires Oct 14 (6 days). DOB.",
-            "",
-            "👷 8 on site · ABC Concrete 5 · GC 3",
-        ]))
+        self.assertEqual(_compose(THU_7, jobs), [
+            "\n".join([
+                "*Thu Oct 8* · *8 Walworth St*",
+                "",
+                "🏛 *DOB / DOT*",
+                "🔴 New violation 35123456, issued Oct 7, open. DOB.",
+            ]),
+            "\n".join([
+                "*Thu Oct 8* · *588 Thomas S Boyland St*",
+                "",
+                "🏛 *DOB / DOT*",
+                "🟠 Permit B01141294 (General Construction) expires Oct 14 (6 days). DOB.",
+                "",
+                "👷 8 on site · ABC Concrete 5 · GC 3",
+            ]),
+        ])
+
+    def test_each_message_is_one_job_keyed_by_its_id(self):
+        viol = wa_brief.job_items([_violation(WALWORTH, "35123456")],
+                                  YESTERDAY - timedelta(hours=1), THU_7)
+        msgs = wa_brief.compose_messages(THU_7, [
+            {"id": THOMAS, "label": "588 Thomas S Boyland St", "items": [],
+             "headcount": "👷 3 on site · GC 3"},
+            {"id": WALWORTH, "label": "8 Walworth St", "items": viol,
+             "headcount": "No check-ins yet."}])
+        self.assertEqual([part for part, _t in msgs], [WALWORTH, THOMAS])
+        self.assertNotIn("Thomas", msgs[0][1])
+        self.assertNotIn("Walworth", msgs[1][1])
+        self.assertNotIn("35123456", msgs[1][1])
 
     def test_nothing_actionable(self):
-        text = wa_brief.compose(THU_7, [
+        msgs = _compose(THU_7, [
             {"label": "588 Thomas S Boyland St", "items": [],
              "headcount": "👷 3 on site · GC 3"},
             {"label": "8 Walworth St", "items": [], "headcount": "No check-ins yet."}])
-        self.assertEqual(text, "\n".join([
-            "*Thu Oct 8*", "No action needed today.", "",
-            "*588 Thomas S Boyland St*", "👷 3 on site · GC 3", "",
-            "No check-ins yet: 8 Walworth St."]))
+        self.assertEqual(msgs, [
+            "*Thu Oct 8* · *588 Thomas S Boyland St*\n\n👷 3 on site · GC 3",
+            "*Thu Oct 8*\nNo action needed today.\n\nNo check-ins yet: 8 Walworth St."])
 
     def test_quiet_jobs_collapse_into_one_line(self):
         viol = wa_brief.job_items([_violation(WALWORTH, "35123456")],
                                   YESTERDAY - timedelta(hours=1), THU_7)
-        text = wa_brief.compose(THU_7, [
+        msgs = _compose(THU_7, [
             {"label": "588 Thomas S Boyland St", "items": [],
              "headcount": "👷 3 on site · GC 3"},
             {"label": "8 Walworth St", "items": viol, "headcount": "No check-ins yet."},
             {"label": "8 Prescott St", "items": [], "headcount": "No check-ins yet."},
             {"label": "12 Pacific St", "items": [], "headcount": "No check-ins yet."}])
-        self.assertEqual(text, "\n".join([
-            "*Thu Oct 8*", "",
-            "*8 Walworth St*",                       # an item: its own block
-            "🏛 *DOB / DOT*",
-            "🔴 New violation 35123456, issued Oct 7, open. DOB.", "",
-            "*588 Thomas S Boyland St*", "👷 3 on site · GC 3", "",
-            "No check-ins yet: 8 Prescott St, 12 Pacific St."]))
+        self.assertEqual(msgs, [
+            "\n".join(["*Thu Oct 8* · *8 Walworth St*", "",    # an item: its own message
+                       "🏛 *DOB / DOT*",
+                       "🔴 New violation 35123456, issued Oct 7, open. DOB."]),
+            "*Thu Oct 8* · *588 Thomas S Boyland St*\n\n👷 3 on site · GC 3",
+            # the quiet ones: one line, in the last message
+            "*Thu Oct 8*\n\nNo check-ins yet: 8 Prescott St, 12 Pacific St."])
 
     def test_jobs_without_check_in_setup(self):
         viol = wa_brief.job_items([_violation(WALWORTH, "35123456")],
                                   YESTERDAY - timedelta(hours=1), THU_7)
-        text = wa_brief.compose(THU_7, [
+        msgs = _compose(THU_7, [
             {"label": "8 Walworth St", "items": viol,
              "headcount": "No check-ins yet.", "uses_checkins": False},
             {"label": "12 Pacific St", "items": [],
              "headcount": "No check-ins yet.", "uses_checkins": False},
             {"label": "8 Prescott St", "items": [],
              "headcount": "No check-ins yet.", "uses_checkins": True}])
-        self.assertEqual(text, "\n".join([
-            "*Thu Oct 8*", "",
-            "*8 Walworth St*",                     # items, no headcount line
-            "🏛 *DOB / DOT*",
-            "🔴 New violation 35123456, issued Oct 7, open. DOB.", "",
-            "No check-ins yet: 8 Prescott St."]))  # 12 Pacific St left out
-        self.assertNotIn("Pacific", text)
+        self.assertEqual(msgs, [
+            "\n".join(["*Thu Oct 8* · *8 Walworth St*", "",    # items, no headcount line
+                       "🏛 *DOB / DOT*",
+                       "🔴 New violation 35123456, issued Oct 7, open. DOB."]),
+            "*Thu Oct 8*\n\nNo check-ins yet: 8 Prescott St."])  # 12 Pacific St left out
 
     def test_every_job_left_out_is_one_line(self):
-        text = wa_brief.compose(THU_7, [
+        self.assertEqual(wa_brief.compose_messages(THU_7, [
             {"label": "12 Pacific St", "items": [],
-             "headcount": "No check-ins yet.", "uses_checkins": False}])
-        self.assertEqual(text, "*Thu Oct 8*\nNo action needed today.")
+             "headcount": "No check-ins yet.", "uses_checkins": False}]),
+            [(wa_brief.REST, "*Thu Oct 8*\nNo action needed today.")])
 
     def test_address_casing_is_kept(self):
-        text = wa_brief.compose(THU_7, [
+        msgs = _compose(THU_7, [
             {"label": "588 Thomas S Boyland St", "items": [],
              "headcount": "👷 1 on site · GC 1", "uses_checkins": True}])
-        self.assertIn("588 Thomas S Boyland St", text)
+        self.assertIn("588 Thomas S Boyland St", msgs[0])
 
     def test_all_quiet(self):
-        text = wa_brief.compose(THU_7, [
+        msgs = _compose(THU_7, [
             {"label": "8 Walworth St", "items": [], "headcount": "No check-ins yet."},
             {"label": "8 Prescott St", "items": [], "headcount": "No check-ins yet."}])
-        self.assertEqual(text, "*Thu Oct 8*\nNo action needed today.\n\n"
-                               "No check-ins yet: 8 Walworth St, 8 Prescott St.")
+        self.assertEqual(msgs, ["*Thu Oct 8*\nNo action needed today.\n\n"
+                                "No check-ins yet: 8 Walworth St, 8 Prescott St."])
 
     def test_at_most_seven_items(self):
         rows = [_permit(THOMAS, f"B{i}", f"2026-10-{10 + i}") for i in range(9)]
-        text = wa_brief.compose(THU_7, [{
+        msgs = _compose(THU_7, [{
             "label": "588 Thomas S Boyland St",
             "items": wa_brief.job_items(rows, YESTERDAY, THU_7),
             "headcount": "No check-ins yet."}])
+        self.assertEqual(len(msgs), 1)
+        text = msgs[0]
         self.assertEqual(text.count("🟠"), 7)
         self.assertIn("B0 ", text)                  # the soonest kept
         self.assertNotIn("B8 ", text)
         self.assertTrue(text.endswith("+2 more DOB / DOT in the Levelog app."))
         self.assertNotIn("Here is", text)
+
+    def test_the_seven_are_per_job(self):
+        thomas = [_permit(THOMAS, f"B{i}", f"2026-10-{10 + i}") for i in range(9)]
+        walworth = [_permit(WALWORTH, f"W{i}", f"2026-10-{10 + i}") for i in range(3)]
+        msgs = _compose(THU_7, [
+            {"label": "588 Thomas S Boyland St", "items": wa_brief.job_items(thomas, YESTERDAY, THU_7),
+             "headcount": "No check-ins yet.", "uses_checkins": False},
+            {"label": "8 Walworth St", "items": wa_brief.job_items(walworth, YESTERDAY, THU_7),
+             "headcount": "No check-ins yet.", "uses_checkins": False}])
+        self.assertEqual(len(msgs), 2)
+        self.assertEqual((msgs[0].count("🟠"), msgs[1].count("🟠")), (7, 3))
+        self.assertTrue(msgs[0].endswith("+2 more DOB / DOT in the Levelog app."))
+        self.assertNotIn("more DOB / DOT", msgs[1])     # another job's cut is not its own
+
+    def test_reminders_have_their_own_last_message(self):
+        msgs = _compose(THU_7, [
+            {"label": "588 Thomas S Boyland St", "items": [], "today": ["• 7am Concrete pour"],
+             "headcount": "No check-ins yet.", "uses_checkins": True},
+            {"label": "8 Walworth St", "items": [], "headcount": "No check-ins yet."}],
+            {"today": ["• 9am Call the bank"], "later": ["• Fri Renew insurance"]})
+        self.assertEqual(msgs, [
+            "*Thu Oct 8* · *588 Thomas S Boyland St*\n\n📅 *Today*\n• 7am Concrete pour",
+            "\n".join(["*Thu Oct 8*", "", "*Your reminders*", "📅 *Today*", "• 9am Call the bank",
+                       "", "📆 *Later this week*", "• Fri Renew insurance",
+                       "", "No check-ins yet: 8 Walworth St."])])
+
+    def test_reminders_alone_are_something_to_do(self):
+        self.assertEqual(_compose(THU_7, [], {"today": ["• 9am Call the bank"]}), [
+            "*Thu Oct 8*\n\n*Your reminders*\n📅 *Today*\n• 9am Call the bank"])
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -364,18 +418,23 @@ class WhoGetsWhat(unittest.TestCase):
         with _Ctx(db) as c:
             _tick(c, THU_7)
         sends = _sends(c)
-        self.assertEqual(len(sends), 1)
-        text = sends[0]["message"]
-        self.assertEqual(sends[0]["chatId"], f"{ADMIN_PHONE}@c.us")
-        self.assertIn("588 Thomas S Boyland St", text)
-        self.assertIn("8 Walworth St", text)
-        self.assertIn("🔴 New violation 35123456, issued Oct 7, open. DOB.", text)
-        self.assertIn("🟠 Permit B01141294 (General Construction) expires Oct 14 (6 days). DOB.", text)
-        self.assertIn("👷 8 on site · ABC Concrete 5 · GC 3", text)
-        self.assertNotIn("1 Gone St", text)          # deleted job
-        self.assertNotIn("99999999", text)           # company B
-        self.assertNotIn("Bedford", text)
-        self.assertNotIn("B Crew", text)
+        self.assertEqual(len(sends), 2)             # one message per job
+        self.assertEqual({p["chatId"] for p in sends}, {f"{ADMIN_PHONE}@c.us"})
+        walworth, thomas = (p["message"] for p in sends)
+        self.assertTrue(walworth.startswith("*Thu Oct 8* · *8 Walworth St*"), walworth)
+        self.assertIn("🔴 New violation 35123456, issued Oct 7, open. DOB.", walworth)
+        self.assertNotIn("Thomas", walworth)
+        self.assertTrue(thomas.startswith("*Thu Oct 8* · *588 Thomas S Boyland St*"), thomas)
+        self.assertIn("🟠 Permit B01141294 (General Construction) expires Oct 14 (6 days). DOB.",
+                      thomas)
+        self.assertIn("👷 8 on site · ABC Concrete 5 · GC 3", thomas)
+        self.assertNotIn("Walworth", thomas)
+        self.assertNotIn("35123456", thomas)
+        both = "\n".join((walworth, thomas))
+        self.assertNotIn("1 Gone St", both)          # deleted job
+        self.assertNotIn("violation 99999999", both)  # company B
+        self.assertNotIn("99 Bedford Ave", both)
+        self.assertNotIn("B Crew", both)
 
     def test_pm_gets_assigned_jobs_only(self):
         db = _world()
@@ -423,9 +482,9 @@ class WhoGetsWhat(unittest.TestCase):
         _optin(db, "u_pm", PM_PHONE)
         with _Ctx(db) as c:
             _tick(c, THU_7)
-        self.assertEqual(_sends(c)[0]["message"], "\n".join([
-            "*Thu Oct 8*", "No action needed today.", "",
-            "*588 Thomas S Boyland St*", "👷 1 on site · ABC Concrete 1"]))
+        self.assertEqual(_texts(c), [
+            "*Thu Oct 8* · *588 Thomas S Boyland St*\n\n👷 1 on site · ABC Concrete 1",
+            "*Thu Oct 8*\nNo action needed today."])
 
 
 NOTHING = "*Thu Oct 8*\nNo action needed today."
@@ -489,7 +548,7 @@ class TimeAndOnce(unittest.TestCase):
         with _Ctx(db) as c:
             _tick(c, THU_7)
             r = _tick(c, THU_7 + timedelta(minutes=10))
-        self.assertEqual(len(_sends(c)), 1)
+        self.assertEqual(len(_sends(c)), 2)         # its two jobs, once
         self.assertEqual(r["already"], 1)
 
     def test_picked_time(self):
@@ -500,7 +559,7 @@ class TimeAndOnce(unittest.TestCase):
             _tick(c, THU_7)
             self.assertEqual(_sends(c), [])
             _tick(c, THU_8)
-        self.assertEqual(len(_sends(c)), 1)
+        self.assertEqual(len(_sends(c)), 2)
 
     def test_off(self):
         db = _world()
@@ -558,13 +617,14 @@ class TimeAndOnce(unittest.TestCase):
         _optin(db, "u_admin", ADMIN_PHONE)
         with _Ctx(db) as c:
             _tick(c, THU_7)
+            n = len(_sends(c))
             fri = THU_7 + timedelta(days=1)
             _tick(c, fri)
-        texts = [p["message"] for p in _sends(c)]
-        self.assertEqual(len(texts), 2)
-        self.assertIn("35123456", texts[0])
-        self.assertNotIn("35123456", texts[1])     # not new any more
-        self.assertIn("B01141294", texts[1])       # still expiring
+        texts = _texts(c)
+        thu, fri = "\n".join(texts[:n]), "\n".join(texts[n:])
+        self.assertIn("35123456", thu)
+        self.assertNotIn("35123456", fri)          # not new any more
+        self.assertIn("B01141294", fri)            # still expiring
 
 
 class TheSettings(unittest.TestCase):
@@ -724,11 +784,11 @@ class FollowUps(unittest.TestCase):
         job = {"label": "588 Thomas S Boyland St", "items": [], "you": [],
                "waiting": ["• Chris: 1 punch item (today)"],
                "headcount": NO_CI, "uses_checkins": False}
-        self.assertEqual(wa_brief.compose(MON_8, [job]), "\n".join([
-            "*Mon Oct 12*", "", "*588 Thomas S Boyland St*",
-            "⏳ *Waiting on others*", "• Chris: 1 punch item (today)"]))
+        self.assertEqual(_compose(MON_8, [job]), ["\n".join([
+            "*Mon Oct 12* · *588 Thomas S Boyland St*", "",
+            "⏳ *Waiting on others*", "• Chris: 1 punch item (today)"])])
         job["waiting"] = []
-        self.assertEqual(wa_brief.compose(MON_8, [job]), "*Mon Oct 12*\nNo action needed today.")
+        self.assertEqual(_compose(MON_8, [job]), ["*Mon Oct 12*\nNo action needed today."])
 
     def test_monday_8_05_on_588(self):
         db = _db()
@@ -745,16 +805,17 @@ class FollowUps(unittest.TestCase):
         _optin(db, "u_admin", ADMIN_PHONE)
         with _Ctx(db) as c:
             _tick(c, MON_8)
-        text = _sends(c)[0]["message"]
-        self.assertNotIn("No action needed", text)
+        brief = "\n\n".join(_texts(c))
+        self.assertNotIn("No action needed", brief)
         self.assertIn("\n".join([
-            "*588 Thomas S Boyland St*",
+            "*Mon Oct 12* · *588 Thomas S Boyland St*",
+            "",
             "⏳ *Waiting on others*",
             "• Mike: Send calcs — ⚠️ 1 day late",
             "• Yeyzmar: 2 punch items (oldest 1 day)",
-            "• Chris: 1 punch item (today)"]), text)
-        self.assertNotIn("other company", text)
-        self.assertNotIn("I'll send the calcs Sunday", text)     # the summary, not the quote
+            "• Chris: 1 punch item (today)"]), brief)
+        self.assertNotIn("other company", brief)
+        self.assertNotIn("I'll send the calcs Sunday", brief)     # the summary, not the quote
 
 
 NO_CI = wa_brief.NO_CHECKINS
@@ -820,19 +881,20 @@ TARGET_BLOCK = [
 class TargetLayout(unittest.TestCase):
 
     def test_one_job_is_the_target_exactly(self):
-        text = wa_brief.compose(TUE_8, [_target_job()])
-        self.assertEqual(text, "\n".join(["*Tue Oct 13*", ""] + TARGET_BLOCK))
+        msgs = _compose(TUE_8, [_target_job()])
+        self.assertEqual(len(msgs), 1)
+        text = msgs[0]
+        self.assertEqual(text, "\n".join(["*Tue Oct 13* · *588 Thomas S Boyland*", ""]
+                                         + TARGET_BLOCK[1:]))
         self.assertLess(len(text.split("\n")), 25)
         self.assertNotIn("calcs by Sunday", text)          # the summary, never the quote
 
-    def test_three_jobs_one_block_each_in_order(self):
+    def test_three_jobs_one_message_each_in_order(self):
         jobs = [_target_job("588 Thomas S Boyland"), _target_job("8 Walworth St"),
                 _target_job("12 Pacific St")]
-        text = wa_brief.compose(TUE_8, jobs)
-        want = ["*Tue Oct 13*"]
-        for label in ("588 Thomas S Boyland", "8 Walworth St", "12 Pacific St"):
-            want += [""] + [f"*{label}*"] + TARGET_BLOCK[1:]
-        self.assertEqual(text, "\n".join(want))
+        want = ["\n".join([f"*Tue Oct 13* · *{label}*", ""] + TARGET_BLOCK[1:])
+                for label in ("588 Thomas S Boyland", "8 Walworth St", "12 Pacific St")]
+        self.assertEqual(_compose(TUE_8, jobs), want)
 
     def test_zero_jobs_no_brief(self):
         db = _db()
@@ -841,16 +903,16 @@ class TargetLayout(unittest.TestCase):
         with _Ctx(db) as c:
             _tick(c, TUE_8)
         self.assertEqual(_sends(c), [])
-        self.assertEqual(wa_brief.compose(TUE_8, []), "*Tue Oct 13*\nNo action needed today.")
+        self.assertEqual(_compose(TUE_8, []), ["*Tue Oct 13*\nNo action needed today."])
 
     def test_empty_sections_are_left_out(self):
         job = _target_job()
         for k in ("today", "waiting", "check", "later"):
             job[k] = []
         job["headcount"] = wa_brief.NO_CHECKINS
-        self.assertEqual(wa_brief.compose(TUE_8, [job]), "\n".join([
-            "*Tue Oct 13*", "", "*588 Thomas S Boyland*", "✅ *You*",
-            "• Send calcs — ⚠️ 2 days late", "• Send basement photos — ⚠️ 1 day late"]))
+        self.assertEqual(_compose(TUE_8, [job]), ["\n".join([
+            "*Tue Oct 13* · *588 Thomas S Boyland*", "", "✅ *You*",
+            "• Send calcs — ⚠️ 2 days late", "• Send basement photos — ⚠️ 1 day late"])])
 
     def test_due_today_and_asap(self):
         self.assertEqual(wa_brief.lateness(TUE, TUE, False), " · today")
@@ -891,23 +953,22 @@ class TargetLayout(unittest.TestCase):
 
 class Budgets(unittest.TestCase):
 
-    def test_later_this_week_is_capped_across_the_whole_brief(self):
-        events = [{"project_id": f"p{j}", "date": f"2026-10-{14 + i}", "time": "09:00",
-                   "title": f"J{j} event {i}"} for j in range(10) for i in range(3)]
-        events += [{"project_id": None, "date": "2026-10-16", "time": None, "title": "call"},
-                   {"project_id": "p9", "date": "2026-10-13", "time": "07:00", "title": "pour"}]
+    def test_later_this_week_is_capped_per_job(self):
+        events = [{"project_id": "p0", "date": f"2026-10-{14 + i % 4}", "time": f"0{i}:00",
+                   "title": f"J0 event {i}"} for i in range(8)]
+        events += [{"project_id": "p1", "date": "2026-10-18", "time": "09:00",
+                    "title": f"J1 event {i}"} for i in range(3)]
+        events += [{"project_id": None, "date": "2026-10-16", "time": None, "title": f"call {i}"}
+                   for i in range(6)]
+        events += [{"project_id": "p1", "date": "2026-10-13", "time": "07:00", "title": "pour"}]
         by = wa_brief.events_by_job(events, TUE)
-        shown = [l for _t, later in by.values() for l in later if "more in" not in l]
-        self.assertEqual(len(shown), wa_brief.MAX_LATER)
-        # the five soonest: Wednesday's, one from each of jobs 0-4
-        self.assertEqual(by["p0"][1], ["• Wed 9am J0 event 0", "• +2 more in the Levelog app"])
-        self.assertEqual(by["p4"][1], ["• Wed 9am J4 event 0", "• +2 more in the Levelog app"])
-        self.assertEqual(by["p9"][0], ["• 7am pour"])                 # today never cut
-        self.assertEqual(by["p9"][1], ["• +3 more in the Levelog app"])
-        self.assertEqual(by[None][1], ["• +1 more in the Levelog app"])
-        total_more = sum(int(l.split("+")[1].split()[0]) for _t, later in by.values()
-                         for l in later if "more in" in l)
-        self.assertEqual(total_more + len(shown), 31)
+        self.assertEqual(len(by["p0"][1]), wa_brief.MAX_LATER + 1)
+        self.assertEqual(by["p0"][1][-1], "• +3 more in the Levelog app")
+        self.assertEqual(by["p0"][1][0], "• Wed 12am J0 event 0")      # the soonest first
+        # Another job's events never cut this one's.
+        self.assertEqual(by["p1"][1], [f"• Sun 9am J1 event {i}" for i in range(3)])
+        self.assertEqual(by["p1"][0], ["• 7am pour"])                  # today never cut
+        self.assertEqual(by[None][1][-1], "• +1 more in the Levelog app")
 
     def test_companies_that_shorten_alike_keep_their_names(self):
         line = wa_brief.headcount_line(_ci(2, "ABC Plumbing") + _ci(1, "ABC Electrical")
