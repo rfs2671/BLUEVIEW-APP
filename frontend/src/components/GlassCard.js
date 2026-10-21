@@ -6,6 +6,7 @@ import { colors, borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
 import { withAlpha } from '../styles/semanticColors';
 import { auraShadow, auraRim } from '../styles/aura';
+import CardSheen from './CardSheen';
 
 /**
  * A card's caller-supplied style, split between the two views a card is now drawn with. The OUTER view places the card
@@ -59,13 +60,13 @@ function outerAura(colors) {
    Light: white → paper tint
    ────────────────────────────────────────────────────────────────────────── */
 const DARK_GRADIENT = [
-  withAlpha('#243746', 0.86),   // chip tone at top
-  withAlpha('#1C2B38', 0.80),   // card tone at bottom
+  withAlpha('#243746', 0.96),   // card tone, flat: the page is now #1C2B38 and the card steps up from it
+  withAlpha('#243746', 0.96),
 ];
 
 // The modal variant keeps the frost but draws a near-solid fill over it, so a dialog reads as the palette's card tone
 // instead of the saturated tint the frost alone gives it.
-const MODAL_DARK_GRADIENT = [withAlpha('#1C2B38', 0.94), withAlpha('#1C2B38', 0.94)];
+const MODAL_DARK_GRADIENT = [withAlpha('#243746', 0.98), withAlpha('#243746', 0.98)];
 const MODAL_LIGHT_GRADIENT = [withAlpha('#ffffff', 0.95), withAlpha('#ffffff', 0.95)];
 
 const LIGHT_GRADIENT = [
@@ -137,7 +138,7 @@ export const GlassCard = ({
         <View
           style={[
             StyleSheet.absoluteFillObject,
-            { backgroundColor: isDark ? withAlpha('#1C2B38', 0.6) : withAlpha('#ffffff', 0.5) },
+            { backgroundColor: isDark ? withAlpha('#243746', 0.6) : withAlpha('#ffffff', 0.5) },
           ]}
         />
       )}
@@ -148,6 +149,8 @@ export const GlassCard = ({
         end={{ x: 0.5, y: 1 }}
         style={StyleSheet.absoluteFillObject}
       />
+      {/* Layer 2b: the shared card sheen (CardSheen.jsx) */}
+      <CardSheen radius={borderRadius.xxl} />
       {/* Layer 3: content. `contentStyle` (optional) overrides the default
           padding — e.g. narrow summary bubbles that can't afford 32px insets. */}
       <View style={[styles.cardContent, contentStyle]}>{children}</View>
@@ -211,6 +214,7 @@ export const StatCard = ({ children, style, onPress }) => {
         end={{ x: 0.5, y: 1 }}
         style={StyleSheet.absoluteFillObject}
       />
+      <CardSheen radius={borderRadius.xl} />
       <View style={styles.statPadded}>{children}</View>
      </View>
     </CardWrapper>
@@ -283,6 +287,7 @@ export const GlassListItem = ({
         end={{ x: 0.5, y: 1 }}
         style={StyleSheet.absoluteFillObject}
       />
+      <CardSheen radius={borderRadius.xl} />
       {/* `contentStyle` (optional) overrides the default spacing.lg inset — for
           dense rows where a 24px inset per side eats the content width. */}
       <View style={[styles.listItemContent, contentStyle]}>

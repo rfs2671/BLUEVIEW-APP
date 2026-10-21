@@ -1056,7 +1056,7 @@ function buildStyles(colors, isDark) {
     // GlassCard variant="modal" has no gradient layer — just blur — so
     // on mobile you can still read the page behind it. Add a solid
     // theme-aware fill so the card is fully opaque.
-    backgroundColor: isDark ? '#1C2B38' : '#ffffff',
+    backgroundColor: isDark ? '#243746' : '#ffffff',
   },
   modalHeader: {
     flexDirection: 'row',

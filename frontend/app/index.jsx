@@ -27,6 +27,8 @@ import FloatingNav from '../src/components/FloatingNav';
 import OfflineIndicator from '../src/components/OfflineIndicator';
 import SyncButton from '../src/components/SyncButton';
 import { auraRim, auraShadow } from '../src/styles/aura';
+import CardSheen from '../src/components/CardSheen';
+import SectionLabel from '../src/components/SectionLabel';
 import { useToast } from '../src/components/Toast';
 import { useAuth, isCompanyAdmin, isAccountAdmin } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
@@ -119,6 +121,7 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
         isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover },
       ]}
     >
+      <CardSheen radius={borderRadius.lg} />
       <IconPod size={40} style={s.actionIcon}>
         <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
       </IconPod>
@@ -141,10 +144,9 @@ const EXPOSURE_FIELD = {
 //    come from semantic tokens inline so they stay theme-aware. Mobile never
 //    renders any of this. ──────────────────────────────────────────────────
 const deskStyles = StyleSheet.create({
-  sectionLabel: { ...typography.label, marginBottom: spacing.sm, marginTop: spacing.md },
   rollupRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, marginBottom: spacing.lg },
   rollupCard: {
-    flex: 1, minWidth: 190, borderWidth: 1, borderRadius: borderRadius.lg,
+    flex: 1, minWidth: 190, borderRadius: borderRadius.lg,
     paddingVertical: spacing.lg, paddingHorizontal: spacing.lg,
   },
   rollupNumber: { fontSize: 40, fontFamily: typography.num, fontWeight: '600', letterSpacing: -1 },
@@ -178,7 +180,7 @@ const deskStyles = StyleSheet.create({
   expandEmpty: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md, fontSize: typography.sizes.sm },
 
   // ── ACTIVE BY SITE ────────────────────────────────────────────────────
-  siteList: { borderWidth: 1, borderRadius: borderRadius.lg, marginBottom: spacing.lg, overflow: 'hidden' },
+  siteList: { marginBottom: spacing.lg },
   siteRow: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.md,
     paddingHorizontal: spacing.lg, paddingVertical: spacing.sm + 2,
@@ -190,7 +192,7 @@ const deskStyles = StyleSheet.create({
   adminRowTile: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm, height: 40,
     flexGrow: 1, flexBasis: 200, maxWidth: 260,
-    paddingHorizontal: spacing.md, borderWidth: 1,
+    paddingHorizontal: spacing.md,
     borderRadius: borderRadius.md,
   },
   adminRowLabel: { fontSize: typography.sizes.sm, fontWeight: '500' },
@@ -203,12 +205,14 @@ const deskStyles = StyleSheet.create({
 // accessibilityRole. The affordance appears only where there is something
 // behind it.
 function RollupCard({ value, label, token, loading, expanded, onToggle }) {
+  const { colors } = useTheme();
   const isZero = !loading && (value == null || value === 0);
   const numberColor = loading || isZero ? semantic.neutral : token;
   const pressable = !loading && !isZero && typeof onToggle === 'function';
 
   const body = (
     <>
+      <CardSheen radius={borderRadius.lg} />
       <Text style={[deskStyles.rollupNumber, { color: numberColor }]}>
         {loading ? '—' : (value ?? 0)}
       </Text>
@@ -228,7 +232,7 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
 
   if (!pressable) {
     return (
-      <View style={[deskStyles.rollupCard, { backgroundColor: surface.card, borderColor: border.subtle }]}>
+      <View style={[deskStyles.rollupCard, { backgroundColor: surface.card }, auraRim(colors), auraShadow(colors, undefined, { translucent: true })]}>
         {body}
       </View>
     );
@@ -242,8 +246,9 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
       accessibilityLabel={`${label}: ${value}. ${expanded ? 'Hide' : 'Show'} contributing projects`}
       style={({ hovered }) => [
         deskStyles.rollupCard,
-        { backgroundColor: surface.card, borderColor: expanded ? border.strong : border.subtle },
-        hovered && { backgroundColor: surface.glassHover, borderColor: border.medium },
+        { backgroundColor: surface.card }, auraRim(colors), auraShadow(colors, undefined, { translucent: true }),
+        expanded && { borderColor: colors.glass.borderHover },
+        hovered && { backgroundColor: surface.glassHover, borderColor: colors.glass.borderHover },
       ]}
     >
       {body}
@@ -254,6 +259,7 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
 // Compressed ~40px admin-tool row item: icon left of label (not the 250px
 // stacked card the mobile home uses). Destinations are the same adminActions.
 function AdminRowTile({ action, onPress }) {
+  const { colors } = useTheme();
   const Icon = action.icon;
   return (
     <Pressable
@@ -262,10 +268,11 @@ function AdminRowTile({ action, onPress }) {
       accessibilityLabel={action.title}
       style={({ hovered }) => [
         deskStyles.adminRowTile,
-        { backgroundColor: surface.glass, borderColor: border.subtle },
-        hovered && { backgroundColor: surface.glassHover, borderColor: border.medium },
+        { backgroundColor: surface.glass }, auraRim(colors), auraShadow(colors, undefined, { translucent: true }),
+        hovered && { backgroundColor: surface.glassHover, borderColor: colors.glass.borderHover },
       ]}
     >
+      <CardSheen radius={borderRadius.md} depth={22} />
       <Icon size={16} strokeWidth={1.5} color={chrome.icon} />
       <Text style={[deskStyles.adminRowLabel, { color: text.primary }]} numberOfLines={1}>
         {action.title}
@@ -698,7 +705,7 @@ export default function DashboardScreen() {
     return (
       <>
         {renderDataNotice()}
-        <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>PORTFOLIO EXPOSURE</Text>
+        <SectionLabel label="PORTFOLIO EXPOSURE" />
         {!dobLoading && dobState !== 'ok' && (
           <OfflineNotice
             mode={dobState}
@@ -771,7 +778,7 @@ export default function DashboardScreen() {
             tile, so the two always agree. All-zero renders one honest line
             rather than a column of zeros; a project whose lookup failed shows
             "—", never a fabricated 0. */}
-        <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>ACTIVE BY SITE</Text>
+        <SectionLabel label="ACTIVE BY SITE" />
         {!onSiteLoading && onSiteState !== 'ok' && siteRows.length > 0 && (
           <OfflineNotice
             mode={onSiteState}
@@ -791,7 +798,7 @@ export default function DashboardScreen() {
             No workers checked in today.
           </Text>
         ) : (
-          <View style={[deskStyles.siteList, { borderColor: border.subtle, backgroundColor: surface.card }]}>
+          <View style={deskStyles.siteList}>
             {siteRows.map(({ p, n }, i) => (
               <Pressable
                 key={p.id || p._id}
@@ -800,7 +807,7 @@ export default function DashboardScreen() {
                 accessibilityLabel={`Open ${p.name || p.address || 'project'}, ${n == null ? 'count unavailable' : `${n} on site`}`}
                 style={({ hovered }) => [
                   deskStyles.siteRow,
-                  i > 0 && { borderTopWidth: 1, borderTopColor: border.subtle },
+                  i > 0 && { borderTopWidth: 1, borderTopColor: colors.ruled.rule },
                   hovered && { backgroundColor: surface.glassHover },
                 ]}
               >
@@ -818,7 +825,7 @@ export default function DashboardScreen() {
 
         {isAdmin || isPmUser(user) ? (
           <>
-            <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>{isAdmin ? 'ADMIN TOOLS' : 'TOOLS'}</Text>
+            <SectionLabel label={isAdmin ? 'ADMIN TOOLS' : 'TOOLS'} />
             <View style={deskStyles.adminRow}>
               {(isAdmin ? adminActionsFor(user) : pmActions).map((action) => (
                 <AdminRowTile
@@ -840,7 +847,7 @@ export default function DashboardScreen() {
     if (!admin && !isPmUser(user)) return null;
     return (
       <>
-        <Text style={[s.sectionLabel, { color: colors.text.muted }]}>{admin ? 'ADMIN TOOLS' : 'TOOLS'}</Text>
+        <SectionLabel label={admin ? 'ADMIN TOOLS' : 'TOOLS'} />
         <View style={s.adminGrid}>
           {(admin ? adminActionsFor(user) : pmActions).map((action) => (
             <ActionTile
@@ -1255,16 +1262,6 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.xl,
     paddingVertical: spacing.xs,
     paddingHorizontal: 0,
-  },
-
-  /* ── Section label ─────────────────────────────────────────────────────── */
-  sectionLabel: {
-    fontFamily: typography.medium,
-    fontSize: 11,
-    color: colors.text.muted,
-    letterSpacing: 1.5,
-    marginBottom: spacing.md,
-    marginTop: spacing.md,
   },
 
   /* ── B3: empty state ──────────────────────────────────────────────────── */

@@ -395,7 +395,7 @@ function SiteDeviceLightMode() {
 function AppShell() {
   const { isDark, themeKey } = useTheme();
   const toast = useToast();
-  const bg = isDark ? '#131E27' : '#ECEDE9';
+  const bg = isDark ? '#1C2B38' : '#ECEDE9';
   // RN-Web desktop presentation layer. False on native and on web < 1024,
   // where the tree below is byte-identical to what it was before this hook.
   const isDesktop = useIsDesktop();
