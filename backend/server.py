@@ -7507,8 +7507,10 @@ async def get_current_user(
     # the OTA carrying that is adopted, and these lines are how "adopted" gets
     # measured. Only a request that actually leaned on it -- no header, and
     # `token` present in its own query string -- is logged. Never the value.
-    via_query = (not credentials and request is not None
-                 and "token" in request.query_params)
+    # getattr: the direct callers (and their tests) pass a request stand-in
+    # that has headers and a url but no query string to read.
+    via_query = (not credentials
+                 and "token" in (getattr(request, "query_params", None) or {}))
 
     if not raw_token:
         if via_query:
