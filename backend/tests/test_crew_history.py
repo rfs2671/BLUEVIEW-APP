@@ -107,6 +107,28 @@ class Personalize(unittest.TestCase):
         self.assertIn("same stage as MEP rough-in", next(c.reason for c in out.chips if c.id == "plmb_sanitary_rough"))
         self.assertIn("next stage after MEP rough-in", next(c.reason for c in out.chips if c.id == "plmb_domestic_water_rough"))
 
+    def test_finished_early_stages_do_not_crowd_out_the_next_stage(self):
+        # The real 588 concrete day 2026-08-26: six activities logged the day
+        # before, from site prep up to foundation walls. The piles and shoring are
+        # long done; vapour barrier, rebar and formwork are what is coming.
+        from app.scheduling.trade_sequence import stages_for
+        prev = ["site_prep", "shoring", "piles", "footings", "foundation_walls", "grade_beams"]
+        stages = stages_for(["Foundation / Concrete", "Excavation", "Shoring / underpinning", "Piles / caissons"])
+        out = CH.personalize(rank("Concrete / Cement"), [day("d1", *prev)], SUCC, stages=stages)
+        top = [c.id for c in out.chips[:6]]
+        self.assertIn("vapour_barrier", top)
+        self.assertIn("foundation_walls", top)          # still being worked
+        self.assertNotIn("piles", top)
+        self.assertNotIn("shoring", top)
+
+    def test_work_in_the_crews_current_stage_is_never_treated_as_finished(self):
+        from app.scheduling.trade_sequence import stages_for
+        out = CH.personalize(rank(), [day("d1", "mep_rough_in", "plmb_sanitary_rough")], SUCC,
+                             stages=stages_for(["Plumbing"]))
+        top = [c.id for c in out.chips[:3]]
+        self.assertIn("mep_rough_in", top)
+        self.assertIn("plmb_sanitary_rough", top)
+
     def test_stages_can_be_switched_off(self):
         from app.scheduling.trade_sequence import stages_for
         on = CH.personalize(rank(), [day("d1", "under_slab_mep")], SUCC, stages=stages_for(["Plumbing"]))

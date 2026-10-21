@@ -58,6 +58,8 @@ HABIT_BONUS = 1.0        # per earlier observation of "from A to B", at most twi
 STAGE_NEXT_BONUS = 1.5   # the stage after the crew's furthest stage
 STAGE_SAME_BONUS = 0.9   # the rest of the crew's current stage (concurrent work)
 SCHEDULED_BONUS = 1.4    # planned for today in a confirmed schedule
+BEHIND_STAGES = 2        # stages behind the crew's furthest one: probably finished
+BEHIND_WEIGHT = 0.4      # ...so continuing / recency lift is scaled down
 _PROMOTABLE_BANDS = ("suggested", "catalog", "remembered_other", "always_available")
 
 
@@ -188,10 +190,24 @@ def _personalize(ranking: ActivityRanking, days: List[Tuple[str, List[str]]],
     why: Dict[str, str] = {}
     best: Dict[str, float] = {}
 
+    # Work in stages well behind the crew's furthest one is most likely finished
+    # (a concrete crew that logged footings, piles, shoring AND foundation walls
+    # yesterday is on the walls, not the piles). Left alone it would fill every
+    # suggested slot and crowd out the stage that follows.
+    behind: set = set()
+    if use_order and stages and days:
+        from app.scheduling.trade_sequence import position
+        furthest = position(stages, last_ids)
+        for n, stage in enumerate(stages):
+            if furthest - n >= BEHIND_STAGES:
+                behind.update(stage)
+
     def lift(chip_id: str, points: float, reason: str) -> None:
         """Add `points` to a chip; its reason is its STRONGEST single cause."""
         if chip_id not in by_id or by_id[chip_id].band not in _PROMOTABLE_BANDS:
             return
+        if chip_id in behind and not reason.startswith("scheduled"):
+            points *= BEHIND_WEIGHT
         score[chip_id] = score.get(chip_id, 0.0) + points
         if points > best.get(chip_id, 0.0):
             best[chip_id] = points
