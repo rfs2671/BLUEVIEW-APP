@@ -15,9 +15,10 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # same words for an unknown number, a CP, a superintendent or an admin who
 # has not turned the assistant on: nothing here tells a stranger who has an
 # account or what role they hold.
-NOT_FOR_YOU_TEXT = (
-    "This assistant is for project admins. Ask your admin to add you."
-)
+# An Admin / PM whose number is on their profile but who never sent START:
+# one short line a day. Anyone else -- unknown, CP, super, a changed phone --
+# gets no reply at all: a stranger is not told the number is a bot.
+START_HINT_TEXT = "Levelog Assistant here. Text START to turn me on."
 NO_JOBS_TEXT = "Levelog Assistant here. You don't have any jobs in Levelog yet."
 MENU_EXPIRED_TEXT = "Which job did you mean? Name the address and I'll answer."
 

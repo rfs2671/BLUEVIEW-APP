@@ -23,15 +23,20 @@ THE LAYOUT is a fixed template (compose_messages, at the bottom): one
 message per job, in this order, WhatsApp *bold* headers, one line per item,
 a blank line between sections, an empty section left out --
 
-  📅 Today · 🏛 DOB / DOT · ✅ You · ⏳ Waiting on others · 🔍 Check ·
-  👷 who is on site · 📆 Later this week
+  📅 Today · 🏛 DOB / DOT · 📋 Open violations (Mondays) · ✅ You ·
+  ⏳ Waiting on others · 🔍 Check · 👷 who is on site · 📆 Later this week
 
   You: open items due today / late / ASAP that the recipient owns, as the
       item's stored summary ("Send calcs — ⚠️ 2 days late"); the quote is
       for search and the app
   Waiting on others: what they asked someone else for, and open punch per
-      assignee ("Chris: 4 punch items (oldest 2 days)")
+      assignee ("Chris: 4 punch items (oldest 2 days)"); punch assigned to
+      the recipient is under You ("3 punch items (oldest 2 days)"). Punch
+      counts only items of walks sent live, never a shadow walk's.
   Today / Later this week: Upcoming events, today's under Today
+  Open violations: Mondays (New York) only, the job's DOB violations,
+      stop-work orders and DOT summonses still open (open_items); at most
+      8, none repeated from a 🔴 New line
 
 A last short message holds the recipient's own reminders, the quiet jobs
 ("No check-ins yet: A, B.") and "No action needed today." when no job has
@@ -185,6 +190,11 @@ def group_records(rows: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[str, An
     return out
 
 
+def record_key(source: str, rid: Any) -> str:
+    """'dob:<raw_dob_id>' / 'dot:<raw_id>': one record, whichever list it is in."""
+    return f"{source}:{_text(rid)}"
+
+
 def _expiry_item(r: Dict[str, Any], num_field: str, source: str, today: date,
                  *, work: str = "", label: str = "Permit") -> Optional[Dict[str, Any]]:
     """🟠 a permit expiring within 14 days, or expired in the last 30."""
@@ -253,6 +263,7 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                         <= timedelta(days=NEW_ISSUED_WITHIN_DAYS)):
                     items.append({
                         "rank": RANK_REGULATORY, "order": (0, -issued.toordinal()),
+                        "record": record_key("dob", rid),
                         "text": f"🔴 New {label} {num}, {verb} {_md(issued)}, {status}. DOB."})
                     continue
 
@@ -306,6 +317,7 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                 status = _text(r.get("status"))
                 items.append({
                     "rank": RANK_REGULATORY, "order": (0, -issued.toordinal()),
+                    "record": record_key("dot", r.get("raw_id") or num),
                     "text": f"🔴 New DOT summons {num}, issued {_md(issued)}"
                             + (f", {status}" if status else "") + ". DOT."})
         elif rt == "dot_permit" and dot_sync.permit_is_active(r.get("status")):
@@ -322,6 +334,86 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                     "text": f"🟠 OATH hearing {_md(hearing)} · ticket #{num} · DOT."})
     items.sort(key=lambda i: (i["rank"], i["order"]))
     return items
+
+
+# ── Open violations: Mondays ────────────────────────────────────────────────
+#
+# A new violation is a 🔴 line once, on the first brief after it is found.
+# On Mondays each job's message also lists the violations still open, so
+# they are looked at once a week. Which are open is wa_alerts'
+# open_dob_violations / open_dot_summonses -- the rule the app's
+# open-violation count uses. One line each, from the record's own stored
+# values; a value not stored is left out of the line, never filled in.
+
+MAX_OPEN = 8
+
+
+def is_review_day(now_utc: datetime) -> bool:
+    """Monday in New York: the day the brief lists open violations."""
+    return local_now(now_utc).weekday() == 0
+
+
+def _amount(v: Any) -> str:
+    """'$2,500' / '$312.50' from a stored amount; '' for none or zero."""
+    try:
+        n = float("".join(ch for ch in str(v or "") if ch.isdigit() or ch in ".-") or "x")
+    except ValueError:
+        return ""
+    if n <= 0:
+        return ""
+    return f"${n:,.0f}" if n == int(n) else f"${n:,.2f}"
+
+
+def open_items(rows: Iterable[Dict[str, Any]], dot_rows: Iterable[Dict[str, Any]],
+               today: date, skip: Iterable[str] = (),
+               synced: Optional[Dict[str, datetime]] = None) -> List[str]:
+    """The job's open violations, one line each: ['• DOB 35123456 · issued
+    Sep 2 · penalty $2,500 · hearing Nov 4', ...]. Pure.
+
+    Stop-work orders first, then the oldest issued first; at most MAX_OPEN,
+    then '+N more open in the Levelog app.'. `skip`: record_key()s already
+    shown today as new. `synced` as in job_items: a source not yet through
+    its first sync gives no line. A record without its number has no line."""
+    skip = set(skip)
+
+    def _ready(rt: str) -> bool:
+        src = source_sync.RECORD_SOURCE.get(rt)
+        return synced is None or src is None or src in synced
+
+    found: List[Tuple[Tuple, str]] = []
+    for r in wa_alerts.open_dob_violations(rows):
+        rt = _text(r.get("record_type")).lower()
+        if not _ready(rt) or record_key("dob", r.get("raw_dob_id")) in skip:
+            continue
+        num = _text(r.get(_NUMBER_FIELD[rt])) or _text(r.get("violation_number"))
+        if not num:
+            continue
+        issued = wa_gc.parse_dob_date(r.get("violation_date"))
+        hearing = wa_gc.parse_dob_date(r.get("hearing_date"))
+        parts = [f"Stop-work order {num}" if rt == "swo" else f"DOB {num}"]
+        parts += [f"issued {_md(issued)}"] if issued else []
+        penalty = _amount(r.get("penalty_amount"))
+        parts += [f"penalty {penalty}"] if penalty else []
+        parts += [f"hearing {_md(hearing)}"] if hearing and hearing >= today else []
+        found.append(((0 if rt == "swo" else 1, issued or date.max, num), " · ".join(parts)))
+    for r in wa_alerts.open_dot_summonses(dot_rows):
+        if not _ready("dot_violation") or record_key(
+                "dot", r.get("raw_id") or r.get("number")) in skip:
+            continue
+        num = _text(r.get("number"))
+        issued = wa_gc.parse_dob_date(r.get("issue_date"))
+        hearing = wa_gc.parse_dob_date(r.get("hearing_date"))
+        parts = [f"DOT {num}"]
+        parts += [f"issued {_md(issued)}"] if issued else []
+        due = _amount(r.get("balance_due"))
+        parts += [f"{due} due"] if due else []
+        parts += [f"hearing {_md(hearing)}"] if hearing and hearing >= today else []
+        found.append(((1, issued or date.max, num), " · ".join(parts)))
+    found.sort(key=lambda f: f[0])
+    lines = [f"• {line}" for _k, line in found[:MAX_OPEN]]
+    if len(found) > MAX_OPEN:
+        lines.append(f"+{len(found) - MAX_OPEN} more open in the Levelog app.")
+    return lines
 
 
 # ── Follow-ups: You / Waiting on others / Check ─────────────────────────────
@@ -449,28 +541,57 @@ def _age(d: date, today: date) -> str:
     return "today" if n <= 0 else f"{n} day{'s' if n != 1 else ''}"
 
 
-def punch_sections(rows: Iterable[Dict[str, Any]], today: date
+def sent_punch(r: Dict[str, Any]) -> bool:
+    """The item really went out: its walk was sent live. A walk sent while
+    the project's "Punch sends" was shadow (the default) stores its items
+    with send_mode "shadow" -- open, but nobody was ever told about them --
+    so no brief counts them (server.py stores send_mode on each row when
+    the walk is sent)."""
+    return r.get("send_mode") == "live"
+
+
+def _punch_day(r: Dict[str, Any], today: date) -> date:
+    at = r.get("assigned_at") or r.get("created_at")
+    if isinstance(at, datetime):
+        return local_now(at if at.tzinfo else at.replace(tzinfo=timezone.utc)).date()
+    return today
+
+
+def punch_sections(rows: Iterable[Dict[str, Any]], today: date,
+                   me: Optional[Dict[str, Any]] = None
                    ) -> Tuple[Dict[str, List[date]], List[str]]:
     """Open punch per assignee ({name: [assigned days]}), and the Check
-    line: '• 1 punch item ready to check'."""
+    line: '• 1 punch item ready to check'. Only items of walks sent live
+    (sent_punch); the recipient's own items (`me`) are theirs to do, not
+    waited on (own_punch_lines)."""
     by: Dict[str, List[date]] = {}
     ready = 0
     for r in rows:
+        if not sent_punch(r):
+            continue
         st = r.get("status")
         if st == "ready_to_check":
             ready += 1
             continue
-        if st != "open":
+        if st != "open" or (me and is_me(r.get("assignee"), me)):
             continue
         who = ((r.get("assignee") or {}).get("name") or "").strip() or "Unassigned"
-        at = r.get("assigned_at") or r.get("created_at")
-        if isinstance(at, datetime):
-            d = local_now(at if at.tzinfo else at.replace(tzinfo=timezone.utc)).date()
-        else:
-            d = today
-        by.setdefault(who, []).append(d)
+        by.setdefault(who, []).append(_punch_day(r, today))
     check = [f"• {ready} punch item{'s' if ready != 1 else ''} ready to check"] if ready else []
     return by, check
+
+
+def own_punch_lines(rows: Iterable[Dict[str, Any]], today: date,
+                    me: Dict[str, Any]) -> List[str]:
+    """The You line for open punch assigned to the recipient (by user id,
+    or their WhatsApp number): ['• 3 punch items (oldest 2 days)']."""
+    days = [_punch_day(r, today) for r in rows
+            if sent_punch(r) and r.get("status") == "open" and is_me(r.get("assignee"), me)]
+    if not days:
+        return []
+    n, age = len(days), _age(min(days), today)
+    return [f"• {n} punch item{'s' if n != 1 else ''} "
+            + (f"(oldest {age})" if n > 1 else f"({age})")]
 
 
 def waiting_lines(tasks: List[Tuple[Tuple, str, str]], punch: Dict[str, List[date]],
@@ -618,6 +739,7 @@ def events_by_job(events: Iterable[Dict[str, Any]], today: date
 #
 #   📅 *Today*            events today
 #   🏛 *DOB / DOT*        new violations, status changes, permits, hearings
+#   📋 *Open violations*  Mondays only: the job's violations still open
 #   ✅ *You*              your items due today / late
 #   ⏳ *Waiting on others* what you asked for, and open punch per person
 #   🔍 *Check*            punch items ready to check
@@ -634,6 +756,7 @@ def events_by_job(events: Iterable[Dict[str, Any]], today: date
 
 NOTHING_TODAY = "No action needed today."
 H_TODAY, H_DOB, H_YOU = "📅 *Today*", "🏛 *DOB / DOT*", "✅ *You*"
+H_OPEN = "📋 *Open violations*"
 H_WAITING, H_CHECK, H_LATER = "⏳ *Waiting on others*", "🔍 *Check*", "📆 *Later this week*"
 #: The part key of the last message (reminders, quiet jobs, nothing today);
 #: a job's message is keyed by the job's id.
@@ -651,6 +774,7 @@ def job_sections(job: Dict[str, Any], dob: List[str]) -> List[str]:
     sections = [
         [H_TODAY] + list(job.get("today") or []) if job.get("today") else [],
         [H_DOB] + dob if dob else [],
+        [H_OPEN] + list(job.get("open") or []) if job.get("open") else [],
         [H_YOU] + list(job.get("you") or []) if job.get("you") else [],
         [H_WAITING] + list(job.get("waiting") or []) if job.get("waiting") else [],
         [H_CHECK] + list(job.get("check") or []) if job.get("check") else [],
@@ -667,7 +791,7 @@ def compose_messages(now_utc: datetime, jobs: List[Dict[str, Any]],
                      own: Optional[Dict[str, List[str]]] = None) -> List[Tuple[str, str]]:
     """[(part, text)]: one message per job with something to say (part: the
     job's id), then at most one more (part REST). jobs: [{id, label, items,
-    today, you, waiting, check, headcount, uses_checkins, later}] in display
+    open, today, you, waiting, check, headcount, uses_checkins, later}] in display
     order; `own`: {today, later} for the recipient's own reminders (no job).
 
     Each job shows at most MAX_ITEMS DOB / DOT lines, the most pressing
@@ -699,7 +823,8 @@ def compose_messages(now_utc: datetime, jobs: List[Dict[str, Any]],
     mine = job_sections({"today": (own or {}).get("today"),
                          "later": (own or {}).get("later")}, [])
     acting = bool(mine) or any(job.get(k) for job in jobs for k in
-                               ("items", "today", "you", "waiting", "check", "later"))
+                               ("items", "open", "today", "you", "waiting", "check",
+                                "later"))
     rest = [] if acting else [NOTHING_TODAY]
     if mine:
         rest += ([""] if rest else []) + ["*Your reminders*"] + mine
