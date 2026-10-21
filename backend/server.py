@@ -56636,22 +56636,44 @@ def _dm_is_asker(jid: str, person: Optional[dict]) -> bool:
     return len(digits) == 10 and digits in {str(p)[-10:] for p in asker.get("phones") or [] if p}
 
 
-async def _wa_typing(chat_id: str, on: bool = True) -> bool:
-    """WaAPI send-typing / send-stop-typing {chatId}. Never raises."""
+async def _wa_chat_action(chat_id: str, action: str) -> bool:
+    """One WaAPI chat action (send-seen / send-typing / send-stop-typing,
+    body {chatId}). Never raises; a failure is logged with the action and
+    status only -- never the chat id (it holds their phone number)."""
     if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and chat_id):
         return False
-    action = "send-typing" if on else "send-stop-typing"
     url = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/{action}"
     code, _body, exc = await _waapi_post_raw(
         url, {"chatId": chat_id}, {"Authorization": f"Bearer {WAAPI_TOKEN}",
                                    "Content-Type": "application/json"})
-    return exc is None and code is not None and code < 400
+    ok = exc is None and code is not None and code < 400
+    inner = _body.get("data") if isinstance(_body, dict) else None
+    if ok and isinstance(inner, dict) and inner.get("status") == "error":
+        ok = False                                   # WaAPI's 200 that did not happen
+    if not ok:
+        # waapi_error scrubs numbers out of what WaAPI said.
+        logger.warning(f"[dm-brain] WaAPI {action} failed: "
+                       f"{send_retry.waapi_error(action, code, _body, exc)}")
+    return ok
+
+
+async def _wa_typing(chat_id: str, on: bool = True) -> bool:
+    """WaAPI send-typing / send-stop-typing {chatId}."""
+    return await _wa_chat_action(chat_id, "send-typing" if on else "send-stop-typing")
+
+
+async def _wa_seen(chat_id: str) -> bool:
+    """WaAPI send-seen {chatId}: their messages read (blue ticks when both
+    sides have read receipts on), the way a person opens the chat."""
+    return await _wa_chat_action(chat_id, "send-seen")
 
 
 async def _dm_typing_while(chat_id: str, done: asyncio.Event) -> None:
-    """"typing…" in their chat until `done`, sent again every
-    DM_TYPING_EVERY_SECONDS (WhatsApp drops it after a while)."""
+    """What a person does: open the chat (read ticks), then "typing…" until
+    `done`, sent again every DM_TYPING_EVERY_SECONDS (WhatsApp drops it
+    after a while)."""
     try:
+        await _wa_seen(chat_id)
         while not done.is_set():
             await _wa_typing(chat_id, True)
             try:

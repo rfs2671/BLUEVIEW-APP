@@ -464,6 +464,42 @@ class TheFlashFixes(_Brain):
         self.assertGreaterEqual(seen.count(True), 2)                 # refreshed while it worked
         self.assertEqual(seen[-1], False)                            # and stopped
 
+    def test_read_then_typing_like_a_person(self):
+        """Blue ticks first (send-seen), then typing…, then stop -- and a
+        failed action is logged without their number."""
+        posted = []
+
+        async def post(url, payload, headers):
+            posted.append(url.rsplit("/", 1)[-1])
+            return (500, {}, None) if posted[-1] == "send-seen" else (200, {"data": {"status": "success"}}, None)
+        dm = "17185550100@c.us"
+        with _Ctx(db=self.db), patch.object(server, "_waapi_post_raw", post), \
+                patch.object(server, "WAAPI_INSTANCE_ID", "i"), patch.object(server, "WAAPI_TOKEN", "t"), \
+                self.assertLogs("server", "WARNING") as logs:
+            done = asyncio.Event()
+
+            async def run():
+                task = asyncio.ensure_future(server._dm_typing_while(dm, done))
+                await asyncio.sleep(0.01)
+                done.set()
+                await task
+            _run(run())
+        self.assertEqual(posted, ["send-seen", "send-typing", "send-stop-typing"])
+        self.assertIn("send-seen failed: http 500 (send-seen)", logs.output[0])
+        self.assertNotRegex(" ".join(logs.output), r"\d{7,}")          # no phone number logged
+
+    def test_a_200_error_envelope_is_a_failure(self):
+        """Codex on #828: WaAPI answers some failures with HTTP 200 and
+        data.status "error" -- that is not typing, and it is logged."""
+        async def post(url, payload, headers):
+            return 200, {"data": {"status": "error", "message": "chat 17185550100@c.us not found"}}, None
+        with patch.object(server, "_waapi_post_raw", post), \
+                patch.object(server, "WAAPI_INSTANCE_ID", "i"), patch.object(server, "WAAPI_TOKEN", "t"), \
+                self.assertLogs("server", "WARNING") as logs:
+            self.assertFalse(_run(server._wa_typing("17185550100@c.us", True)))
+        self.assertIn("send-typing failed: http 200 (send-typing)", logs.output[0])
+        self.assertNotRegex(" ".join(logs.output), r"\d{7,}")          # the number in WaAPI's text is scrubbed
+
 
 class TheCodexFindings(_Brain):
     """Codex on #824 (9cdc3e6)."""
