@@ -621,6 +621,37 @@ def _floor_matrix(cur: List[Dict[str, Any]], prev: List[Dict[str, Any]], canon: 
 
 # ── PHOTOS ───────────────────────────────────────────────────────────────────
 
+def photo_key(p: Dict[str, Any], log: str, n: int) -> str:
+    """The key a filed photo is known by: its stored file, else (a photo with only
+    its inline copy -- Codex on #803) the place it sits in the log. '' when it has
+    neither. ONE definition, used by the report AND by the filing-time pipeline,
+    so a verdict stored at filing is the one the report finds."""
+    key = p.get("enhanced_r2_key") or p.get("original_r2_key") or p.get("thumb_r2_key")
+    if not key and (p.get("base64") or p.get("thumb_base64")):
+        key = f"inline:{log}:{n}"
+    return str(key or "")
+
+
+def log_photos(logbook: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """[{key, photo, log_id, date}] for every photograph in a daily jobsite log's
+    activity rows, keyed exactly as the report keys them. Tolerant of any shape."""
+    out: List[Dict[str, Any]] = []
+    data = logbook.get("data") if isinstance(logbook, dict) else None
+    rows = data.get("activities") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return out
+    log_id = str(logbook.get("_id") or "")
+    for slot, a in enumerate(rows):
+        if not isinstance(a, dict):
+            continue
+        for n, p in enumerate(a.get("photos") or []):
+            if isinstance(p, dict):
+                key = photo_key(p, f"{logbook.get('_id') or logbook.get('date')}:{slot}", n)
+                if key:
+                    out.append({"key": key, "photo": p, "log_id": log_id, "date": str(logbook.get("date") or "")[:10]})
+    return out
+
+
 def photo_candidates(acts: List[Dict[str, Any]], start: date, end: date,
                      *_ignored: Any, **_ignored_kw: Any) -> List[Dict[str, Any]]:
     """The report's photographs come from the filed daily logs ONLY: each is
@@ -632,11 +663,7 @@ def photo_candidates(acts: List[Dict[str, Any]], start: date, end: date,
             continue
         place = floors_label(a["floors"]) or base.no_phone(a["where"])[:60]
         for n, p in enumerate(a["photos"]):
-            key = p.get("enhanced_r2_key") or p.get("original_r2_key") or p.get("thumb_r2_key")
-            # A filed photo with only its inline copy is a photo too (Codex on
-            # #803): keyed by where it is, read from the log by the server.
-            if not key and (p.get("base64") or p.get("thumb_base64")):
-                key = f"inline:{a['log']}:{n}"
+            key = photo_key(p, a["log"], n)
             if key:
                 out.append({"key": key, "date": a["date"], "sub": a["company"], "trade": a["trade"],
                             "where": place, "words": work_line(a["work"] or a["trade"], place),
