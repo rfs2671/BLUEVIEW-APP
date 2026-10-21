@@ -262,6 +262,45 @@ def sub_text(s: Dict[str, Any], now: datetime, sub: Optional[str], job: str = ""
     return line + "."
 
 
+def trade_text(rows: List[Dict[str, Any]], now: datetime, trade: str, listed: List[str],
+               named: List[str], job: str = "", date_from: Optional[date] = None,
+               date_to: Optional[date] = None, range_label: str = "") -> str:
+    """A trade's days on site ("how many days hvac worked in 588"): the
+    trade's sub(s) -- `listed` on the job's subs list for that trade, and
+    `named` (check-in companies whose name says the trade) -- then each
+    one's days, span and man-days from the check-ins; with more than one,
+    the distinct days of them all."""
+    at = f" at {job}" if job else ""
+    when = f" {range_label}" if range_label else ""
+    subs: List[str] = []
+    for c in list(listed) + list(named):
+        if c and _fold(c) not in {_fold(x) for x in subs}:
+            subs.append(c)
+    if not subs:
+        return (f"No sub is listed for {trade}{at}, and no company checked in{at} with {trade} "
+                f"in its name. Tell me the company and I'll count its days.")
+    src = []
+    if listed:
+        src.append(f"{', '.join(listed)} (subs list)")
+    extra = [c for c in named if _fold(c) not in {_fold(x) for x in listed}]
+    if extra:
+        src.append(f"{', '.join(extra)} (by name)")
+    lines = [f"{trade}{at}: " + "; ".join(src) + "."]
+    days: set = set()
+    for c in subs:
+        s = summary(rows, now, c, date_from, date_to)
+        if s.get("ambiguous") or s.get("no_such") or not s.get("days"):
+            lines.append(f"{c}: no check-ins{at}{when}.")
+            continue
+        days.update(s["days"])
+        lines.append(sub_text(s, now, c, "", range_label))
+    if len(subs) > 1 and days:
+        today = local_day(now)
+        lines.append(f"Together: {len(days)} distinct day{'s' if len(days) != 1 else ''}{when} "
+                     f"({_label(min(days), today)} → {_label(max(days), today)}).")
+    return "\n".join(lines)
+
+
 def _subs_line(day: Dict[str, set]) -> str:
     parts = sorted(((c, len(w)) for c, w in day.items()), key=lambda cw: (-cw[1], cw[0]))
     return ", ".join(f"{c} {n}" for c, n in parts)
@@ -332,12 +371,15 @@ SUB_ATTENDANCE_TOOL = {"type": "function", "function": {
     "description": (
         "Days a subcontractor (or the whole job) has been ON SITE, from the check-ins: distinct "
         "days, the first and last day, man-days, average and most workers per day, today's "
-        "count. USE THIS for 'how many days has Arkon been on 588', 'when did the plumber "
-        "start', 'how many guys does X usually send'. The sub's name as the user said it (short "
+        "count. USE THIS for 'how many days has Arkon been on 588', 'how many days hvac worked "
+        "in 588' (trade), 'when did the plumber start', 'how many guys does X usually send'. The sub's name as the user said it (short "
         "or misspelled names are matched). Every number comes from the check-ins: never answer "
         "that the data does not say."),
     "parameters": {"type": "object", "properties": {
         "sub": {"type": "string", "description": "The company as the user said it; omit for the whole job."},
+        "trade": {"type": "string", "description": (
+            "A trade instead of a company (\"hvac\", \"the electrician\", \"plumber\"): the job's "
+            "sub(s) for that trade, from the job's subs list and the check-in company names.")},
         "range": _RANGE_ARG,
         "date_from": {"type": "string", "description": "Optional first day, YYYY-MM-DD."},
         "date_to": {"type": "string", "description": "Optional last day, YYYY-MM-DD."}},

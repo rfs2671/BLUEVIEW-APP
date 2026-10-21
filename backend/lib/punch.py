@@ -2137,10 +2137,28 @@ def group_confirm(loc: Dict[str, Optional[str]], ns: List[int]) -> str:
 def group_targets(items: List[dict], since_captured: int) -> List[dict]:
     """The photos a group location is for: every live item captured after
     the previous location message, except one whose place the walker gave
-    for it (its own caption, a reply, "#n")."""
+    for it (its own caption, a reply, "#n"). A place a group message or the
+    "next photos" default gave is theirs to set again."""
     return [it for it in items if it.get("status", "draft") != "dropped"
             and (it.get("captured") or 0) > since_captured
-            and not (location_ok(it) and it.get("loc_src") != "group")]
+            and not (location_ok(it) and it.get("loc_src") not in ("group", "default"))]
+
+
+def apply_default_location(it: dict, loc: Optional[Dict[str, Optional[str]]]) -> bool:
+    """A new photo with no place of its own takes the walk's "next photos"
+    place ("moving up to 4th now"); a caption naming only a unit or room
+    keeps it and takes the floor. True when it set anything."""
+    if not loc or location_ok(it) or it.get("floor") not in (None, UNKNOWN):
+        return False
+    own = it.get("area") not in (None, UNKNOWN)
+    if own:
+        if not loc.get("floor"):
+            return False
+        it["floor"] = loc["floor"]
+        return True
+    merge_location(it, loc)
+    it["loc_src"] = "default"
+    return True
 
 
 def set_group_location(it: dict, loc: Dict[str, Optional[str]],
