@@ -1,16 +1,20 @@
-"""Turn the DM brain (flag dm_brain_v2) on or off for one company.
+"""The DM brain's off switch (flag dm_brain_off), for one company or everyone.
+
+The brain answers every company's WhatsApp DMs by default. This switches a
+company -- or everyone -- back to the old DM pipeline, and back on again.
 
     railway run python scripts/dm_brain_flag.py --show
-    railway run python scripts/dm_brain_flag.py --email you@company.com --on          # dry run
-    railway run python scripts/dm_brain_flag.py --email you@company.com --on \
-        --i-know --reason "DM brain for our company" --session <id>
+    railway run python scripts/dm_brain_flag.py --email you@company.com --off      # dry run
+    railway run python scripts/dm_brain_flag.py --email you@company.com --off \
+        --i-know --reason "why" --session <id>
+    railway run python scripts/dm_brain_flag.py --email you@company.com --on ...   # back on
+    railway run python scripts/dm_brain_flag.py --everyone --off ...                # kill switch
+    railway run python scripts/dm_brain_flag.py --everyone --on ...                 # undo it
 
-Writes the feature_flags row (enabled_for_companies) and a
-feature_flag_audit_log row, as the admin endpoint does; every write is also
-recorded in audit_logs with actor "script:dm_brain_flag" (prod_guard).
-Nothing else changes: companies not on the list keep the old DM pipeline.
-The brain also needs QWEN_API_KEY (DeepInfra) on the service; without it everyone
-gets the old one.
+Writes the feature_flags row and a feature_flag_audit_log row, as the admin
+endpoint does; every write is also recorded in audit_logs with actor
+"script:dm_brain_flag" (prod_guard). The brain also needs QWEN_API_KEY
+(DeepInfra) on the service; without it everyone gets the old pipeline.
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ from prod_guard import (  # noqa: E402
 )
 
 NAME = "dm_brain_flag"
-FLAG = "dm_brain_v2"
+FLAG = "dm_brain_off"
 
 
 async def run(a) -> int:
@@ -48,29 +52,41 @@ async def run(a) -> int:
     db = audited(AsyncIOMotorClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]], a, NAME)
     row = await db.feature_flags.find_one({"flag": FLAG})
     if a.show:
-        print(row or f"{FLAG}: not created (off for everyone)")
+        if not row:
+            print("DM brain: ON for every company (no off switch set).")
+        elif row.get("enabled_globally"):
+            print("DM brain: OFF for everyone (kill switch on).")
+        else:
+            off = row.get("enabled_for_companies") or []
+            print(f"DM brain: ON, except {len(off)} compan{'y' if len(off) == 1 else 'ies'} switched off: {off}")
         return 0
-    company = a.company
-    if a.email:
-        user = await db.users.find_one({"email": a.email.strip().lower(), "is_deleted": {"$ne": True}})
-        if not user:
-            sys.exit("No user with that email.")
-        company = str(user.get("company_id") or "")
-    if not company:
-        sys.exit("Give --email or --company.")
+    off_all = bool((row or {}).get("enabled_globally"))
     companies = [str(c) for c in (row or {}).get("enabled_for_companies") or []]
-    if a.on and company not in companies:
-        companies.append(company)
-    if a.off:
-        companies = [c for c in companies if c != company]
+    if a.everyone:
+        off_all = bool(a.off)
+        what = "everyone"
+    else:
+        company = a.company
+        if a.email:
+            user = await db.users.find_one({"email": a.email.strip().lower(), "is_deleted": {"$ne": True}})
+            if not user:
+                sys.exit("No user with that email.")
+            company = str(user.get("company_id") or "")
+        if not company:
+            sys.exit("Give --email, --company or --everyone.")
+        if a.off and company not in companies:
+            companies.append(company)
+        if a.on:
+            companies = [c for c in companies if c != company]
+        what = company
     if not apply:
-        report_dry_run(f"set {FLAG} enabled_for_companies = {companies}")
+        report_dry_run(f"set {FLAG} enabled_globally = {off_all}, enabled_for_companies = {companies}")
         return 0
     now = datetime.now(timezone.utc)
-    doc = {"flag": FLAG, "enabled_globally": False, "enabled_for_companies": companies,
+    doc = {"flag": FLAG, "enabled_globally": off_all, "enabled_for_companies": companies,
            "enabled_for_users": (row or {}).get("enabled_for_users") or [],
            "enabled_percentage": 0,
-           "description": "WhatsApp DM brain: one model with tools answers every free-text DM.",
+           "description": "WhatsApp DM brain OFF switch: companies here (or everyone) get the old DM pipeline.",
            "updated_at": now}
     await db.feature_flags.update_one({"flag": FLAG}, {"$set": doc, "$setOnInsert": {"created_at": now}},
                                       upsert=True)
@@ -78,8 +94,7 @@ async def run(a) -> int:
         "flag": FLAG, "action": "updated" if row else "created",
         "before": {k: v for k, v in (row or {}).items() if k != "_id"} or None,
         "after": doc, "changed_by_user_id": f"script:{NAME}", "changed_at": now})
-    print(f"{FLAG}: on for {len(companies)} compan{'y' if len(companies) == 1 else 'ies'}"
-          f" ({'including' if company in companies else 'not'} {company}).")
+    print(f"DM brain {'OFF' if a.off else 'ON'} for {what}.")
     print("The server caches flags for up to a minute; the change applies within a minute.")
     return 0
 
@@ -93,6 +108,7 @@ def main(argv=None) -> int:
     g.add_argument("--show", action="store_true")
     ap.add_argument("--email")
     ap.add_argument("--company")
+    ap.add_argument("--everyone", action="store_true", help="the kill switch: every company")
     add_guard_args(ap)
     return asyncio.run(run(ap.parse_args(argv)))
 
