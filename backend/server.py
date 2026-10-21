@@ -50397,6 +50397,26 @@ async def _waapi_contact_phone(jid: str) -> str:
     return ""
 
 
+DM_START_HINT_SECONDS = 24 * 3600
+
+
+async def _dm_start_hint_due(chat: str, raw: Any = None) -> bool:
+    """A DM from someone not using the assistant: True only when the number
+    is an eligible Admin / PM's own profile phone and they had no hint in the
+    last day. Everyone else is not answered at all (no "for admins only"
+    line telling a stranger this is a bot)."""
+    if await _dm_state_get("start_hint", chat):
+        return False
+    phone = await _resolve_dm_phone(chat, raw)
+    if not phone:
+        return False
+    users = [u for u in await _find_users_by_phone(phone) if wa_dm.is_dm_eligible(u)]
+    if not users:
+        return False
+    await _dm_state_set("start_hint", chat, DM_START_HINT_SECONDS)
+    return True
+
+
 async def _resolve_dm_phone(chat_id: str, raw: Any = None) -> str:
     """The sender's real phone digits, or '' when it cannot be known.
 
@@ -72683,7 +72703,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 if not parsed.get("has_image") or _punch_photo_caption_ref(
                     parsed, parsed.get("body") or "") else None
             reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
-            await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
+            if reply:
+                await send_whatsapp_message(dm_chat, reply)
+            elif await _dm_start_hint_due(dm_chat, parsed.get("raw")):
+                await send_whatsapp_message(dm_chat, wa_assistant.START_HINT_TEXT)
             return
         # Opted in but never welcomed (START before the welcome existed):
         # welcomed now, once, and their message is still answered below.

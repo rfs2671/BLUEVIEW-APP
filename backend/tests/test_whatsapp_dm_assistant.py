@@ -122,25 +122,36 @@ class _Harness:
 
 class WhoMayUseIt(_Harness, unittest.TestCase):
 
-    def test_unknown_cp_super_and_not_opted_in_get_one_line(self):
+    def test_unknown_cp_super_get_no_reply_at_all(self):
+        """Not on the list: silence -- no "for admins only" line telling a
+        stranger this number is a bot."""
         db = _db()
         _optin(db, "u_cp", CP_PHONE)          # even with an opt-in row, a CP is refused
         _optin(db, "u_super", SUPER_PHONE)
         with _Ctx(db=db) as c:
-            for phone in (UNKNOWN_PHONE, CP_PHONE, SUPER_PHONE, ADMIN_PHONE):
+            for i, phone in enumerate((UNKNOWN_PHONE, CP_PHONE, SUPER_PHONE)):
                 with self.subTest(phone):
-                    reply = self._send(c, f"{phone}@c.us", "who's on site at 588 Thomas")
-                    self.assertEqual(reply, wa_assistant.NOT_FOR_YOU_TEXT)
+                    self._send(c, f"{phone}@c.us", "who's on site at 588 Thomas", mid=f"S{i}")
+            self.assertEqual([p for p in c.wire.calls if "message" in p], [])
         self.assertEqual(self.agent_calls, [])
         self.assertEqual(self.llm_calls, [])
+
+    def test_an_admin_not_opted_in_gets_the_start_hint_once_a_day(self):
+        db = _db()
+        with _Ctx(db=db) as c:
+            self.assertEqual(self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site"),
+                             wa_assistant.START_HINT_TEXT)
+            self._send(c, f"{ADMIN_PHONE}@c.us", "hello?", mid="D2")
+            sent = [p["message"] for p in c.wire.calls if "message" in p]
+        self.assertEqual(sent, [wa_assistant.START_HINT_TEXT])         # once, not per message
+        self.assertEqual(self.agent_calls, [])
 
     def test_a_changed_profile_phone_fails_closed(self):
         db = _db()
         _optin(db, "u_admin", ADMIN_PHONE)
         db.users.rows[0]["phone"] = "+15550007777"
         with _Ctx(db=db) as c:
-            self.assertEqual(self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site"),
-                             wa_assistant.NOT_FOR_YOU_TEXT)
+            self.assertIsNone(self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site"))
         self.assertEqual(self.agent_calls, [])
 
     def test_a_lid_sender_is_resolved_through_its_opt_in(self):
