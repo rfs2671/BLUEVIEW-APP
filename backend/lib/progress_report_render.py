@@ -26,6 +26,7 @@ import hashlib
 import html
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from lib import progress_report as P
 from lib import project_report as base
@@ -92,6 +93,7 @@ th { text-align: left; font-size: 7.5pt; letter-spacing: .6px; text-transform: u
 td { padding: 4px 5px; border-bottom: 1px solid #e3e7ee; vertical-align: top; }
 td.n, th.n { text-align: right; white-space: nowrap; }
 tr { page-break-inside: avoid; }
+table.wf td:first-child { white-space: nowrap; }
 table.ev td { padding: 2px 5px; font-size: 8pt; }
 table.ev td:nth-child(1) { width: 5%; } table.ev td:nth-child(2) { width: 27%; }
 .chip { display: inline-block; font-size: 7pt; font-weight: 700; padding: 1px 6px; border-radius: 8px;
@@ -144,6 +146,10 @@ def _record_numbers(reps: List[Dict[str, Any]]) -> frozenset:
                 out.update(str(m) for m in r.get("members") or [])
     out.discard("")
     return frozenset(out)
+
+
+def _host(link: str) -> str:
+    return urlsplit(str(link)).netloc or str(link)
 
 
 def _e(v: Any) -> str:
@@ -510,7 +516,7 @@ def _workforce(rep: Dict[str, Any]) -> str:
             + "</ul>") if callouts else ""
     return (f"<section class='keep'><h2>Workforce and site activity {_tag('G')}</h2><p class='muted'>Workers counted once per day from "
             f"site check-ins; working days are {_e(rep['site']['basis'])}.</p>{call}"
-            "<table class='keep'><tr><th>Subcontractor</th><th>Trade</th><th>Floors reported</th><th class='n'>Days on site</th>"
+            "<table class='keep wf'><tr><th>Subcontractor</th><th>Trade</th><th>Floors reported</th><th class='n'>Days on site</th>"
             "<th class='n'>Previous</th><th class='n'>Avg workers</th><th class='n'>Previous avg</th>"
             "<th class='n'>Peak</th></tr>" + "".join(rows) + "</table></section>")
 
@@ -601,7 +607,10 @@ def _basis(rep: Dict[str, Any], report_id: str) -> str:
             ev.append(f"<tr><td><b>{e['id']}</b></td><td>{_e(e['label'])}</td><td>{_e(e['detail'])}"
                       f"<div class='muted'>{_e(refs)}</div></td></tr>")
         elif e["kind"] == "regulatory":
-            link = (f" <span class='muted'>{html.escape(e['link'])}</span>" if e.get("link") else "")
+            # a clickable link showing only its host: the full address is in the
+            # stored snapshot, and two wrapped URL lines per record cost a page
+            link = (f" <a class='muted' href='{html.escape(e['link'], quote=True)}'>{html.escape(_host(e['link']))}</a>"
+                    if e.get("link") else "")
             ev.append(f"<tr><td><b>{e['id']}</b></td><td>{_e(e['label'])}</td><td>{_e(e['detail'])}{link}</td></tr>")
         else:
             ev.append(f"<tr><td><b>{e['id']}</b></td><td>{_e(e['label'])}</td><td>{_e(e['detail'])}</td></tr>")
