@@ -311,6 +311,52 @@ def refers_elsewhere(reply: Any) -> bool:
     return bool(_REFER_RE.search(str(reply or "")))
 
 
+#: What the OLD pipeline sends when its answer was nothing but "check with X":
+#: never a referral, never invented data.
+NOT_FOUND_TEXT = "I couldn't find that in Levelog."
+NOT_FOUND_JOB_TEXT = "I couldn't find that in Levelog for {job}."
+
+# A sentence ends at . ! ? (then space) or at a line break.
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def strip_referrals(reply: Any) -> str:
+    """The reply without the sentence(s) that send them elsewhere
+    (refers_elsewhere): every other sentence kept as written, line breaks
+    kept. "" when nothing with a letter or digit is left. Pure."""
+    t = str(reply or "")
+    if not refers_elsewhere(t):
+        return t
+    lines = []
+    for line in t.splitlines():
+        if not refers_elsewhere(line):
+            lines.append(line)
+            continue
+        lead = re.match(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)?", line).group(0)    # a bullet stays
+        kept = [s for s in _SENTENCE_END_RE.split(line[len(lead):].strip())
+                if s and not refers_elsewhere(s)]
+        if any(re.search(r"[^\W_]", s) for s in kept):
+            lines.append(lead + " ".join(kept))
+    out = "\n".join(lines).strip()
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out if re.search(r"[^\W_]", out) else ""
+
+
+def no_referral(reply: Any, job_label: Optional[str] = None) -> tuple:
+    """(text to send, removed?) for the OLD pipeline: a reply that sends them
+    elsewhere loses those sentences; when nothing is left, the fixed
+    "I couldn't find that in Levelog[ for <job>]." line. A reply with no
+    referral comes back unchanged (removed False)."""
+    t = str(reply or "")
+    if not refers_elsewhere(t):
+        return t, False
+    kept = strip_referrals(t)
+    if kept:
+        return kept, True
+    job = str(job_label or "").strip()
+    return (NOT_FOUND_JOB_TEXT.format(job=job) if job else NOT_FOUND_TEXT), True
+
+
 def cant_answer(reply: Any) -> bool:
     """A "can't answer": sends them elsewhere, or says it doesn't know /
     doesn't have it."""
