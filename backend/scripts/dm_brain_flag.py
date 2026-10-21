@@ -45,6 +45,24 @@ NAME = "dm_brain_flag"
 FLAG = "dm_brain_off"
 
 
+def plan(row, *, on: bool, everyone: bool, company: str = ""):
+    """(off for everyone, companies switched off, refusal) after this change.
+    One company can't be switched back on while the kill switch holds
+    everyone off -- the global switch wins, so "ON" would be untrue."""
+    off_all = bool((row or {}).get("enabled_globally"))
+    companies = [str(c) for c in (row or {}).get("enabled_for_companies") or []]
+    if everyone:
+        return (not on), companies, None
+    if on and off_all:
+        return off_all, companies, ("The DM brain is OFF for everyone (kill switch). Turn it back on with "
+                                    "--everyone --on first; one company can't be on while it holds.")
+    if on:
+        companies = [c for c in companies if c != company]
+    elif company not in companies:
+        companies.append(company)
+    return off_all, companies, None
+
+
 async def run(a) -> int:
     if not os.environ.get("MONGO_URL") or not os.environ.get("DB_NAME"):
         sys.exit("MONGO_URL / DB_NAME are not set — run under `railway run`.")
@@ -60,25 +78,18 @@ async def run(a) -> int:
             off = row.get("enabled_for_companies") or []
             print(f"DM brain: ON, except {len(off)} compan{'y' if len(off) == 1 else 'ies'} switched off: {off}")
         return 0
-    off_all = bool((row or {}).get("enabled_globally"))
-    companies = [str(c) for c in (row or {}).get("enabled_for_companies") or []]
-    if a.everyone:
-        off_all = bool(a.off)
-        what = "everyone"
-    else:
-        company = a.company
-        if a.email:
-            user = await db.users.find_one({"email": a.email.strip().lower(), "is_deleted": {"$ne": True}})
-            if not user:
-                sys.exit("No user with that email.")
-            company = str(user.get("company_id") or "")
-        if not company:
-            sys.exit("Give --email, --company or --everyone.")
-        if a.off and company not in companies:
-            companies.append(company)
-        if a.on:
-            companies = [c for c in companies if c != company]
-        what = company
+    company = a.company
+    if not a.everyone and a.email:
+        user = await db.users.find_one({"email": a.email.strip().lower(), "is_deleted": {"$ne": True}})
+        if not user:
+            sys.exit("No user with that email.")
+        company = str(user.get("company_id") or "")
+    if not a.everyone and not company:
+        sys.exit("Give --email, --company or --everyone.")
+    off_all, companies, refused = plan(row, on=bool(a.on), everyone=bool(a.everyone), company=company)
+    if refused:
+        sys.exit(refused)
+    what = "everyone" if a.everyone else company
     if not apply:
         report_dry_run(f"set {FLAG} enabled_globally = {off_all}, enabled_for_companies = {companies}")
         return 0

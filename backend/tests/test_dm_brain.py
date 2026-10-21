@@ -622,6 +622,21 @@ class TheFlag(unittest.TestCase):
         feature_flags.cache_invalidate()
 
 
+    def test_the_script_never_says_on_under_the_kill_switch(self):
+        """Codex on #831: with everyone switched off, --on for one company
+        left it off (the global switch wins) but printed ON. Refused now."""
+        from scripts.dm_brain_flag import plan
+        killed = {"enabled_globally": True, "enabled_for_companies": ["co_a"]}
+        off_all, companies, refused = plan(killed, on=True, everyone=False, company="co_a")
+        self.assertIn("--everyone --on", refused)
+        self.assertEqual((off_all, companies), (True, ["co_a"]))          # unchanged
+        self.assertEqual(plan(killed, on=True, everyone=True), (False, ["co_a"], None))
+        self.assertEqual(plan(None, on=False, everyone=False, company="co_a"), (False, ["co_a"], None))
+        self.assertEqual(plan({"enabled_for_companies": ["co_a", "co_b"]}, on=True, everyone=False,
+                              company="co_a"), (False, ["co_b"], None))
+        self.assertEqual(plan(None, on=False, everyone=True), (True, [], None))
+
+
 class TheLib(unittest.TestCase):
     def test_unverified(self):
         src = ['{"on_site_now": 31, "by_sub": [{"sub": "Arkon", "on_site": 17}]} brief at 8:01', "588 Thomas"]
