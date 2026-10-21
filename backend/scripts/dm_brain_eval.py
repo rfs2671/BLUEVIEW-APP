@@ -312,6 +312,9 @@ async def _replay_one(server, row: dict, cache: dict, models: List[str]) -> dict
             str(history[-1].get("body") or "").strip()[:40] == q[:40]:
         history.pop()                                     # the question itself
     out["history_turns"] = len(history)
+    # What came just before it (for review): the last two messages.
+    out["before"] = [f"{'bot' if str(h.get('sender') or '') == 'bot' else 'them'}: "
+                     f"{_clean(str(h.get('body') or ''))[:160]}" for h in history[-2:]]
     for m in models:
         run = await _dm_run(server, ident, chat, q, history, m)
         res = run.pop("_res")
@@ -410,6 +413,10 @@ async def _fixed(server, rows: list, cache: dict, email: str, models: List[str])
                     res = run.pop("_res")
                     run["checks"] = _case_checks(case["id"], res.get("reply") or "", res.get("trace") or [])
                     run["quality"] = _quality(case["said"], res.get("reply") or "", res)
+                    # A fixed case passes only with the answer itself out: not
+                    # the "couldn't check" / "cut off" / failure text.
+                    for k in ("answered", "evidence", "whole", "actions"):
+                        run["checks"][f"quality: {k}"] = run["quality"][k]
                     run.pop("trace", None)
             except Exception as e:
                 run = {"answer": f"(error: {type(e).__name__}: {e})", "checks": {}}
@@ -514,6 +521,8 @@ def _md(results: list, models: List[str], dropped: list, fixed: Optional[list] =
     for i, r in enumerate(results, 1):
         lines += [f"### {r.get('n', i)}. {r['when'][:16].replace('T', ' ')} — {r['question'][:120]}", "",
                   f"**Old** ({r.get('old_path')}):", "", _quote(r["old_answer"]), ""]
+        if r.get("before"):
+            lines += ["_Just before it:_ " + " · ".join(r["before"]), ""]
         if r.get("skipped"):
             lines += [f"_(skipped: {r['skipped']})_", ""]
             continue

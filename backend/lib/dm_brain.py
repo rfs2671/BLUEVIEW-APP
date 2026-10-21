@@ -123,7 +123,8 @@ with answer_pending_change, or cancel_pending_change if they drop it.
 
 Context, history
 - Messages starting "[voice note]" were transcribed and may be misheard; read them generously.
-- Earlier messages in this chat are context: follow-ups like "and Walworth?", "those 3", "send it" refer \
+- Answer their LATEST message only. Earlier messages in this chat are context, not questions to answer \
+again: follow-ups like "and Walworth?", "those 3", "send it" refer \
 back to them.
 - A message or voice note is "from you" / "you said" ONLY when the tool result marks its sender "(you)"; \
 otherwise name the sender as the record does.
@@ -195,13 +196,20 @@ def history_messages(rows: Iterable[Dict[str, Any]], now: datetime) -> List[Dict
     return out
 
 
+#: Before their latest message when earlier ones share its turn.
+LATEST_MARK = ("[Their latest message -- answer this one. The lines above are earlier messages, "
+               "context only; don't answer them again:]")
+
+
 def turn_messages(history: List[Dict[str, Any]], text: str) -> List[Dict[str, Any]]:
     """The conversation plus this message, roles alternating. The message is
-    its own user turn; if the history ends on a user turn (an unanswered
-    message), they are joined."""
+    its own user turn; if the history ends on a user turn (an earlier message
+    with no reply recorded after it), they share the turn -- marked, so the
+    model answers THIS message, not the earlier one too (Oct 20 #37: "How
+    many arkon guys on 588" got a 546 checklist asked before it)."""
     msgs = [dict(m) for m in history]
     if msgs and msgs[-1]["role"] == "user":
-        msgs[-1]["content"] = f"{msgs[-1]['content']}\n{text}"
+        msgs[-1]["content"] = (f"{msgs[-1]['content']}\n\n{LATEST_MARK}\n{text}")
     else:
         msgs.append({"role": "user", "content": text})
     return msgs
@@ -212,6 +220,8 @@ def turn_messages(history: List[Dict[str, Any]], text: str) -> List[Dict[str, An
 # A record id: letters then digits ("P-588-1", "SSP-011.00", "B00123456",
 # "ECB 39012345X"), or a long digit run (a DOB job / BIN / permit number).
 _ID_RE = re.compile(r"\b[A-Z]{1,6}-?\d[\w.-]*\d\b|\b[A-Z]{1,6}-?\d\b|\b\d{5,}(?:-\d+)*\b")
+# An ISO date (and time), as tools and Mongo write them.
+_ISO_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?")
 # A number as said: 31, 8:01, 2.5, 1,200.
 _NUM_RE = re.compile(r"(?<![\w.])\d+(?:[:.,]\d+)*(?![\w])")
 # Phone-shaped: 10-11 digits as a phone is written, never a permit's
@@ -240,7 +250,12 @@ def unverified(reply: str, sources: Iterable[str]) -> List[str]:
     """The numbers and record ids in `reply` that no source holds (tool
     results, the conversation, the context). Empty when it checks out."""
     src = "\n".join(s for s in sources if s)
+    # An ISO date in a source vouches for its parts: "2026-09-18T00:00:00"
+    # from a tool covers "Sep 18" / "2026-09-18" (Oct 20 eval: "18" blocked a
+    # right answer). Only ISO dates -- "8:45" still does not vouch for "45".
     src_nums = _numbers(src)
+    for m in _ISO_RE.finditer(src):
+        src_nums |= {_norm_num(g) for g in m.groups() if g}
     src_low = src.lower()
     missing: List[str] = []
     for m in _ID_RE.finditer(reply or ""):

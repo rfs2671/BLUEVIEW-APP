@@ -540,6 +540,24 @@ class TheLib(unittest.TestCase):
         self.assertEqual(dm_brain.history_messages(rows, now),
                          [{"role": "user", "content": "a\nb"}, {"role": "assistant", "content": "c"}])
 
+    def test_an_iso_date_vouches_for_its_parts(self):
+        # Oct 20 eval (Dot and Akron): "2026-09-18" in the answer, the tool's
+        # "2026-09-18T00:00:00" -- "18" was not found and a right answer blocked.
+        src = ['{"issued": "2026-09-18T00:00:00"}']
+        self.assertEqual(dm_brain.unverified("Issued 2026-09-18 (Sep 18).", src), [])
+        self.assertEqual(dm_brain.unverified("27 on site.", src), ["27"])        # still caught
+
+    def test_only_the_latest_message_is_answered(self):
+        # Oct 20 eval #37: an earlier "546 starting checklist" with no reply
+        # after it was answered again with "How many arkon guys on 588".
+        msgs = dm_brain.turn_messages([{"role": "user", "content": "546 starting checklist"}],
+                                      "How many arkon guys on 588")
+        self.assertEqual(len(msgs), 1)
+        last = msgs[-1]["content"]
+        self.assertLess(last.index("546 starting checklist"), last.index(dm_brain.LATEST_MARK))
+        self.assertTrue(last.endswith(dm_brain.LATEST_MARK + "\nHow many arkon guys on 588"))
+        self.assertIn("LATEST message only", dm_brain.SYSTEM_PROMPT)
+
     def test_cut_claims_you(self):
         self.assertTrue(dm_brain.truncated("*Ark"))
         self.assertTrue(dm_brain.truncated("All good", "length"))
