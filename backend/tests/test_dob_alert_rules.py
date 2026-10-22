@@ -111,7 +111,8 @@ class _Sync:
     """A project that has been scanned for months (its legacy per-project
     first-scan key is set); `answers` is what each BIN returns."""
 
-    def __init__(self, answers):
+    def __init__(self, answers, real_sender=False):
+        self.real_sender = real_sender
         self.db = _DB()
         self.db.system_config.docs.append({"key": "initial_scan_done:dob:p588"})
         self.answers = answers
@@ -120,10 +121,15 @@ class _Sync:
     def run(self):
         async def query(bin_, address="", answered=None):
             return [dict(r) for r in self.answers.get(bin_, [])]
+        # real_sender: the real email builder and send_notification run
+        # (Resend is faked by the caller); otherwise the builder is a mock.
+        sender = (patch.object(server, "_critical_dob_alert_recipients",
+                               AsyncMock(return_value=["pm@x.test"]))
+                  if self.real_sender else patch.object(server, "_send_critical_dob_alert", self.sent))
         with patch.object(server, "db", self.db), \
                 patch.object(server, "_query_dob_apis", side_effect=query), \
                 patch.object(server, "eastern_today", lambda: TODAY), \
-                patch.object(server, "_send_critical_dob_alert", self.sent):
+                sender:
             asyncio.run(server.run_dob_sync_for_project(_project()))
         return self
 
@@ -258,6 +264,57 @@ class Updates(unittest.TestCase):
         s = self._changed(_complaint("3B00007", "10/17/2026", disposition="A3"),
                           _complaint("3B00007", "10/17/2026", disposition="L3"))
         self.assertEqual(s.events, [])
+
+
+class TheThrottleIsPerEvent(unittest.TestCase):
+    """The 24h throttle and send_notification's 23h idempotency are keyed per
+    record AND event (ruling 2026-10-22): issue, lift and rescind are each
+    separate. Real sender, real send_notification; only Resend is faked."""
+
+    def _outbox(self):
+        import types
+        sent = []
+
+        def send(payload):
+            sent.append(payload)
+            return {"id": f"m{len(sent)}"}
+        fake = types.SimpleNamespace(api_key=None, Emails=types.SimpleNamespace(send=send))
+        from lib import notifications
+        patches = [patch.dict(sys.modules, {"resend": fake}),
+                   patch.object(notifications, "NOTIFICATIONS_ENABLED", True),
+                   patch.object(notifications, "RESEND_API_KEY", "k"),
+                   patch.object(server, "RESEND_API_KEY", "k")]
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in reversed(patches)])
+        return sent
+
+    def test_a_swo_issued_then_lifted_three_hours_later_sends_two_emails(self):
+        sent = self._outbox()
+        s = _Sync({OWN: [_complaint("3C00001", "10/17/2026", disposition="A1")]},
+                  real_sender=True).run()            # stored; too old to email
+        self.assertEqual(sent, [])
+        s.answers = {OWN: [_complaint("3C00001", "10/17/2026", disposition="A3")]}
+        s.run()                                       # Stop Work Order issued
+        s.answers = {OWN: [_complaint("3C00001", "10/17/2026", disposition="L2")]}
+        s.run()                                       # lifted, well inside 24h
+        self.assertEqual([m["subject"] for m in sent],
+                         ["Stop Work Order on 588 Thomas S Boyland",
+                          "Stop Work Order lifted on 588 Thomas S Boyland"])
+
+    def test_the_same_event_twice_in_a_day_is_one_email(self):
+        sent = self._outbox()
+        db = _DB()
+        db.system_config.docs.append({"key": "initial_scan_done:dob:p588"})
+        row = {"raw_dob_id": "3C00002", "record_type": "complaint",
+               "complaint_number": "3C00002", "disposition_code": "A3"}
+        with patch.object(server, "db", db), \
+                patch.object(server, "_critical_dob_alert_recipients",
+                             AsyncMock(return_value=["pm@x.test"])):
+            for _ in range(2):
+                asyncio.run(server._send_critical_dob_alert_throttled(
+                    _project(), row, source="dob", event="swo"))
+        self.assertEqual(len(sent), 1)
 
 
 class TheEmail(unittest.TestCase):

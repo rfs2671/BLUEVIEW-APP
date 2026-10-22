@@ -18295,6 +18295,9 @@ async def hard_delete_project(
         cfg_res = await db.system_config.delete_many({"$or": [
             {"key": f"dob_sync_last:{project_id}"},
             {"key": {"$regex": f"^initial_scan_done:.*:{pid_re}$"}},
+            # The per-BIN first-scan keys (lib/dob_alert_gate.scan_key) end
+            # with the BIN, not the project, so the pattern above misses them.
+            {"key": {"$regex": f"^initial_scan_done:dob:{pid_re}:"}},
             {"key": {"$regex": f"^dob_alert_sent:{pid_re}:"}},
             {"key": {"$regex": f"^daily_report:{pid_re}:"}},
         ]})
@@ -41280,7 +41283,12 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict, *, event: str):
     # idempotency check guarantees one alert per record per recipient
     # per 23 hours, regardless of how many polls fire in between.
     raw_dob_id = dob_log.get("raw_dob_id") or ""
-    entity_id = f"dob_log:{raw_dob_id}" if raw_dob_id else f"project:{project.get('_id')}"
+    # Per record AND event: send_notification's 23h idempotency keys on this
+    # id, so with the bare record id a lift three hours after the issue email
+    # would be swallowed. "new" keeps the historical id, so idempotency for
+    # emails already sent carries across the deploy.
+    entity_id = (f"dob_log:{raw_dob_id}" + ("" if event == "new" else f":{event}")
+                 if raw_dob_id else f"project:{project.get('_id')}")
     from lib.notifications import send_notification
     for recipient in recipients:
         try:
@@ -41425,15 +41433,25 @@ async def _mark_initial_scan_done(project_id: str, source: str) -> None:
         logger.warning(f"initial_scan mark failed: {e}")
 
 
+def _dob_alert_key(project_id: str, raw_dob_id: str, event: Optional[str] = None) -> str:
+    """system_config key of the 24h throttle: per project, record AND event
+    (operator ruling 2026-10-22). A Stop Work Order issued and then lifted
+    three hours later is two events, and both email; the same event twice in
+    a day is one."""
+    base = f"dob_alert_sent:{project_id}:{raw_dob_id}"
+    return f"{base}:{event}" if event else base
+
+
 async def _dob_alert_recently_sent(project_id: str, raw_dob_id: str,
-                                     window_hours: int = _DOB_ALERT_THROTTLE_HOURS) -> bool:
-    """Returns True if we've already emailed this (project, record) combo
-    inside the window. Keyed on `dob_alert_sent:{project}:{raw_dob_id}`."""
+                                     window_hours: int = _DOB_ALERT_THROTTLE_HOURS,
+                                     event: Optional[str] = None) -> bool:
+    """Returns True if we've already emailed this (project, record, event)
+    inside the window. Keyed by _dob_alert_key."""
     if not project_id or not raw_dob_id:
         return False
     try:
         doc = await db.system_config.find_one(
-            {"key": f"dob_alert_sent:{project_id}:{raw_dob_id}"}
+            {"key": _dob_alert_key(project_id, raw_dob_id, event)}
         )
         if not doc:
             return False
@@ -41449,14 +41467,16 @@ async def _dob_alert_recently_sent(project_id: str, raw_dob_id: str,
         return False  # on error, err toward sending rather than silent-drop
 
 
-async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str) -> None:
+async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str,
+                               event: Optional[str] = None) -> None:
     if not project_id or not raw_dob_id:
         return
+    key = _dob_alert_key(project_id, raw_dob_id, event)
     try:
         await db.system_config.update_one(
-            {"key": f"dob_alert_sent:{project_id}:{raw_dob_id}"},
+            {"key": key},
             {"$set": {
-                "key":           f"dob_alert_sent:{project_id}:{raw_dob_id}",
+                "key":           key,
                 "last_alert_at": datetime.now(timezone.utc),
             }},
             upsert=True,
@@ -41491,8 +41511,9 @@ async def _send_critical_dob_alert_throttled(
         )
         return False
 
-    # Gate 2 — 24h per-record throttle
-    if await _dob_alert_recently_sent(project_id, raw_dob_id):
+    # Gate 2 — 24h throttle, per record AND event (issue, lift, rescind each
+    # separate: ruling 2026-10-22).
+    if await _dob_alert_recently_sent(project_id, raw_dob_id, event=event):
         logger.info(
             f"DOB alert throttled (within 24h) source={source} "
             f"project={project.get('name')} raw_dob_id={raw_dob_id}"
@@ -41500,7 +41521,7 @@ async def _send_critical_dob_alert_throttled(
         return False
 
     await _send_critical_dob_alert(project, dob_log, event=event)
-    await _mark_dob_alert_sent(project_id, raw_dob_id)
+    await _mark_dob_alert_sent(project_id, raw_dob_id, event=event)
     return True
 
 
