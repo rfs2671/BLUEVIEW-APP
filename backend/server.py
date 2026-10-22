@@ -1,3 +1,4 @@
+# Redeploy marker 2026-10-22: Railway builds of #826 to #843 failed on a Railway platform outage (infrastructure error).
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, Request, BackgroundTasks
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
