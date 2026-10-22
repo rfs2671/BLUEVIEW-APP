@@ -266,7 +266,10 @@ def banner(rows: Iterable[Dict[str, Any]], today: date) -> Dict[str, Any]:
             unknown.append(item)
     missing.sort(key=lambda x: str(x["number"]))
     unknown.sort(key=lambda x: str(x["number"]))
-    return {"in_window": window, "show": window and bool(missing),
+    # Shown for an UNVERIFIED waiver too ("Waiver not verified", operator ruling
+    # 2026-10-22): the screen may say what the email never will, because a
+    # reader can check it; unknown still never sends anything.
+    return {"in_window": window, "show": window and bool(missing or unknown),
             "season": {"year": season.year, "start": season.start.isoformat(),
                        "end": season.end.isoformat()},
             "missing_waiver": missing if window else [],

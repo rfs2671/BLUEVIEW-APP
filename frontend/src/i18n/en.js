@@ -2138,5 +2138,8 @@ export default {
     // Coverage limit. DOT Phase 1 B (segment permits) REMOVES this key;
     // the email carries the same line (backend lib/dot_embargo.COVERAGE_NOTE_*).
     coverageNote: 'Checks permits matched to your address. Permits filed by street segment arrive with the next update.',
+    // A permit whose DOT stipulations could not be read: shown, never emailed.
+    unverifiedTitle: 'Holiday embargo Nov 15 – Jan 2: check these permits',
+    unverified: 'Waiver not verified: {list}',
   },
 };

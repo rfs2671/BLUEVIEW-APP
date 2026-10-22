@@ -88,5 +88,7 @@ export default {
     permits: 'Permisos: {list}',
     action: 'Solicite una exención o detenga el trabajo del 15 de nov al 2 de ene.',
     coverageNote: 'Revisa los permisos vinculados a su dirección. Los permisos registrados por tramo de calle llegarán con la próxima actualización.',
+    unverifiedTitle: 'Embargo navideño del 15 de nov al 2 de ene: revise estos permisos',
+    unverified: 'Exención no verificada: {list}',
   },
 };
