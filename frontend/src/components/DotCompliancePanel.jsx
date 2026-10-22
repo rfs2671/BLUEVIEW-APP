@@ -374,6 +374,12 @@ export default function DotCompliancePanel({ projectId, embargoBanner, toast }) 
               <Text style={[s.badgeText, { color: semantic.attention }]}>{t('waiverMissing')}</Text>
             </View>
           ) : null}
+          {/* Stipulations could not be read: shown, never emailed or posted. */}
+          {!p.waiver_missing && p.waiver_unverified ? (
+            <View style={[s.badge, { borderColor: semantic.attentionBorder }]}>
+              <Text style={[s.badgeText, { color: semantic.attention }]}>{t('waiverUnverified')}</Text>
+            </View>
+          ) : null}
           {p.link ? (
             <Pressable onPress={() => Linking.openURL(p.link)} hitSlop={6} accessibilityRole="link" style={s.iconBtn}>
               <ExternalLink size={13} strokeWidth={1.6} color={colors.text.muted} />

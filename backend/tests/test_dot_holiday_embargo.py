@@ -352,6 +352,18 @@ class TheBanner(unittest.TestCase):
         before = E.banner(rows, date(2026, 10, 31))
         self.assertEqual((before["show"], before["missing_waiver"]), (False, []))
 
+    def test_unreadable_stipulations_alone_still_show_it(self):
+        # "Waiver not verified" (ruling 2026-10-22): a permit whose
+        # stipulations could not be read is shown on the screen; the email
+        # and the group post still ignore it (TheAlertJob, TheGroupPost).
+        rows = [_row("2026-11-03T00:00:00.000", "2026-11-30T00:00:00.000", number="C", waiver=None),
+                _row("2026-11-03T00:00:00.000", "2026-11-30T00:00:00.000", number="A", waiver=True)]
+        got = E.banner(rows, date(2026, 11, 20))
+        self.assertTrue(got["show"])
+        self.assertEqual(got["missing_waiver"], [])
+        self.assertEqual([p["number"] for p in got["unknown"]], ["C"])
+        self.assertFalse(E.banner(rows, date(2026, 10, 31))["show"])
+
 
 # ═══ Through the real job code ══════════════════════════════════════════════
 
@@ -630,10 +642,34 @@ class TheBannerStrings(unittest.TestCase):
             self.assertNotIn("coverageNote", self._ns(name), name)
             self.assertNotIn(line, (self.FE / "src" / "i18n" / name).read_text(encoding="utf-8"))
 
-    def test_the_banner_no_longer_shows_it(self):
+    BANNER = "{(embargoMissing.length > 0 || embargoUnverified.length > 0) && ("
+
+    def _banner(self):
         src = (self.FE / "app" / "project" / "[id]" / "dob-logs.jsx").read_text(encoding="utf-8")
-        self.assertIn("embargoMissing.length > 0", src)          # the banner is still there
+        i = src.index(self.BANNER)
+        return src, src[i:src.index("</GlassCard>", i)]
+
+    def test_the_banner_no_longer_shows_it(self):
+        # DOT Phase 1 B removed the coverage note; the banner (and its
+        # "Waiver not verified" line, below) stays.
+        src, banner = self._banner()
+        self.assertIn("tEmbargo('action')", banner)
         self.assertNotIn("coverageNote", src)
+
+    def test_waiver_not_verified_is_in_en_and_es(self):
+        en, es = self._ns("en.js"), self._ns("es.js")
+        self.assertIn("unverified: 'Waiver not verified: {list}'", en)
+        self.assertIn("unverified: 'Exención no verificada: {list}'", es)
+        self.assertIn("unverifiedTitle: 'Holiday embargo Nov 15 – Jan 2: check these permits'", en)
+        self.assertIn("unverifiedTitle: 'Embargo navideño del 15 de nov al 2 de ene: revise estos permisos'", es)
+
+    def test_the_banner_lists_the_unverified_permits_from_the_endpoints_unknown(self):
+        src, banner = self._banner()
+        self.assertIn("embargo.unknown.filter((p) => p && p.number)", src)
+        self.assertIn("tEmbargo('unverified').replace('{list}', embargoUnverified.map((p) => p.number)",
+                      banner)
+        self.assertIn("tEmbargo('unverifiedTitle')", banner)
+        self.assertIn("tEmbargo('action')", banner)
 
 
 class TheEndpoint(unittest.TestCase):
@@ -660,6 +696,17 @@ class TheEndpoint(unittest.TestCase):
             got = _run(server.get_dot_embargo("p1", current_user={}, project=env.db.projects.docs[0]))
         self.assertTrue(got["show"])
         self.assertEqual([p["number"] for p in got["missing_waiver"]], [NO_WAIVER_NUM])
+
+    def test_answers_unverified_when_every_read_failed(self):
+        _need()
+        env = _Env()
+        env.sync([NO_WAIVER_PERMIT], {})                       # every read failed
+        with patch.object(server, "db", env.db), \
+                patch.object(server.dot_embargo, "ny_date", lambda _v: date(2026, 11, 20)):
+            got = _run(server.get_dot_embargo("p1", current_user={}, project=env.db.projects.docs[0]))
+        self.assertTrue(got["show"])
+        self.assertEqual(got["missing_waiver"], [])
+        self.assertEqual([p["number"] for p in got["unknown"]], [NO_WAIVER_NUM])
 
 
 if __name__ == "__main__":

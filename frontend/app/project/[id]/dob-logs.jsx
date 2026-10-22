@@ -341,6 +341,11 @@ export default function DOBLogsScreen() {
   const embargoMissing = (embargo && embargo.show && Array.isArray(embargo.missing_waiver))
     ? embargo.missing_waiver.filter((p) => p && p.number)
     : [];
+  // Exposed permits whose stipulations could not be read: "Waiver not
+  // verified". Shown here so someone can check; never emailed.
+  const embargoUnverified = (embargo && embargo.show && Array.isArray(embargo.unknown))
+    ? embargo.unknown.filter((p) => p && p.number)
+    : [];
 
   // Permits needing renewal: expiring within 30 days OR expired within 60 days
   const renewablePermits = allLogs.filter(l => {
@@ -362,23 +367,39 @@ export default function DOBLogsScreen() {
   });
 
   // DOT holiday embargo: an active, CONFIRMED permit exposed to Nov 15 –
-  // Jan 2 with no waiver (stipulation 410). Only inside Nov 1 – Jan 2.
-  const embargoBanner = embargoMissing.length > 0 ? (
-    <GlassCard style={s.renewalBanner}>
-      <View style={s.renewalBannerHeader}>
-        <ShieldAlert size={16} strokeWidth={2} color={semantic.attention} />
-        <Text style={[s.renewalBannerTitle, s.embargoTitle]}>
-          {embargoMissing.length === 1
-            ? tEmbargo('bannerOne')
-            : tEmbargo('banner').replace('{n}', String(embargoMissing.length))}
-        </Text>
-      </View>
-      <Text style={s.embargoLine}>
-        {tEmbargo('permits').replace('{list}', embargoMissing.map((p) => p.number).join(', '))}
-      </Text>
-      <Text style={s.embargoLine}>{tEmbargo('action')}</Text>
-    </GlassCard>
-  ) : null;
+  // Jan 2 with no waiver (stipulation 410), or whose stipulations could not be
+  // read ("Waiver not verified" -- shown, never emailed). Only inside Nov 1 –
+  // Jan 2. One element: outside the DOT tab it sits above the renewal banner;
+  // inside it, DotCompliancePanel places it between setup and permits.
+  const embargoBanner = (
+    <>
+      {(embargoMissing.length > 0 || embargoUnverified.length > 0) && (
+        <GlassCard style={s.renewalBanner}>
+          <View style={s.renewalBannerHeader}>
+            <ShieldAlert size={16} strokeWidth={2} color={semantic.attention} />
+            <Text style={[s.renewalBannerTitle, s.embargoTitle]}>
+              {embargoMissing.length === 0
+                ? tEmbargo('unverifiedTitle')
+                : embargoMissing.length === 1
+                  ? tEmbargo('bannerOne')
+                  : tEmbargo('banner').replace('{n}', String(embargoMissing.length))}
+            </Text>
+          </View>
+          {embargoMissing.length > 0 && (
+            <Text style={s.embargoLine}>
+              {tEmbargo('permits').replace('{list}', embargoMissing.map((p) => p.number).join(', '))}
+            </Text>
+          )}
+          {embargoUnverified.length > 0 && (
+            <Text style={s.embargoLine}>
+              {tEmbargo('unverified').replace('{list}', embargoUnverified.map((p) => p.number).join(', '))}
+            </Text>
+          )}
+          <Text style={s.embargoLine}>{tEmbargo('action')}</Text>
+        </GlassCard>
+      )}
+    </>
+  );
 
   const handlePrepareRenewal = async (log) => {
     setPreparingId(log.id);

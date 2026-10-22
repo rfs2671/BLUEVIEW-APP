@@ -47948,7 +47948,9 @@ async def _dot_complete_chains(project_id: str, fetch, report: dict) -> None:
                     others.append(log)
     for row in rows:
         rb = dot_sync.renewed_by(row, others)
-        if rb != (row.get("renewed_by") or None):
+        # Written even when None the first time: a stored None says "the
+        # chain was read and nothing renews it" (a voided renewal included).
+        if "renewed_by" not in row or rb != (row.get("renewed_by") or None):
             await db.dot_logs.update_one({"_id": row["_id"]}, {"$set": {"renewed_by": rb}})
             if rb:
                 report["renewals"] += 1
@@ -48572,6 +48574,10 @@ async def get_dot_setup(
     fallback = None
     if not sug["frontages"] and setup["status"] != "confirmed":
         fallback = dot_permits.fallback_frontage(pk, await _dot_cross_streets(project, pk))
+    # A suggestion already in the setup (under either name of a renamed
+    # street) is not offered twice.
+    sug = {**sug, "frontages": [f for f in sug["frontages"]
+                                if not any(dot_permits.same_frontage(f, x) for x in setup["frontages"])]}
     role = _dot_setup_role(current_user)
     return {"setup": dot_permits.setup_view(setup), "suggestions": sug, "fallback": fallback,
             "project_boro": pk.get("boro") or "", "project_street": pk.get("street") or "",

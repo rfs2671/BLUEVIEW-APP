@@ -2137,6 +2137,9 @@ export default {
     action: 'Apply for a waiver or stop work Nov 15 – Jan 2.',
     // (The temporary coverage note was removed by DOT Phase 1 B: permits filed
     // by street segment are matched now, by permittee + confirmed frontage.)
+    // A permit whose DOT stipulations could not be read: shown, never emailed.
+    unverifiedTitle: 'Holiday embargo Nov 15 – Jan 2: check these permits',
+    unverified: 'Waiver not verified: {list}',
   },
 
   // ── app/project/[id]/dob-logs.jsx — the DOT tab (DOT Phase 1 B) ──────────
@@ -2188,6 +2191,7 @@ export default {
     groupExpired: 'Expired',
     renewedBy: 'Renewed by {permit}',
     waiverMissing: 'No holiday embargo waiver',
+    waiverUnverified: 'Waiver not verified',
     workDates: 'Work {start} – {end}',
     daysLeft: '{n} days left',
     dayLeft: '1 day left',

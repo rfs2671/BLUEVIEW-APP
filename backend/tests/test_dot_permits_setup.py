@@ -674,7 +674,7 @@ class TheSetup(unittest.TestCase):
         self.assertEqual(names[0]["name"], "BLUE ELM INC.")          # ranked by count
         self.assertTrue(names[0]["checked"])                         # the company's own
         self.assertEqual([p["checked"] for p in names[1:]], [False] * (len(names) - 1))
-        self.assertEqual(names[0]["count"], 16)
+        self.assertEqual(names[0]["count"], 17)              # BLUE ELM INC. at 588, recorded
         (f,) = got["suggestions"]["frontages"]
         self.assertEqual((f["boro"], f["on"], sorted([f["from"], f["to"]])),
                          ("3", "HOPKINSON AVE", ["BLAKE AVE", "SUTTER AVE"]))
@@ -743,9 +743,11 @@ class TheSetup(unittest.TestCase):
             self.assertEqual(ctx.exception.status_code, 403)
         self.assertNotIn("dot_setup", env.project)
         self.assertEqual(env.db.audit_logs.docs, [])
-        got = env.call(server.get_dot_setup, "p1", current_user=CP, project=env.project) \
-            if False else None   # reading is allowed: covered above (fallback test, as CP)
-        self.assertIsNone(got)
+        # Reading is allowed, and says so.
+        with patch.object(server, "_dot_fetch", _fetch(cross=CROSS)):
+            got = env.call(server.get_dot_setup, "p1", current_user=CP, project=env.project)
+        self.assertEqual((got["role"], got["can_confirm"], got["can_suggest"]), ("read", False, False))
+        self.assertFalse(env.permits(user=CP)["can_review"])
 
     def test_an_admin_adds_and_removes_a_frontage(self):
         env = _Env()
@@ -794,6 +796,39 @@ class TheEmbargoCoversConfirmedPermitsOnly(unittest.TestCase):
         accepted = {**base, "match": {"how": "segment_other_permittee", "state": "confirmed"},
                     "review": {"state": "accepted"}}
         self.assertEqual(len(dot_embargo.due_sends([accepted], date(2026, 11, 1))), 1)
+
+
+class TheUnverifiedWaiver(unittest.TestCase):
+    """Operator ruling 2026-10-22 (#852): an exposed permit whose stipulations
+    could not be read shows "Waiver not verified" -- on the DOT tab too -- and
+    never gets an embargo email or post."""
+
+    def test_shown_on_the_dot_tab_and_never_emailed(self):
+        _need()
+        env = _Env()
+        env.confirm()
+        env.sync(stips={OURS["permitnumber"]: None})          # the read failed
+        self.assertIsNone(env.row(OURS["permitnumber"]).get("holiday_waiver"))
+        with patch.object(server.dot_embargo, "ny_date", lambda _v: date(2026, 11, 2)):
+            board = env.permits()
+        (p,) = [x for x in board["permits"] if x["number"] == OURS["permitnumber"]]
+        self.assertEqual((p["waiver_unverified"], p["waiver_missing"]), (True, False))
+        env.alerts(_days(date(2026, 11, 1), date(2026, 11, 20)))
+        emb = [m for m in env.emails("dot_embargo_waiver_missing")
+               if m["metadata"]["permit"] == OURS["permitnumber"]]
+        self.assertEqual(emb, [])
+        # (The expiry email is about the work end, not the waiver: it still goes.)
+        self.assertEqual([m["metadata"]["threshold"] for m in env.emails("dot_permit_expiring")
+                          if m["metadata"]["permit"] == OURS["permitnumber"]], [14, 3])
+
+    def test_the_label_is_in_en_and_es(self):
+        en = (FE / "src" / "i18n" / "en.js").read_text(encoding="utf-8")
+        es = (FE / "src" / "i18n" / "es.js").read_text(encoding="utf-8")
+        self.assertIn("waiverUnverified: 'Waiver not verified'", en[en.index("dotCompliance: {"):])
+        self.assertIn("waiverUnverified: 'Exención no verificada'", es[es.index("dotCompliance: {"):])
+        panel = (FE / "src" / "components" / "DotCompliancePanel.jsx").read_text(encoding="utf-8")
+        self.assertIn("p.waiver_unverified", panel)
+        self.assertIn("t('waiverUnverified')", panel)
 
 
 class TheCoverageNoteIsGone(unittest.TestCase):

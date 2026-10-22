@@ -68,9 +68,12 @@ def work_end(row: Dict[str, Any]) -> Optional[date]:
 
 
 def renewal_of(row: Dict[str, Any], rows: Iterable[Dict[str, Any]]) -> Optional[str]:
-    """The renewal: what the sync stored (it read the chain), else what the
-    project's own permits say (another permit naming this one as previous)."""
-    return row.get("renewed_by") or dot_sync.renewed_by(row, rows)
+    """The renewal: what the sync stored once it read the chain (None
+    included -- e.g. the renewal DOT named was VOIDED), else, for a row the
+    chain step has not reached, what the project's own permits say."""
+    if "renewed_by" in row:
+        return row.get("renewed_by") or None
+    return dot_sync.renewed_by(row, rows)
 
 
 def _permits(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -107,9 +110,6 @@ def expiry_ledger_id(project_id: str, permit: str, threshold: int, end: date) ->
 
 
 # ── The permits screen ──────────────────────────────────────────────────────
-
-GROUP_ORDER = {"active": 0, "expiring": 1, "expired": 2}
-
 
 def boro_name(code: Any) -> str:
     return dot_sync.BORO_NAME.get(str(code or ""), "")
@@ -155,6 +155,11 @@ def permit_view(row: Dict[str, Any], today: date,
         # #852's rule: confirmed, active, exposed to the coming season, and
         # KNOWN to lack stipulation 410. Unknown is never flagged.
         "waiver_missing": dot_embargo.needs_waiver(row, dot_embargo.season_for(today)),
+        # Exposed, but the stipulations could not be read: "Waiver not
+        # verified" (operator ruling 2026-10-22). Shown on screen only -- it
+        # never emails and never posts (needs_waiver is False for it).
+        "waiver_unverified": (dot_embargo.exposed(row, dot_embargo.season_for(today))
+                              and dot_embargo.has_waiver(row) is None),
         "how": m.get("how") or row.get("matched_by"),
         "state": dot_sync.match_state(row),
         "link": row.get("link"),
@@ -235,10 +240,12 @@ def clean_frontage(body: Dict[str, Any], default_boro: str = "") -> Dict[str, st
 
 
 def same_frontage(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
-    """The same segment as stored (exact, normalized; from/to either order)."""
+    """The same segment for de-duplicating the setup: exact after
+    normalizing (a renamed street's names count as one: HOPKINSON AVE is
+    THOMAS S BOYLAND ST); from/to in either order. No cut-off prefixes here."""
     if str(a.get("boro") or "") != str(b.get("boro") or ""):
         return False
-    if dot_sync.norm_street(a.get("on")) != dot_sync.norm_street(b.get("on")):
+    if not set(dot_sync.street_variants(a.get("on"))) & set(dot_sync.street_variants(b.get("on"))):
         return False
     pa = sorted([dot_sync.norm_street(a.get("from")), dot_sync.norm_street(a.get("to"))])
     pb = sorted([dot_sync.norm_street(b.get("from")), dot_sync.norm_street(b.get("to"))])

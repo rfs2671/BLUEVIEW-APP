@@ -87,6 +87,8 @@ export default {
     bannerOne: 'Embargo navideño del 15 de nov al 2 de ene: 1 permiso activo del DOT no tiene exención.',
     permits: 'Permisos: {list}',
     action: 'Solicite una exención o detenga el trabajo del 15 de nov al 2 de ene.',
+    unverifiedTitle: 'Embargo navideño del 15 de nov al 2 de ene: revise estos permisos',
+    unverified: 'Exención no verificada: {list}',
   },
 
   // ── app/project/[id]/dob-logs.jsx — la pestaña del DOT (DOT Fase 1 B) ────
@@ -135,6 +137,7 @@ export default {
     groupExpired: 'Vencidos',
     renewedBy: 'Renovado por {permit}',
     waiverMissing: 'Sin exención del embargo navideño',
+    waiverUnverified: 'Exención no verificada',
     workDates: 'Trabajo {start} – {end}',
     daysLeft: 'Quedan {n} días',
     dayLeft: 'Queda 1 día',
