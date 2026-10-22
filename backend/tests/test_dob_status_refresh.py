@@ -356,7 +356,12 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
     def test_genuine_change_goes_through_real_throttled_path(self):
         """Through the REAL _send_critical_dob_alert_throttled: initial-scan
         suppression still applies to the refresh path, and once the scan is
-        done a genuine change emails exactly once."""
+        done an update that may email does so exactly once.
+
+        AMENDED 2026-10-22 (operator ruling, lib/dob_alert_gate): a plain
+        status change (ACTIVE -> HEARING) no longer emails at all, so the
+        change driven here is one that ISSUES a Stop Work Order -- the update
+        exception. The plain change is asserted silent separately below."""
         for scan_done, expect in ((False, 0), (True, 1)):
             with self.subTest(initial_scan_done=scan_done):
                 s = _Sync()
@@ -364,7 +369,8 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
                 sender = AsyncMock()
                 with patch.object(server, "db", s.db), \
                         patch.object(server, "_query_dob_apis", AsyncMock(
-                            return_value=[_viol_rec(category="V*-DOB VIOLATION - HEARING")])), \
+                            return_value=[_viol_rec(category="V*-DOB VIOLATION - HEARING",
+                                                    description="Full Stop Work Order")])), \
                         patch.object(server, "_initial_scan_done", AsyncMock(return_value=scan_done)), \
                         patch.object(server, "_dob_alert_recently_sent", AsyncMock(return_value=False)), \
                         patch.object(server, "_mark_dob_alert_sent", AsyncMock()), \
@@ -372,6 +378,20 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
                     _run(server.run_dob_sync_for_project(_project()))
                     _run(server.run_dob_sync_for_project(_project()))   # no further change
                 self.assertEqual(sender.await_count, expect)
+
+    def test_a_plain_status_change_never_emails_even_after_the_first_scan(self):
+        s = _Sync()
+        s.sync(_project(), [_viol_rec()])
+        sender = AsyncMock()
+        with patch.object(server, "db", s.db), \
+                patch.object(server, "_query_dob_apis", AsyncMock(
+                    return_value=[_viol_rec(category="V*-DOB VIOLATION - HEARING")])), \
+                patch.object(server, "_initial_scan_done", AsyncMock(return_value=True)), \
+                patch.object(server, "_dob_alert_recently_sent", AsyncMock(return_value=False)), \
+                patch.object(server, "_mark_dob_alert_sent", AsyncMock()), \
+                patch.object(server, "_send_critical_dob_alert", sender):
+            _run(server.run_dob_sync_for_project(_project()))
+        self.assertEqual(sender.await_count, 0)
 
     def test_a_lifted_swo_alerts_once_as_a_lift(self):
         """AMENDED 2026-10-22: was 'rescinded closed outcomes never alert'. The
