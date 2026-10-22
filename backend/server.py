@@ -41381,6 +41381,16 @@ async def _stamp_order_issued(row_id, order: str, now: datetime) -> None:
         logger.warning(f"order stamp failed: {type(e).__name__}")
 
 
+async def _stamp_order_lifted(row_id, which: str, now: datetime) -> None:
+    """Mark the row an UPDATE lifted a SWO / vacate order on in full, so the GC
+    group alerts post it once, in green (lib/dob_alert_gate.gc_order_lifted_items)."""
+    try:
+        await db.dob_logs.update_one(
+            {"_id": row_id}, {"$set": {"order_lifted": {"kind": which, "at": now}}})
+    except Exception as e:
+        logger.warning(f"order-lifted stamp failed: {type(e).__name__}")
+
+
 async def _mark_bins_scanned(project_id: str, bins) -> None:
     """Record a finished DOB pass for each real BIN in `bins`."""
     now = datetime.now(timezone.utc)
@@ -43506,6 +43516,12 @@ async def run_dob_sync_for_project(project: dict) -> list:
                         await _stamp_order_issued(existing["_id"], order, now)
                         await _send_critical_dob_alert_throttled(
                             project, after, source="dob", event=order)
+                    # ...or lifted one in full: the second update exception.
+                    lifted = dob_alert_gate.update_lifts_order(existing, after)
+                    if lifted:
+                        await _stamp_order_lifted(existing["_id"], lifted, now)
+                        await _send_critical_dob_alert_throttled(
+                            project, after, source="dob", event=f"{lifted}_lifted")
             elif existing and existing.get("current_status") == current_status:
                 # No status change — refresh mutable fields. Don't
                 # insert a duplicate.
@@ -43539,6 +43555,11 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     await _stamp_order_issued(existing["_id"], order, now)
                     await _send_critical_dob_alert_throttled(
                         project, dob_log, source="dob", event=order)
+                lifted = dob_alert_gate.update_lifts_order(existing, dob_log)
+                if lifted:
+                    await _stamp_order_lifted(existing["_id"], lifted, now)
+                    await _send_critical_dob_alert_throttled(
+                        project, dob_log, source="dob", event=f"{lifted}_lifted")
             else:
                 # Either first time OR status changed. Stamp
                 # transition markers and insert a new row. The
@@ -43577,7 +43598,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 )
                 dob_log["is_seed_transition"] = is_seed_transition
                 site_bin = str(rec.get("_site_bin") or nyc_bin or "")
-                order = None
+                order = lifted = None
                 if existing is None:
                     # Which BIN it came from, and whether that BIN's first pass
                     # is under way: the GC group alerts read both from the row
@@ -43593,6 +43614,9 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     order = dob_alert_gate.update_issues_order(existing, dob_log)
                     if order:
                         dob_log["order_issued"] = {"kind": order, "at": now}
+                    lifted = dob_alert_gate.update_lifts_order(existing, dob_log)
+                    if lifted:
+                        dob_log["order_lifted"] = {"kind": lifted, "at": now}
                 result = await db.dob_logs.insert_one(dob_log)
                 dob_log["id"] = str(result.inserted_id)
                 inserted_logs.append(dob_log)
@@ -43600,6 +43624,10 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     if order:
                         await _send_critical_dob_alert_throttled(
                             project, dob_log, source="dob", event=order)
+                    if dob_log.get("order_lifted"):
+                        await _send_critical_dob_alert_throttled(
+                            project, dob_log, source="dob",
+                            event=f"{dob_log['order_lifted']['kind']}_lifted")
                 elif severity == "Action" and not is_seed_transition:
                     if existing is None:
                         # A FIRST SIGHTING. Announced as new only if the BIN it
@@ -47504,6 +47532,11 @@ async def _gc_ai_line(kind: str, facts: Dict[str, str]) -> Optional[str]:
 
 async def _gc_alert_text(item: dict, address: str, today) -> str:
     kind, rec = item["kind"], item["rec"]
+    if kind == dob_alert_gate.ORDER_LIFTED_KIND:
+        return "\n".join(
+            [f"{wa_alerts.GREEN} {address}"]
+            + dob_alert_gate.lifted_post_lines(item.get("lifted") or "swo", address)
+            + [wa_alerts.record_line(kind, rec), wa_alerts.source_line(kind, rec)])
     if kind == dob_alert_gate.BIN_ADDED_KIND:
         return dob_alert_gate.bin_summary_message(
             address, item.get("bin") or rec.get("site_bin") or "", item.get("open") or [],
@@ -47637,6 +47670,7 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
         # silently below, so it can never post later as a backlog.
         latest_dob = _gc_latest_per_record(dob_rows)
         items += dob_alert_gate.gc_order_items(latest_dob, today)
+        items += dob_alert_gate.gc_order_lifted_items(latest_dob, today)
         items += dob_alert_gate.gc_bin_summary_items(latest_dob)
         report["permits_no_expiry"] += sum(
             1 for r in _gc_latest_per_record(dob_rows)

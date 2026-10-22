@@ -48,6 +48,7 @@ KIND_SWITCH = {
     # An update that issued a Stop Work Order or vacate order, and the one
     # summary for a newly added BIN (lib/dob_alert_gate, ruling 2026-10-22).
     "order": "swo_alerts",
+    "order_lifted": "swo_alerts",
     "bin_added": "violation_alerts",
 }
 SWITCHES = tuple(dict.fromkeys(KIND_SWITCH.values()))
@@ -59,7 +60,7 @@ NEW_KINDS = tuple(k for k in KIND_SWITCH if k not in LEGACY_KINDS)
 # Fed by the DOT sync, not DOB: they wait for the project's first DOT pass.
 DOT_KINDS = ("dot_violation", "dot_permit")
 
-RED, ORANGE = "🔴", "🟠"
+RED, ORANGE, GREEN = "🔴", "🟠", "🟢"
 
 _CRITICAL_TEXT = re.compile(r"\bvacate\b|\bstop[- ]work order\b", re.IGNORECASE)
 
@@ -457,6 +458,7 @@ ICON = {
     "violation": RED, "complaint": RED, "swo": RED, "dot_violation": RED,
     "swo_rescinded": ORANGE, "violation_status": ORANGE, "permit_status": ORANGE,
     "permit": ORANGE, "dot_permit": ORANGE, "order": RED, "bin_added": ORANGE,
+    "order_lifted": GREEN,
 }
 # Kinds whose "what happened" line may be an AI sentence (checked). The others
 # are status or date changes, said exactly by a template.
@@ -539,7 +541,7 @@ def what_line(kind: str, rec: Dict[str, Any], ai_text: Optional[str], *,
 def record_line(kind: str, rec: Dict[str, Any]) -> str:
     """'<record type> #<number> · <issue date> · <status>' — each part from
     the record, left out when the record does not carry it."""
-    label_kind = _t(rec.get("record_type")).lower() if kind == "order" else kind
+    label_kind = _t(rec.get("record_type")).lower() if kind in ("order", "order_lifted") else kind
     parts = [f"{LABEL.get(label_kind, 'Record')} #{record_number(rec)}"]
     d = record_issue_date(rec)
     if d:

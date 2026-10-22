@@ -180,7 +180,10 @@ class TestSwoRescindedRefresh(unittest.TestCase):
         self.assertEqual(r["status_changed_at"], r["status_history"][-1]["at"])
         self.assertEqual(_hist(r), [("ACTIVE", "first_seen"), ("RESCINDED", "sync")])
         self.assertLessEqual(r["status_history"][0]["at"], r["status_history"][1]["at"])
-        s.alert.assert_not_awaited()          # closed outcome never emails
+        # AMENDED 2026-10-22 (operator ruling): lifting a SWO is the second
+        # update exception -- it emails once, as a lift, never as "new".
+        s.alert.assert_awaited_once()
+        self.assertEqual(s.alert.await_args.kwargs["event"], "swo_lifted")
 
     def test_swo_rescinded_alert_fires_for_refreshed_row_but_not_a_seed(self):
         """The GC `swo_rescinded` alert is previous_status based: it can now
@@ -370,13 +373,28 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
                     _run(server.run_dob_sync_for_project(_project()))   # no further change
                 self.assertEqual(sender.await_count, expect)
 
-    def test_rescinded_closed_outcomes_never_alert(self):
+    def test_a_lifted_swo_alerts_once_as_a_lift(self):
+        """AMENDED 2026-10-22: was 'rescinded closed outcomes never alert'. The
+        operator ruled that an update lifting a SWO (or rescinding a vacate
+        order) emails and posts -- once, as a lift."""
         s = _Sync()
         s.sync(_project(), [_swo_rec(status="Active")])
         s.alert.reset_mock()
         s.sync(_project(), [_swo_rec(status="Lifted")])
-        s.alert.assert_not_awaited()
+        s.alert.assert_awaited_once()
+        self.assertEqual(s.alert.await_args.kwargs["event"], "swo_lifted")
         self.assertEqual(s.rows()[0]["severity"], "Good")
+
+    def test_a_legacy_swo_rows_first_refresh_stays_silent_even_when_lifted(self):
+        """The migration-day rule outranks the lift exception: a row written
+        before status_history existed was a first-sight snapshot, so its first
+        refresh (seed) never alerts, lifted or not."""
+        s = _Sync()
+        s.seed_legacy(record_type="swo", raw_dob_id="SWO1", severity="Action",
+                      stop_work_order_number="SWO1", status="Active",
+                      current_status="ACTIVE", description="Full Stop Work Order")
+        s.sync(_project(), [_swo_rec(status="Lifted")])
+        s.alert.assert_not_awaited()
 
 
 # ═══ project scoping ═════════════════════════════════════════════════════════

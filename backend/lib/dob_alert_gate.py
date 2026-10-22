@@ -138,6 +138,32 @@ def update_issues_order(before: Optional[Dict[str, Any]], after: Dict[str, Any])
     return None if order_in_force(before or {}) == now_ else now_
 
 
+#: DOB's words for an order ENDED IN FULL. A partial rescind ("Stop Work Order
+#: Partially Rescinded", L3; "Vacate Order Partially Rescinded", Y4) leaves an
+#: order in force and is not a lift.
+_LIFTED = re.compile(r"fully rescinded|\blifted\b|\brescinded\b", re.IGNORECASE)
+_PARTIAL = re.compile(r"partial", re.IGNORECASE)
+
+
+def update_lifts_order(before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> Optional[str]:
+    """"swo" / "vacate" when an UPDATE lifted that order in full: it was in
+    force before, it is not now, and the record SAYS it ended (an SWO record
+    whose status reads rescinded / lifted, or a fully-rescinded disposition).
+    An order that merely stopped showing is not a lift. The second update
+    exception (operator ruling 2026-10-22): it emails and posts, in green."""
+    was = order_in_force(before or {})
+    if was is None or order_in_force(after) is not None:
+        return None
+    r = after or {}
+    if str(r.get("record_type") or "").lower() == "swo":
+        text = str(r.get("current_status") or r.get("status") or "")
+    else:
+        text = _order_text(r)
+    if not _LIFTED.search(text) or _PARTIAL.search(text):
+        return None
+    return was
+
+
 # ── The email: EN / ES copy and the record line ─────────────────────────────
 
 COPY = {
@@ -148,6 +174,10 @@ COPY = {
         "intro_swo": "DOB issued a Stop Work Order on {project}.",
         "subject_vacate": "Vacate order on {project}",
         "intro_vacate": "DOB issued a vacate order on {project}.",
+        "subject_swo_lifted": "Stop Work Order lifted on {project}",
+        "intro_swo_lifted": "DOB lifted the Stop Work Order on {project}.",
+        "subject_vacate_lifted": "Vacate order rescinded on {project}",
+        "intro_vacate_lifted": "DOB rescinded the vacate order on {project}.",
         "received": "Received by DOB",
         "status": "Status",
         "not_stated": "not stated",
@@ -159,6 +189,10 @@ COPY = {
         "intro_swo": "El DOB emitió una orden de suspensión de obra en {project}.",
         "subject_vacate": "Orden de desalojo en {project}",
         "intro_vacate": "El DOB emitió una orden de desalojo en {project}.",
+        "subject_swo_lifted": "Se levantó la orden de suspensión de obra en {project}",
+        "intro_swo_lifted": "El DOB levantó la orden de suspensión de obra en {project}.",
+        "subject_vacate_lifted": "Se rescindió la orden de desalojo en {project}",
+        "intro_vacate_lifted": "El DOB rescindió la orden de desalojo en {project}.",
         "received": "Recibido por el DOB",
         "status": "Estado",
         "not_stated": "no indicado",
@@ -167,7 +201,8 @@ COPY = {
 
 #: The events an email can be for. "new": a first sighting that passed
 #: new_alert_refusal. "swo" / "vacate": an update that issued that order.
-EVENTS = ("new", "swo", "vacate")
+#: "swo_lifted" / "vacate_lifted": an update that lifted it in full.
+EVENTS = ("new", "swo", "vacate", "swo_lifted", "vacate_lifted")
 
 _ES_MONTHS = ("ene", "feb", "mar", "abr", "may", "jun",
               "jul", "ago", "sep", "oct", "nov", "dic")
@@ -220,6 +255,7 @@ def record_line(row: Dict[str, Any], rt: str, lang: str) -> str:
 GC_NEW_RECORD_KINDS = ("violation", "complaint", "swo")
 GC_UPDATE_KINDS = ("violation_status", "permit_status", "swo_rescinded")
 ORDER_KIND = "order"            # an update that issued a SWO / vacate order
+ORDER_LIFTED_KIND = "order_lifted"  # an update that lifted one in full
 BIN_ADDED_KIND = "bin_added"    # one summary for a newly added BIN
 REFUSED_UPDATE = "update"
 
@@ -236,8 +272,9 @@ def gc_refusal(item: Dict[str, Any], today: date) -> Optional[str]:
             return REFUSED_NO_DATE
         if too_old(rec, today):
             return REFUSED_TOO_OLD
-    if kind == ORDER_KIND:
-        d = wa_gc.parse_dob_date(((rec.get("order_issued") or {}).get("at")))
+    if kind in (ORDER_KIND, ORDER_LIFTED_KIND):
+        field = "order_issued" if kind == ORDER_KIND else "order_lifted"
+        d = wa_gc.parse_dob_date(((rec.get(field) or {}).get("at")))
         if d is None or (today - d).days > NEW_RECORD_MAX_AGE_DAYS:
             return REFUSED_TOO_OLD
     return None
@@ -259,6 +296,36 @@ def gc_order_items(latest_rows, today: date) -> list:
         out.append({"kind": ORDER_KIND, "item": f"{rid}:order:{oi['kind']}:{d:%Y%m%d}",
                     "rec": r, "order": oi["kind"]})
     return out
+
+
+def gc_order_lifted_items(latest_rows, today: date) -> list:
+    """An item for each record an UPDATE lifted a SWO / vacate order on within
+    the window (the sync stamps `order_lifted`). One post, in green."""
+    out = []
+    for r in latest_rows or []:
+        ol = (r or {}).get("order_lifted") or {}
+        d = wa_gc.parse_dob_date(ol.get("at"))
+        rid = str(r.get("raw_dob_id") or "")
+        if not rid or d is None or ol.get("kind") not in ("swo", "vacate"):
+            continue
+        if (today - d).days > NEW_RECORD_MAX_AGE_DAYS:
+            continue
+        out.append({"kind": ORDER_LIFTED_KIND, "item": f"{rid}:lifted:{ol['kind']}:{d:%Y%m%d}",
+                    "rec": r, "lifted": ol["kind"]})
+    return out
+
+
+LIFTED_POST_COPY = {
+    "swo": ("Stop Work Order lifted on {address}.",
+            "Se levantó la orden de suspensión de obra en {address}."),
+    "vacate": ("Vacate order rescinded on {address}.",
+               "Se rescindió la orden de desalojo en {address}."),
+}
+
+
+def lifted_post_lines(which: str, address: str) -> list:
+    en, es = LIFTED_POST_COPY.get(which, LIFTED_POST_COPY["swo"])
+    return [en.format(address=address), es.format(address=address)]
 
 
 #: The record types a BIN summary lists when open.

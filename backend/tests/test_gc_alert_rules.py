@@ -130,6 +130,22 @@ class Updates(_Base):
         self.assertEqual(len(msgs), 1)
         self.assertIn("DOB issued a vacate order.", msgs[0])
 
+    def test_a_lifted_stop_work_order_posts_once_in_green(self):
+        msgs = self._ticks([_complaint("L1", complaint_date="2026-09-20",
+                                       order_lifted={"kind": "swo", "at": NOON})], ticks=3)
+        self.assertEqual(len(msgs), 1, msgs)
+        self.assertTrue(msgs[0].startswith("🟢 Main St"))
+        self.assertIn("Stop Work Order lifted on Main St.", msgs[0])
+        self.assertIn("Se levantó la orden de suspensión de obra en Main St.", msgs[0])
+        self.assertIn("Complaint #CL1", msgs[0])
+
+    def test_a_rescinded_vacate_order_posts_once_in_green(self):
+        msgs = self._ticks([_complaint("L2", complaint_date="2026-09-20",
+                                       order_lifted={"kind": "vacate", "at": NOON})])
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("Vacate order rescinded on Main St.", msgs[0])
+        self.assertIn("Se rescindió la orden de desalojo en Main St.", msgs[0])
+
     def test_an_order_stamped_a_week_ago_posts_nothing(self):
         self.assertEqual(self._ticks([_complaint(
             "O3", complaint_date="2026-09-20",

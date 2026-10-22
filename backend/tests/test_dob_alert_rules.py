@@ -237,10 +237,26 @@ class Updates(unittest.TestCase):
                           _complaint("3B00003", "10/17/2026", disposition="Y1"))
         self.assertEqual(s.events, ["vacate"])
 
-    def test_a_rescinded_order_is_not_an_order(self):
-        # L2 "Stop Work Order Fully Rescinded".
+    def test_a_lifted_stop_work_order_sends_one(self):
+        # L2 "Stop Work Order Fully Rescinded": the second update exception
+        # (operator ruling 2026-10-22) -- it emails, and the row is stamped
+        # for the group's one green post.
         s = self._changed(_complaint("3B00004", "10/17/2026", disposition="A3"),
                           _complaint("3B00004", "10/17/2026", disposition="L2"))
+        self.assertEqual(s.events, ["swo_lifted"])
+        (row,) = s.stored("3B00004")
+        self.assertEqual(row["order_lifted"]["kind"], "swo")
+
+    def test_a_rescinded_vacate_order_sends_one(self):
+        # Y1 "Full Vacate Order Issued" -> Y2 "Vacate Order Fully Rescinded".
+        s = self._changed(_complaint("3B00006", "10/17/2026", disposition="Y1"),
+                          _complaint("3B00006", "10/17/2026", disposition="Y2"))
+        self.assertEqual(s.events, ["vacate_lifted"])
+
+    def test_a_partial_rescind_is_not_a_lift(self):
+        # L3 "Stop Work Order Partially Rescinded": an order is still in force.
+        s = self._changed(_complaint("3B00007", "10/17/2026", disposition="A3"),
+                          _complaint("3B00007", "10/17/2026", disposition="L3"))
         self.assertEqual(s.events, [])
 
 
@@ -272,6 +288,14 @@ class TheEmail(unittest.TestCase):
         self.assertEqual(kw["subject"], "Stop Work Order on 588 Thomas")
         self.assertIn("El DOB emitió una orden de suspensión de obra", kw["text"])
         self.assertNotIn("New ", kw["subject"])
+
+    def test_a_lift_is_titled_lifted_in_both_languages(self):
+        kw = self._render("swo_lifted", {**self.ROW, "disposition_code": "L2"})
+        self.assertEqual(kw["subject"], "Stop Work Order lifted on 588 Thomas")
+        self.assertIn("El DOB levantó la orden de suspensión de obra en 588 Thomas.", kw["text"])
+        kw = self._render("vacate_lifted", {**self.ROW, "disposition_code": "Y2"})
+        self.assertEqual(kw["subject"], "Vacate order rescinded on 588 Thomas")
+        self.assertIn("El DOB rescindió la orden de desalojo en 588 Thomas.", kw["text"])
 
     def test_the_event_must_be_named(self):
         with self.assertRaises(TypeError):
