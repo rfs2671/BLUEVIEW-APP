@@ -244,13 +244,13 @@ export default function ProjectsScreen() {
     };
 
     if (Platform.OS === 'web') {
-      if (window.confirm(`Delete "${projectName}"?\n\nThis will permanently remove the project and all its DOB compliance data. This cannot be undone.`)) {
+      if (window.confirm(`Delete "${projectName}"?\n\nThis will permanently remove the project and all its compliance data. This cannot be undone.`)) {
         doDelete();
       }
     } else {
       Alert.alert(
         'Delete Project?',
-        `This will permanently remove "${projectName}" and all its DOB compliance data. This cannot be undone.`,
+        `This will permanently remove "${projectName}" and all its compliance data. This cannot be undone.`,
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Delete', style: 'destructive', onPress: doDelete },

@@ -676,7 +676,7 @@ export default function DashboardScreen() {
         .sort((a, b) => b.n - a.n);
     };
 
-    // Violations/permits/complaints land on the project's DOB compliance tab
+    // Violations/permits/complaints land on the project's Compliance tab
     // (where the records actually are). "Never synced" has no DOB records yet
     // by definition, so it lands on the project itself.
     const rowTarget = (key, p) =>

@@ -151,7 +151,7 @@ export default function DOBLogsScreen() {
     } else {
       console.error('Failed to fetch DOB logs:', logsRes.error);
       if (logsRes.status === 'error') {
-        toast.error('Error', 'Could not load DOB compliance data');
+        toast.error('Error', 'Could not load compliance data');
       } else {
         toast.warning('Offline', 'DOB records are unavailable offline — this is not a clean record.');
       }
@@ -927,7 +927,7 @@ export default function DOBLogsScreen() {
               overstating a fallback action. Sync is unchanged underneath. */}
           <View style={s.titleSection}>
             <View style={s.titleTopRow}>
-              <Text style={s.titleLabel}>DOB COMPLIANCE</Text>
+              <Text style={s.titleLabel}>COMPLIANCE</Text>
               <Pressable
                 onPress={handleSync}
                 disabled={syncing}

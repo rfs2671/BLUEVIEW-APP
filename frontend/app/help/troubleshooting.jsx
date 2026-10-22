@@ -23,7 +23,7 @@ export default function HelpTroubleshooting() {
         <HelpBullets
           items={[
             "Is the project less than 15 minutes old? The first poll runs every 15 minutes; if you just added the project, wait one cycle.",
-            "Open the project's DOB Compliance page (gear icon). Confirm \"Enable DOB Tracking\" is on. If it's off, no DOB data will pull for the project.",
+            "Open the project's Compliance page (gear icon). Confirm \"Enable DOB Tracking\" is on. If it's off, no DOB data will pull for the project.",
             "Check the BIN. If the BIN field shows blank or a placeholder (e.g. 1000000, 2000000), GeoSearch couldn't auto-resolve from the address. Open the gear icon and enter the correct BIN manually — find it at a810-bisweb.nyc.gov.",
             "Confirm the address is well-formed. \"123 Main St, Brooklyn, NY 11201\" works; \"123 Main\" alone may not.",
             "If the project is in another borough or city, no DOB data will surface — LeveLog only monitors NYC.",
@@ -84,7 +84,7 @@ export default function HelpTroubleshooting() {
         </HelpParagraph>
         <HelpParagraph>
           If the BIN was already auto-resolved to the wrong building,
-          open the DOB Compliance page (gear icon) and edit the BIN
+          open the Compliance page (gear icon) and edit the BIN
           field directly.
         </HelpParagraph>
       </HelpSection>

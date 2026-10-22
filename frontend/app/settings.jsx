@@ -719,7 +719,7 @@ export default function SettingsScreen() {
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={s.settingTitle}>Notification Preferences</Text>
                     <Text style={s.settingSubtitle}>
-                      Tune which DOB compliance signals reach you and how
+                      Tune which compliance signals reach you and how
                     </Text>
                   </View>
                 </View>

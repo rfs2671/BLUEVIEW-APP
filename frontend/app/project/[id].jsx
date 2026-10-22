@@ -641,7 +641,7 @@ export default function ProjectDetailScreen() {
 
   // No valid BIN flag — shared isValidBin() (mirrors backend
   // _is_placeholder_bin). When false, DOB scans silently return nothing, so we
-  // flag it on the DOB Compliance action card (the dob-logs screen has the full
+  // flag it on the Compliance action card (the dob-logs screen has the full
   // "No BIN on File" remediation flow). Same predicate as the DOB tab.
   const hasValidBin = isValidBin(project?.nyc_bin);
 
@@ -658,13 +658,13 @@ export default function ProjectDetailScreen() {
     // lost something: this was the wrong door to a room that is still
     // open.
     // MR.14 commit 3 — v1 monitoring product surface. Activity feed
-    // sits ABOVE the legacy DOB Compliance entry; both are reachable.
+    // sits ABOVE the legacy Compliance entry; both are reachable.
     { title: 'Activity', icon: Activity, path: `/project/${projectId}/activity`, color: '#0ea5e9' },
-    // DOB Compliance + Check-in Trades are CORE modules — give them active
+    // Compliance + Check-in Trades are CORE modules — give them active
     // accent colors (like Plans/Daily Log/Activity) so they don't read as
     // disabled/greyed. They were never gated; the grey was only this hardcoded
     // semantic.neutral.
-    { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: semantic.critical, warn: !hasValidBin },
+    { title: 'Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: semantic.critical, warn: !hasValidBin },
     // No Report Settings tile: the daily report's time and email list are on
     // Reports, with the rest of the job's reports.
     { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: semantic.attention },
