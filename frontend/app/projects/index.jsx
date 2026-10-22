@@ -43,6 +43,7 @@ import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
 import ProjectsTable from '../../src/components/ProjectsTable';
 import { useTheme } from '../../src/context/ThemeContext';
+import { useT } from '../../src/i18n';
 // ── FIX #3: Import AddressAutocomplete ──
 import AddressAutocomplete from '../../src/components/AddressAutocomplete';
 import HeaderBrand from '../../src/components/HeaderBrand';
@@ -58,6 +59,7 @@ export default function ProjectsScreen() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
+  const tc = useT('compliance');
   // Desktop (RN-Web >=1024) swaps the card list for a sortable table.
   // Below the breakpoint, and on native, the card list below is unchanged.
   const isDesktop = useIsDesktop();
@@ -244,13 +246,13 @@ export default function ProjectsScreen() {
     };
 
     if (Platform.OS === 'web') {
-      if (window.confirm(`Delete "${projectName}"?\n\nThis will permanently remove the project and all its compliance data. This cannot be undone.`)) {
+      if (window.confirm(tc('deleteConfirmWeb').replace('{name}', () => projectName))) {
         doDelete();
       }
     } else {
       Alert.alert(
         'Delete Project?',
-        `This will permanently remove "${projectName}" and all its compliance data. This cannot be undone.`,
+        tc('deleteConfirmNative').replace('{name}', () => projectName),
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Delete', style: 'destructive', onPress: doDelete },

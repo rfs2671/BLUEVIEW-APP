@@ -104,12 +104,62 @@ check('no user-visible "DOB Compliance" survives in UI source', () => {
   ok(bad.length === 0, `${bad.length} occurrence(s):\n      ${bad.join('\n      ')}`);
 });
 
-check('the project tile and the screen title carry the new label', () => {
+// ── THE LABEL LIVES IN THE CATALOGUE ─────────────────────────────────────────
+// The renamed strings are read from the `compliance` namespace of
+// src/i18n/en.js / es.js, not typed into the screens. The catalogues are loaded
+// the same way i18n.test.cjs loads them (ESM default export rewritten).
+function loadCatalogue(file) {
+  const src = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', file), 'utf8')
+    .replace(/^import .*$/gm, '')
+    .replace(/^export default /m, 'return ');
+  // eslint-disable-next-line no-new-func
+  return new Function(src)();
+}
+const EN = loadCatalogue('en.js');
+const ES = loadCatalogue('es.js');
+
+// Every user-visible site this rename touched, and the catalogue key it reads.
+const SITES = [
+  { file: 'frontend/app/project/[id].jsx', keys: ['title'] },
+  { file: 'frontend/app/project/[id]/dob-logs.jsx', keys: ['title', 'loadError'] },
+  { file: 'frontend/app/projects/index.jsx', keys: ['deleteConfirmWeb', 'deleteConfirmNative'] },
+  { file: 'frontend/app/settings.jsx', keys: ['notificationPrefsSubtitle'] },
+  { file: 'frontend/app/help/troubleshooting.jsx', keys: ['helpCheckTracking', 'helpEditBin'] },
+];
+
+check('the `compliance` namespace exists in BOTH catalogues, key-identical, Spanish "Cumplimiento"', () => {
+  ok(EN.compliance && ES.compliance, 'en.compliance / es.compliance missing');
+  const a = Object.keys(EN.compliance).sort().join(',');
+  const b = Object.keys(ES.compliance).sort().join(',');
+  ok(a === b, `en/es compliance keys differ: [${a}] vs [${b}]`);
+  ok(EN.compliance.title === 'Compliance', `en title is ${JSON.stringify(EN.compliance.title)}`);
+  ok(ES.compliance.title === 'Cumplimiento', `es title is ${JSON.stringify(ES.compliance.title)}`);
+  for (const { keys } of SITES) {
+    for (const k of keys) ok(typeof EN.compliance[k] === 'string' && EN.compliance[k], `en.compliance.${k} missing`);
+  }
+});
+
+check('each renamed site reads its label from the catalogue, not a literal', () => {
+  for (const { file, keys } of SITES) {
+    const code = SOURCES.find((f) => f.rel === file).code;
+    ok(/\buseT\('compliance'\)/.test(code), `${file} does not call useT('compliance')`);
+    for (const k of keys) {
+      ok(new RegExp(`\\b\\w+\\('${k}'\\)`).test(code), `${file} never asks for compliance.${k}`);
+    }
+    // The exact strings that moved into the catalogue. Not a bare "compliance
+    // data": "Loading compliance data..." on dob-logs never said DOB and was
+    // not part of this rename.
+    for (const literal of ["'Compliance'", '>COMPLIANCE<', 'Could not load compliance data',
+      'all its compliance data', 'compliance signals reach you', 'Compliance page (gear icon)']) {
+      ok(!code.includes(literal), `${file} still carries the literal ${literal}`);
+    }
+  }
   const tile = SOURCES.find((f) => f.rel === 'frontend/app/project/[id].jsx').code;
-  ok(/title:\s*'Compliance',\s*icon:\s*Shield,\s*path:\s*`\/project\/\$\{projectId\}\/dob-logs`/.test(tile),
-    'project detail has no Compliance tile pointing at the (unchanged) dob-logs route');
+  ok(/title:\s*\w+\('title'\),\s*icon:\s*Shield,\s*path:\s*`\/project\/\$\{projectId\}\/dob-logs`/.test(tile),
+    'the dob-logs tile (route unchanged) does not take its title from the catalogue');
   const screen = SOURCES.find((f) => f.rel === 'frontend/app/project/[id]/dob-logs.jsx').code;
-  ok(/<Text style=\{s\.titleLabel\}>COMPLIANCE<\/Text>/.test(screen), 'dob-logs screen title is not COMPLIANCE');
+  ok(/<Text style=\{s\.titleLabel\}>\{\w+\('title'\)\}<\/Text>/.test(screen),
+    'the dob-logs screen title does not take its text from the catalogue');
 });
 
 console.log(`\n${failures === 0 ? 'all passed' : `${failures} FAILED`}\n`);

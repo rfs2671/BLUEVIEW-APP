@@ -83,6 +83,7 @@ import CardSheen from '../../src/components/CardSheen';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
+import { useT } from '../../src/i18n';
 
 // Site device API for project-specific devices
 const siteDevicesAPI = {
@@ -157,6 +158,7 @@ export default function ProjectDetailScreen() {
   const { id: projectId } = useLocalSearchParams();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
+  const tc = useT('compliance');
   // Desktop (RN-Web >=1024) renders the 2-column triage layout; mobile renders
   // exactly what it does today. Called unconditionally (hooks rule).
   const isDesktop = useIsDesktop();
@@ -664,7 +666,7 @@ export default function ProjectDetailScreen() {
     // accent colors (like Plans/Daily Log/Activity) so they don't read as
     // disabled/greyed. They were never gated; the grey was only this hardcoded
     // semantic.neutral.
-    { title: 'Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: semantic.critical, warn: !hasValidBin },
+    { title: tc('title'), icon: Shield, path: `/project/${projectId}/dob-logs`, color: semantic.critical, warn: !hasValidBin },
     // No Report Settings tile: the daily report's time and email list are on
     // Reports, with the rest of the job's reports.
     { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: semantic.attention },

@@ -81,4 +81,17 @@ export default {
     deniedBody: 'Se requiere acceso de propietario, administrador o CP',
   },
 
+  // ── La etiqueta de Cumplimiento (ver en.js: una etiqueta, un espacio) ─────
+  // "Enable DOB Tracking" queda en inglés: es el nombre del interruptor tal como
+  // aparece en pantalla, y ese interruptor no está traducido.
+  compliance: {
+    title: 'Cumplimiento',
+    loadError: 'No se pudieron cargar los datos de cumplimiento',
+    deleteConfirmWeb: '¿Eliminar "{name}"?\n\nEsto eliminará permanentemente el proyecto y todos sus datos de cumplimiento. Esta acción no se puede deshacer.',
+    deleteConfirmNative: 'Esto eliminará permanentemente "{name}" y todos sus datos de cumplimiento. Esta acción no se puede deshacer.',
+    notificationPrefsSubtitle: 'Ajuste qué señales de cumplimiento le llegan y cómo',
+    helpCheckTracking: 'Abra la página de Cumplimiento del proyecto (ícono de engranaje). Confirme que "Enable DOB Tracking" esté activado. Si está desactivado, no se obtendrán datos del DOB para el proyecto.',
+    helpEditBin: 'Si el BIN ya se resolvió automáticamente al edificio equivocado, abra la página de Cumplimiento (ícono de engranaje) y edite el campo BIN directamente.',
+  },
+
 };

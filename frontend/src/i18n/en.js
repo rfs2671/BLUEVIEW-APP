@@ -2126,4 +2126,29 @@ export default {
     actionFailed: 'That did not work. Try again.',
   },
 
+  // ── The Compliance feature label, everywhere a user sees it ───────────────
+  //
+  // ONE NAMESPACE FOR ONE LABEL, not one per screen: the project tile
+  // (app/project/[id].jsx), the screen title (app/project/[id]/dob-logs.jsx),
+  // the delete confirmations (app/projects/index.jsx), the notification
+  // settings subtitle (app/settings.jsx) and two help sentences
+  // (app/help/troubleshooting.jsx) all name the same feature, and renaming it
+  // again should be one edit here. Read by owners, admins and CPs — NOT a
+  // logbook and not a filed record, so it carries Spanish like waGroups.
+  //
+  // `title` is rendered by the screen header through typography.label, which
+  // uppercases it — one key serves the tile ("Compliance") and the header
+  // ("COMPLIANCE"). The route stays /project/:id/dob-logs.
+  //
+  // {name} is the project name, substituted by the caller.
+  compliance: {
+    title: 'Compliance',
+    loadError: 'Could not load compliance data',
+    deleteConfirmWeb: 'Delete "{name}"?\n\nThis will permanently remove the project and all its compliance data. This cannot be undone.',
+    deleteConfirmNative: 'This will permanently remove "{name}" and all its compliance data. This cannot be undone.',
+    notificationPrefsSubtitle: 'Tune which compliance signals reach you and how',
+    helpCheckTracking: 'Open the project\'s Compliance page (gear icon). Confirm "Enable DOB Tracking" is on. If it\'s off, no DOB data will pull for the project.',
+    helpEditBin: 'If the BIN was already auto-resolved to the wrong building, open the Compliance page (gear icon) and edit the BIN field directly.',
+  },
+
 };
