@@ -118,10 +118,10 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
         { width: tileWidth, backgroundColor: colors.glass.background },
         auraRim(colors),
         auraShadow(colors, undefined, { translucent: true }),
-        isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover },
+        isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover, transform: [{ translateY: -2 }] },
       ]}
     >
-      <CardSheen radius={borderRadius.lg} active={isHovered} />
+      <CardSheen radius={borderRadius.lg} active={isHovered} intro />
       <IconPod size={40} style={s.actionIcon}>
         <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
       </IconPod>
@@ -212,7 +212,7 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
 
   const body = (active) => (
     <>
-      <CardSheen radius={borderRadius.lg} active={active} />
+      <CardSheen radius={borderRadius.lg} active={active} intro />
       <Text style={[deskStyles.rollupNumber, { color: numberColor }]}>
         {loading ? '—' : (value ?? 0)}
       </Text>
@@ -248,7 +248,7 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
         deskStyles.rollupCard,
         { backgroundColor: surface.card }, auraRim(colors), auraShadow(colors, undefined, { translucent: true }),
         expanded && { borderColor: colors.glass.borderHover },
-        hovered && { backgroundColor: surface.glassHover, borderColor: colors.glass.borderHover },
+        hovered && { backgroundColor: surface.glassHover, borderColor: colors.glass.borderHover, transform: [{ translateY: -2 }] },
       ]}
     >
       {({ hovered, pressed }) => body(!!(hovered || pressed))}
@@ -269,12 +269,12 @@ function AdminRowTile({ action, onPress }) {
       style={({ hovered }) => [
         deskStyles.adminRowTile,
         { backgroundColor: surface.glass }, auraRim(colors), auraShadow(colors, undefined, { translucent: true }),
-        hovered && { backgroundColor: surface.glassHover, borderColor: colors.glass.borderHover },
+        hovered && { backgroundColor: surface.glassHover, borderColor: colors.glass.borderHover, transform: [{ translateY: -2 }] },
       ]}
     >
       {({ hovered, pressed }) => (
         <>
-          <CardSheen radius={borderRadius.md} depth={22} active={!!(hovered || pressed)} />
+          <CardSheen radius={borderRadius.md} depth={22} active={!!(hovered || pressed)} intro />
           <Icon size={16} strokeWidth={1.5} color={chrome.icon} />
           <Text style={[deskStyles.adminRowLabel, { color: text.primary }]} numberOfLines={1}>
             {action.title}
