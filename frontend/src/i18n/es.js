@@ -81,4 +81,11 @@ export default {
     deniedBody: 'Se requiere acceso de propietario, administrador o CP',
   },
 
+  // ── app/project/[id]/dob-logs.jsx — embargo navideño del DOT ─────────────
+  dotEmbargo: {
+    banner: 'Embargo navideño del 15 de nov al 2 de ene: {n} permisos activos del DOT no tienen exención.',
+    bannerOne: 'Embargo navideño del 15 de nov al 2 de ene: 1 permiso activo del DOT no tiene exención.',
+    permits: 'Permisos: {list}',
+    action: 'Solicite una exención o detenga el trabajo del 15 de nov al 2 de ene.',
+  },
 };

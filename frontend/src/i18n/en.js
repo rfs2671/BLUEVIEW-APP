@@ -2126,4 +2126,14 @@ export default {
     actionFailed: 'That did not work. Try again.',
   },
 
+  // ── app/project/[id]/dob-logs.jsx — DOT holiday construction embargo ─────
+  // Shown Nov 1 – Jan 2 when an active DOT permit whose work dates overlap
+  // Nov 15 – Jan 2 has no waiver (stipulation 410). `{n}` and `{list}` are
+  // substituted at the call site. Two keys rather than one with "(s)".
+  dotEmbargo: {
+    banner: 'Holiday embargo Nov 15 – Jan 2: {n} active DOT permits have no waiver.',
+    bannerOne: 'Holiday embargo Nov 15 – Jan 2: 1 active DOT permit has no waiver.',
+    permits: 'Permits: {list}',
+    action: 'Apply for a waiver or stop work Nov 15 – Jan 2.',
+  },
 };
