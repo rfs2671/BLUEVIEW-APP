@@ -1,0 +1,747 @@
+{
+ "_source": "Recorded 2026-10-22 from NYC Open Data tqtj-sjs8. 'segment': every permit on HOPKINSON AVENUE (Brooklyn; now Thomas S Boyland St) between BLAKE AVENUE and SUTTER AVENUE issued since 2024-10-22, from the query boroughname='BROOKLYN' AND onstreetname like HOPKINSON/BOYLAND AND permitissuedate >= 2024-10-22, permitissuedate DESC, $limit 400 (the 400 rows were filtered to this block, plus 6 rows of the next block, Blake-Dumont, kept as non-matches). 'cross_streets': the first 30 rows of $select=fromstreetname,tostreetname,count(*) $group=fromstreetname,tostreetname on the same street and borough. Values unedited.",
+ "segment": [
+  {
+   "permitnumber": "B012026289B88",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "REPAIR WATER - SEWER",
+   "permitissuedate": "2026-10-16T14:57:13.000",
+   "issuedworkstartdate": "2026-10-17T00:00:00.000",
+   "issuedworkenddate": "2026-11-01T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "24 SEVEN PLUMBING INC.",
+   "previouspermitnumber": "B012026266B82"
+  },
+  {
+   "permitnumber": "B012026266C19",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "C.A.R. RESTORATION",
+   "permitissuedate": "2026-09-23T13:51:14.000",
+   "issuedworkstartdate": "2026-09-23T13:51:14.000",
+   "issuedworkenddate": "2026-10-16T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "A & H CONSTRUCTION AND PLUMBING CORP."
+  },
+  {
+   "permitnumber": "B012026266B82",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "REPAIR WATER - SEWER",
+   "permitissuedate": "2026-09-23T13:13:13.000",
+   "issuedworkstartdate": "2026-09-23T13:13:13.000",
+   "issuedworkenddate": "2026-10-16T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "24 SEVEN PLUMBING INC."
+  },
+  {
+   "permitnumber": "B012026266B15",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "TRIBUTARY INSTALL - ELECTRIC",
+   "permitissuedate": "2026-09-23T10:45:23.000",
+   "issuedworkstartdate": "2026-10-04T00:00:00.000",
+   "issuedworkenddate": "2026-11-02T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "previouspermitnumber": "B012026246C78"
+  },
+  {
+   "permitnumber": "B022026266B65",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "TEMPORARY PEDESTRIAN WALK",
+   "permitissuedate": "2026-09-23T10:45:23.000",
+   "issuedworkstartdate": "2026-10-04T00:00:00.000",
+   "issuedworkenddate": "2026-11-02T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "previouspermitnumber": "B022026246C26"
+  },
+  {
+   "permitnumber": "B022026266B66",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "OCCUPANCY OF SIDEWALK AS STIPULATED",
+   "permitissuedate": "2026-09-23T10:45:23.000",
+   "issuedworkstartdate": "2026-10-04T00:00:00.000",
+   "issuedworkenddate": "2026-11-02T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "previouspermitnumber": "B022026246C27"
+  },
+  {
+   "permitnumber": "B022026246C27",
+   "permitstatusshortdesc": "EXPIRED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "OCCUPANCY OF SIDEWALK AS STIPULATED",
+   "permitissuedate": "2026-09-03T14:16:05.000",
+   "issuedworkstartdate": "2026-09-04T00:00:00.000",
+   "issuedworkenddate": "2026-10-03T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "nextpermitnumber": "B022026266B66"
+  },
+  {
+   "permitnumber": "B022026246C26",
+   "permitstatusshortdesc": "EXPIRED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "TEMPORARY PEDESTRIAN WALK",
+   "permitissuedate": "2026-09-03T14:16:05.000",
+   "issuedworkstartdate": "2026-09-04T00:00:00.000",
+   "issuedworkenddate": "2026-10-03T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "nextpermitnumber": "B022026266B65"
+  },
+  {
+   "permitnumber": "B012026246C78",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "TRIBUTARY INSTALL - ELECTRIC",
+   "permitissuedate": "2026-09-03T14:16:05.000",
+   "issuedworkstartdate": "2026-09-04T00:00:00.000",
+   "issuedworkenddate": "2026-10-03T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "nextpermitnumber": "B012026266B15"
+  },
+  {
+   "permitnumber": "B022026215B30",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
+   "permitissuedate": "2026-08-03T12:31:54.000",
+   "issuedworkstartdate": "2026-08-03T12:31:54.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B32",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
+   "permitissuedate": "2026-08-03T12:31:54.000",
+   "issuedworkstartdate": "2026-08-03T12:31:54.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B31",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
+   "permitissuedate": "2026-08-03T12:31:54.000",
+   "issuedworkstartdate": "2026-08-03T12:31:54.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B29",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
+   "permitissuedate": "2026-08-03T12:31:53.000",
+   "issuedworkstartdate": "2026-08-03T12:31:53.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B26",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
+   "permitissuedate": "2026-08-03T12:31:52.000",
+   "issuedworkstartdate": "2026-08-03T12:31:52.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B25",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
+   "permitissuedate": "2026-08-03T12:31:52.000",
+   "issuedworkstartdate": "2026-08-03T12:31:52.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B27",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
+   "permitissuedate": "2026-08-03T12:31:52.000",
+   "issuedworkstartdate": "2026-08-03T12:31:52.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B28",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
+   "permitissuedate": "2026-08-03T12:31:52.000",
+   "issuedworkstartdate": "2026-08-03T12:31:52.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B24",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "TEMP. CONST. SIGNS/MARKINGS",
+   "permitissuedate": "2026-08-03T12:31:52.000",
+   "issuedworkstartdate": "2026-08-03T12:31:52.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B22",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE OPEN CONSTRUCTION DEBRIS CONTAINER ON STREET",
+   "permitissuedate": "2026-08-03T12:31:51.000",
+   "issuedworkstartdate": "2026-08-03T12:31:51.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B19",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "CROSSING SIDEWALK",
+   "permitissuedate": "2026-08-03T12:31:51.000",
+   "issuedworkstartdate": "2026-08-03T12:31:51.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B20",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "TEMPORARY PEDESTRIAN WALK",
+   "permitissuedate": "2026-08-03T12:31:51.000",
+   "issuedworkstartdate": "2026-08-03T12:31:51.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B23",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "OCCUPANCY OF SIDEWALK AS STIPULATED",
+   "permitissuedate": "2026-08-03T12:31:51.000",
+   "issuedworkstartdate": "2026-08-03T12:31:51.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B21",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "OCCUPANCY OF ROADWAY AS STIPULATED",
+   "permitissuedate": "2026-08-03T12:31:51.000",
+   "issuedworkstartdate": "2026-08-03T12:31:51.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B022026215B18",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE MATERIAL ON STREET",
+   "permitissuedate": "2026-08-03T12:31:50.000",
+   "issuedworkstartdate": "2026-08-03T12:31:50.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B012026215B96",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "OPEN SIDEWALK TO INSTALL FOUNDATION",
+   "permitissuedate": "2026-08-03T12:31:50.000",
+   "issuedworkstartdate": "2026-08-03T12:31:50.000",
+   "issuedworkenddate": "2026-10-25T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B012026215B97",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "INSTALL FENCE",
+   "permitissuedate": "2026-08-03T12:31:50.000",
+   "issuedworkstartdate": "2026-08-03T12:31:50.000",
+   "issuedworkenddate": "2026-08-26T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "BLUE ELM INC."
+  },
+  {
+   "permitnumber": "B012026201B94",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "C.A.R. RESTORATION",
+   "permitissuedate": "2026-07-20T15:23:18.000",
+   "issuedworkstartdate": "2026-07-20T15:23:18.000",
+   "issuedworkenddate": "2026-08-05T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "A & H CONSTRUCTION AND PLUMBING CORP."
+  },
+  {
+   "permitnumber": "B012026181B26",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "MAJOR INSTALLATIONS - HIGH VOLTAGE",
+   "permitissuedate": "2026-06-30T09:37:37.000",
+   "issuedworkstartdate": "2026-06-30T09:37:37.000",
+   "issuedworkenddate": "2026-07-29T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "CONSOLIDATED EDISON"
+  },
+  {
+   "permitnumber": "B012026128B44",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "MAJOR INSTALLATIONS - HIGH VOLTAGE",
+   "permitissuedate": "2026-05-08T13:22:27.000",
+   "issuedworkstartdate": "2026-05-08T13:22:27.000",
+   "issuedworkenddate": "2026-06-05T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "previouspermitnumber": "B012026084A34"
+  },
+  {
+   "permitnumber": "B012026084A34",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "MAJOR INSTALLATIONS - HIGH VOLTAGE",
+   "permitissuedate": "2026-03-25T06:36:46.000",
+   "issuedworkstartdate": "2026-03-29T00:00:00.000",
+   "issuedworkenddate": "2026-04-27T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "previouspermitnumber": "B012026051A22",
+   "nextpermitnumber": "B012026128B44"
+  },
+  {
+   "permitnumber": "B012026057B35",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "REPAIR GAS",
+   "permitissuedate": "2026-02-26T10:00:06.000",
+   "issuedworkstartdate": "2026-03-06T00:00:00.000",
+   "issuedworkenddate": "2026-04-04T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "THE BROOKLYN UNION GAS COMPANY D/B/A NATIONAL GRID NY",
+   "previouspermitnumber": "B012026027B24"
+  },
+  {
+   "permitnumber": "B012026051A22",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "MAJOR INSTALLATIONS - HIGH VOLTAGE",
+   "permitissuedate": "2026-02-20T06:09:40.000",
+   "issuedworkstartdate": "2026-02-27T00:00:00.000",
+   "issuedworkenddate": "2026-03-28T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "previouspermitnumber": "B012025360E56",
+   "nextpermitnumber": "B012026084A34"
+  },
+  {
+   "permitnumber": "B012026036A27",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "REPAIR WATER",
+   "permitissuedate": "2026-02-05T08:16:19.000",
+   "issuedworkstartdate": "2026-02-05T08:16:19.000",
+   "issuedworkenddate": "2026-02-14T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "A & H CONSTRUCTION AND PLUMBING CORP."
+  },
+  {
+   "permitnumber": "B012026027B24",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "REPAIR GAS",
+   "permitissuedate": "2026-01-27T12:00:54.000",
+   "issuedworkstartdate": "2026-02-04T00:00:00.000",
+   "issuedworkenddate": "2026-03-05T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "THE BROOKLYN UNION GAS COMPANY D/B/A NATIONAL GRID NY",
+   "previouspermitnumber": "B012026005B34",
+   "nextpermitnumber": "B012026057B35"
+  },
+  {
+   "permitnumber": "B012026005B34",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "REPAIR GAS",
+   "permitissuedate": "2026-01-05T13:37:13.000",
+   "issuedworkstartdate": "2026-01-05T13:37:13.000",
+   "issuedworkenddate": "2026-02-03T23:59:59.000",
+   "permithousenumber": "588",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "THE BROOKLYN UNION GAS COMPANY D/B/A NATIONAL GRID NY",
+   "nextpermitnumber": "B012026027B24"
+  },
+  {
+   "permitnumber": "B012025360E56",
+   "permitstatusshortdesc": "EXPIRED UNDER GUARANTEE",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "MAJOR INSTALLATIONS - HIGH VOLTAGE",
+   "permitissuedate": "2025-12-26T15:35:32.000",
+   "issuedworkstartdate": "2025-12-29T00:00:00.000",
+   "issuedworkenddate": "2026-02-26T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "nextpermitnumber": "B012026051A22"
+  },
+  {
+   "permitnumber": "B022026288A79",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "TEMPORARY PEDESTRIAN WALK",
+   "permitissuedate": "2026-10-15T11:45:47.000",
+   "issuedworkstartdate": "2026-10-27T00:00:00.000",
+   "issuedworkenddate": "2026-11-25T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "DUMONT AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "previouspermitnumber": "B022026259B66"
+  },
+  {
+   "permitnumber": "B022026288A80",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "OCCUPANCY OF SIDEWALK AS STIPULATED",
+   "permitissuedate": "2026-10-15T11:45:47.000",
+   "issuedworkstartdate": "2026-10-27T00:00:00.000",
+   "issuedworkenddate": "2026-11-25T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "DUMONT AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "previouspermitnumber": "B022026259B67"
+  },
+  {
+   "permitnumber": "B012026288C53",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "STREET OPENING PERMIT",
+   "permittypedesc": "TRIBUTARY INSTALL - ELECTRIC",
+   "permitissuedate": "2026-10-15T11:45:46.000",
+   "issuedworkstartdate": "2026-10-27T00:00:00.000",
+   "issuedworkenddate": "2026-11-25T23:59:59.000",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "DUMONT AVENUE",
+   "permitteename": "CONSOLIDATED EDISON",
+   "previouspermitnumber": "B012026259B68"
+  },
+  {
+   "permitnumber": "B022026281E11",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
+   "permitissuedate": "2026-10-08T15:24:19.000",
+   "issuedworkstartdate": "2026-10-16T00:00:00.000",
+   "issuedworkenddate": "2026-12-28T23:59:59.000",
+   "permithousenumber": "682",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "DUMONT AVENUE",
+   "permitteename": "ROCK BUILDERS INC",
+   "previouspermitnumber": "B022026208B82"
+  },
+  {
+   "permitnumber": "B022026281E10",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
+   "permitissuedate": "2026-10-08T15:24:18.000",
+   "issuedworkstartdate": "2026-10-16T00:00:00.000",
+   "issuedworkenddate": "2026-12-28T23:59:59.000",
+   "permithousenumber": "682",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "DUMONT AVENUE",
+   "permitteename": "ROCK BUILDERS INC",
+   "previouspermitnumber": "B022026208B81"
+  },
+  {
+   "permitnumber": "B022026281E09",
+   "permitstatusshortdesc": "ISSUED & PRINTED",
+   "permitseriesshortdesc": "BUILDING OPERATION PERMIT",
+   "permittypedesc": "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
+   "permitissuedate": "2026-10-08T15:24:18.000",
+   "issuedworkstartdate": "2026-10-16T00:00:00.000",
+   "issuedworkenddate": "2026-12-28T23:59:59.000",
+   "permithousenumber": "682",
+   "onstreetname": "HOPKINSON AVENUE",
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "DUMONT AVENUE",
+   "permitteename": "ROCK BUILDERS INC",
+   "previouspermitnumber": "B022026208B80"
+  }
+ ],
+ "cross_streets": [
+  {
+   "fromstreetname": "EAST NEW YORK AVENUE",
+   "tostreetname": "PITKIN AVENUE",
+   "count": "200"
+  },
+  {
+   "fromstreetname": "PITKIN AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "count": "191"
+  },
+  {
+   "fromstreetname": "LIVONIA AVENUE",
+   "tostreetname": "RIVERDALE AVENUE",
+   "count": "109"
+  },
+  {
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "DUMONT AVENUE",
+   "count": "84"
+  },
+  {
+   "fromstreetname": "BLAKE AVENUE",
+   "tostreetname": "SUTTER AVENUE",
+   "count": "51"
+  },
+  {
+   "fromstreetname": "NEWPORT STREET",
+   "count": "34"
+  },
+  {
+   "fromstreetname": "HEGEMAN AVENUE",
+   "tostreetname": "LINDEN BOULEVARD",
+   "count": "34"
+  },
+  {
+   "fromstreetname": "NEWPORT STREET",
+   "tostreetname": "RIVERDALE AVENUE",
+   "count": "33"
+  },
+  {
+   "fromstreetname": "HEGEMAN AVENUE",
+   "tostreetname": "LOTT AVENUE",
+   "count": "31"
+  },
+  {
+   "fromstreetname": "LOTT AVENUE",
+   "tostreetname": "NEWPORT STREET",
+   "count": "25"
+  },
+  {
+   "fromstreetname": "MACON STREET",
+   "tostreetname": "MAC DONOUGH STREET",
+   "count": "25"
+  },
+  {
+   "fromstreetname": "RIVERDALE AVENUE",
+   "count": "24"
+  },
+  {
+   "fromstreetname": "LIVONIA AVENUE",
+   "count": "23"
+  },
+  {
+   "fromstreetname": "BROADWAY",
+   "tostreetname": "MACON STREET",
+   "count": "22"
+  },
+  {
+   "fromstreetname": "EAST   98 STREET",
+   "tostreetname": "LINDEN BOULEVARD",
+   "count": "20"
+  },
+  {
+   "fromstreetname": "EAST NEW YORK AVENUE",
+   "tostreetname": "PARK PLACE",
+   "count": "19"
+  },
+  {
+   "fromstreetname": "BERGEN STREET",
+   "tostreetname": "ST MARKS AVENUE",
+   "count": "16"
+  },
+  {
+   "fromstreetname": "MAC DOUGAL STREET",
+   "tostreetname": "SUMPTER STREET",
+   "count": "15"
+  },
+  {
+   "fromstreetname": "BERGEN STREET",
+   "tostreetname": "DEAN STREET",
+   "count": "15"
+  },
+  {
+   "fromstreetname": "LOTT AVENUE",
+   "count": "14"
+  },
+  {
+   "fromstreetname": "PROSPECT PLACE",
+   "tostreetname": "ST MARKS AVENUE",
+   "count": "14"
+  },
+  {
+   "fromstreetname": "ATLANTIC AVENUE",
+   "tostreetname": "HERKIMER STREET",
+   "count": "11"
+  },
+  {
+   "fromstreetname": "DEAN STREET",
+   "tostreetname": "PACIFIC STREET",
+   "count": "11"
+  },
+  {
+   "fromstreetname": "FULTON STREET",
+   "tostreetname": "HERKIMER STREET",
+   "count": "11"
+  },
+  {
+   "fromstreetname": "MAC DOUGAL STREET",
+   "count": "10"
+  },
+  {
+   "fromstreetname": "PARK PLACE",
+   "count": "10"
+  },
+  {
+   "fromstreetname": "DECATUR STREET",
+   "tostreetname": "MAC DONOUGH STREET",
+   "count": "10"
+  },
+  {
+   "fromstreetname": "ATLANTIC AVENUE",
+   "tostreetname": "PACIFIC STREET",
+   "count": "10"
+  },
+  {
+   "fromstreetname": "BAINBRIDGE STREET",
+   "tostreetname": "CHAUNCEY STREET",
+   "count": "8"
+  },
+  {
+   "fromstreetname": "LINDEN BOULEVARD",
+   "count": "7"
+  }
+ ]
+}

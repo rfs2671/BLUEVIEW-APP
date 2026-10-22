@@ -413,6 +413,11 @@ def collect(dob_rows: List[Dict[str, Any]], dot_rows: List[Dict[str, Any]],
             # below is an active permit whose end date has passed.
             if not dot_sync.permit_is_active(r.get("status")):
                 continue
+            # A permit by another permittee on the project's block is not the
+            # project's until a person says so (dot_sync.permit_confirmed):
+            # pending and rejected permits post nothing.
+            if not dot_sync.permit_confirmed(r):
+                continue
             exp = wa_gc.parse_dob_date(r.get("expiration_date"))
             if exp is None:
                 continue

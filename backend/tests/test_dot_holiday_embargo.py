@@ -71,7 +71,8 @@ STIP_DATASET = "gsgx-6efw"
 ACTION_EN = "No street work Nov 15 - Jan 2 unless DOT grants one."
 ACTION_ES = ("No se permite trabajo en la calle del 15 de nov al 2 de ene salvo que "
              "el DOT otorgue una exención.")
-# Coverage limit (operator copy), until DOT Phase 1 B adds segment permits.
+# The coverage limit #852 stated (operator copy). DOT Phase 1 B matches segment
+# permits (permittee + frontage) and REMOVED it: these lines must be gone.
 COVERAGE_EN = ("Checks permits matched to your address. Permits filed by street segment "
                "arrive with the next update.")
 COVERAGE_ES = ("Revisa los permisos vinculados a su dirección. Los permisos registrados por "
@@ -424,11 +425,12 @@ class TheAlertJob(unittest.TestCase):
             self.assertIn(line, m["text"])
             self.assertIn(line, m["html"])
         self.assertLess(m["text"].index(ACTION_EN), m["text"].index(ACTION_ES))
-        for line in (COVERAGE_EN, COVERAGE_ES):
-            self.assertIn(line, m["text"])
-            self.assertIn(line, m["html"])
-        self.assertLess(m["text"].index(COVERAGE_EN), m["text"].index("Qué hacer"))
-        self.assertLess(m["text"].index("Qué hacer"), m["text"].index(COVERAGE_ES))
+        # DOT Phase 1 B: the coverage note is gone from the email, EN and ES.
+        for line in (COVERAGE_EN, COVERAGE_ES, "Permits filed by street segment",
+                     "registrados por tramo de calle"):
+            self.assertNotIn(line, m["text"])
+            self.assertNotIn(line, m["html"])
+        self.assertFalse(hasattr(E, "COVERAGE_NOTE_EN") or hasattr(E, "COVERAGE_NOTE_ES"))
         (led,) = env.db.dot_alert_ledger.docs
         self.assertEqual(led["_id"], f"dot:p1:embargo:{NO_WAIVER_NUM}:2026:2026-11-01")
 
@@ -611,7 +613,8 @@ class TheGroupPost(unittest.TestCase):
 
 
 class TheBannerStrings(unittest.TestCase):
-    """The banner's coverage note, read from the catalogue SOURCE and the
+    """The banner's coverage note was REMOVED by DOT Phase 1 B (segment permits
+    are matched now): gone from the catalogue SOURCE, EN and ES, and from the
     screen (the node i18n test checks the EN/ES keys are identical)."""
 
     FE = Path(__file__).resolve().parents[2] / "frontend"
@@ -621,14 +624,16 @@ class TheBannerStrings(unittest.TestCase):
         i = src.index("dotEmbargo: {")
         return src[i:src.index("},", i)]
 
-    def test_the_coverage_note_is_in_en_and_es(self):
-        self.assertIn(f"coverageNote: '{COVERAGE_EN}'", self._ns("en.js"))
-        self.assertIn(f"coverageNote: '{COVERAGE_ES}'", self._ns("es.js"))
+    def test_the_coverage_note_is_gone_from_en_and_es(self):
+        for name, line in (("en.js", COVERAGE_EN), ("es.js", COVERAGE_ES)):
+            self.assertIn("banner:", self._ns(name))          # the namespace was read
+            self.assertNotIn("coverageNote", self._ns(name), name)
+            self.assertNotIn(line, (self.FE / "src" / "i18n" / name).read_text(encoding="utf-8"))
 
-    def test_the_banner_shows_it(self):
+    def test_the_banner_no_longer_shows_it(self):
         src = (self.FE / "app" / "project" / "[id]" / "dob-logs.jsx").read_text(encoding="utf-8")
-        i = src.index("{embargoMissing.length > 0 && (")
-        self.assertIn("tEmbargo('coverageNote')", src[i:src.index("</GlassCard>", i)])
+        self.assertIn("embargoMissing.length > 0", src)          # the banner is still there
+        self.assertNotIn("coverageNote", src)
 
 
 class TheEndpoint(unittest.TestCase):
