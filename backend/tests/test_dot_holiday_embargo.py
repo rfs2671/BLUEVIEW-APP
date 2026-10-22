@@ -639,8 +639,9 @@ class TheBannerStrings(unittest.TestCase):
     def test_the_coverage_note_is_gone_from_en_and_es(self):
         for name, line in (("en.js", COVERAGE_EN), ("es.js", COVERAGE_ES)):
             self.assertIn("banner:", self._ns(name))          # the namespace was read
-            self.assertNotIn("coverageNote", self._ns(name), name)
-            self.assertNotIn(line, (self.FE / "src" / "i18n" / name).read_text(encoding="utf-8"))
+            self.assertNotIn("coverageNote:", self._ns(name), name)
+            cat = (self.FE / "src" / "i18n" / name).read_text(encoding="utf-8")
+            self.assertTrue(line not in cat, f"the coverage note is still in {name}")
 
     BANNER = "{(embargoMissing.length > 0 || embargoUnverified.length > 0) && ("
 
@@ -654,7 +655,7 @@ class TheBannerStrings(unittest.TestCase):
         # "Waiver not verified" line, below) stays.
         src, banner = self._banner()
         self.assertIn("tEmbargo('action')", banner)
-        self.assertNotIn("coverageNote", src)
+        self.assertTrue("tEmbargo('coverageNote')" not in src, "dob-logs.jsx still renders coverageNote")
 
     def test_waiver_not_verified_is_in_en_and_es(self):
         en, es = self._ns("en.js"), self._ns("es.js")

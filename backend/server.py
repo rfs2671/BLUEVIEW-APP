@@ -47927,8 +47927,8 @@ async def _dot_complete_chains(project_id: str, fetch, report: dict) -> None:
     renewals the project's own rows do not show are read in ONE batched
     request (dot_sync.chain_params, capped at 50 + 50 numbers). A failed read
     writes nothing: what the rows already say still stands."""
-    rows = await db.dot_logs.find(
-        {"project_id": project_id, "record_type": "dot_permit"}).to_list(2000)
+    rows = [r for r in await db.dot_logs.find({"project_id": project_id}).to_list(5000)
+            if r.get("record_type") == "dot_permit"]
     if not rows:
         return
     others = list(rows)
@@ -48516,7 +48516,7 @@ async def _dot_setup_context(project: dict) -> tuple:
     """(setup, suggestions, own names, project keys) for one project."""
     pid = str(project.get("_id") or "")
     today = dot_embargo.ny_date(datetime.now(timezone.utc))
-    rows = await db.dot_logs.find({"project_id": pid, "record_type": "dot_permit"}).to_list(2000)
+    rows = await db.dot_logs.find({"project_id": pid}).to_list(5000)
     own = [project.get("gc_legal_name")]
     try:
         company = await db.companies.find_one({"_id": to_query_id(str(project.get("company_id") or ""))},
@@ -48586,7 +48586,7 @@ async def get_dot_setup(
 
 
 @api_router.post("/projects/{project_id}/dot/setup/confirm",
-                 dependencies=[Depends(require_approved)])
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def confirm_dot_setup(
     project_id: str,
     body: Optional[DotSetupConfirm] = None,
@@ -48659,7 +48659,7 @@ async def confirm_dot_setup(
 
 
 @api_router.post("/projects/{project_id}/dot/setup/frontage",
-                 dependencies=[Depends(require_approved)])
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def add_dot_frontage(
     project_id: str,
     body: DotFrontageIn,
@@ -48710,7 +48710,7 @@ async def add_dot_frontage(
 
 
 @api_router.delete("/projects/{project_id}/dot/setup/frontage/{index}",
-                   dependencies=[Depends(require_approved)])
+                   dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def remove_dot_frontage(
     project_id: str,
     index: int,
@@ -48742,7 +48742,7 @@ async def get_dot_permits(
     expired) and the permits by another permittee on its block waiting for a
     "yours?"."""
     pid = str(project.get("_id") or project_id)
-    rows = await db.dot_logs.find({"project_id": pid, "record_type": "dot_permit"}).to_list(2000)
+    rows = await db.dot_logs.find({"project_id": pid}).to_list(5000)
     out = dot_permits.board(rows, dot_embargo.ny_date(datetime.now(timezone.utc)))
     setup = dot_permits.load_setup(project.get("dot_setup"))
     role = _dot_setup_role(current_user)
@@ -48750,7 +48750,7 @@ async def get_dot_permits(
 
 
 @api_router.post("/projects/{project_id}/dot/permits/{permit}/review",
-                 dependencies=[Depends(require_approved)])
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def review_dot_permit(
     project_id: str,
     permit: str,
@@ -48767,9 +48767,8 @@ async def review_dot_permit(
     if decision not in ("accept", "reject"):
         raise HTTPException(status_code=422, detail='decision: "accept" or "reject"')
     pid = str(project.get("_id") or project_id)
-    row = await db.dot_logs.find_one({"project_id": pid, "record_type": "dot_permit",
-                                      "number": str(permit)})
-    if not row:
+    row = await db.dot_logs.find_one({"project_id": pid, "raw_id": f"dotpermit:{permit}"})
+    if not row or row.get("record_type") != "dot_permit":
         raise HTTPException(status_code=404, detail="Permit not found on this project")
     if dot_sync.match_state(row) != dot_sync.STATE_NEEDS:
         raise HTTPException(status_code=409, detail="This permit is not waiting for confirmation")

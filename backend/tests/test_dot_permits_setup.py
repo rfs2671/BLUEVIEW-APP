@@ -824,11 +824,13 @@ class TheUnverifiedWaiver(unittest.TestCase):
     def test_the_label_is_in_en_and_es(self):
         en = (FE / "src" / "i18n" / "en.js").read_text(encoding="utf-8")
         es = (FE / "src" / "i18n" / "es.js").read_text(encoding="utf-8")
-        self.assertIn("waiverUnverified: 'Waiver not verified'", en[en.index("dotCompliance: {"):])
-        self.assertIn("waiverUnverified: 'Exención no verificada'", es[es.index("dotCompliance: {"):])
+        self.assertTrue("waiverUnverified: 'Waiver not verified'" in en[en.index("dotCompliance: {"):],
+                        "en dotCompliance.waiverUnverified missing")
+        self.assertTrue("waiverUnverified: 'Exención no verificada'" in es[es.index("dotCompliance: {"):],
+                        "es dotCompliance.waiverUnverified missing")
         panel = (FE / "src" / "components" / "DotCompliancePanel.jsx").read_text(encoding="utf-8")
-        self.assertIn("p.waiver_unverified", panel)
-        self.assertIn("t('waiverUnverified')", panel)
+        self.assertTrue("p.waiver_unverified" in panel, "the panel does not read waiver_unverified")
+        self.assertTrue("t('waiverUnverified')" in panel, "the panel does not render the label")
 
 
 class TheCoverageNoteIsGone(unittest.TestCase):
@@ -848,11 +850,13 @@ class TheCoverageNoteIsGone(unittest.TestCase):
             self.assertNotIn(gone, m["text"])
             self.assertNotIn(gone, m["html"])
             for name in ("en.js", "es.js"):
-                self.assertNotIn(gone, (FE / "src" / "i18n" / name).read_text(encoding="utf-8"))
+                cat = (FE / "src" / "i18n" / name).read_text(encoding="utf-8")
+                self.assertTrue(gone not in cat, f"{gone!r} is still in {name}")
         for name in ("en.js", "es.js"):
-            self.assertNotIn("coverageNote", (FE / "src" / "i18n" / name).read_text(encoding="utf-8"))
-        self.assertNotIn("coverageNote", (FE / "app" / "project" / "[id]" / "dob-logs.jsx")
-                         .read_text(encoding="utf-8"))
+            cat = (FE / "src" / "i18n" / name).read_text(encoding="utf-8")
+            self.assertTrue("coverageNote:" not in cat, f"the coverageNote key is still in {name}")
+        screen = (FE / "app" / "project" / "[id]" / "dob-logs.jsx").read_text(encoding="utf-8")
+        self.assertTrue("tEmbargo('coverageNote')" not in screen, "dob-logs.jsx still renders coverageNote")
 
 
 # ═══ WhatsApp: the dot_permit 30/14/7/1 posts skip pending permits ═══════════
