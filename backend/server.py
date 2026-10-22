@@ -113,6 +113,7 @@ from lib import wa_alerts  # noqa: E402
 from lib import status_history as status_hist  # noqa: E402
 from lib import dot_sync  # noqa: E402
 from lib import dob_site_bins  # noqa: E402
+from lib import dob_alert_gate  # noqa: E402
 from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
@@ -41164,8 +41165,13 @@ async def _critical_dob_alert_recipients(project: dict) -> List[str]:
     return out
 
 
-async def _send_critical_dob_alert(project: dict, dob_log: dict):
+async def _send_critical_dob_alert(project: dict, dob_log: dict, *, event: str):
     """Send a notification email about a DOB record that needs attention.
+
+    `event` is required, one of lib/dob_alert_gate.EVENTS: "new" for a first
+    sighting that passed new_alert_refusal (not closed, received by DOB within
+    2 days, its BIN past its first pass); "swo" / "vacate" for an update that
+    issued that order. No other update emails (operator ruling 2026-10-22).
 
     Deliberately plain and conversational. All-caps subjects, red
     banners, bracketed "[CRITICAL]" tags, and heavy emoji push spam
@@ -41196,11 +41202,21 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     else:
         detected_str = str(detected_at)
 
+    # Which event, and the record's own facts -- its number, the date DOB
+    # received it and its status -- so a reader can see at a glance how old it
+    # is and whether it is still open (lib/dob_alert_gate.COPY: EN and ES).
+    head_en = dob_alert_gate.headline(event, rt, project_name, "en")
+    head_es = dob_alert_gate.headline(event, rt, project_name, "es")
+    subject, intro, intro_es = head_en["subject"], head_en["intro"], head_es["intro"]
+    line_en = dob_alert_gate.record_line(dob_log, rt, "en")
+    line_es = dob_alert_gate.record_line(dob_log, rt, "es")
+
     # Plaintext alternative: present-tense, human, no urgency language.
     link_line = f"\n\nDetails: {dob_link}" if dob_link else ""
     text_body = (
         f"Hi,\n\n"
-        f"Levelog picked up a new {rt} on {project_name}.\n\n"
+        f"{intro}\n{intro_es}\n\n"
+        f"{line_en}\n{line_es}\n\n"
         f"Summary: {summary}\n\n"
         f"Recommended next step: {next_action}\n\n"
         f"Detected {detected_str}."
@@ -41227,12 +41243,13 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     <tr><td style="padding:24px 28px;">
       <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
       <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">
-        New {rt} on {project_name}
+        {subject}
       </h1>
       <p style="margin:0 0 14px;font-size:15px;">Hi,</p>
-      <p style="margin:0 0 14px;font-size:15px;">
-        Levelog picked up a new {rt} on <strong>{project_name}</strong>. Here are the details:
-      </p>
+      <p style="margin:0 0 4px;font-size:15px;">{intro}</p>
+      <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">{intro_es}</p>
+      <p style="margin:0 0 4px;font-size:15px;"><strong>{line_en}</strong></p>
+      <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">{line_es}</p>
       <p style="margin:0 0 14px;font-size:15px;"><strong>Summary:</strong> {summary}</p>
       <p style="margin:0 0 14px;font-size:15px;"><strong>Recommended next step:</strong> {next_action}</p>
       <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">Detected {detected_str}.</p>
@@ -41247,8 +41264,6 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
   </table>
 </body>
 </html>"""
-
-    subject = f"New {rt} on {project_name}"
 
     # MR.14 fix — route through lib/notifications.send_notification.
     # That helper provides:
@@ -41283,6 +41298,8 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
                     "record_type": rt_raw,
                     "raw_dob_id": raw_dob_id,
                     "severity": dob_log.get("severity"),
+                    "event": event,
+                    "received_by_dob": str(dob_alert_gate.received_date(dob_log) or ""),
                 },
             )
         except Exception as e:
@@ -41331,6 +41348,43 @@ async def _initial_scan_done(project_id: str, source: str) -> bool:
         # On DB hiccups, err toward "done" so we don't silently suppress
         # real alerts forever.
         return True
+
+
+async def _bin_scan_done(project_id: str, bin_: str, own_bin: str) -> bool:
+    """Has the DOB sync finished a full pass of `bin_` for this project?
+    Keyed per project AND per BIN (lib/dob_alert_gate.scan_key), so a BIN added
+    to a project later has a silent first pass of its own. The legacy
+    per-project key still answers for the project's OWN BIN: those records have
+    been scanned all along, and requiring a new key for them would mute one
+    sync of genuine alerts on every project at deploy."""
+    if not project_id:
+        return False
+    keys = [dob_alert_gate.scan_key(project_id, bin_)] if bin_ else []
+    if not bin_ or bin_ == own_bin:
+        keys.append(f"initial_scan_done:dob:{project_id}")
+    try:
+        return bool(await db.system_config.find_one({"key": {"$in": keys}}))
+    except Exception as e:
+        logger.warning(f"bin scan state read failed: {type(e).__name__}")
+        # As _initial_scan_done: err toward "done" -- the age and closed
+        # rules (lib/dob_alert_gate) still stop a backfilled record.
+        return True
+
+
+async def _mark_bins_scanned(project_id: str, bins) -> None:
+    """Record a finished DOB pass for each real BIN in `bins`."""
+    now = datetime.now(timezone.utc)
+    for b in sorted({str(b) for b in (bins or []) if b and not _is_placeholder_bin(str(b))}):
+        key = dob_alert_gate.scan_key(project_id, b)
+        try:
+            await db.system_config.update_one(
+                {"key": key},
+                {"$set": {"key": key, "source": "dob", "project_id": project_id,
+                          "bin": b, "updated_at": now},
+                 "$setOnInsert": {"completed_at": now}},
+                upsert=True)
+        except Exception as e:
+            logger.warning(f"bin scan state write failed: {type(e).__name__}")
 
 
 async def _mark_initial_scan_done(project_id: str, source: str) -> None:
@@ -41392,7 +41446,7 @@ async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str) -> None:
 
 
 async def _send_critical_dob_alert_throttled(
-    project: dict, dob_log: dict, source: str = "dob",
+    project: dict, dob_log: dict, source: str = "dob", *, event: str,
 ) -> bool:
     """Wrapper that enforces:
 
@@ -41425,7 +41479,7 @@ async def _send_critical_dob_alert_throttled(
         )
         return False
 
-    await _send_critical_dob_alert(project, dob_log)
+    await _send_critical_dob_alert(project, dob_log, event=event)
     await _mark_dob_alert_sent(project_id, raw_dob_id)
     return True
 
@@ -41713,8 +41767,24 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
                 # Fire critical alert through the throttled wrapper.
                 # Initial-scan suppression here means the very first 311
                 # poll for a project quietly backfills the historical
-                # complaints without spamming the owner.
-                await _send_critical_dob_alert_throttled(project, doc, source="311")
+                # complaints without spamming the owner. The same rules as
+                # the DOB sync (lib/dob_alert_gate): a first sighting emails
+                # only if open and received within 2 days; a transition only
+                # if it issued a Stop Work Order or a vacate order.
+                if existing is None:
+                    why = dob_alert_gate.new_alert_refusal(
+                        doc, _Date.fromisoformat(eastern_today()))
+                    if why:
+                        logger.info(f"[dob-alert] 311 not sent as new: reason={why} "
+                                    f"project={project_id} raw_dob_id={doc.get('raw_dob_id')}")
+                    else:
+                        await _send_critical_dob_alert_throttled(
+                            project, doc, source="311", event="new")
+                else:
+                    order = dob_alert_gate.update_issues_order(existing, doc)
+                    if order:
+                        await _send_critical_dob_alert_throttled(
+                            project, doc, source="311", event=order)
 
             # V2.3 Commit 6 — predictive inspection surfacing.
             # Spawn a fire-and-forget similar-case correlation
@@ -42268,6 +42338,11 @@ def _classify_resolution_state(rec: dict) -> str:
     # neither current_status nor violation_category exposes, so a won dispute
     # ("Disputed Successfully") read as OPEN until this was added.
     vstatus = str(rec.get("violation_status") or "").upper()
+    # ECB/OATH (6bgk-3dad) carries its state in `ecb_violation_status`
+    # ("ACTIVE" / "RESOLVE" -- no trailing D), which none of the fields above
+    # expose: a resolved ECB violation read as OPEN and severity 'Action', and
+    # 39558663R would have been emailed as new (2026-10-22).
+    ecb = str(rec.get("ecb_violation_status") or "").upper()
     hearing = rec.get("hearing_date_time") or rec.get("hearing_date") or ""
     disp_date = rec.get("disposition_date") or ""
 
@@ -42280,7 +42355,7 @@ def _classify_resolution_state(rec: dict) -> str:
     # `category`, using substrings that DOB itself uses.
     if any(w in cert_status for w in ["CERTIFIED", "CERTIFICATE", "RESOLVE"]):
         return "certified"
-    if "DISMISS" in current_status or "DISMISS" in category:
+    if "DISMISS" in current_status or "DISMISS" in category or "DISMISS" in ecb:
         return "dismissed"
     # A successful dispute (DOB NOW) resolves the violation in the owner's
     # favor. Match the FULL phrase — "Disputed Unsuccessfully" stays open.
@@ -42290,7 +42365,8 @@ def _classify_resolution_state(rec: dict) -> str:
         return "paid"
     if (any(w in current_status for w in ["RESOLVE", "CLOSED", "RESCIND"])
             or any(w in category for w in ["RESOLVE", "CLOSED", "RESCIND"])
-            or any(w in vstatus for w in ["RESOLVE", "CLOSED", "CURED", "COMPLIED"])):
+            or any(w in vstatus for w in ["RESOLVE", "CLOSED", "CURED", "COMPLIED"])
+            or any(w in ecb for w in ["RESOLVE", "CLOSED"])):
         return "resolved"
     if "CURE" in cert_status or "CURE" in current_status:
         return "cure_pending"
@@ -43004,11 +43080,16 @@ def _plan_in_place_refresh(existing: dict, dob_log: dict, now: datetime):
 
 
 async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
-                          answered: Optional[Dict[str, bool]] = None) -> list:
+                          answered: Optional[Dict[str, bool]] = None,
+                          fetched_bins: Optional[list] = None) -> list:
     """`records` plus everything filed under the job site's OTHER building BINs
     (lib/dob_site_bins). A BIN counts only when one of its jobs is also a job
     under the project's BIN; a neighbour's BIN is never fetched. Never raises: a
-    failure leaves the sync exactly as it was."""
+    failure leaves the sync exactly as it was.
+
+    Each record added here is tagged `_site_bin` and each BIN fetched is
+    appended to `fetched_bins`, so the first pass of a newly added BIN is
+    silent (lib/dob_alert_gate.scan_key) like any other backfill."""
     try:
         if not nyc_bin or _is_placeholder_bin(nyc_bin):
             return records
@@ -43016,7 +43097,12 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
         for cand in dob_site_bins.candidate_bins(records, nyc_bin):
             found = await _query_dob_apis(cand, "", answered)
             if dob_site_bins.shares_job(records, nyc_bin, found, cand):
+                for r in found:
+                    if isinstance(r, dict):
+                        r["_site_bin"] = cand
                 added += dob_site_bins.new_records(list(records) + added, found)
+                if fetched_bins is not None:
+                    fetched_bins.append(cand)
                 logger.info(f"[dob-sync] project {project_id}: BIN {cand} is part of the site "
                             f"(shares a job with BIN {nyc_bin}); {len(found)} records")
             else:
@@ -43094,7 +43180,8 @@ async def run_dob_sync_for_project(project: dict) -> list:
             & set(source_sync.DOB_SOURCES))
 
     raw_records = await _query_dob_apis(nyc_bin, project_address, answered)
-    raw_records = await _with_site_bins(project_id, nyc_bin, raw_records, answered)
+    site_bins: list = []
+    raw_records = await _with_site_bins(project_id, nyc_bin, raw_records, answered, site_bins)
 
     # --- BIN auto-heal ---
     # Scan returned records for a real BIN. DOB's datasets expose the
@@ -43260,10 +43347,14 @@ async def run_dob_sync_for_project(project: dict) -> list:
     if not new_records:
         logger.info(f"DOB sync for project {project_id}: no new records")
         await _mark_synced()
+        await _mark_bins_scanned(project_id, [nyc_bin] + site_bins)
         return []
  
     inserted_logs = []
     now = datetime.now(timezone.utc)
+    # DOB dates are New York calendar dates.
+    alert_today = _Date.fromisoformat(eastern_today())
+    bin_scanned: Dict[str, bool] = {}
  
     for raw_id, rec in new_records:
         try:
@@ -43391,11 +43482,19 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # 'Good' and never email as critical. The throttled wrapper
                 # still applies initial-scan suppression and the 24h per-record
                 # dedupe.
-                if changed and not legacy and severity == "Action":
-                    await _send_critical_dob_alert_throttled(
-                        project,
-                        {**existing, **update, "id": str(existing["_id"])},
-                        source="dob")
+                # An UPDATE never emails (operator ruling 2026-10-22) -- unless
+                # it issued a Stop Work Order or a vacate order. Checked on
+                # every non-legacy refresh, not only a status change: DOB
+                # serves an A3 "Full Stop Work Order" as a new DISPOSITION on a
+                # complaint whose status stays ACTIVE. The 24h throttle and the
+                # before/after comparison keep it to one email.
+                if not legacy:
+                    after = {**existing, **dob_log, **(update or {}),
+                             "id": str(existing["_id"])}
+                    order = dob_alert_gate.update_issues_order(existing, after)
+                    if order:
+                        await _send_critical_dob_alert_throttled(
+                            project, after, source="dob", event=order)
             elif existing and existing.get("current_status") == current_status:
                 # No status change — refresh mutable fields. Don't
                 # insert a duplicate.
@@ -43422,9 +43521,12 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # Only alert if severity escalated to Action — and
                 # route through the throttled wrapper so initial-scan
                 # suppression + 24h dedupe apply.
-                old_severity = existing.get("severity", "")
-                if severity == "Action" and old_severity != "Action":
-                    await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
+                # A field refresh is an update: it emails only when it issued
+                # a Stop Work Order or a vacate order (ruling 2026-10-22).
+                order = dob_alert_gate.update_issues_order(existing, dob_log)
+                if order:
+                    await _send_critical_dob_alert_throttled(
+                        project, dob_log, source="dob", event=order)
             else:
                 # Either first time OR status changed. Stamp
                 # transition markers and insert a new row. The
@@ -43465,8 +43567,31 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 result = await db.dob_logs.insert_one(dob_log)
                 dob_log["id"] = str(result.inserted_id)
                 inserted_logs.append(dob_log)
-                if severity == "Action" and not is_seed_transition:
-                    await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
+                if existing is not None and not is_seed_transition:
+                    # A change row (permit diff / transition): an update.
+                    order = dob_alert_gate.update_issues_order(existing, dob_log)
+                    if order:
+                        await _send_critical_dob_alert_throttled(
+                            project, dob_log, source="dob", event=order)
+                elif severity == "Action" and not is_seed_transition:
+                    if existing is None:
+                        # A FIRST SIGHTING. Announced as new only if the BIN it
+                        # came from has had its first pass, it is not closed,
+                        # and DOB received it within the last 7 days
+                        # (lib/dob_alert_gate). Otherwise stored, not sent.
+                        site_bin = str(rec.get("_site_bin") or nyc_bin or "")
+                        if site_bin not in bin_scanned:
+                            bin_scanned[site_bin] = await _bin_scan_done(
+                                project_id, site_bin, nyc_bin)
+                        why = dob_alert_gate.new_alert_refusal(
+                            dob_log, alert_today, bin_scanned=bin_scanned[site_bin])
+                        if why:
+                            logger.info(
+                                f"[dob-alert] not sent as new: reason={why} "
+                                f"project={project_id} bin={site_bin} raw_dob_id={raw_id}")
+                        else:
+                            await _send_critical_dob_alert_throttled(
+                                project, dob_log, source="dob", event="new")
         except Exception as e:
             failed_types.add(rec.get("_record_type"))
             logger.error(f"Failed to process dob_log for raw_id={raw_id} type={rec.get('_record_type')}: {e}", exc_info=True)
@@ -43559,6 +43684,9 @@ async def run_dob_sync_for_project(project: dict) -> list:
     # can send email alerts. The first scan of a newly-tracked project
     # pulls in the entire historical backlog — silent during that run.
     await _mark_initial_scan_done(project_id, "dob")
+    # ...and per BIN: a site BIN fetched for the first time this run is
+    # backfill too, and its first pass ends here.
+    await _mark_bins_scanned(project_id, [nyc_bin] + site_bins)
 
     # Rolling per-project sync freshness. Distinct from first_poll_completed_at,
     # which is written ONCE (guarded above) and therefore answers "has this

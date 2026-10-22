@@ -293,8 +293,12 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
     def test_legacy_change_to_action_does_not_alert_then_genuine_change_does(self):
         """The migration-day rule. NEGATIVE CONTROL: if the legacy branch were
         not marked `legacy`, the first assert_not_awaited fails (the 2026-05-03
-        storm); if genuine changes were silenced too, the later assert_awaited
-        fails."""
+        storm).
+
+        AMENDED 2026-10-22 (operator ruling, lib/dob_alert_gate): a genuine
+        status change no longer emails at all -- only an update that ISSUES a
+        Stop Work Order or a vacate order does. So the later change to PENALTY
+        stays silent, and a change that issues a SWO alerts once."""
         s = _Sync()
         self._legacy_violation(s)
         # ACTIVE -> HEARING: still Action severity, i.e. WOULD alert if genuine.
@@ -309,18 +313,24 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
         self.assertEqual(r["status_history"][0]["at"], datetime(2026, 3, 1, tzinfo=timezone.utc))
         s.alert.assert_not_awaited()
 
-        # a LATER genuine change to Action severity alerts, once, through the
-        # throttled wrapper, and un-seeds the row.
+        # a LATER genuine status change un-seeds the row -- and, since
+        # 2026-10-22, does not email: an update is not news.
         s.sync(_project(), [_viol_rec(category="V*-DOB VIOLATION - PENALTY")])
         (r,) = s.rows()
         self.assertFalse(r["is_seed_transition"])
         self.assertEqual([x[1] for x in _hist(r)], ["first_seen", "legacy_first_refresh", "sync"])
+        s.alert.assert_not_awaited()
+
+        # ...an update that ISSUES a Stop Work Order emails, once.
+        s.sync(_project(), [_viol_rec(category="V*-DOB VIOLATION - PENALTY",
+                                      description="Full Stop Work Order")])
         s.alert.assert_awaited_once()
         sent_project, sent_log = s.alert.await_args.args
         self.assertEqual(sent_project["_id"], "p1")
         self.assertEqual(sent_log["raw_dob_id"], "555")
         self.assertEqual(sent_log["current_status"], "V*-DOB VIOLATION - PENALTY")
         self.assertEqual(s.alert.await_args.kwargs["source"], "dob")
+        self.assertEqual(s.alert.await_args.kwargs["event"], "swo")
 
     def test_legacy_unchanged_status_only_gains_history(self):
         s = _Sync()
