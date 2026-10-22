@@ -149,6 +149,16 @@ class TheIncident(unittest.TestCase):
         self.assertIn(f"initial_scan_done:dob:p588:{SECOND}", keys,
                       "the second BIN's first pass is recorded")
 
+    def test_the_rows_say_which_bin_and_that_it_was_its_first_pass(self):
+        """What the WhatsApp group alerts read: silent first pass, and the
+        one summary for the newly added BIN (lib/dob_alert_gate)."""
+        s = _Sync({OWN: [_permit(OWN, "I1"), _permit(SECOND, "S1")],
+                   SECOND: SECOND_BIN}).run()
+        for rid in ("3A78809", "39558662P", "39558663R"):
+            (row,) = s.stored(rid)
+            self.assertEqual(row.get("site_bin"), SECOND)
+            self.assertTrue(row.get("bin_first_pass"))
+
     def test_the_same_records_stay_silent_on_the_next_sync_too(self):
         s = _Sync({OWN: [_permit(OWN, "I1"), _permit(SECOND, "S1")], SECOND: SECOND_BIN})
         s.run().run()
@@ -173,6 +183,9 @@ class NewRecordsOnAnExistingBin(unittest.TestCase):
     def test_a_record_entered_today_sends_one_email(self):
         s = _Sync({OWN: [_dob_violation("901", "20261022")]}).run()
         self.assertEqual(s.events, ["new"])
+        (row,) = s.stored("901")
+        self.assertNotIn("site_bin", row, "the project's own BIN")
+        self.assertFalse(row.get("bin_first_pass"), "its BIN was scanned long ago")
 
     def test_a_record_entered_five_days_ago_first_seen_today_sends_nothing(self):
         s = _Sync({OWN: [_dob_violation("902", "20261017")]}).run()
@@ -214,6 +227,9 @@ class Updates(unittest.TestCase):
         s = self._changed(_complaint("3B00002", "10/17/2026", disposition="A1"),
                           _complaint("3B00002", "10/17/2026", disposition="A3"))
         self.assertEqual(s.events, ["swo"])
+        (row,) = s.stored("3B00002")
+        self.assertEqual(row["order_issued"]["kind"], "swo",
+                         "stamped for the group alert's one post")
 
     def test_an_update_that_issues_a_vacate_order_sends_one(self):
         # Y1 "Full Vacate Order Issued".

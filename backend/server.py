@@ -41371,6 +41371,16 @@ async def _bin_scan_done(project_id: str, bin_: str, own_bin: str) -> bool:
         return True
 
 
+async def _stamp_order_issued(row_id, order: str, now: datetime) -> None:
+    """Mark the row an UPDATE put under a Stop Work Order / vacate order, so
+    the GC group alerts can post it once (lib/dob_alert_gate.gc_order_items)."""
+    try:
+        await db.dob_logs.update_one(
+            {"_id": row_id}, {"$set": {"order_issued": {"kind": order, "at": now}}})
+    except Exception as e:
+        logger.warning(f"order stamp failed: {type(e).__name__}")
+
+
 async def _mark_bins_scanned(project_id: str, bins) -> None:
     """Record a finished DOB pass for each real BIN in `bins`."""
     now = datetime.now(timezone.utc)
@@ -43493,6 +43503,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
                              "id": str(existing["_id"])}
                     order = dob_alert_gate.update_issues_order(existing, after)
                     if order:
+                        await _stamp_order_issued(existing["_id"], order, now)
                         await _send_critical_dob_alert_throttled(
                             project, after, source="dob", event=order)
             elif existing and existing.get("current_status") == current_status:
@@ -43525,6 +43536,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # a Stop Work Order or a vacate order (ruling 2026-10-22).
                 order = dob_alert_gate.update_issues_order(existing, dob_log)
                 if order:
+                    await _stamp_order_issued(existing["_id"], order, now)
                     await _send_critical_dob_alert_throttled(
                         project, dob_log, source="dob", event=order)
             else:
@@ -43564,12 +43576,27 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     and "current_status" not in existing
                 )
                 dob_log["is_seed_transition"] = is_seed_transition
+                site_bin = str(rec.get("_site_bin") or nyc_bin or "")
+                order = None
+                if existing is None:
+                    # Which BIN it came from, and whether that BIN's first pass
+                    # is under way: the GC group alerts read both from the row
+                    # (silent first pass, one summary per newly added BIN).
+                    if site_bin not in bin_scanned:
+                        bin_scanned[site_bin] = await _bin_scan_done(
+                            project_id, site_bin, nyc_bin)
+                    if rec.get("_site_bin"):
+                        dob_log["site_bin"] = str(rec["_site_bin"])
+                    dob_log["bin_first_pass"] = not bin_scanned[site_bin]
+                elif not is_seed_transition:
+                    # A change row (permit diff / transition): an update.
+                    order = dob_alert_gate.update_issues_order(existing, dob_log)
+                    if order:
+                        dob_log["order_issued"] = {"kind": order, "at": now}
                 result = await db.dob_logs.insert_one(dob_log)
                 dob_log["id"] = str(result.inserted_id)
                 inserted_logs.append(dob_log)
                 if existing is not None and not is_seed_transition:
-                    # A change row (permit diff / transition): an update.
-                    order = dob_alert_gate.update_issues_order(existing, dob_log)
                     if order:
                         await _send_critical_dob_alert_throttled(
                             project, dob_log, source="dob", event=order)
@@ -43577,12 +43604,8 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     if existing is None:
                         # A FIRST SIGHTING. Announced as new only if the BIN it
                         # came from has had its first pass, it is not closed,
-                        # and DOB received it within the last 7 days
+                        # and DOB received it within the last 2 days
                         # (lib/dob_alert_gate). Otherwise stored, not sent.
-                        site_bin = str(rec.get("_site_bin") or nyc_bin or "")
-                        if site_bin not in bin_scanned:
-                            bin_scanned[site_bin] = await _bin_scan_done(
-                                project_id, site_bin, nyc_bin)
                         why = dob_alert_gate.new_alert_refusal(
                             dob_log, alert_today, bin_scanned=bin_scanned[site_bin])
                         if why:
@@ -47481,6 +47504,10 @@ async def _gc_ai_line(kind: str, facts: Dict[str, str]) -> Optional[str]:
 
 async def _gc_alert_text(item: dict, address: str, today) -> str:
     kind, rec = item["kind"], item["rec"]
+    if kind == dob_alert_gate.BIN_ADDED_KIND:
+        return dob_alert_gate.bin_summary_message(
+            address, item.get("bin") or rec.get("site_bin") or "", item.get("open") or [],
+            icon=wa_alerts.ICON.get(kind, wa_alerts.ORANGE))
     ai = await _gc_ai_line(kind, wa_alerts.facts(rec)) if kind in wa_alerts.AI_KINDS else None
     what = wa_alerts.what_line(kind, rec, ai, today=today, exp=item.get("exp"),
                                prev=item.get("prev") or "")
@@ -47604,6 +47631,13 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             logger.warning(f"[wa-gc] record read failed: {type(e).__name__}")
             continue
         items = wa_alerts.collect(dob_rows, dot_rows, today)
+        # The email's rules, for the group too (lib/dob_alert_gate, ruling
+        # 2026-10-22): an update that issued a SWO / vacate order, and ONE
+        # summary per newly added BIN. Everything a rule refuses is claimed
+        # silently below, so it can never post later as a backlog.
+        latest_dob = _gc_latest_per_record(dob_rows)
+        items += dob_alert_gate.gc_order_items(latest_dob, today)
+        items += dob_alert_gate.gc_bin_summary_items(latest_dob)
         report["permits_no_expiry"] += sum(
             1 for r in _gc_latest_per_record(dob_rows)
             if r.get("record_type") == "permit"
@@ -47697,6 +47731,14 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
 
         todo = []
         for it in items:
+            why = dob_alert_gate.gc_refusal(it, today)
+            if why:
+                if await _gc_ledger_claim(
+                        wa_gc.ledger_id(project_id, it["kind"], it["item"]),
+                        kind=f"gc_{it['kind']}", project_id=project_id,
+                        company_id=company_id, status=f"not_posted_{why}"):
+                    report["not_posted"] = report.get("not_posted", 0) + 1
+                continue
             if not wa_alerts.postable(it["kind"], it["rec"]):
                 report["no_number"] += 1
                 continue

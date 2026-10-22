@@ -209,6 +209,118 @@ def record_line(row: Dict[str, Any], rt: str, lang: str) -> str:
     return " · ".join(parts)
 
 
+# ── WhatsApp GC group alerts: the same rules (operator ruling 2026-10-22) ────
+#
+# The group alerts (server._gc_alerts_tick, lib/wa_alerts) post once ever per
+# item from a ledger, with a per-kind baseline. They now follow the email's
+# rules: a record new to Levelog posts only if DOB dated it within 2 days, an
+# update never posts unless it issued a SWO or vacate order, and the first sync
+# of a newly added BIN is silent -- except ONE summary per project per new BIN.
+
+GC_NEW_RECORD_KINDS = ("violation", "complaint", "swo")
+GC_UPDATE_KINDS = ("violation_status", "permit_status", "swo_rescinded")
+ORDER_KIND = "order"            # an update that issued a SWO / vacate order
+BIN_ADDED_KIND = "bin_added"    # one summary for a newly added BIN
+REFUSED_UPDATE = "update"
+
+
+def gc_refusal(item: Dict[str, Any], today: date) -> Optional[str]:
+    """Why a group alert item must not post, or None when it may."""
+    kind, rec = item.get("kind"), item.get("rec") or {}
+    if kind in GC_UPDATE_KINDS:
+        return REFUSED_UPDATE
+    if kind in GC_NEW_RECORD_KINDS:
+        if rec.get("bin_first_pass"):
+            return REFUSED_FIRST_SCAN_OF_BIN
+        if received_date(rec) is None:
+            return REFUSED_NO_DATE
+        if too_old(rec, today):
+            return REFUSED_TOO_OLD
+    if kind == ORDER_KIND:
+        d = wa_gc.parse_dob_date(((rec.get("order_issued") or {}).get("at")))
+        if d is None or (today - d).days > NEW_RECORD_MAX_AGE_DAYS:
+            return REFUSED_TOO_OLD
+    return None
+
+
+def gc_order_items(latest_rows, today: date) -> list:
+    """An item for each record an UPDATE put under a SWO / vacate order within
+    the window (the sync stamps `order_issued` when update_issues_order says
+    so). Keyed on the order and its day, so a later, separate order posts."""
+    out = []
+    for r in latest_rows or []:
+        oi = (r or {}).get("order_issued") or {}
+        d = wa_gc.parse_dob_date(oi.get("at"))
+        rid = str(r.get("raw_dob_id") or "")
+        if not rid or d is None or oi.get("kind") not in ("swo", "vacate"):
+            continue
+        if (today - d).days > NEW_RECORD_MAX_AGE_DAYS:
+            continue
+        out.append({"kind": ORDER_KIND, "item": f"{rid}:order:{oi['kind']}:{d:%Y%m%d}",
+                    "rec": r, "order": oi["kind"]})
+    return out
+
+
+#: The record types a BIN summary lists when open.
+BIN_SUMMARY_TYPES = ("violation", "complaint", "swo")
+
+
+def gc_bin_summary_items(latest_rows) -> list:
+    """ONE item per BIN whose first pass stored records: the rows the sync
+    flagged `bin_first_pass`, grouped by their `site_bin`. Only open records
+    are listed (lib/wa_alerts.is_closed), newest DOB date first."""
+    by_bin: Dict[str, list] = {}
+    for r in latest_rows or []:
+        b = str((r or {}).get("site_bin") or "")
+        if b and r.get("bin_first_pass"):
+            by_bin.setdefault(b, []).append(r)
+    out = []
+    for b in sorted(by_bin):
+        open_rows = [r for r in by_bin[b]
+                     if str(r.get("record_type") or "").lower() in BIN_SUMMARY_TYPES
+                     and not wa_alerts.is_closed(r)]
+        open_rows.sort(key=lambda r: received_date(r) or date.min, reverse=True)
+        out.append({"kind": BIN_ADDED_KIND, "item": f"bin:{b}",
+                    "rec": {"site_bin": b, "raw_dob_id": f"bin:{b}"},
+                    "bin": b, "open": open_rows})
+    return out
+
+
+_TYPE_WORD = {
+    "en": {"violation": "Violation", "complaint": "Complaint", "swo": "Stop-work order"},
+    "es": {"violation": "Infracción", "complaint": "Queja", "swo": "Orden de suspensión de obra"},
+}
+BIN_SUMMARY_COPY = {
+    "en": {"head": "Now also tracking BIN {bin} for this job.",
+           "open": "Open items found: {n}", "none": "No open items found."},
+    "es": {"head": "Ahora también seguimos el BIN {bin} de esta obra.",
+           "open": "Pendientes abiertos: {n}", "none": "No hay pendientes abiertos."},
+}
+
+
+def _bin_item_line(r: Dict[str, Any], lang: str) -> str:
+    rt = str(r.get("record_type") or "").lower()
+    word = _TYPE_WORD[lang].get(rt, rt.title())
+    c = COPY[lang]
+    return (f"• {word} {record_number(r)} · {c['received']}: "
+            f"{_date_label(received_date(r), lang)} · {c['status']}: {current_status(r, lang)}")
+
+
+def bin_summary_message(address: str, bin_: str, open_rows, icon: str = "🟠") -> str:
+    """The one group message for a newly added BIN, English then Spanish."""
+    lines = [f"{icon} {address}"]
+    for lang in ("en", "es"):
+        c = BIN_SUMMARY_COPY[lang]
+        lines.append(c["head"].format(bin=bin_))
+        if open_rows:
+            lines.append(c["open"].format(n=len(open_rows)))
+            lines += [_bin_item_line(r, lang) for r in open_rows]
+        else:
+            lines.append(c["none"])
+    lines.append("Source: DOB")
+    return "\n".join(lines)
+
+
 def headline(event: str, rt: str, project: str, lang: str) -> Dict[str, str]:
     """{subject, intro} for an event in EVENTS."""
     c = COPY[lang]
