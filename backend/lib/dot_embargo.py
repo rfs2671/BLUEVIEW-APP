@@ -63,6 +63,16 @@ TRIGGER_TYPE = "dot_embargo_waiver_missing"
 ACTION_EN = "No street work Nov 15 - Jan 2 unless DOT grants one."
 ACTION_ES = ("No se permite trabajo en la calle del 15 de nov al 2 de ene salvo que "
              "el DOT otorgue una exención.")
+
+#: COVERAGE LIMIT -- TEMPORARY. Only permits matched to the project's address
+#: (borough + house + street) are checked; segment permits (no house number)
+#: are not matched yet. The embargo email and the app banner (i18n
+#: dotEmbargo.coverageNote) say so. DOT Phase 1 B REMOVES THIS: it adds permits
+#: matched by permittee + frontage segment, after which the note is untrue.
+COVERAGE_NOTE_EN = ("Checks permits matched to your address. Permits filed by street "
+                    "segment arrive with the next update.")
+COVERAGE_NOTE_ES = ("Revisa los permisos vinculados a su dirección. Los permisos "
+                    "registrados por tramo de calle llegarán con la próxima actualización.")
 LEDGER = "dot_alert_ledger"
 
 

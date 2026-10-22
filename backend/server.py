@@ -48011,6 +48011,8 @@ def _dot_embargo_email(project: dict, row: dict, season) -> tuple:
         f"Embargo: {_dot_day_en(season.start)} - {_dot_day_en(season.end)}",
         "What to do: apply to DOT (OCMC) for a holiday embargo waiver, or stop work "
         "on this permit from Nov 15 through Jan 2.",
+        # Coverage limit until DOT Phase 1 B (segment permits): removed with it.
+        dot_embargo.COVERAGE_NOTE_EN,
     ]
     es = [
         "Hola,",
@@ -48023,15 +48025,16 @@ def _dot_embargo_email(project: dict, row: dict, season) -> tuple:
         f"Embargo: {_dot_day_es(season.start)} - {_dot_day_es(season.end)}",
         "Qué hacer: solicite al DOT (OCMC) una exención del embargo navideño, o detenga "
         "el trabajo de este permiso del 15 de noviembre al 2 de enero.",
+        dot_embargo.COVERAGE_NOTE_ES,
     ]
     footer_en = ("You're receiving this because you're an admin of this company or the "
                  "assigned project manager on this Levelog project.")
     footer_es = ("Recibe este correo porque es administrador de esta empresa o el "
                  "gerente de proyecto asignado a este proyecto en Levelog.")
     source = f"Source: NYC DOT permit records (NYC Open Data). {link}".strip()
-    text = ("\n\n".join([en[0], en[1], "\n".join(en[2:6]), en[6]])
+    text = ("\n\n".join([en[0], en[1], "\n".join(en[2:6]), en[6], en[7]])
             + "\n\n" + "-" * 8 + "\n\n"
-            + "\n\n".join([es[0], es[1], "\n".join(es[2:6]), es[6]])
+            + "\n\n".join([es[0], es[1], "\n".join(es[2:6]), es[6], es[7]])
             + f"\n\n{source}\n\n{footer_en}\n{footer_es}\n\n- Levelog")
 
     def _p(t, extra=""):
@@ -48051,10 +48054,10 @@ def _dot_embargo_email(project: dict, row: dict, season) -> tuple:
     <tr><td style="padding:24px 28px;">
       <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
       <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">{_html.escape(f"Holiday embargo: permit {permit} has no waiver")}</h1>
-      {_p(en[0])}{_p(en[1])}{_block(en[2:6])}{_p(en[6])}
+      {_p(en[0])}{_p(en[1])}{_block(en[2:6])}{_p(en[6])}{_p(en[7], "color:#6b7280;font-size:13px;")}
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;">
       <h2 style="margin:0 0 14px;font-size:16px;font-weight:600;color:#111827;">{_html.escape(f"Embargo navideño: el permiso {permit} no tiene exención")}</h2>
-      {_p(es[0])}{_p(es[1])}{_block(es[2:6])}{_p(es[6])}
+      {_p(es[0])}{_p(es[1])}{_block(es[2:6])}{_p(es[6])}{_p(es[7], "color:#6b7280;font-size:13px;")}
       {link_html}
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
       <p style="margin:0;font-size:12px;color:#6b7280;">{_html.escape(footer_en)}<br>{_html.escape(footer_es)}</p>

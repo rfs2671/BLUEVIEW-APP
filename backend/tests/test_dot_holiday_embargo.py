@@ -71,6 +71,11 @@ STIP_DATASET = "gsgx-6efw"
 ACTION_EN = "No street work Nov 15 - Jan 2 unless DOT grants one."
 ACTION_ES = ("No se permite trabajo en la calle del 15 de nov al 2 de ene salvo que "
              "el DOT otorgue una exención.")
+# Coverage limit (operator copy), until DOT Phase 1 B adds segment permits.
+COVERAGE_EN = ("Checks permits matched to your address. Permits filed by street segment "
+               "arrive with the next update.")
+COVERAGE_ES = ("Revisa los permisos vinculados a su dirección. Los permisos registrados por "
+               "tramo de calle llegarán con la próxima actualización.")
 
 UTC = timezone.utc
 OCT22 = datetime(2026, 10, 22, 16, 0, tzinfo=UTC)    # the sync that first sees them
@@ -419,6 +424,11 @@ class TheAlertJob(unittest.TestCase):
             self.assertIn(line, m["text"])
             self.assertIn(line, m["html"])
         self.assertLess(m["text"].index(ACTION_EN), m["text"].index(ACTION_ES))
+        for line in (COVERAGE_EN, COVERAGE_ES):
+            self.assertIn(line, m["text"])
+            self.assertIn(line, m["html"])
+        self.assertLess(m["text"].index(COVERAGE_EN), m["text"].index("Qué hacer"))
+        self.assertLess(m["text"].index("Qué hacer"), m["text"].index(COVERAGE_ES))
         (led,) = env.db.dot_alert_ledger.docs
         self.assertEqual(led["_id"], f"dot:p1:embargo:{NO_WAIVER_NUM}:2026:2026-11-01")
 
@@ -598,6 +608,27 @@ class TheGroupPost(unittest.TestCase):
             self.assertEqual([x for x in _group_sends(c) if "embargo" in x["message"]], [])
         self.assertTrue(any(x.get("kind") == "gc_dot_embargo" and x.get("status") == "seen_while_off"
                             for x in db.whatsapp_notification_ledger.rows))
+
+
+class TheBannerStrings(unittest.TestCase):
+    """The banner's coverage note, read from the catalogue SOURCE and the
+    screen (the node i18n test checks the EN/ES keys are identical)."""
+
+    FE = Path(__file__).resolve().parents[2] / "frontend"
+
+    def _ns(self, name):
+        src = (self.FE / "src" / "i18n" / name).read_text(encoding="utf-8")
+        i = src.index("dotEmbargo: {")
+        return src[i:src.index("},", i)]
+
+    def test_the_coverage_note_is_in_en_and_es(self):
+        self.assertIn(f"coverageNote: '{COVERAGE_EN}'", self._ns("en.js"))
+        self.assertIn(f"coverageNote: '{COVERAGE_ES}'", self._ns("es.js"))
+
+    def test_the_banner_shows_it(self):
+        src = (self.FE / "app" / "project" / "[id]" / "dob-logs.jsx").read_text(encoding="utf-8")
+        i = src.index("{embargoMissing.length > 0 && (")
+        self.assertIn("tEmbargo('coverageNote')", src[i:src.index("</GlassCard>", i)])
 
 
 class TheEndpoint(unittest.TestCase):

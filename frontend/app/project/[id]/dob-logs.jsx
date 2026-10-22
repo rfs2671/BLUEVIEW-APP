@@ -1033,6 +1033,8 @@ export default function DOBLogsScreen() {
                 {tEmbargo('permits').replace('{list}', embargoMissing.map((p) => p.number).join(', '))}
               </Text>
               <Text style={s.embargoLine}>{tEmbargo('action')}</Text>
+              {/* Coverage limit until DOT Phase 1 B (segment permits); removed with it. */}
+              <Text style={s.embargoNote}>{tEmbargo('coverageNote')}</Text>
             </GlassCard>
           )}
 
@@ -1282,6 +1284,7 @@ function buildStyles(colors, isDark) {
     // DOT holiday embargo banner (shares the renewal banner's card).
     embargoTitle: { flex: 1, flexShrink: 1 },
     embargoLine: { fontSize: 13, color: colors.text.secondary, marginTop: spacing.xs },
+    embargoNote: { fontSize: 12, color: colors.text.muted, marginTop: spacing.xs },
     renewalStatsRow: { flexDirection: 'row', gap: spacing.lg, marginBottom: spacing.sm },
     renewalStat: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
     renewalStatNum: { fontSize: 18, fontWeight: '700' },

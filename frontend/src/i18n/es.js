@@ -87,5 +87,6 @@ export default {
     bannerOne: 'Embargo navideño del 15 de nov al 2 de ene: 1 permiso activo del DOT no tiene exención.',
     permits: 'Permisos: {list}',
     action: 'Solicite una exención o detenga el trabajo del 15 de nov al 2 de ene.',
+    coverageNote: 'Revisa los permisos vinculados a su dirección. Los permisos registrados por tramo de calle llegarán con la próxima actualización.',
   },
 };

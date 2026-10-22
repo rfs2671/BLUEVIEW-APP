@@ -2135,5 +2135,8 @@ export default {
     bannerOne: 'Holiday embargo Nov 15 – Jan 2: 1 active DOT permit has no waiver.',
     permits: 'Permits: {list}',
     action: 'Apply for a waiver or stop work Nov 15 – Jan 2.',
+    // Coverage limit. DOT Phase 1 B (segment permits) REMOVES this key;
+    // the email carries the same line (backend lib/dot_embargo.COVERAGE_NOTE_*).
+    coverageNote: 'Checks permits matched to your address. Permits filed by street segment arrive with the next update.',
   },
 };
