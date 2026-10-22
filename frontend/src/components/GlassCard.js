@@ -150,7 +150,7 @@ export const GlassCard = ({
         style={StyleSheet.absoluteFillObject}
       />
       {/* Layer 2b: the shared card sheen (CardSheen.jsx) */}
-      <CardSheen radius={borderRadius.xxl} active={isHovered && hoverEffect} />
+      <CardSheen radius={borderRadius.xxl} active={isHovered && hoverEffect} intro />
       {/* Layer 3: content. `contentStyle` (optional) overrides the default
           padding — e.g. narrow summary bubbles that can't afford 32px insets. */}
       <View style={[styles.cardContent, contentStyle]}>{children}</View>
@@ -214,7 +214,7 @@ export const StatCard = ({ children, style, onPress }) => {
         end={{ x: 0.5, y: 1 }}
         style={StyleSheet.absoluteFillObject}
       />
-      <CardSheen radius={borderRadius.xl} active={isHovered} />
+      <CardSheen radius={borderRadius.xl} active={isHovered} intro />
       <View style={styles.statPadded}>{children}</View>
      </View>
     </CardWrapper>
