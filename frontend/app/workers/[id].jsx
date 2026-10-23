@@ -62,6 +62,7 @@ import {
 import { pairingLine, hasPairing } from '../../src/utils/workerPairingCopy';
 import { settleFetch, failureDetail } from '../../src/utils/offlineState';
 
+import SheenView from '../../src/components/SheenView';
 /**
  * OFFLINE SST/OSHA CARD.
  *
@@ -1030,7 +1031,7 @@ export default function WorkerDetailScreen() {
             {certifications.length > 0 ? (
               <View style={s.certList}>
                 {certifications.map((cert, index) => (
-                  <View key={index} style={s.certItem}>
+                  <SheenView key={index} style={s.certItem}>
                     <IconPod size={40}>
                       <Award size={18} strokeWidth={1.5} color={semantic.neutral} />
                     </IconPod>
@@ -1060,7 +1061,7 @@ export default function WorkerDetailScreen() {
                         <Trash2 size={16} strokeWidth={1.5} color={colors.status.error} />
                       </Pressable>
                     )}
-                  </View>
+                  </SheenView>
                 ))}
               </View>
             ) : (

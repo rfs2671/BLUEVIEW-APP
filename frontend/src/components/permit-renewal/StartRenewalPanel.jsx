@@ -45,6 +45,7 @@ import { spacing, borderRadius, typography } from '../../styles/theme';
 import { semantic } from '../../styles/semanticColors';
 import { useTheme } from '../../context/ThemeContext';
 
+import SheenView from '../SheenView';
 // ── Field → section assignment ────────────────────────────────────
 //
 // MR.4's mapper emits a flat dict of field_name → FieldValue. Operator
@@ -245,7 +246,7 @@ const StartRenewalPanel = ({ visible, fieldMap, onClose, onReopenDob }) => {
     : [];
 
   return (
-    <View style={s.panel}>
+    <SheenView style={s.panel}>
       <View style={s.header}>
         <View style={s.headerText}>
           <Text style={s.headerTitle}>Renewal Values</Text>
@@ -353,7 +354,7 @@ const StartRenewalPanel = ({ visible, fieldMap, onClose, onReopenDob }) => {
           </View>
         )}
       </ScrollView>
-    </View>
+    </SheenView>
   );
 };
 

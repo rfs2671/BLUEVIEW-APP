@@ -96,7 +96,7 @@ check('user management and the admin password stay with an admin', () => {
   ok(!/\(isAdmin \? adminActions : pmActions\)|\(admin \? adminActions : pmActions\)/.test(home),
     'no tile list bypasses adminActionsFor');
   ok(/\{isAccountAdmin\(user\) && \(/.test(read('src', 'components', 'FloatingNav.js')), 'nav password');
-  ok(/\{isAccountAdmin\(user\) && \(\s*<>\s*<Text style=\{s\.sectionLabel\}>SECURITY/.test(read('app', 'settings.jsx')),
+  ok(/\{isAccountAdmin\(user\) && \(\s*<>\s*<SectionLabel label="SECURITY"/.test(read('app', 'settings.jsx')),
     'settings password');
 });
 

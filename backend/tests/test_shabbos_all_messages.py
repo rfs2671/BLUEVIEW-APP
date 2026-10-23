@@ -221,9 +221,9 @@ class TheGcAlerts(unittest.TestCase):
             G._confirm()
             G._run(server._gc_alerts_tick(G.NOON))                  # baseline (Wed)
             db.dob_logs.rows.extend([
-                G._violation("2"),
-                G._violation("S1", record_type="swo", status="ACTIVE"),
-                G._violation("9", violation_subtype="VACATE_FULL"),
+                G._violation("2", violation_date="2026-10-09"),
+                G._violation("S1", record_type="swo", status="ACTIVE", violation_date="2026-10-09"),
+                G._violation("9", violation_subtype="VACATE_FULL", violation_date="2026-10-09"),
             ])
             rep = G._run(server._gc_alerts_tick(FRI_AFTER))
             during = [p["message"] for p in G._group_sends(c)]
@@ -257,7 +257,7 @@ class TheGcAlerts(unittest.TestCase):
         with G._Ctx(db=db) as c, G._no_ai():
             G._confirm()
             G._run(server._gc_alerts_tick(G.NOON))
-            db.dob_logs.rows.append(G._violation("2"))
+            db.dob_logs.rows.append(G._violation("2", violation_date="2026-10-09"))
             G._run(server._gc_alerts_tick(FRI_BEFORE))
             self.assertEqual(len(G._group_sends(c)), 1)
 

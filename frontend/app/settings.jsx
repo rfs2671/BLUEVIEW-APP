@@ -58,6 +58,7 @@ import apiClient, { authAPI, versionAPI } from '../src/utils/api';
 import { buildVerdict } from '../src/utils/buildVerdict';
 import { spacing, borderRadius, typography, touchTarget } from '../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
+import SectionLabel from '../src/components/SectionLabel';
 import {
   insuranceExpiryState,
   formatInsuranceExpiryLong,
@@ -651,7 +652,7 @@ export default function SettingsScreen() {
           showsVerticalScrollIndicator={false}
         >
           {/* ── APPEARANCE ─────────────────────────────────────────────── */}
-          <Text style={s.sectionLabel}>APPEARANCE</Text>
+          <SectionLabel label="APPEARANCE" />
           <GlassCard style={s.card}>
             <View style={s.settingRow}>
               <View style={s.settingLeft}>
@@ -680,7 +681,7 @@ export default function SettingsScreen() {
               server answers 404 on the portal's routes regardless. */}
           {isPlatformOperator(user) ? (
             <>
-              <Text style={s.sectionLabel}>PLATFORM</Text>
+              <SectionLabel label="PLATFORM" />
               <Pressable
                 onPress={() => router.push('/owner')}
                 accessibilityRole="button"
@@ -705,7 +706,7 @@ export default function SettingsScreen() {
           ) : null}
 
           {/* ── NOTIFICATIONS ─────────────────────────────────────────── */}
-          <Text style={s.sectionLabel}>NOTIFICATIONS</Text>
+          <SectionLabel label="NOTIFICATIONS" />
           <Pressable
             onPress={() => router.push('/settings/notifications')}
             style={({ pressed }) => [
@@ -729,7 +730,7 @@ export default function SettingsScreen() {
           </Pressable>
 
           {/* ── PERSONAL DETAILS ───────────────────────────────────────── */}
-          <Text style={s.sectionLabel}>PERSONAL DETAILS</Text>
+          <SectionLabel label="PERSONAL DETAILS" />
           <GlassCard style={s.card}>
             <View style={s.fieldGroup}>
               <View style={s.fieldIconRow}>
@@ -813,7 +814,7 @@ export default function SettingsScreen() {
           */}
           {isAdmin && !user?.company_id && (
             <>
-              <Text style={s.sectionLabel}>COMPANY</Text>
+              <SectionLabel label="COMPANY" />
               <GlassCard
                 style={[s.card, {
                   backgroundColor: semantic.attentionBg,
@@ -841,7 +842,7 @@ export default function SettingsScreen() {
 
           {isAdmin && (
             <>
-              <Text style={s.sectionLabel}>INSURANCE & LICENSE</Text>
+              <SectionLabel label="INSURANCE & LICENSE" />
 
               {insLoading ? (
                 <GlassCard style={s.card}>
@@ -1055,7 +1056,7 @@ export default function SettingsScreen() {
               admin turns their own off (or back on) here. */}
           {isAccountAdmin(user) && (user?.id || user?._id) ? (
             <>
-              <Text style={s.sectionLabel}>CHASE</Text>
+              <SectionLabel label="CHASE" />
               <GlassCard style={s.card}>
                 <ChaseEscalationToggle userRow={user}
                   onSaved={(on) => updateUser({ chase_escalation_dms: on })} />
@@ -1067,7 +1068,7 @@ export default function SettingsScreen() {
           {/* The admin-seat password route: not a full-access PM's. */}
           {isAccountAdmin(user) && (
             <>
-              <Text style={s.sectionLabel}>SECURITY</Text>
+              <SectionLabel label="SECURITY" />
               <GlassCard style={s.card}>
                 <View style={s.fieldGroup}>
                   <View style={s.fieldIconRow}>
@@ -1110,7 +1111,7 @@ export default function SettingsScreen() {
           {/* ── DOB PERMIT RENEWAL (admin only) ────────────────────────── */}
           {isAdmin && (
             <>
-              <Text style={s.sectionLabel}>DOB PERMIT RENEWAL</Text>
+              <SectionLabel label="DOB PERMIT RENEWAL" />
               <GlassCard style={s.card}>
                 <View style={s.fieldGroup}>
                   <View style={s.fieldIconRow}>
@@ -1194,7 +1195,7 @@ export default function SettingsScreen() {
           )}
 
           {/* ── SIGN OUT (only place logout lives now) ─────────────────── */}
-          <Text style={s.sectionLabel}>ACCOUNT</Text>
+          <SectionLabel label="ACCOUNT" />
           <GlassCard style={s.card}>
             <GlassButton
               title="Sign Out"
@@ -1235,7 +1236,7 @@ export default function SettingsScreen() {
               control is presentation; the refusal is the rule. */}
           {!siteMode && user?.registration_source === 'self_registered' && (
             <>
-              <Text style={s.sectionLabel}>DANGER ZONE</Text>
+              <SectionLabel label="DANGER ZONE" />
               <GlassCard style={s.card}>
                 {deletionRequestedAt ? (
                   <>
@@ -1379,7 +1380,7 @@ export default function SettingsScreen() {
               shrinking the display is a different decision from shrinking the
               clipboard.
               Not on a CP-facing compliance screen — settings only. */}
-          <Text style={s.sectionLabel}>BUILD</Text>
+          <SectionLabel label="BUILD" />
           <GlassCard style={s.card}>
             <BuildInfoRow
               label="Backend"
