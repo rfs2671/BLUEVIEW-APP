@@ -48,6 +48,11 @@ KIND_SWITCH = {
     "dot_permit": "dot_permit_alerts",
     # The holiday embargo is about a DOT permit: the DOT permit switch.
     "dot_embargo": "dot_permit_alerts",
+    # An update that issued a Stop Work Order or vacate order, and the one
+    # summary for a newly added BIN (lib/dob_alert_gate, ruling 2026-10-22).
+    "order": "swo_alerts",
+    "order_lifted": "swo_alerts",
+    "bin_added": "violation_alerts",
 }
 SWITCHES = tuple(dict.fromkeys(KIND_SWITCH.values()))
 # "violation" and "permit" were baselined by the original GC alerts under one
@@ -58,7 +63,7 @@ NEW_KINDS = tuple(k for k in KIND_SWITCH if k not in LEGACY_KINDS)
 # Fed by the DOT sync, not DOB: they wait for the project's first DOT pass.
 DOT_KINDS = ("dot_violation", "dot_permit", "dot_embargo")
 
-RED, ORANGE = "🔴", "🟠"
+RED, ORANGE, GREEN = "🔴", "🟠", "🟢"
 
 _CRITICAL_TEXT = re.compile(r"\bvacate\b|\bstop[- ]work order\b", re.IGNORECASE)
 
@@ -66,7 +71,7 @@ _CRITICAL_TEXT = re.compile(r"\bvacate\b|\bstop[- ]work order\b", re.IGNORECASE)
 def is_critical(it: Dict[str, Any]) -> bool:
     """A Stop Work Order or a Vacate order: what may still post on Shabbos
     when the company says so. A rescinded order is not."""
-    if it.get("kind") == "swo":
+    if it.get("kind") in ("swo", "order"):
         return True
     if it.get("kind") not in ("violation", "complaint"):
         return False
@@ -463,12 +468,14 @@ LABEL = {
     "complaint": "Complaint", "swo": "Stop-work order",
     "swo_rescinded": "Stop-work order", "permit": "Permit",
     "permit_status": "Permit", "dot_violation": "DOT summons",
-    "dot_permit": "DOT permit", "dot_embargo": "DOT permit",
+    "dot_permit": "DOT permit", "dot_embargo": "DOT permit", "bin_added": "BIN",
 }
 ICON = {
     "violation": RED, "complaint": RED, "swo": RED, "dot_violation": RED,
     "swo_rescinded": ORANGE, "violation_status": ORANGE, "permit_status": ORANGE,
     "permit": ORANGE, "dot_permit": ORANGE, "dot_embargo": ORANGE,
+    "order": RED, "bin_added": ORANGE,
+    "order_lifted": GREEN,
 }
 # Kinds whose "what happened" line may be an AI sentence (checked). The others
 # are status or date changes, said exactly by a template.
@@ -530,6 +537,9 @@ def template_line(kind: str, rec: Dict[str, Any], *, today: date,
                 f"{dot_embargo.ACTION_EN}\n"
                 f"Embargo navideño: este permiso del DOT no tiene exención. "
                 f"{dot_embargo.ACTION_ES}")
+    if kind == "order":
+        which = _t((rec.get("order_issued") or {}).get("kind"))
+        return "DOB issued a vacate order." if which == "vacate" else "DOB issued a stop-work order."
     return "DOB record updated."
 
 
@@ -555,7 +565,8 @@ def what_line(kind: str, rec: Dict[str, Any], ai_text: Optional[str], *,
 def record_line(kind: str, rec: Dict[str, Any]) -> str:
     """'<record type> #<number> · <issue date> · <status>' — each part from
     the record, left out when the record does not carry it."""
-    parts = [f"{LABEL.get(kind, 'Record')} #{record_number(rec)}"]
+    label_kind = _t(rec.get("record_type")).lower() if kind in ("order", "order_lifted") else kind
+    parts = [f"{LABEL.get(label_kind, 'Record')} #{record_number(rec)}"]
     d = record_issue_date(rec)
     if d:
         parts.append(nice_date(d))
@@ -578,5 +589,8 @@ def alert_message(kind: str, rec: Dict[str, Any], *, address: str,
 
 
 def postable(kind: str, rec: Dict[str, Any]) -> bool:
-    """An item without its record number is not posted (omit if unsure)."""
+    """An item without its record number is not posted (omit if unsure). A
+    BIN summary names the BIN, not a record."""
+    if kind == "bin_added":
+        return bool(_t(rec.get("site_bin")))
     return bool(record_number(rec))
