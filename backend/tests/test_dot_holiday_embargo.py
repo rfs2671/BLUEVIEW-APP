@@ -524,6 +524,15 @@ class TheAlertJob(unittest.TestCase):
         env.sync([fresh], {NO_WAIVER_NUM: NO_WAIVER_STIPS},
                  now=datetime(2026, 11, 20, 15, 0, tzinfo=UTC))
         env.alerts(datetime(2026, 11, 21, 12, 0, tzinfo=UTC))
+        # Saturday Nov 21, 07:00: held over Shabbos (spec decision 6, ruling
+        # 2026-10-23) and delivered by the Shabbos queue after havdalah.
+        from lib import shabbos
+        until = shabbos.quiet_until(datetime(2026, 11, 21, 12, 0, tzinfo=UTC))
+        with patch.object(server, "db", env.db), \
+                patch.object(server, "RESEND_API_KEY", "re_test_key"), \
+                patch.dict(os.environ, {"NOTIFICATIONS_KILL_SWITCH": ""}), \
+                patch("lib.notifications.send_notification", env.send):
+            _run(server._quiet_queue_tick(now=until + timedelta(minutes=1)))
         env.alerts(datetime(2026, 11, 22, 12, 0, tzinfo=UTC))
         mails = env.emails()
         self.assertEqual(len(mails), 1)

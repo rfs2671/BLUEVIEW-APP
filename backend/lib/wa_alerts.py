@@ -70,6 +70,10 @@ NEW_KINDS = tuple(k for k in KIND_SWITCH if k not in LEGACY_KINDS)
 DOT_KINDS = ("dot_violation", "dot_permit", "dot_embargo",
              "dot_hearing", "dot_hearing_pending", "dot_default")
 
+#: Kinds posted as ONE group post per project per day (operator ruling
+#: 2026-10-23): every item of the kind due that day, grouped by date.
+DIGEST_KINDS = ("dot_permit",)
+
 RED, ORANGE, GREEN = "🔴", "🟠", "🟢"
 
 _CRITICAL_TEXT = re.compile(r"\bvacate\b|\bstop[- ]work order\b", re.IGNORECASE)
@@ -646,6 +650,50 @@ def alert_message(kind: str, rec: Dict[str, Any], *, address: str,
                   what: str) -> str:
     return "\n".join([f"{ICON.get(kind, ORANGE)} {address}", what,
                       record_line(kind, rec), source_line(kind, rec)])
+
+
+_ES_MON = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
+
+
+def _es_date(d: date) -> str:
+    return f"{d.day} {_ES_MON[d.month - 1]} {d.year}"
+
+
+def _days_en(n: int) -> str:
+    return "today" if n == 0 else ("tomorrow" if n == 1 else f"in {n} days")
+
+
+def _days_es(n: int) -> str:
+    return "hoy" if n == 0 else ("mañana" if n == 1 else f"en {n} días")
+
+
+def digest_message(kind: str, items: List[Dict[str, Any]], *, address: str, today: date) -> str:
+    """ONE group post for every item of a DIGEST kind due today, grouped by
+    date, English then Spanish."""
+    n = len(items)
+    if kind == "dot_permit":
+        head = [f"{n} DOT permits: expiry reminders.", f"{n} permisos del DOT: avisos de vencimiento."]
+        key = "exp"
+    else:
+        head = [f"{n} DOT records.", f"{n} registros del DOT."]
+        key = "exp"
+    groups: Dict[Any, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault(it.get(key), []).append(it)
+    lines = []
+    for d in sorted(groups, key=lambda x: (x is None, x or date.max)):
+        nums = ", ".join(f"#{record_number(it['rec'])}" for it in
+                         sorted(groups[d], key=lambda it: record_number(it["rec"])))
+        if d is None:
+            lines.append(nums)
+            continue
+        days = (d - today).days
+        if kind == "dot_permit" and days < 0:
+            lines.append(f"Expired on {nice_date(d)} / Venció el {_es_date(d)}: {nums}")
+        else:
+            lines.append(f"Ends {nice_date(d)} ({_days_en(days)}) / Termina el {_es_date(d)} "
+                         f"({_days_es(days)}): {nums}")
+    return "\n".join([f"{ICON.get(kind, ORANGE)} {address}"] + head + lines + ["Source: DOT"])
 
 
 def postable(kind: str, rec: Dict[str, Any]) -> bool:
