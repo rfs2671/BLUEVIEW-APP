@@ -197,7 +197,9 @@ def _render_rows(page: Any, level: Dict[str, Any], width_pt: float, height_pt: f
     try:
         im = bm.to_pil().convert("RGB")
     finally:
-        bm.close() if hasattr(bm, "close") else None
+        close = getattr(bm, "close", None)
+        if close:
+            close()
     return _fit(im, level["width"], y1 - y0)
 
 
