@@ -49626,8 +49626,10 @@ async def review_dot_permit(
 #     (own match, new to Levelog, issued by DOT within 2 days; per-company flag
 #     dot_phase1), and a confirmed summons that CHANGED to DEFAULTED/DOCKETED.
 #   * _dot_hearing_tick (in the 07:00 job): hearing reminders 14/7/1 for
-#     confirmed open summonses, and ONE email for a pending segment match whose
-#     hearing is within 14 days.
+#     confirmed open summonses -- ONE digest email per project per day,
+#     grouped by hearing date, true days left -- and ONE email for a pending
+#     segment match whose hearing is within 14 days. Both held over Shabbos /
+#     Yom Tov to the window's end.
 #   Every email: dot_alert_ledger row first (an existing row = no send), the
 #   DOB-alert recipients, lib.notifications.send_notification, EN then ES.
 #   Nothing sends before the project's first DOT summons pass.
@@ -49773,7 +49775,8 @@ async def _dot_summons_send(project: dict, project_id: str, row: dict, kind: str
 
 
 async def _dot_summons_projects(project_ids=None):
-    """(live projects, email possible?) -- the shared preamble of the ticks."""
+    """(live projects, email possible?) -- the shared preamble of the ticks.
+    `project_ids`: only those (the Shabbos queue releasing one project)."""
     from lib.notifications import is_email_kill_switch_on
     if not RESEND_API_KEY or is_email_kill_switch_on():
         return None, ("no_resend_key" if not RESEND_API_KEY else "kill_switch")
@@ -49840,15 +49843,62 @@ async def _dot_summons_record_alert_tick(now: Optional[datetime] = None,
     return report
 
 
-async def _dot_hearing_tick(now: Optional[datetime] = None) -> dict:
-    """Part of the 07:00 New York run: hearing reminders 14/7/1 and the
-    pending-segment hearing email. Reads dot_logs only. Not flag-gated."""
+def _dot_hearing_digest_email(project: dict, items: list, today) -> tuple:
+    """(subject, text, html) for ONE email listing every hearing reminder due
+    today, grouped by hearing date; English, then Spanish."""
+    import html as _html
+    t = dot_summons.hearing_digest_text(project.get("name") or "your project", items, today)
+    en_sub, es_sub = (t["subject"].split(" / ", 1) + [""])[:2]
+    footer_en = ("You're receiving this because you're an admin of this company or the "
+                 "assigned project manager on this Levelog project.")
+    footer_es = ("Recibe este correo porque es administrador de esta empresa o el "
+                 "gerente de proyecto asignado a este proyecto en Levelog.")
+    source = "Source: NYC OATH hearings, DOT summonses (NYC Open Data)."
+    text = ("Hi,\n\n" + t["en"][0] + "\n\n" + "\n".join(t["en"][1:]) + "\n\n" + "-" * 8
+            + "\n\nHola,\n\n" + t["es"][0] + "\n\n" + "\n".join(t["es"][1:])
+            + f"\n\n{source}\n\n{footer_en}\n{footer_es}\n\n- Levelog")
+
+    def _block(lines):
+        return ('<p style="margin:0 0 12px;font-size:15px;">'
+                + "<br>".join(_html.escape(str(x)).replace("  ", "&nbsp;&nbsp;") for x in lines) + "</p>")
+
+    html_body = f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2937;line-height:1.55;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" width="560" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
+    <tr><td style="padding:24px 28px;">
+      <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
+      <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">{_html.escape(en_sub)}</h1>
+      {_block([t["en"][0]])}{_block(t["en"][1:])}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;">
+      <h2 style="margin:0 0 14px;font-size:16px;font-weight:600;color:#111827;">{_html.escape(es_sub)}</h2>
+      {_block([t["es"][0]])}{_block(t["es"][1:])}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
+      <p style="margin:0;font-size:12px;color:#6b7280;">{_html.escape(source)}<br>{_html.escape(footer_en)}<br>{_html.escape(footer_es)}</p>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    return t["subject"], text, html_body
+
+
+async def _dot_hearing_tick(now: Optional[datetime] = None,
+                            project_ids: Optional[List[str]] = None,
+                            release: bool = False) -> dict:
+    """Part of the 07:00 New York run: ONE digest a day per project of the
+    hearing reminders 14/7/1 due (true days left), and the pending-segment
+    hearing email. Held over Shabbos / Yom Tov (_dot_hold_if_quiet); `release`:
+    the Shabbos queue delivering the held day. Reads dot_logs only. Not
+    flag-gated."""
+    from lib.notifications import send_notification
+    from pymongo.errors import DuplicateKeyError
     now = now or datetime.now(timezone.utc)
     today = dot_embargo.ny_date(now)
     report = {"date": today.isoformat(), "projects": 0, "hearing_due": 0, "pending_due": 0,
-              "sent": 0, "already": 0, "no_recipients": 0, "ledger_failed": 0, "waiting_sync": 0}
+              "sent": 0, "digests": 0, "already": 0, "no_recipients": 0, "ledger_failed": 0,
+              "waiting_sync": 0, "held": 0}
     try:
-        live, skipped = await _dot_summons_projects()
+        live, skipped = await _dot_summons_projects(project_ids)
     except Exception as e:
         logger.warning(f"[dot-hearing] project read failed: {type(e).__name__}")
         return report
@@ -49865,9 +49915,22 @@ async def _dot_hearing_tick(now: Optional[datetime] = None) -> dict:
             report["waiting_sync"] += 1
             continue
         rows = await db.dot_logs.find({"project_id": project_id}).to_list(5000)
-        hearing = dot_summons.hearing_due(rows, today)
-        pending = dot_summons.pending_hearing_due(rows, today)
+        hearing = []
+        for d in dot_summons.hearing_due(rows, today):
+            # Once per threshold WINDOW (`bucket`) per hearing date, whatever
+            # day it went.
+            if await db[dot_embargo.LEDGER].find_one({
+                    "project_id": project_id, "kind": "hearing", "ticket": d["ticket"],
+                    "hearing_date": d["hearing"].isoformat(), "bucket": d["threshold"]}):
+                report["already"] += 1
+                continue
+            hearing.append(d)
+        pending = [d for d in dot_summons.pending_hearing_due(rows, today)
+                   if not await db[dot_embargo.LEDGER].find_one({"_id": dot_summons.ledger_id(
+                       project_id, "hearing_pending", d["ticket"], "-", d["hearing"])})]
         if not hearing and not pending:
+            continue
+        if await _dot_hold_if_quiet(project, project_id, "hearing", today, now, report, release=release):
             continue
         report["projects"] += 1
         report["hearing_due"] += len(hearing)
@@ -49876,12 +49939,54 @@ async def _dot_hearing_tick(now: Optional[datetime] = None) -> dict:
         if not recipients:
             report["no_recipients"] += len(hearing) + len(pending)
             continue
-        for d in hearing:
-            lid = dot_summons.ledger_id(project_id, "hearing", d["ticket"], d["threshold"], d["hearing"])
-            await _dot_summons_send(project, project_id, d["row"], "hearing",
-                                    dot_summons.TRIGGER_HEARING, lid, recipients, today, now,
-                                    {"threshold": d["threshold"], "hearing_date": d["hearing"].isoformat()},
-                                    report)
+        if hearing:
+            did = dot_permits.digest_id(project_id, "hearing", today)
+            claimed = []
+            try:
+                await db[dot_embargo.LEDGER].insert_one({
+                    "_id": did, "project_id": project_id, "company_id": str(project.get("company_id") or ""),
+                    "kind": "hearing_digest", "send_date": today.isoformat(),
+                    "trigger_type": dot_summons.TRIGGER_HEARING, "recipients": len(recipients),
+                    "created_at": now})
+                for d in hearing:
+                    try:
+                        await db[dot_embargo.LEDGER].insert_one({
+                            "_id": dot_summons.hearing_ledger_id(project_id, d["ticket"], d["days"], d["hearing"]),
+                            "project_id": project_id, "company_id": str(project.get("company_id") or ""),
+                            "kind": "hearing", "ticket": d["ticket"], "bucket": d["threshold"],
+                            "days_left": d["days"], "hearing_date": d["hearing"].isoformat(),
+                            "send_date": today.isoformat(), "digest": did,
+                            "trigger_type": dot_summons.TRIGGER_HEARING, "created_at": now})
+                        claimed.append(d)
+                    except DuplicateKeyError:
+                        report["already"] += 1
+            except DuplicateKeyError:
+                report["already"] += len(hearing)        # today's digest went: the rest wait a day
+            except Exception as e:
+                logger.warning(f"[dot-hearing] ledger write failed: {type(e).__name__}")
+                report["ledger_failed"] += 1
+            if claimed:
+                subject, text, html_body = _dot_hearing_digest_email(project, claimed, today)
+                sent = 0
+                for recipient in recipients:
+                    try:
+                        await send_notification(
+                            db, permit_renewal_id=did, trigger_type=dot_summons.TRIGGER_HEARING,
+                            recipient=recipient, subject=subject, html=html_body, text=text,
+                            metadata={"project_id": project_id, "project_name": project.get("name"),
+                                      "count": len(claimed),
+                                      "items": [{"ticket": d["ticket"], "days_left": d["days"],
+                                                 "hearing_date": d["hearing"].isoformat()} for d in claimed]})
+                        sent += 1
+                    except Exception as e:
+                        logger.error(f"[dot-hearing] send failed: {type(e).__name__}")
+                report["sent"] += len(claimed) if sent else 0
+                report["digests"] += 1 if sent else 0
+                try:
+                    await db[dot_embargo.LEDGER].update_one({"_id": did}, {"$set": {
+                        "sent_to": sent, "sent_at": datetime.now(timezone.utc), "count": len(claimed)}})
+                except Exception:
+                    pass
         for d in pending:
             lid = dot_summons.ledger_id(project_id, "hearing_pending", d["ticket"], "-", d["hearing"])
             await _dot_summons_send(project, project_id, d["row"], "pending",

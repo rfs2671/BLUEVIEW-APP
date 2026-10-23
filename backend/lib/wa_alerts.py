@@ -72,7 +72,7 @@ DOT_KINDS = ("dot_violation", "dot_permit", "dot_embargo",
 
 #: Kinds posted as ONE group post per project per day (operator ruling
 #: 2026-10-23): every item of the kind due that day, grouped by date.
-DIGEST_KINDS = ("dot_permit",)
+DIGEST_KINDS = ("dot_permit", "dot_hearing")
 
 RED, ORANGE, GREEN = "🔴", "🟠", "🟢"
 
@@ -674,6 +674,9 @@ def digest_message(kind: str, items: List[Dict[str, Any]], *, address: str, toda
     if kind == "dot_permit":
         head = [f"{n} DOT permits: expiry reminders.", f"{n} permisos del DOT: avisos de vencimiento."]
         key = "exp"
+    elif kind == "dot_hearing":
+        head = [f"{n} DOT hearings coming up.", f"{n} audiencias del DOT próximas."]
+        key = "hearing"
     else:
         head = [f"{n} DOT records.", f"{n} registros del DOT."]
         key = "exp"
@@ -690,6 +693,9 @@ def digest_message(kind: str, items: List[Dict[str, Any]], *, address: str, toda
         days = (d - today).days
         if kind == "dot_permit" and days < 0:
             lines.append(f"Expired on {nice_date(d)} / Venció el {_es_date(d)}: {nums}")
+        elif kind == "dot_hearing":
+            lines.append(f"Hearing {nice_date(d)} ({_days_en(days)}) / Audiencia el {_es_date(d)} "
+                         f"({_days_es(days)}): {nums}")
         else:
             lines.append(f"Ends {nice_date(d)} ({_days_en(days)}) / Termina el {_es_date(d)} "
                          f"({_days_es(days)}): {nums}")

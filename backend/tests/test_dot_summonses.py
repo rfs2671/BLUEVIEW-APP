@@ -106,6 +106,12 @@ def _iso(d: date) -> str:
     return f"{d.isoformat()}T00:00:00.000"
 
 
+def _hearing_items(env):
+    """[(item, email)] across the hearing DIGEST emails (one per project per
+    day: metadata.items, each with its TRUE days left)."""
+    return [(i, m) for m in env.emails("dot_hearing_reminder") for i in m["metadata"]["items"]]
+
+
 def _days(a: date, b: date):
     return [a + timedelta(days=i) for i in range((b - a).days + 1)]
 
@@ -457,7 +463,7 @@ class TheNewSummonsEmail(unittest.TestCase):
         r = env.record_alerts()
         self.assertEqual((env.emails("dot_summons_new"), r["flag_off"]), ([], 1))
         env.hearing_alerts([date(2026, 10, 23)])                            # 14 days out
-        self.assertEqual([m["metadata"]["threshold"] for m in env.emails("dot_hearing_reminder")], [14])
+        self.assertEqual([i["days_left"] for i, _m in _hearing_items(env)], [14])
 
     def test_nothing_before_the_first_pass(self):
         env = _Env()
@@ -489,19 +495,21 @@ class TheHearingReminders(unittest.TestCase):
     def test_14_7_1_once_each(self):
         self.env.hearing_alerts(_days(date(2026, 12, 9), date(2026, 12, 25)))
         mails = self.env.emails("dot_hearing_reminder")
-        self.assertEqual([m["metadata"]["threshold"] for m in mails], [14, 7, 1])
-        self.assertEqual(mails[0]["permit_renewal_id"], "dot:p1:hearing:0704345548:14:2026-12-24")
-        self.assertEqual(mails[0]["subject"], "DOT hearing in 14 days on 588 Thomas S Boyland / "
-                                              "Audiencia del DOT en 14 días en 588 Thomas S Boyland")
-        self.assertIn("Hearing: Dec 24, 2026", mails[0]["text"])
+        self.assertEqual([i["days_left"] for i, _m in _hearing_items(self.env)], [14, 7, 1])
+        self.assertEqual(mails[0]["permit_renewal_id"], "dot:p1:hearing_digest:-:-:2026-12-10")
+        self.assertEqual(mails[0]["subject"], "1 DOT hearing coming up on 588 Thomas S Boyland / "
+                                              "1 audiencia del DOT próxima en 588 Thomas S Boyland")
+        self.assertIn("Hearing Dec 24, 2026 (in 14 days):", mails[0]["text"])
+        self.assertIn("Audiencia el 24 dic 2026 (en 14 días):", mails[0]["text"])
+        self.assertIn("dot:p1:hearing:0704345548:14d:2026-12-24",
+                      [d["_id"] for d in self.env.db.dot_alert_ledger.docs])
 
     def test_a_rescheduled_hearing_gets_fresh_reminders(self):
         env = self.env
         env.hearing_alerts([date(2026, 12, 10)])
         env.sync(now=_at(date(2026, 12, 11)), address=[summons("0704345548", hearing=date(2027, 1, 7))])
         env.hearing_alerts(_days(date(2026, 12, 11), date(2027, 1, 8)))
-        self.assertEqual([(m["metadata"]["threshold"], m["metadata"]["hearing_date"])
-                          for m in env.emails("dot_hearing_reminder")],
+        self.assertEqual([(i["days_left"], i["hearing_date"]) for i, _m in _hearing_items(env)],
                          [(14, "2026-12-24"), (14, "2027-01-07"), (7, "2027-01-07"), (1, "2027-01-07")])
 
     def test_a_paid_summons_gets_none(self):
@@ -541,9 +549,8 @@ class ThePendingBlockHearing(unittest.TestCase):
         env = self.env
         env.review("0704197771", "accept")
         env.hearing_alerts(_days(date(2026, 10, 21), date(2026, 11, 4)))
-        self.assertEqual([(m["trigger_type"], m["metadata"].get("threshold")) for m in env.emails()],
-                         [("dot_hearing_reminder", 14), ("dot_hearing_reminder", 7),
-                          ("dot_hearing_reminder", 1)])
+        self.assertEqual({m["trigger_type"] for m in env.emails()}, {"dot_hearing_reminder"})
+        self.assertEqual([i["days_left"] for i, _m in _hearing_items(env)], [14, 7, 1])
         other = _Env()
         other.first_pass(segment=[BLOCK])
         other.review("0704197771", "reject")
