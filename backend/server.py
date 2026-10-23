@@ -112,6 +112,7 @@ from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
 from lib import status_history as status_hist  # noqa: E402
 from lib import dot_sync  # noqa: E402
+from lib import dot_embargo  # noqa: E402
 from lib import dob_site_bins  # noqa: E402
 from lib import dob_alert_gate  # noqa: E402
 from lib import source_sync  # noqa: E402
@@ -48002,7 +48003,7 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
     now = now or datetime.now(timezone.utc)
     fetch = fetch or _dot_fetch
     report = {"projects": 0, "requests": 0, "failed": 0, "records": 0,
-              "matched": 0, "new": 0, "changed": 0}
+              "matched": 0, "new": 0, "changed": 0, "stipulations_read": 0}
     named = set()
     try:
         # Fixture (is_test) companies are left out, as in every unattended
@@ -48076,6 +48077,12 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
                     continue
                 if res in ("new", "changed"):
                     report[res] += 1
+                    if q["kind"] == "dot_permit":
+                        # A new or changed permit has its stipulations read at
+                        # once (one request), so the holiday-embargo waiver is
+                        # known before the next 07:00 alert run.
+                        report["stipulations_read"] += await _dot_stipulations_for_new(
+                            project_id, log["raw_id"], fetch, now)
         await _mark_sources_synced(
             project_id, company_id,
             source_sync.answered_sources(answered, failed_types))
@@ -48088,6 +48095,320 @@ async def _dot_sync_job() -> None:
         await _dot_sync_tick()
     except Exception as e:
         logger.error(f"[dot-sync] tick failed: {type(e).__name__}: {e}")
+
+
+# ── DOT HOLIDAY EMBARGO (lib/dot_embargo.py is the rule) ───────────────────
+#
+# NYC DOT stops street work Nov 15 - Jan 2 every year unless the permit
+# carries stipulation 410, the waiver. Three pieces live here:
+#   * _dot_stipulations_tick (daily 05:30 New York, and per new/changed permit
+#     inside _dot_sync_tick): reads gsgx-6efw for every matched permit that is
+#     active or starts within 30 days, and stores `stipulations`,
+#     `holiday_waiver`, `stipulations_fetched_at` on its dot_logs row. A FAILED
+#     read writes nothing, so a known waiver is never erased and an unread
+#     permit is never "no waiver".
+#   * _dot_embargo_alert_tick (daily 07:00 New York): emails the DOB-alert
+#     recipients on Nov 1 and Nov 12, and on first sight, about each exposed
+#     permit known to lack the waiver. Once per (project, permit, season,
+#     send date): the dot_alert_ledger row is inserted FIRST and an existing
+#     row means no send. Nothing sends before the project's first DOT permit
+#     pass (source_sync first_synced_at). The GC group post is the
+#     "dot_embargo" kind in lib/wa_alerts.py, posted by _gc_alerts_tick on the
+#     same due dates under the "dot_permit_alerts" switch.
+#   * GET /projects/{project_id}/dot/embargo: the Compliance screen's banner.
+# Fixture (is_test) companies are left out of both sweeps.
+
+
+async def _dot_read_stipulations(row: dict, fetch, now: datetime,
+                                 cache: Optional[dict] = None) -> str:
+    """'read' | 'unknown' | 'failed'. 'failed' writes nothing."""
+    permit = str(row.get("number") or "").strip()
+    if not permit:
+        return "failed"
+    if cache is not None and permit in cache:
+        recs = cache[permit]
+    else:
+        recs = await fetch(dot_embargo.STIPULATION_DATASET,
+                           dot_embargo.stipulation_params(permit))
+        if cache is not None:
+            cache[permit] = recs
+    if recs is None:
+        return "failed"
+    fields = dot_embargo.stipulation_fields(permit, recs)
+    await db.dot_logs.update_one(
+        {"_id": row["_id"]},
+        {"$set": {**fields, "stipulations_fetched_at": now}})
+    return "read" if fields["holiday_waiver"] is not None else "unknown"
+
+
+async def _dot_stipulations_for_new(project_id: str, raw_id: str, fetch,
+                                    now: datetime) -> int:
+    """1 when the just-stored permit's stipulations were read, else 0."""
+    try:
+        row = await db.dot_logs.find_one({"project_id": project_id, "raw_id": raw_id})
+        if not row or not dot_embargo.stipulations_wanted(row, dot_embargo.ny_date(now)):
+            return 0
+        return 1 if await _dot_read_stipulations(row, fetch, now) != "failed" else 0
+    except Exception as e:
+        logger.warning(f"[dot-stipulations] new permit read failed: {type(e).__name__}")
+        return 0
+
+
+async def _dot_live_projects() -> Dict[str, dict]:
+    """{project_id: project} for live projects of real (non-test) companies."""
+    projects = await db.projects.find(
+        await unattended_project_filter(dict(ACTIVE_PROJECT_FILTER))).to_list(5000)
+    test_ids = await test_company_ids()
+    return {str(p.get("_id")): p for p in projects
+            if str(p.get("company_id") or "").strip()
+            and str(p.get("company_id")) not in test_ids}
+
+
+async def _dot_stipulations_tick(now: Optional[datetime] = None, fetch=None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    fetch = fetch or _dot_fetch
+    today = dot_embargo.ny_date(now)
+    report = {"permits": 0, "read": 0, "unknown": 0, "failed": 0}
+    try:
+        live = await _dot_live_projects()
+        # By project only: dot_logs has no is_deleted, and lib/dot_embargo
+        # checks record_type itself (stipulations_wanted / exposed).
+        rows = await db.dot_logs.find(
+            {"project_id": {"$in": sorted(live)}}).to_list(10000)
+    except Exception as e:
+        logger.warning(f"[dot-stipulations] read failed: {type(e).__name__}")
+        return report
+    cache: dict = {}
+    for row in rows:
+        if str(row.get("project_id") or "") not in live:
+            continue
+        if not dot_embargo.stipulations_wanted(row, today):
+            continue
+        report["permits"] += 1
+        try:
+            res = await _dot_read_stipulations(row, fetch, now, cache)
+        except Exception as e:
+            logger.warning(f"[dot-stipulations] store failed: {type(e).__name__}")
+            res = "failed"
+        report[res] += 1
+    logger.info(f"[dot-stipulations] {report}")
+    return report
+
+
+async def _dot_stipulations_job() -> None:
+    try:
+        await _dot_stipulations_tick()
+    except Exception as e:
+        logger.error(f"[dot-stipulations] tick failed: {type(e).__name__}: {e}")
+
+
+_ES_MONTHS = ("ene", "feb", "mar", "abr", "may", "jun",
+              "jul", "ago", "sep", "oct", "nov", "dic")
+
+
+def _dot_day_en(d) -> str:
+    return f"{d:%b} {d.day}, {d.year}" if d else "not stated"
+
+
+def _dot_day_es(d) -> str:
+    return f"{d.day} {_ES_MONTHS[d.month - 1]} {d.year}" if d else "no indicada"
+
+
+def _dot_embargo_email(project: dict, row: dict, season) -> tuple:
+    """(subject, text, html) -- English, then Spanish. Plain and
+    transactional, like _send_critical_dob_alert: no caps, no banners."""
+    import html as _html
+    permit = str(row.get("number") or "")
+    project_name = project.get("name") or "your project"
+    kind = row.get("description") or "DOT street permit"
+    start, end = dot_embargo.work_dates(row)
+    link = row.get("link") or ""
+    subject = (f"Holiday embargo: permit {permit} has no waiver / "
+               f"Embargo navideño: el permiso {permit} no tiene exención")
+    en = [
+        "Hi,",
+        f"DOT permit {permit} on {project_name} is active during NYC DOT's holiday "
+        f"construction embargo, and it has no embargo waiver (stipulation 410). "
+        f"{dot_embargo.ACTION_EN}",
+        f"Permit: {permit}",
+        f"Type: {kind}",
+        f"Work dates: {_dot_day_en(start)} - {_dot_day_en(end)}",
+        f"Embargo: {_dot_day_en(season.start)} - {_dot_day_en(season.end)}",
+        "What to do: apply to DOT (OCMC) for a holiday embargo waiver, or stop work "
+        "on this permit from Nov 15 through Jan 2.",
+        # Coverage limit until DOT Phase 1 B (segment permits): removed with it.
+        dot_embargo.COVERAGE_NOTE_EN,
+    ]
+    es = [
+        "Hola,",
+        f"El permiso del DOT {permit} de {project_name} está activo durante el embargo "
+        f"navideño de construcción del DOT de NYC, y no tiene exención del embargo "
+        f"(estipulación 410). {dot_embargo.ACTION_ES}",
+        f"Permiso: {permit}",
+        f"Tipo: {kind}",
+        f"Fechas de trabajo: {_dot_day_es(start)} - {_dot_day_es(end)}",
+        f"Embargo: {_dot_day_es(season.start)} - {_dot_day_es(season.end)}",
+        "Qué hacer: solicite al DOT (OCMC) una exención del embargo navideño, o detenga "
+        "el trabajo de este permiso del 15 de noviembre al 2 de enero.",
+        dot_embargo.COVERAGE_NOTE_ES,
+    ]
+    footer_en = ("You're receiving this because you're an admin of this company or the "
+                 "assigned project manager on this Levelog project.")
+    footer_es = ("Recibe este correo porque es administrador de esta empresa o el "
+                 "gerente de proyecto asignado a este proyecto en Levelog.")
+    source = f"Source: NYC DOT permit records (NYC Open Data). {link}".strip()
+    text = ("\n\n".join([en[0], en[1], "\n".join(en[2:6]), en[6], en[7]])
+            + "\n\n" + "-" * 8 + "\n\n"
+            + "\n\n".join([es[0], es[1], "\n".join(es[2:6]), es[6], es[7]])
+            + f"\n\n{source}\n\n{footer_en}\n{footer_es}\n\n- Levelog")
+
+    def _p(t, extra=""):
+        return f'<p style="margin:0 0 12px;font-size:15px;{extra}">{_html.escape(t)}</p>'
+
+    def _block(lines):
+        return ('<p style="margin:0 0 12px;font-size:15px;">'
+                + "<br>".join(_html.escape(t) for t in lines) + "</p>")
+
+    link_html = (f'<p style="margin:0 0 12px;font-size:13px;"><a href="{_html.escape(link)}" '
+                 f'style="color:#1d4ed8;text-decoration:none;">View the permit on NYC Open Data</a></p>'
+                 if link else "")
+    html_body = f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2937;line-height:1.55;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" width="560" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
+    <tr><td style="padding:24px 28px;">
+      <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
+      <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">{_html.escape(f"Holiday embargo: permit {permit} has no waiver")}</h1>
+      {_p(en[0])}{_p(en[1])}{_block(en[2:6])}{_p(en[6])}{_p(en[7], "color:#6b7280;font-size:13px;")}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;">
+      <h2 style="margin:0 0 14px;font-size:16px;font-weight:600;color:#111827;">{_html.escape(f"Embargo navideño: el permiso {permit} no tiene exención")}</h2>
+      {_p(es[0])}{_p(es[1])}{_block(es[2:6])}{_p(es[6])}{_p(es[7], "color:#6b7280;font-size:13px;")}
+      {link_html}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
+      <p style="margin:0;font-size:12px;color:#6b7280;">{_html.escape(footer_en)}<br>{_html.escape(footer_es)}</p>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    return subject, text, html_body
+
+
+async def _dot_embargo_alert_tick(now: Optional[datetime] = None) -> dict:
+    """The 07:00 run: the emails due today (lib/dot_embargo.due_sends)."""
+    from lib.notifications import is_email_kill_switch_on, send_notification
+    from pymongo.errors import DuplicateKeyError
+    now = now or datetime.now(timezone.utc)
+    today = dot_embargo.ny_date(now)
+    report = {"date": today.isoformat(), "projects": 0, "due": 0, "sent": 0,
+              "already": 0, "no_recipients": 0, "ledger_failed": 0,
+              "waiting_sync": 0}
+    if not dot_embargo.in_alert_window(today):
+        return report
+    # Checked BEFORE any ledger row is written, so a halted day does not burn
+    # the once-only row (send_notification checks both again at send time).
+    if not RESEND_API_KEY or is_email_kill_switch_on():
+        report["skipped"] = "no_resend_key" if not RESEND_API_KEY else "kill_switch"
+        logger.info(f"[dot-embargo] {report}")
+        return report
+    try:
+        live = await _dot_live_projects()
+    except Exception as e:
+        logger.warning(f"[dot-embargo] project read failed: {type(e).__name__}")
+        return report
+    for project_id, project in live.items():
+        # Nothing sends before the project's first full DOT permit pass
+        # (lib/source_sync.py): until then its permits are not all known, and
+        # the GC group alerts wait for the same moment.
+        try:
+            synced = await _project_first_synced(project_id)
+        except Exception as e:
+            logger.warning(f"[dot-embargo] sync state read failed: {type(e).__name__}")
+            continue
+        if source_sync.DOT_PERMITS not in synced:
+            report["waiting_sync"] += 1
+            continue
+        rows = await db.dot_logs.find({"project_id": project_id}).to_list(2000)
+        due = dot_embargo.due_sends(rows, today)
+        if not due:
+            continue
+        report["projects"] += 1
+        report["due"] += len(due)
+        recipients = await _critical_dob_alert_recipients(project)
+        if not recipients:
+            report["no_recipients"] += len(due)
+            continue
+        for d in due:
+            season = d["season"]
+            lid = dot_embargo.ledger_id(project_id, d["permit"], season.year, d["send_date"])
+            try:
+                await db[dot_embargo.LEDGER].insert_one({
+                    "_id": lid, "project_id": project_id,
+                    "company_id": str(project.get("company_id") or ""),
+                    "permit": d["permit"], "season_year": season.year,
+                    "send_date": d["send_date"].isoformat(), "kind": d["kind"],
+                    "trigger_type": dot_embargo.TRIGGER_TYPE,
+                    "recipients": len(recipients), "created_at": now})
+            except DuplicateKeyError:
+                report["already"] += 1
+                continue
+            except Exception as e:
+                # No ledger row, no send: once-only cannot be promised.
+                logger.warning(f"[dot-embargo] ledger write failed: {type(e).__name__}")
+                report["ledger_failed"] += 1
+                continue
+            subject, text, html_body = _dot_embargo_email(project, d["row"], season)
+            sent = 0
+            for recipient in recipients:
+                try:
+                    await send_notification(
+                        db,
+                        permit_renewal_id=lid,
+                        trigger_type=dot_embargo.TRIGGER_TYPE,
+                        recipient=recipient,
+                        subject=subject,
+                        html=html_body,
+                        text=text,
+                        metadata={
+                            "project_id": project_id,
+                            "project_name": project.get("name"),
+                            "permit": d["permit"],
+                            "season_year": season.year,
+                            "kind": d["kind"],
+                        },
+                    )
+                    sent += 1
+                except Exception as e:
+                    logger.error(f"[dot-embargo] send failed: {type(e).__name__}")
+            report["sent"] += 1 if sent else 0
+            try:
+                await db[dot_embargo.LEDGER].update_one(
+                    {"_id": lid}, {"$set": {"sent_to": sent, "sent_at": datetime.now(timezone.utc)}})
+            except Exception:
+                pass
+    logger.info(f"[dot-embargo] {report}")
+    return report
+
+
+async def _dot_embargo_alert_job() -> None:
+    try:
+        await _dot_embargo_alert_tick()
+    except Exception as e:
+        logger.error(f"[dot-embargo] tick failed: {type(e).__name__}: {e}")
+
+
+@api_router.get("/projects/{project_id}/dot/embargo")
+async def get_dot_embargo(
+    project_id: str,
+    current_user=Depends(get_current_user),
+    project=Depends(require_project_access),
+):
+    """The holiday-embargo banner for one project: inside Nov 1 - Jan 2, the
+    exposed DOT permits known to lack the waiver (stipulation 410). Permits
+    whose stipulations could not be read are listed apart as `unknown` and
+    never counted as missing a waiver."""
+    rows = await db.dot_logs.find(
+        {"project_id": str(project.get("_id") or project_id)}).to_list(2000)
+    return dot_embargo.banner(rows, dot_embargo.ny_date(datetime.now(timezone.utc)))
 
 
 async def _whatsapp_gc_tick() -> None:
@@ -81834,6 +82155,29 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=8),
+    )
+    # DOT holiday embargo (lib/dot_embargo.py). 05:30 New York: read the
+    # stipulations (waiver = 410) of every matched permit that is active or
+    # starts within 30 days. 07:00 New York: email the permits that are exposed
+    # to Nov 15 - Jan 2 without the waiver (Nov 1, Nov 12, first sight; once
+    # each, dot_alert_ledger). The grace time lets a deploy at 07:00 still run.
+    scheduler.add_job(
+        _dot_stipulations_job,
+        CronTrigger(hour=5, minute=30, timezone="America/New_York"),
+        id='dot_stipulations',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _dot_embargo_alert_job,
+        CronTrigger(hour=7, minute=0, timezone="America/New_York"),
+        id='dot_embargo_alerts',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
     )
     # Filing-time photo pipeline: every unjudged photo of a recent filed daily log
     # is judged once and the verdict stored, so reports are instant. Every 20 min.
