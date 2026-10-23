@@ -987,7 +987,7 @@ class CriticalDobAlertRecipients(unittest.TestCase):
                 patch.object(server, "RESEND_API_KEY", "re_test"), \
                 patch("lib.notifications.send_notification", _send):
             _run(server._send_critical_dob_alert(
-                PROJ_A, {"record_type": "violation", "raw_dob_id": "v1"}))
+                PROJ_A, {"record_type": "violation", "raw_dob_id": "v1"}, event="new"))
         self.assertEqual(sorted(sent_to), ["admin@a", "pm-on@a"])
 
     def test_the_retired_role_is_gone_from_the_query(self):

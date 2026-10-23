@@ -449,7 +449,9 @@ class HardDeleteCascadeTest(unittest.TestCase):
         branches = db.system_config.deleted[0]["$or"]
         self.assertIn({"key": f"dob_sync_last:{_PID}"}, branches)
         regexes = [b["key"]["$regex"] for b in branches if isinstance(b["key"], dict)]
-        self.assertEqual(len(regexes), 3, "three suffixed key families")
+        self.assertEqual(len(regexes), 4, "four suffixed key families")
+        # The per-BIN first-scan markers (initial_scan_done:dob:{pid}:{bin}).
+        self.assertIn(f"^initial_scan_done:dob:{_PID}:", regexes)
         # Anchored so a project whose id is a substring can't be caught.
         self.assertTrue(all(r.startswith("^") for r in regexes))
 

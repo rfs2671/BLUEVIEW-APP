@@ -150,18 +150,20 @@ const _light = {
   glass: {
     background:      'rgba(255, 255, 255, 0.96)',
     backgroundHover: 'rgba(242, 243, 240, 0.98)',
-    border:          'rgba(201, 204, 198, 1)',
-    borderHover:     'rgba(166, 170, 163, 1)',
+    border:          'rgba(44, 65, 83, 0.26)',
+    borderHover:     'rgba(44, 65, 83, 0.45)',
     card:            'rgba(255, 255, 255, 0.96)',
     cardHover:       'rgba(242, 243, 240, 0.98)',
     cardGradientEnd: 'rgba(255, 255, 255, 0.96)',
   },
 
+  // EVERY LINE in this theme is one colour, the sheen's #2C4153 (the dark theme's blue), at different strengths; the dark
+  // theme's lines are all #ECEDE9 (the light theme's background). Rims, dividers, rules, ticks, the sheen's hairline.
   sheen: { color: '#2C4153', wash: 0.14 },
-  ruled: { tick: '#458CB5', ink: '#243746', rule: 'rgba(44, 65, 83, 0.24)' },
+  ruled: { tick: '#2C4153', ink: '#243746', rule: 'rgba(44, 65, 83, 0.26)' },
 
   aura: {
-    rim:     'rgba(69, 140, 181, 0.18)',
+    rim:     'rgba(44, 65, 83, 0.24)',
     color:   '#458CB5',
     opacity: 0.20,
     radius:  10,
@@ -176,9 +178,9 @@ const _light = {
   },
 
   border: {
-    subtle: 'rgba(201, 204, 198, 0.55)',
-    medium: 'rgba(201, 204, 198, 0.9)',
-    strong: 'rgba(166, 170, 163, 0.9)',
+    subtle: 'rgba(44, 65, 83, 0.16)',
+    medium: 'rgba(44, 65, 83, 0.26)',
+    strong: 'rgba(44, 65, 83, 0.45)',
   },
 
   text: {
@@ -360,8 +362,8 @@ export const outdoor = {
 
   // The glass border — present but soft. GlassCard draws exactly this, so the
   // "no visible border" in the brief is not what the app actually does.
-  line: 'rgba(201, 204, 198, 1)',
-  lineStrong: 'rgba(166, 170, 163, 0.9)',
+  line: 'rgba(44, 65, 83, 0.26)',
+  lineStrong: 'rgba(44, 65, 83, 0.45)',
 
   // The accent the reference screen's count badge uses.
   accent: '#B47C1F',
