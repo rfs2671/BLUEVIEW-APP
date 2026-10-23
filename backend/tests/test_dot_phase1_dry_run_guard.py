@@ -209,6 +209,28 @@ class NoSendLeavesTheMachine(_Spied):
         self.spies["urllib.https_open"].assert_not_called()
         self.assertFalse(any("data.cityofnewyork.us" in e["where"] for e in self.guard.blocked))
 
+    def test_the_lower_layers_boto3_uses(self):
+        # boto3 / botocore (R2 uploads) call urllib3 directly, below requests;
+        # urllib3 and urllib end in http.client. A PUT through either is refused.
+        import http.client
+        import urllib3
+        import urllib3.connectionpool
+        made = MagicMock(name="urllib3._make_request")
+        sent = MagicMock(name="http.client.send")
+        for owner, name, m in ((urllib3.connectionpool.HTTPConnectionPool, "_make_request", made),
+                               (http.client.HTTPConnection, "send", sent)):
+            p = patch.object(owner, name, m)
+            p.start()
+            self._patches.append(p)
+        pool =urllib3.HTTPSConnectionPool("r2.example.com", retries=False)
+        self.refused(pool.urlopen, "PUT", "/bucket/report.pdf", body=b"%PDF")
+        self.recorded("urllib3 PUT", "r2.example.com/bucket/report.pdf")
+        made.assert_not_called()
+        conn = http.client.HTTPSConnection("hooks.example.com", timeout=1)
+        self.refused(conn.request, "POST", "/x", body="{}")
+        self.recorded("http.client POST", "hooks.example.com/x")
+        sent.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

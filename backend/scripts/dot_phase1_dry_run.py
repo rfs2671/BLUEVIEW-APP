@@ -3,7 +3,9 @@
     railway run --service Blueview2 python backend/scripts/dot_phase1_dry_run.py [out_dir]
 
 (Blueview2 is the backend service the repo's other production scripts name;
-add `--environment production` if the linked environment is not production.)
+add `--environment production` if the linked environment is not production.
+If MONGO_URL is on Railway's private network it will not resolve from this
+machine: set DOT_DRY_RUN_MONGO_URL (and DOT_DRY_RUN_DB) to the public URL.)
 
 WHAT IT ANSWERS. For each project: every email and every WhatsApp group post
 the first 7 days after deploy would produce -- kind, record id (ticket /
@@ -311,6 +313,36 @@ class Guard:
             done.append("aiohttp.ClientSession._request")
         except Exception:
             pass
+        # THE LOWER LAYERS, for any client that skips the ones above: boto3 /
+        # botocore (R2) call urllib3 directly, and urllib3, requests and urllib
+        # all end in http.client. Same rule: GET to NYC Open Data only.
+        try:
+            import urllib3.connectionpool as u3
+            u3_urlopen = u3.HTTPConnectionPool.urlopen
+
+            def u3open(this, method, url, *a, **k):
+                full = f"{this.scheme}://{this.host}{url if str(url).startswith('/') else '/' + str(url)}"
+                if not guard.http_allowed(method, full):
+                    guard._http_refuse("urllib3", method, full, k.get("body") or (a[0] if a else None))
+                return u3_urlopen(this, method, url, *a, **k)
+            self._patch(u3.HTTPConnectionPool, "urlopen", u3open)
+            done.append("urllib3.HTTPConnectionPool.urlopen (covers boto3 / botocore)")
+        except Exception:
+            pass
+        try:
+            import http.client as hc
+            hc_putrequest = hc.HTTPConnection.putrequest
+
+            def putrequest(this, method, url, *a, **k):
+                scheme = "https" if isinstance(this, hc.HTTPSConnection) else "http"
+                full = f"{scheme}://{this.host}{url if str(url).startswith('/') else '/' + str(url)}"
+                if not guard.http_allowed(method, full):
+                    guard._http_refuse("http.client", method, full)
+                return hc_putrequest(this, method, url, *a, **k)
+            self._patch(hc.HTTPConnection, "putrequest", putrequest)
+            done.append("http.client.HTTPConnection.putrequest (every client built on it)")
+        except Exception:
+            pass
         return done
 
     # email
@@ -425,10 +457,17 @@ def lock_database() -> List[str]:
 
 
 def configure_environment() -> str:
-    url, name = os.environ.get("MONGO_URL"), os.environ.get("DB_NAME")
+    # DOT_DRY_RUN_MONGO_URL / DOT_DRY_RUN_DB win when set: `railway run` runs
+    # on the operator's machine, and a MONGO_URL on Railway's private network
+    # does not resolve there (same override as real_report_dry_run.py).
+    url = os.environ.get("DOT_DRY_RUN_MONGO_URL") or os.environ.get("MONGO_URL")
+    name = os.environ.get("DOT_DRY_RUN_DB") or os.environ.get("DB_NAME")
     if not url or not name:
-        sys.exit("No database: MONGO_URL and DB_NAME are not set (railway run sets them). "
-                 "Nothing was read or written.")
+        sys.exit("No database: MONGO_URL and DB_NAME are not set (railway run sets them), nor "
+                 "DOT_DRY_RUN_MONGO_URL and DOT_DRY_RUN_DB. Nothing was read or written.")
+    os.environ["MONGO_URL"], os.environ["DB_NAME"] = url, name
+    from urllib.parse import urlparse
+    print(f"database: {name} on {urlparse(url).hostname or '?'}  (credentials not printed)")
     os.environ.setdefault("JWT_SECRET", "dry-run-only")
     os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
     return name
