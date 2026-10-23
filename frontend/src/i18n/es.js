@@ -94,4 +94,14 @@ export default {
     helpEditBin: 'Si el BIN ya se resolvió automáticamente al edificio equivocado, abra la página de Cumplimiento (ícono de engranaje) y edite el campo BIN directamente.',
   },
 
+  // ── app/project/[id]/dob-logs.jsx — embargo navideño del DOT ─────────────
+  dotEmbargo: {
+    banner: 'Embargo navideño del 15 de nov al 2 de ene: {n} permisos activos del DOT no tienen exención.',
+    bannerOne: 'Embargo navideño del 15 de nov al 2 de ene: 1 permiso activo del DOT no tiene exención.',
+    permits: 'Permisos: {list}',
+    action: 'Solicite una exención o detenga el trabajo del 15 de nov al 2 de ene.',
+    coverageNote: 'Revisa los permisos vinculados a su dirección. Los permisos registrados por tramo de calle llegarán con la próxima actualización.',
+    unverifiedTitle: 'Embargo navideño del 15 de nov al 2 de ene: revise estos permisos',
+    unverified: 'Exención no verificada: {list}',
+  },
 };

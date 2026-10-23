@@ -8,9 +8,11 @@ import { spacing, typography } from '../styles/theme';
  * drawing's title block does and replaces the box that used to enclose the section's contents. The tick and rule take
  * the other theme's tone (theme.js `ruled`): steel blue and navy on paper, beige on navy.
  *
+ * `right` is an optional node placed after the rule (a count badge, an add button) for header rows that carry one.
+ *
  * The label is passed as a `label` prop (a string the caller owns), and is rendered unchanged, so anything that reads the page for that text still finds it.
  */
-export default function SectionLabel({ label, style }) {
+export default function SectionLabel({ label, style, right }) {
   const { colors } = useTheme();
   const r = colors.ruled;
   return (
@@ -18,6 +20,7 @@ export default function SectionLabel({ label, style }) {
       <View style={[styles.tick, { backgroundColor: r.tick }]} />
       <Text style={[typography.label, styles.text, { color: r.ink }]}>{label}</Text>
       <View style={[styles.rule, { backgroundColor: r.rule }]} />
+      {right || null}
     </View>
   );
 }

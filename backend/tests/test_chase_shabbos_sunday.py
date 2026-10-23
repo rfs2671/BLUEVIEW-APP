@@ -23,7 +23,7 @@ os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 
 import server  # noqa: E402
-from lib import dm_actions, shabbos, wa_chase  # noqa: E402
+from lib import datefmt, dm_actions, shabbos, wa_chase  # noqa: E402
 from tests.test_whatsapp_chase import _Base, _item, _run  # noqa: E402
 
 ASK = "Just Shabbos (Fri evening to Sat night), or Sunday too?"
@@ -35,7 +35,7 @@ def _ny(y, mo, d, h, mi=0):
 
 
 def _clock(dt):
-    return dt.astimezone(shabbos.NY).strftime("%a %b %-d %-I:%M %p")
+    return datefmt.strftime(dt.astimezone(shabbos.NY), "%a %b %-d %-I:%M %p")
 
 
 class TheTimes(unittest.TestCase):

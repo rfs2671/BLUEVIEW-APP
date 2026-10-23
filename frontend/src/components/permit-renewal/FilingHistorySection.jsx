@@ -28,6 +28,7 @@ import { spacing, borderRadius, typography } from '../../styles/theme';
 import { semantic, chrome } from '../../styles/semanticColors';
 import { useTheme } from '../../context/ThemeContext';
 
+import SheenView from '../SheenView';
 // Status palette mirrors FilingStatusCard's STATUS_BADGE — same color
 // per status so the operator's eye correlates between active panel
 // and history rows. Compact form, label-only (no icon) since the row
@@ -67,7 +68,7 @@ const FilingHistorySection = ({ filingJobs = [] }) => {
   const ChevronIcon = expanded ? ChevronUp : ChevronDown;
 
   return (
-    <View style={s.container}>
+    <SheenView style={s.container}>
       <Pressable
         style={s.headerRow}
         onPress={() => setExpanded((v) => !v)}
@@ -135,7 +136,7 @@ const FilingHistorySection = ({ filingJobs = [] }) => {
           })}
         </View>
       )}
-    </View>
+    </SheenView>
   );
 };
 

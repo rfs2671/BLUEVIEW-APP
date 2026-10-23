@@ -98,6 +98,8 @@ import {
 import { SIGNAL_KIND_HELP } from '../../src/utils/signalKindHelp';
 import InfoTooltip from '../../src/components/InfoTooltip';
 
+import SectionLabel from '../../src/components/SectionLabel';
+import CardSheen from '../../src/components/CardSheen';
 // ── Static select options ────────────────────────────────────────
 
 const DELIVERY_OPTIONS = [
@@ -283,6 +285,9 @@ const PresetRadioCard = ({
       pressed && { opacity: 0.85 },
     ]}
   >
+{({ hovered, pressed }) => (
+<>
+<CardSheen radius={borderRadius.lg} active={!!(hovered || pressed)} intro />
     <View
       style={[
         styles.presetRadio,
@@ -309,7 +314,8 @@ const PresetRadioCard = ({
       <Text style={styles.presetSubtitle}>{preset.subtitle}</Text>
       <Text style={styles.presetBodyHelp}>{preset.bodyHelp}</Text>
     </View>
-  </Pressable>
+  </>)}
+</Pressable>
 );
 
 // ── Main page ────────────────────────────────────────────────────
@@ -727,7 +733,7 @@ export default function NotificationPreferencesScreen() {
           />
 
           {/* ── Section B — Delivery timing ─────────────────────── */}
-          <Text style={styles.sectionLabel}>DELIVERY TIMING</Text>
+          <SectionLabel label="DELIVERY TIMING" />
           <GlassCard style={styles.timingCard}>
             <View style={styles.timingRow}>
               <Text style={styles.timingLabel}>Daily digest time</Text>
@@ -765,7 +771,7 @@ export default function NotificationPreferencesScreen() {
           {advancedOpen && (
             <View>
               <View style={styles.advancedHeaderRow}>
-                <Text style={styles.sectionLabel}>ADVANCED — PER-SIGNAL TYPE</Text>
+                <SectionLabel label="ADVANCED — PER-SIGNAL TYPE" />
                 {anchorPreset !== 'custom' && anchorPresetMeta && (
                   <Pressable onPress={handleResetToAnchor} style={styles.resetAnchorLink}>
                     <RotateCcw size={12} strokeWidth={1.5} color={colors.text.muted} />
@@ -915,7 +921,7 @@ export default function NotificationPreferencesScreen() {
             onPress={() => setShowProjectsSection((v) => !v)}
             style={styles.projectsSectionHeader}
           >
-            <Text style={styles.sectionLabel}>PER-PROJECT OVERRIDES</Text>
+            <SectionLabel label="PER-PROJECT OVERRIDES" />
             {showProjectsSection ? (
               <ChevronUp size={16} strokeWidth={1.5} color={colors.text.muted} />
             ) : (

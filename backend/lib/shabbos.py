@@ -25,6 +25,8 @@ from functools import lru_cache
 from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from lib.datefmt import strftime as _fmt
+
 NY = ZoneInfo("America/New_York")
 LAT, LON = 40.7128, -74.0060
 CANDLES_BEFORE_SUNSET = timedelta(minutes=18)
@@ -165,5 +167,5 @@ def is_sunday(at: datetime) -> bool:
 def times(day: date) -> List[str]:
     """For a reader: "Fri Oct 9: candles 6:03 PM, Sat Oct 10: nightfall 7:01 PM"."""
     s, e = window(day)
-    return [f"quiet from {s.astimezone(NY):%a %b %-d %-I:%M %p}",
-            f"to {e.astimezone(NY):%a %b %-d %-I:%M %p}"]
+    return [f"quiet from {_fmt(s.astimezone(NY), '%a %b %-d %-I:%M %p')}",
+            f"to {_fmt(e.astimezone(NY), '%a %b %-d %-I:%M %p')}"]

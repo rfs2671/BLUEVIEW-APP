@@ -81,11 +81,14 @@ class TheRuntimeCarriesWhatTheWheelsLinkAgainst(unittest.TestCase):
         return dict(re.findall(r"^\s*([a-z0-9][a-z0-9.+-]*)=(\S+)\s*\\?\s*$",
                                text, re.M))
 
-    def test_the_renderer_is_pinned_to_the_one_that_read_the_corpus(self):
-        # pdftoppm 25.03.0 measured from deployment 6eea5ba4's startup log;
-        # the Debian revision inferred. A pin break means: re-run the
-        # ocr-repro harness before bumping (see the Dockerfile).
-        self.assertEqual(self.apt_pins().get("poppler-utils"), "25.03.0-5+deb13u4")
+    def test_the_renderer_is_installed_and_not_version_pinned(self):
+        # Operator ruling 2026-10-21: an exact apt version fails EVERY build on
+        # the day Debian replaces it on the mirror. The renderer that read the
+        # corpus was pdftoppm 25.03.0 (deployment 6eea5ba4's startup log); a
+        # drift from it shows in the boot log's POPPLER CHECK line, and the
+        # ocr-repro harness judges it before a re-index (see the Dockerfile).
+        self.assertIn("poppler-utils", self.apt_packages())
+        self.assertNotIn("poppler-utils", self.apt_pins())
 
     def test_the_base_image_is_pinned_by_digest(self):
         text = (REPO / "Dockerfile").read_text(encoding="utf-8")

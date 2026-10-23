@@ -2151,4 +2151,20 @@ export default {
     helpEditBin: 'If the BIN was already auto-resolved to the wrong building, open the Compliance page (gear icon) and edit the BIN field directly.',
   },
 
+  // ── app/project/[id]/dob-logs.jsx — DOT holiday construction embargo ─────
+  // Shown Nov 1 – Jan 2 when an active DOT permit whose work dates overlap
+  // Nov 15 – Jan 2 has no waiver (stipulation 410). `{n}` and `{list}` are
+  // substituted at the call site. Two keys rather than one with "(s)".
+  dotEmbargo: {
+    banner: 'Holiday embargo Nov 15 – Jan 2: {n} active DOT permits have no waiver.',
+    bannerOne: 'Holiday embargo Nov 15 – Jan 2: 1 active DOT permit has no waiver.',
+    permits: 'Permits: {list}',
+    action: 'Apply for a waiver or stop work Nov 15 – Jan 2.',
+    // Coverage limit. DOT Phase 1 B (segment permits) REMOVES this key;
+    // the email carries the same line (backend lib/dot_embargo.COVERAGE_NOTE_*).
+    coverageNote: 'Checks permits matched to your address. Permits filed by street segment arrive with the next update.',
+    // A permit whose DOT stipulations could not be read: shown, never emailed.
+    unverifiedTitle: 'Holiday embargo Nov 15 – Jan 2: check these permits',
+    unverified: 'Waiver not verified: {list}',
+  },
 };
