@@ -249,11 +249,18 @@ class TheShippedSuite(unittest.TestCase):
                           {"subject": "EF-1", "value": 2},
                           {"subject": "exhaust fans", "value": 32}])
 
-    def test_vent_fan_is_narrowed_not_deleted(self):
+    def test_vent_fan_is_the_located_building_count(self):
+        """Rewritten 2026-10-23 (operator ruling): since #679 the located 36
+        binds at building scope and is true. The failure the case was written
+        for - '3 vent fans' counted off schedule rows - and the 2 fan types
+        are its refused claims; it is not deleted."""
         c = self.by_id.get("vent-fan-count-not-stated")
         self.assertIsNotNone(c, "vent-fan-count-not-stated was deleted")
-        self.assertTrue(c["expect"].get("no_unscoped_count"))
-        self.assertNotIn("no_stated_count", c["expect"])
+        self.assertEqual(c["kind"], "answer")
+        self.assertEqual(c["expect"]["claims"], [{"subject": "exhaust fans", "value": 36}])
+        self.assertEqual(c["expect"]["refused"], [{"subject": "exhaust fans", "value": 3},
+                                                  {"subject": "exhaust fans", "value": 2}])
+        self.assertNotIn("no_unscoped_count", c["expect"])
 
 
 if __name__ == "__main__":
