@@ -55783,12 +55783,17 @@ def _dm_chat_ids(dm_chat: str) -> list:
 
 async def _dm_history(dm_chat: str, now: datetime) -> list:
     """This chat's last 20 messages within 4 hours, oldest first: theirs and
-    Levelog's (answers, menus, the morning brief)."""
+    Levelog's (answers, menus, the morning brief).
+
+    ORDERED ON (created_at, _id): a question and the reply stored in the same
+    clock tick must come back in the order they were written, or the repeat
+    guard pairs an answer with the wrong question. An ObjectId grows with
+    insertion; tests/test_history_ties.py injects the tie."""
     try:
         rows = await db.whatsapp_messages.find(
             {"group_id": {"$in": _dm_chat_ids(dm_chat)}, "is_dm": True,
              "created_at": {"$gte": now - timedelta(hours=wa_assistant.HISTORY_HOURS)}}
-        ).sort([("created_at", -1)]).to_list(wa_assistant.HISTORY_MAX)
+        ).sort([("created_at", -1), ("_id", -1)]).to_list(wa_assistant.HISTORY_MAX)
     except Exception as e:
         logger.warning(f"[wa-assistant] history read failed: {type(e).__name__}")
         return []
@@ -57907,7 +57912,7 @@ async def _dm_brain_history(dm_chat: str, now: datetime, before: Optional[dateti
     if before:
         q["created_at"]["$lt"] = before
     try:
-        rows = await db.whatsapp_messages.find(q).sort([("created_at", -1)]).to_list(
+        rows = await db.whatsapp_messages.find(q).sort([("created_at", -1), ("_id", -1)]).to_list(
             dm_brain.HISTORY_TURNS)
     except Exception as e:
         logger.warning(f"[dm-brain] history read failed: {type(e).__name__}")

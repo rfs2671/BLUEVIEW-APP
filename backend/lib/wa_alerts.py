@@ -287,27 +287,32 @@ def _status_events(rows: List[Dict[str, Any]]) -> List[Any]:
     back to status_changed_at). A diff row's status_changed_at equals its
     detected_at, so for a permit timeline this is "the latest row whose
     status_changed_at/detected_at <= when". Rows with no usable date add
-    nothing: a status we cannot date is never claimed for a date."""
+    nothing: a status we cannot date is never claimed for a date.
+
+    THE ORDER KEY BREAKS A TIMESTAMP TIE BY WRITE ORDER: the row's _id (an
+    ObjectId grows with insertion), then the entry's place in its history
+    array. It used to be the row's position in the caller's list -- the
+    order of a find() with no sort, which Mongo does not promise. A row with
+    no _id sorts before any row that has one, then by list position."""
     events: List[Any] = []
-    n = 0
-    for r in rows:
+    for pos, r in enumerate(rows):
         if not isinstance(r, dict):
             continue
+        rid = r.get("_id")
+        row_key = (1, str(rid), pos) if rid is not None else (0, "", pos)
         hist = r.get("status_history")
         if isinstance(hist, list) and hist:
-            for e in hist:
+            for i, e in enumerate(hist):
                 at = _utc(e.get("at")) if isinstance(e, dict) else None
                 if at is not None:
-                    events.append((at, n, e.get("status")))
-                    n += 1
+                    events.append((at, (row_key, i), e.get("status")))
             continue
         at = _utc(r.get("detected_at")) or _utc(r.get("status_changed_at"))
         if at is None:
             continue
         stored = r["current_status"] if "current_status" in r else (
             r.get("status") if "status" in r else r.get("permit_status"))
-        events.append((at, n, stored))
-        n += 1
+        events.append((at, (row_key, 0), stored))
     return events
 
 

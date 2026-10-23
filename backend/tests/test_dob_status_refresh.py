@@ -837,18 +837,48 @@ class TestStatusAsOf(unittest.TestCase):
 
 
 class TestReportReadsHistoryAcrossSyncs(unittest.TestCase):
+    @staticmethod
+    def _at(when):
+        """server.datetime with now() pinned to `when`. The two syncs used to
+        read the real clock, and on a clock that ticks every ~15.6 ms
+        (Windows) they shared an instant one run in three -- which is the tie
+        case, not the case this test describes."""
+        class _Pinned(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return when if tz else when.replace(tzinfo=None)
+        return patch.object(server, "datetime", _Pinned)
+
     def test_sync_then_status_as_of(self):
         """End to end: what a report asks ('was this SWO in force on D?')."""
+        t1 = datetime(2026, 10, 20, 9, 0, tzinfo=timezone.utc)
         s = _Sync()
-        s.sync(_project(), [_swo_rec(status="Active")])
-        s.sync(_project(), [_swo_rec(status="Rescinded")])
+        with self._at(t1):
+            s.sync(_project(), [_swo_rec(status="Active")])
+        with self._at(t1 + timedelta(hours=1)):
+            s.sync(_project(), [_swo_rec(status="Rescinded")])
         (r,) = s.rows()
         t_first, t_resc = (e["at"] for e in r["status_history"])
-        mid = t_first + (t_resc - t_first) / 2 if t_resc > t_first else t_first
+        self.assertLess(t_first, t_resc)
         self.assertEqual(wa_alerts.status_as_of(r, t_first - timedelta(seconds=1)), None)
         self.assertEqual(wa_alerts.status_as_of(r, t_first), "ACTIVE")
         self.assertEqual(wa_alerts.status_as_of(r, t_resc), "RESCINDED")
         self.assertTrue(wa_alerts.closed_as_of(r, t_resc))
+
+    def test_two_syncs_in_the_same_instant_resolve_to_the_later_one(self):
+        """The tie, injected: both syncs stamp the same instant. The later
+        fact wins at that instant (wa_alerts.status_as_of: ties go to the
+        later-written fact), and before it nothing is known."""
+        t1 = datetime(2026, 10, 20, 9, 0, tzinfo=timezone.utc)
+        s = _Sync()
+        with self._at(t1):
+            s.sync(_project(), [_swo_rec(status="Active")])
+            s.sync(_project(), [_swo_rec(status="Rescinded")])
+        (r,) = s.rows()
+        ats = [e["at"] for e in r["status_history"]]
+        self.assertEqual(len(set(ats)), 1, "precondition: the two entries share an instant")
+        self.assertEqual(wa_alerts.status_as_of(r, ats[0]), "RESCINDED")
+        self.assertIsNone(wa_alerts.status_as_of(r, ats[0] - timedelta(seconds=1)))
 
 
 class TestResetResyncReingest(unittest.TestCase):
