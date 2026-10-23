@@ -420,13 +420,23 @@ class Guard:
         request; both must be refused and recorded before anything is read."""
         out = []
         n = len(self.blocked)
-        try:
-            res = real_db["dot_dry_run_guard_check"].insert_one({"_id": "dry-run"})
-            if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
-                await res
-            raise SystemExit("GUARD FAILED: a write on the production handle was not refused. Nothing was run.")
-        except DryRunBlocked as e:
-            out.append(f"guard OK: {e}")
+        cfg = real_db["system_config"]
+        writes = (
+            ("insert_one", lambda: real_db["dot_dry_run_guard_check"].insert_one({"_id": "dry-run"})),
+            ("update_one(upsert)", lambda: cfg.update_one(
+                {"_id": "initial_scan_done:dot:dry-run"}, {"$set": {"value": True}}, upsert=True)),
+            ("find_one_and_update", lambda: cfg.find_one_and_update(
+                {"_id": "initial_scan_done:dot:dry-run"}, {"$set": {"value": True}}, upsert=True)),
+        )
+        for what, attempt in writes:
+            try:
+                res = attempt()
+                if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+                    await res
+                raise SystemExit(f"GUARD FAILED: {what} on the production handle was not refused. "
+                                 "Nothing was run.")
+            except DryRunBlocked as e:
+                out.append(f"guard OK: {e}")
         try:
             import httpx
             async with httpx.AsyncClient() as c:
@@ -434,7 +444,7 @@ class Guard:
             raise SystemExit("GUARD FAILED: an HTTP POST was not refused. Nothing was run.")
         except DryRunBlocked as e:
             out.append(f"guard OK: {e}")
-        if len(self.blocked) - n != 2:
+        if len(self.blocked) - n != 4:
             raise SystemExit("GUARD FAILED: a refused call was not recorded. Nothing was run.")
         for e in self.blocked[n:]:
             e["run"] = "self-check"
@@ -456,6 +466,36 @@ def lock_database() -> List[str]:
     return GUARD.lock_mongo()
 
 
+#: Kept through the credential blanking: the database read and its overrides.
+KEEP_ENV = ("MONGO_URL", "DB_NAME", "DOT_DRY_RUN_MONGO_URL", "DOT_DRY_RUN_DB")
+#: Blanked by name: every send / outbound credential the backend reads (operator
+#: ruling 2026-10-23) -- email, WhatsApp, push, SMS, SMTP, storage, AI, error
+#: reporting -- plus anything shaped like a credential, so a key added later
+#: is blanked without anyone remembering to list it here.
+_CRED_PREFIXES = ("RESEND", "WAAPI_", "WHATSAPP_", "EXPO_", "PUSH", "FCM", "APNS", "TWILIO", "SMTP_",
+                  "R2_", "S3_", "AWS_", "QWEN", "DEEPINFRA", "OPENAI", "GEMINI", "DM_BRAIN_API",
+                  "DROPBOX_", "SENTRY_", "GOOGLE_", "OPENWEATHER", "SOCRATA_")
+_CRED_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "DSN", "CREDENTIAL")
+#: What production had, read BEFORE blanking (presence only, never a value).
+PROD_ENV_FACTS: Dict[str, Any] = {}
+
+
+def blank_send_credentials(env=None) -> List[str]:
+    """Blank (set to "") every send credential in `env`, keeping KEEP_ENV.
+    Returns the blanked NAMES, sorted (values are never printed)."""
+    env = os.environ if env is None else env
+    blanked = []
+    for k in list(env):
+        if k in KEEP_ENV:
+            continue
+        u = k.upper()
+        if u.startswith(_CRED_PREFIXES) or any(w in u for w in _CRED_WORDS):
+            if env.get(k):
+                blanked.append(k)
+            env[k] = ""
+    return sorted(blanked)
+
+
 def configure_environment() -> str:
     # DOT_DRY_RUN_MONGO_URL / DOT_DRY_RUN_DB win when set: `railway run` runs
     # on the operator's machine, and a MONGO_URL on Railway's private network
@@ -468,7 +508,13 @@ def configure_environment() -> str:
     os.environ["MONGO_URL"], os.environ["DB_NAME"] = url, name
     from urllib.parse import urlparse
     print(f"database: {name} on {urlparse(url).hostname or '?'}  (credentials not printed)")
-    os.environ.setdefault("JWT_SECRET", "dry-run-only")
+    PROD_ENV_FACTS["resend_key_set"] = bool(os.environ.get("RESEND_API_KEY"))
+    PROD_ENV_FACTS["kill_switch"] = os.environ.get("NOTIFICATIONS_KILL_SWITCH", "")
+    # BEFORE `import server`: no send credential reaches the application, so
+    # even a path the guard missed has nothing to authenticate with.
+    blanked = blank_send_credentials()
+    print(f"blanked {len(blanked)} send credentials (names only): {', '.join(blanked) or '(none set)'}")
+    os.environ["JWT_SECRET"] = "dry-run-only"          # the app needs one to import; signs nothing real
     os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
     return name
 
@@ -936,7 +982,9 @@ async def simulate(server, source, *, label: str, force_flag: bool, start: datet
     reports: List[tuple] = []
     try:
         server.db = copydb
-        server.RESEND_API_KEY = server.RESEND_API_KEY or "dry-run"   # the ticks' own early exit
+        # The ticks exit early with no key; the real key was blanked before
+        # import, and send_notification / Resend are refused regardless.
+        server.RESEND_API_KEY = "dry-run"
         server._gc_alert_text = text_and_capture
         server._quiet_enqueue = enqueue_and_mark
         os.environ["NOTIFICATIONS_KILL_SWITCH"] = ""
@@ -1216,9 +1264,11 @@ async def run_all(server, source, out_dir: str, *, fetch, start: Optional[dateti
 
 def env_notes() -> List[str]:
     from lib import notifications
-    ks = os.environ.get("NOTIFICATIONS_KILL_SWITCH", "")
-    return [f"RESEND_API_KEY set in this environment: {bool(os.environ.get('RESEND_API_KEY'))}",
-            f"NOTIFICATIONS_KILL_SWITCH in this environment: {ks!r}"
+    # Read before the credentials were blanked (configure_environment).
+    ks = PROD_ENV_FACTS.get("kill_switch", os.environ.get("NOTIFICATIONS_KILL_SWITCH", ""))
+    return [f"RESEND_API_KEY set in production's environment: {PROD_ENV_FACTS.get('resend_key_set')}"
+            f" (blanked for this run)",
+            f"NOTIFICATIONS_KILL_SWITCH in production's environment: {ks!r}"
             f" (on means production would send NO email right now)",
             f"NOTIFICATIONS_ENABLED in this environment: {getattr(notifications, 'NOTIFICATIONS_ENABLED', None)}",
             "The run lists what the jobs hand to the sender with the kill switch off."]

@@ -232,5 +232,62 @@ class NoSendLeavesTheMachine(_Spied):
         sent.assert_not_called()
 
 
+class TheSelfCheck(_Spied):
+    """Before anything is read: insert_one, update_one(upsert) and
+    find_one_and_update on the PRODUCTION handle, plus one POST -- all four
+    refused and recorded (operator ruling 2026-10-23)."""
+
+    def test_four_refusals_recorded(self):
+        prod = AsyncIOMotorClient("mongodb://127.0.0.1:9", serverSelectionTimeoutMS=50)["prod"]
+        lines = _run(self.guard.self_check(prod))
+        self.assertEqual(len(lines), 4, lines)
+        self.assertTrue(all(x.startswith("guard OK: ") for x in lines), lines)
+        got = [(e["method"], e["where"]) for e in self.guard.blocked if e["run"] == "self-check"]
+        self.assertEqual([m for m, _ in got],
+                         ["insert_one", "update_one", "find_one_and_update", "httpx POST"])
+        self.assertTrue(got[1][1].endswith("system_config") and got[2][1].endswith("system_config"), got)
+        self.spies["motor.insert_one"].assert_not_called()
+
+
+class NoSendCredentialReachesTheApp(unittest.TestCase):
+    """configure_environment blanks every send credential BEFORE `import
+    server`, keeps the database read, and prints the names only."""
+
+    CREDS = {"RESEND_API_KEY": "re_live_x1", "WAAPI_TOKEN": "wa_x2", "WAAPI_INSTANCE_ID": "inst_x3",
+             "SMTP_PASSWORD": "smtp_x4", "AWS_SECRET_ACCESS_KEY": "aws_x5", "R2_ACCESS_KEY_ID": "r2_x6",
+             "QWEN_API_KEY": "qw_x7", "DEEPINFRA_API_KEY": "di_x8", "EXPO_ACCESS_TOKEN": "ex_x9",
+             "TWILIO_AUTH_TOKEN": "tw_x10", "SENTRY_DSN": "https://k@sentry.example/1",
+             "PUNCH_LINK_SECRET": "pl_x11", "SOME_NEW_PROVIDER_KEY": "np_x12"}
+    KEEP = {"MONGO_URL": "mongodb://prod.example:27017", "DB_NAME": "prod_db",
+            "DOT_DRY_RUN_MONGO_URL": "mongodb://public.example:27017", "DOT_DRY_RUN_DB": "prod_db"}
+
+    def test_blanked_and_kept(self):
+        env = {**self.CREDS, **self.KEEP, "PATH": "/usr/bin", "NOTIFICATIONS_KILL_SWITCH": "on"}
+        names = D.blank_send_credentials(env)
+        self.assertEqual(names, sorted(self.CREDS))
+        for k in self.CREDS:
+            self.assertEqual(env[k], "", k)
+        for k, v in self.KEEP.items():
+            self.assertEqual(env[k], v, k)
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_configure_prints_names_never_values(self):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with patch.dict(os.environ, {**self.CREDS, **self.KEEP}, clear=False), \
+                contextlib.redirect_stdout(buf):
+            D.configure_environment()
+            after = {k: os.environ.get(k) for k in self.CREDS}
+            mongo = os.environ["MONGO_URL"]
+        out = buf.getvalue()
+        self.assertEqual(after, {k: "" for k in self.CREDS})
+        self.assertEqual(mongo, self.KEEP["DOT_DRY_RUN_MONGO_URL"])       # the override wins
+        for k, v in self.CREDS.items():
+            self.assertIn(k, out)
+            self.assertNotIn(v, out)
+        self.assertTrue(D.PROD_ENV_FACTS["resend_key_set"])
+
+
 if __name__ == "__main__":
     unittest.main()
