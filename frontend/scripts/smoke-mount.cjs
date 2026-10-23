@@ -232,7 +232,7 @@ const ROUTES = [
   '/login',
   '/projects',                          // ProjectsTable
   '/project/p1',                        // project detail — CompliancePanel, DefconHeader
-  '/project/p1/dob-logs',               // DOB compliance
+  '/project/p1/dob-logs',               // Compliance screen
   // ── THE PLAN LIST ────────────────────────────────────────────────────────
   //
   // Nothing in CI executed this screen, and it is the one the CP spends his

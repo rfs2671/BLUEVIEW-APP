@@ -313,7 +313,7 @@ export default function PermitRenewalScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   // permitId is the optional dob_log id passed by deep-links from the
-  // DOB compliance tab's Prepare Renewal handler. When present, the
+  // Compliance tab's Prepare Renewal handler. When present, the
   // list page auto-expands the matching renewal card on landing so
   // the operator drops directly onto the right permit (vs. hunting
   // through a list of all the project's renewals). MR.1 polish.

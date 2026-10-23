@@ -146,6 +146,7 @@ from lib.logbook.signature_provenance import (  # noqa: E402
 )
 import re
 import hashlib
+import hmac
 from urllib.parse import quote_plus
 import json
 from dob_complaint_codes import classify_complaint, get_disposition_label, get_category_label, violation_type_display
@@ -1960,6 +1961,13 @@ class RateLimiter:
             return False
         self._hits[key].append(now)
         return True
+
+    def recent(self, key: str) -> int:
+        """Hits for `key` inside the window, WITHOUT recording one. For a
+        limiter that counts only failures and must be read on every attempt."""
+        now = _time.time()
+        self._hits[key] = [t for t in self._hits[key] if now - t < self.window]
+        return len(self._hits[key])
 
     def reset(self) -> None:
         """Clear all state. Used by tests; should not be called in
@@ -7513,7 +7521,19 @@ async def get_current_user(
     elif token:
         raw_token = token
 
+    # A JWT IN THE QUERY STRING IS STILL ACCEPTED, AND EVERY USE IS COUNTED.
+    # Downloads moved to /files/{id}/signed-url; the ?token= path stays until
+    # the OTA carrying that is adopted, and these lines are how "adopted" gets
+    # measured. Only a request that actually leaned on it -- no header, and
+    # `token` present in its own query string -- is logged. Never the value.
+    # getattr: the direct callers (and their tests) pass a request stand-in
+    # that has headers and a url but no query string to read.
+    via_query = (not credentials
+                 and "token" in (getattr(request, "query_params", None) or {}))
+
     if not raw_token:
+        if via_query:
+            _log_query_token_use(request, None, "empty")
         logger.error("❌ AUTH FAIL: No token provided")
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -7521,6 +7541,9 @@ async def get_current_user(
         payload = jwt.decode(raw_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("sub")
         site_mode = payload.get("site_mode", False)
+
+        if via_query:
+            _log_query_token_use(request, user_id, "ok")
 
         if not user_id:
             logger.error("❌ AUTH FAIL: No user_id in token")
@@ -7623,12 +7646,30 @@ async def get_current_user(
         return user_data
 
     except jwt.ExpiredSignatureError:
+        if via_query:
+            _log_query_token_use(request, None, "expired")
         logger.error("❌ AUTH FAIL: Token expired")
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError as e:
+        if via_query:
+            _log_query_token_use(request, None, "invalid")
         logger.error(f"❌ AUTH FAIL: Invalid token - {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid token")
-		
+
+
+def _log_query_token_use(request, user_id, outcome: str) -> None:
+    """One `[query-token]` line per request that authenticated (or tried to)
+    with ?token=. Path without its query string, the subject when the token
+    verified, and the client build, so adoption of the OTA that stops sending
+    it can be read straight off the logs. A logging failure changes nothing."""
+    try:
+        client = (request.headers.get("x-client-version") or "-").strip()[:32]
+        logger.info("[query-token] path=%s user=%s outcome=%s client=%s",
+                    request.url.path, user_id or "-", outcome, client or "-")
+    except Exception:
+        pass
+
+
 async def get_admin_user(current_user = Depends(get_current_user)):
     """THE COMPANY-WIDE ADMIN GATE. admin and owner, and nobody else.
 
@@ -28016,6 +28057,9 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
                 "modified": rec.get("modified", ""),
                 "r2_url": proxy_url or stored_url,
                 "cache_version": rec.get("cache_version", 0),
+                # Dropbox's hash of the bytes; the phone keys its download
+                # cache on it. "" for a direct upload, which has none.
+                "content_hash": rec.get("dropbox_content_hash") or "",
                 "source": rec.get("source", "dropbox_sync"),
                 # "Combined set — skipped" in Plans & Files, with its reason.
                 "index_status": _public_index_status(rec.get("index_status")),
@@ -29433,6 +29477,332 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
     if obj.get("ContentLength"):
         headers["Content-Length"] = str(obj["ContentLength"])
     return StreamingResponse(_iter(), media_type=content_type, headers=headers)
+
+
+# ── A DOWNLOAD LINK WORTH FIFTEEN MINUTES, NOT THIRTY DAYS ─────────────────
+#
+# WHAT WAS WRONG. The Download button built `/content?token=<JWT>` from
+# window.localStorage. A phone has no window.localStorage, so the token was
+# empty and the browser opened on {"detail":"Not authenticated"} -- the four
+# non-webhook `token=` lines in the retained Railway logs (2026-10-15..21) are
+# exactly those 401s. On the web it "worked" by putting the 30-day session
+# token in a URL: history, the address bar, anything it was pasted into.
+#
+# WHAT REPLACES IT. The app calls GET /files/{id}/signed-url with its bearer
+# header and gets back a link to /api/files/{id}/download whose HMAC names the
+# file, the principal and an expiry 15 minutes out. NOT SINGLE-USE, ON
+# PURPOSE: a PDF viewer comes back for byte ranges of the same document, and a
+# link that died on its first use would break the second range.
+#
+# THE SIGNATURE IS NOT THE PERMISSION. It proves this server issued the link
+# to this principal for this file. The download re-loads the principal (a
+# deleted user, a pending account, a removed device all refuse) and re-runs the
+# project, company and device allow-list checks the /content route runs, so
+# access revoked inside the fifteen minutes is revoked.
+#
+# THE KEY IS DERIVED FROM JWT_SECRET UNDER ITS OWN LABEL, so a MAC from here
+# can never be presented as anything else signed with that secret.
+FILE_DOWNLOAD_LINK_TTL_SECONDS = 900
+_FILE_DOWNLOAD_KEY_LABEL = b"levelog/file-download-link/v1"
+_FILE_DOWNLOAD_FILE_ID = re.compile(r"^[0-9a-f]{24}$")
+_FILE_DOWNLOAD_SUBJECT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_FILE_DOWNLOAD_EXP = re.compile(r"^\d{1,12}$")
+_FILE_DOWNLOAD_SIG = re.compile(r"^[0-9a-f]{64}$")
+# One range, the only shape R2 answers with a single 206. A multi-range ask
+# is served whole (200), which every client must accept.
+_SINGLE_BYTE_RANGE = re.compile(r"^bytes=(\d+-\d*|-\d+)$")
+
+# FORGED SIGNATURES ARE COUNTED PER ADDRESS, AND NOTHING ELSE IS. The MAC is
+# checked first; only a link whose signature does not verify is counted, and
+# after this many in a minute that address's further forgeries get a 429. An
+# expired link this server did sign is a 401 and never counted; a valid,
+# unexpired link is never refused here, so a PDF viewer's byte ranges -- or an
+# office behind one NAT where another tab sent junk -- always get through. A
+# forged MAC is not reachable by guessing at any rate: this bounds the noise,
+# not the odds. The per-address cap on ALL requests to the route is the
+# middleware's (lib/rate_limits.py).
+SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE = 20
+signed_download_refusal_limiter = RateLimiter(
+    max_requests=SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE, window_seconds=60)
+
+
+def _file_download_signature(file_id: str, kind: str, subject: str, exp: int) -> str:
+    key = hmac.new(JWT_SECRET.encode(), _FILE_DOWNLOAD_KEY_LABEL,
+                   hashlib.sha256).digest()
+    msg = f"{file_id}|{kind}|{subject}|{int(exp)}".encode()
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+def _file_download_principal(current_user: dict) -> tuple:
+    """("d", device id) for a site device, ("u", user id) for a person. The
+    kind is signed too: an id names a row in ONE collection, and a link issued
+    to a device must not be redeemable as a user of the same id."""
+    kind = "d" if _is_site_device(current_user) else "u"
+    return kind, str(current_user.get("id") or current_user.get("_id") or "")
+
+
+def _sign_file_download_path(file_id: str, current_user: dict,
+                             now: Optional[float] = None) -> tuple:
+    """(path, exp). The path is relative so the client joins it to whatever
+    API base it already talks to."""
+    kind, subject = _file_download_principal(current_user)
+    exp = int(_time.time() if now is None else now) + FILE_DOWNLOAD_LINK_TTL_SECONDS
+    sig = _file_download_signature(file_id, kind, subject, exp)
+    return (f"/api/files/{file_id}/download?k={kind}&u={subject}&e={exp}&s={sig}",
+            exp)
+
+
+def _check_file_download_signature(file_id: str, kind: str, subject: str,
+                                   exp: str, sig: str,
+                                   now: Optional[float] = None) -> Optional[str]:
+    """None for a good link, else "invalid" or "expired".
+
+    Shape first, so a malformed field never reaches the message; the MAC before
+    the clock, so a forged link learns nothing about expiry."""
+    if (kind not in ("u", "d")
+            or not _FILE_DOWNLOAD_FILE_ID.match(file_id or "")
+            or not _FILE_DOWNLOAD_SUBJECT.match(subject or "")
+            or not _FILE_DOWNLOAD_EXP.match(exp or "")
+            or not _FILE_DOWNLOAD_SIG.match(sig or "")):
+        return "invalid"
+    expected = _file_download_signature(file_id, kind, subject, int(exp))
+    if not hmac.compare_digest(expected, sig):
+        return "invalid"
+    if int(exp) < int(_time.time() if now is None else now):
+        return "expired"
+    return None
+
+
+def _site_device_is_live(device: dict) -> bool:
+    """A removed or switched-off tablet gets no download link. get_current_user
+    does not ask this of a device JWT; this path does, because a link is the
+    one thing here that outlives the request that minted it."""
+    return not device.get("is_deleted") and device.get("is_active", True) is not False
+
+
+async def _file_download_principal_row(kind: str, subject: str,
+                                       request: Request) -> Optional[dict]:
+    """The principal a link was signed for, re-read NOW, shaped the way
+    get_current_user shapes it so the access helpers read it the same way.
+    None when it no longer exists. A pending/demo user raises the same
+    HTTPException get_current_user would."""
+    if kind == "d":
+        device = await db.site_devices.find_one({"_id": to_query_id(subject)})
+        if not device or not _site_device_is_live(device):
+            return None
+        data = serialize_id(device)
+        data["site_mode"] = True
+        data["role"] = "site_device"
+        if device.get("project_id"):
+            project = await db.projects.find_one(
+                {"_id": to_query_id(device["project_id"])})
+            if project:
+                data["company_id"] = project.get("company_id")
+        return data
+    user = await db.users.find_one(
+        {"_id": to_query_id(subject), "is_deleted": {"$ne": True}})
+    if not user:
+        return None
+    data = serialize_id(user)
+    data["site_mode"] = False
+    _refuse_unapproved_principal(data, request)
+    return data
+
+
+async def _project_file_for(file_id: str, current_user: dict) -> dict:
+    """The project_files row, or the HTTPException the /content route raises:
+    project access, then same company, then the device allow-list. The
+    project comes from the ROW here, not the caller, so there is no
+    caller-supplied id to agree with."""
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one({"_id": rec_oid})
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    project = await _assert_project_access(str(rec.get("project_id") or ""),
+                                           current_user)
+    _same_company_or_403(rec, current_user)
+    if _is_site_device(current_user):
+        device = await db.site_devices.find_one(
+            {"_id": to_query_id(current_user.get("id") or "")})
+        if not device or not _site_device_is_live(device):
+            raise HTTPException(status_code=403, detail="Access denied to this file")
+    if not _site_device_may_retrieve(project, current_user,
+                                     rec.get("dropbox_path") or ""):
+        raise HTTPException(status_code=403, detail="Access denied to this file")
+    return rec
+
+
+@api_router.get("/files/{file_id}/signed-url")
+async def get_file_signed_url(file_id: str, current_user = Depends(get_current_user)):
+    """A 15-minute link to one stored file, for the caller only. See the
+    note above FILE_DOWNLOAD_LINK_TTL_SECONDS."""
+    rec = await _project_file_for(file_id, current_user)
+    if not rec.get("r2_key"):
+        raise HTTPException(status_code=404, detail="File not stored in R2")
+    path, exp = _sign_file_download_path(str(rec["_id"]), current_user)
+    return {
+        "path": path,
+        "url": f"{PUBLIC_API_BASE_URL}{path}",
+        "expires_in": FILE_DOWNLOAD_LINK_TTL_SECONDS,
+        "expires_at": datetime.fromtimestamp(exp, timezone.utc).isoformat(),
+        "filename": rec.get("name") or "file",
+    }
+
+
+# Shown in a browser tab, where the app's locale is not known, so both
+# languages are on the page. (status, EN title, EN hint, ES title, ES hint)
+_DOWNLOAD_REFUSAL_COPY = {
+    # 401, not 403: the link was genuine and has lapsed -- ask again.
+    "expired": (401,
+                "This download link has expired.",
+                "Go back to Levelog and tap Download again.",
+                "Este enlace de descarga ha caducado.",
+                "Vuelva a Levelog y toque Descargar otra vez."),
+    "invalid": (403,
+                "This download link is not valid.",
+                "Go back to Levelog and tap Download again.",
+                "Este enlace de descarga no es válido.",
+                "Vuelva a Levelog y toque Descargar otra vez."),
+    "denied": (403,
+               "You do not have access to this file.",
+               "If you think this is wrong, ask your admin.",
+               "No tiene acceso a este archivo.",
+               "Si cree que es un error, consulte a su administrador."),
+    "missing": (404,
+                "This file is not available for download.",
+                "It may have been removed or may still be syncing. Try again from Levelog.",
+                "Este archivo no está disponible para descargar.",
+                "Puede que se haya eliminado o que aún se esté sincronizando. Inténtelo de nuevo desde Levelog."),
+    "storage": (502,
+                "The file could not be fetched right now.",
+                "Try again in a minute.",
+                "No se pudo obtener el archivo en este momento.",
+                "Inténtelo de nuevo en un minuto."),
+    "throttled": (429,
+                  "Too many download attempts from this connection.",
+                  "Wait a minute, then go back to Levelog and tap Download again.",
+                  "Demasiados intentos de descarga desde esta conexión.",
+                  "Espere un minuto, vuelva a Levelog y toque Descargar otra vez."),
+}
+
+
+def _download_refusal_page(reason: str):
+    from fastapi.responses import HTMLResponse
+    status_code, en_t, en_h, es_t, es_h = _DOWNLOAD_REFUSAL_COPY.get(
+        reason, _DOWNLOAD_REFUSAL_COPY["invalid"])
+    html = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Levelog</title>"
+        "<style>body{font-family:system-ui,sans-serif;max-width:32rem;"
+        "margin:3rem auto;padding:0 1rem;color:#1f2937;background:#fff}"
+        "h1{font-size:1.15rem;margin:0 0 .4rem}p{margin:0 0 1.6rem;color:#4b5563}"
+        "@media(prefers-color-scheme:dark){body{background:#111827;color:#f3f4f6}"
+        "p{color:#9ca3af}}</style></head><body>"
+        f"<h1>{en_t}</h1><p>{en_h}</p>"
+        f"<h1 lang='es'>{es_t}</h1><p lang='es'>{es_h}</p>"
+        "</body></html>")
+    return HTMLResponse(content=html, status_code=status_code,
+                        headers={"Cache-Control": "private, no-store"})
+
+
+@app.get("/api/files/{file_id}/download")
+async def download_signed_file(file_id: str, request: Request,
+                               k: str = "", u: str = "", e: str = "",
+                               s: str = "", dl: str = ""):
+    """Serve one stored file to the holder of a link from /signed-url.
+
+    ON `app`, NOT `api_router`, because the request carries no bearer header:
+    the link IS the credential, and it is checked here before anything else.
+    Honours a single `Range`, so a PDF viewer can fetch the pages it needs.
+    `dl=1` asks for an attachment instead of inline display."""
+    # THE SIGNATURE FIRST, THEN THE LIMITER, AND ONLY FOR A FORGERY. An HMAC
+    # is cheap; refusing a real link is not. An expired link this server
+    # signed is a person who was slow (401, never counted), and a valid,
+    # unexpired one is served whatever its address has been doing -- an
+    # office behind one NAT must not lose its download to somebody else's
+    # junk requests.
+    reason = _check_file_download_signature(file_id, k, u, e, s)
+    if reason == "invalid":
+        from lib.rate_limits import _client_ip
+        client_ip = _client_ip(request)
+        if signed_download_refusal_limiter.recent(client_ip) >= SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE:
+            logger.warning("[signed-download] throttled ip=%s", client_ip)
+            page = _download_refusal_page("throttled")
+            page.headers["Retry-After"] = "60"
+            return page
+        signed_download_refusal_limiter.is_allowed(client_ip)  # records the forgery
+    if reason:
+        logger.info("[signed-download] refused file=%s reason=%s", file_id[:24], reason)
+        return _download_refusal_page(reason)
+    try:
+        principal = await _file_download_principal_row(k, u, request)
+        if principal is None:
+            raise HTTPException(status_code=403, detail="principal gone")
+        rec = await _project_file_for(file_id, principal)
+    except HTTPException as exc:
+        reason = "missing" if exc.status_code == 404 else "denied"
+        logger.info("[signed-download] refused file=%s kind=%s user=%s reason=%s",
+                    file_id, k, u, reason)
+        return _download_refusal_page(reason)
+
+    r2_key = rec.get("r2_key") or ""
+    if not r2_key or not _r2_client or not R2_BUCKET_NAME:
+        return _download_refusal_page("missing")
+
+    get_kwargs = {"Bucket": R2_BUCKET_NAME, "Key": r2_key}
+    asked_range = (request.headers.get("range") or "").strip()
+    if _SINGLE_BYTE_RANGE.match(asked_range):
+        get_kwargs["Range"] = asked_range
+    try:
+        obj = await asyncio.to_thread(_r2_client.get_object, **get_kwargs)
+    except Exception as exc:
+        code = ((getattr(exc, "response", None) or {}).get("Error") or {}).get("Code")
+        if code == "InvalidRange":
+            return Response(status_code=416, headers={
+                "Content-Range": f"bytes */{rec.get('size') or '*'}"})
+        logger.error(f"signed download R2 get failed key={r2_key}: {exc!r}")
+        return _download_refusal_page("storage")
+
+    body = obj["Body"]
+
+    def _iter():
+        try:
+            for chunk in iter(lambda: body.read(65536), b""):
+                yield chunk
+        finally:
+            try:
+                body.close()
+            except Exception:
+                pass
+
+    from urllib.parse import quote as _quote
+    name = str(rec.get("name") or "file")
+    ascii_name = (name.encode("ascii", "ignore").decode() or "file").replace('"', "")
+    disposition = "attachment" if dl == "1" else "inline"
+    headers = {
+        "Content-Disposition": (f'{disposition}; filename="{ascii_name}"; '
+                                f"filename*=UTF-8''{_quote(name)}"),
+        "Accept-Ranges": "bytes",
+        # The bytes are a private project document; nothing shared may keep them.
+        "Cache-Control": "private, no-store",
+    }
+    status_code = 200
+    if obj.get("ContentRange"):
+        headers["Content-Range"] = obj["ContentRange"]
+        status_code = 206
+    if obj.get("ContentLength") is not None:
+        headers["Content-Length"] = str(obj["ContentLength"])
+    content_type = (obj.get("ContentType")
+                    or mimetypes.guess_type(name)[0]
+                    or "application/octet-stream")
+    logger.info("[signed-download] file=%s kind=%s user=%s status=%s",
+                file_id, k, u, status_code)
+    return StreamingResponse(_iter(), status_code=status_code,
+                             media_type=content_type, headers=headers)
 
 
 @api_router.delete("/projects/{project_id}/files/{file_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])

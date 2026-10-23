@@ -106,6 +106,13 @@ _EXEMPT: dict[str, str] = {
         "to the person who added the bot, never to a tenant. The tenant gate "
         "for this feature lives on the pending-groups ROUTES, which do have a "
         "caller; see test_pending_group_linking.py",
+    "_file_download_principal_row":
+        "get_current_user's site-device stamp, repeated for a signed download "
+        "link (which carries no JWT to resolve): it STAMPS the device's project "
+        "company onto the re-loaded principal and reads nothing by company. "
+        "The tenant checks run after it, in _project_file_for "
+        "(_assert_project_access, _same_company_or_403, the device allow-list); "
+        "see test_signed_file_download.py",
 }
 
 

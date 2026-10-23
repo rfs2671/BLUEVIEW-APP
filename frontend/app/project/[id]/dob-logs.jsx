@@ -43,10 +43,10 @@ import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { semantic, chrome, border, surface, text, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import { useT } from '../../../src/i18n';
 import OfflineNotice from '../../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../../src/utils/offlineState';
 import InfoTooltip from '../../../src/components/InfoTooltip';
-import { useT } from '../../../src/i18n';
 // daysUntil moved to a shared util so workers/[id].jsx can use the SAME
 // definition and threshold for credential expiry (it previously had none).
 import { daysUntil } from '../../../src/utils/expiry';
@@ -94,6 +94,7 @@ export default function DOBLogsScreen() {
   const { id: projectId } = useLocalSearchParams();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
+  const tc = useT('compliance');
   const tEmbargo = useT('dotEmbargo');
 
   const [loading, setLoading] = useState(true);
@@ -159,7 +160,7 @@ export default function DOBLogsScreen() {
     } else {
       console.error('Failed to fetch DOB logs:', logsRes.error);
       if (logsRes.status === 'error') {
-        toast.error('Error', 'Could not load DOB compliance data');
+        toast.error('Error', tc('loadError'));
       } else {
         toast.warning('Offline', 'DOB records are unavailable offline — this is not a clean record.');
       }
@@ -946,7 +947,7 @@ export default function DOBLogsScreen() {
               overstating a fallback action. Sync is unchanged underneath. */}
           <View style={s.titleSection}>
             <View style={s.titleTopRow}>
-              <Text style={s.titleLabel}>DOB COMPLIANCE</Text>
+              <Text style={s.titleLabel}>{tc('title')}</Text>
               <Pressable
                 onPress={handleSync}
                 disabled={syncing}

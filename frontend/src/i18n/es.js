@@ -81,6 +81,37 @@ export default {
     deniedBody: 'Se requiere acceso de propietario, administrador o CP',
   },
 
+  // ── Botón Descargar (Planos y archivos) y abrir en el navegador (web) ─────
+  fileDownload: {
+    downloading: 'Descargando',
+    progress: '{pct}% de {total} MB',
+    progressUnknown: '{done} MB hasta ahora',
+    cancel: 'Cancelar',
+    failTitle: 'La descarga falló',
+    failBody: 'No se pudo descargar el archivo. Inténtelo de nuevo.',
+    network: 'La conexión se cortó antes de terminar el archivo. Inténtelo de nuevo con mejor señal.',
+    noAccess: 'No tiene acceso a este archivo.',
+    notStored: 'Este archivo aún no está disponible para descargar. Puede que todavía se esté sincronizando.',
+    cancelled: 'Descarga cancelada.',
+    popupBlocked: 'Su navegador bloqueó la pestaña de descarga. Permita las ventanas emergentes para Levelog e inténtelo de nuevo.',
+    shareUnavailable: 'Este dispositivo no tiene opción para compartir archivos.',
+    offlineTitle: 'No disponible sin conexión',
+    offlineBody: 'Este archivo no está guardado en este dispositivo. Vuelva a conectarse e inténtelo de nuevo.',
+  },
+
+  // ── La etiqueta de Cumplimiento (ver en.js: una etiqueta, un espacio) ─────
+  // "Enable DOB Tracking" queda en inglés: es el nombre del interruptor tal como
+  // aparece en pantalla, y ese interruptor no está traducido.
+  compliance: {
+    title: 'Cumplimiento',
+    loadError: 'No se pudieron cargar los datos de cumplimiento',
+    deleteConfirmWeb: '¿Eliminar "{name}"?\n\nEsto eliminará permanentemente el proyecto y todos sus datos de cumplimiento. Esta acción no se puede deshacer.',
+    deleteConfirmNative: 'Esto eliminará permanentemente "{name}" y todos sus datos de cumplimiento. Esta acción no se puede deshacer.',
+    notificationPrefsSubtitle: 'Ajuste qué señales de cumplimiento le llegan y cómo',
+    helpCheckTracking: 'Abra la página de Cumplimiento del proyecto (ícono de engranaje). Confirme que "Enable DOB Tracking" esté activado. Si está desactivado, no se obtendrán datos del DOB para el proyecto.',
+    helpEditBin: 'Si el BIN ya se resolvió automáticamente al edificio equivocado, abra la página de Cumplimiento (ícono de engranaje) y edite el campo BIN directamente.',
+  },
+
   // ── app/project/[id]/dob-logs.jsx — embargo navideño del DOT ─────────────
   dotEmbargo: {
     banner: 'Embargo navideño del 15 de nov al 2 de ene: {n} permisos activos del DOT no tienen exención.',
