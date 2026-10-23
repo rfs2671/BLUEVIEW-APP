@@ -66,6 +66,14 @@ def how(row: Dict[str, Any]) -> str:
     return str(m.get("how") or row.get("matched_by") or "")
 
 
+def gc_flag_gated(item: Dict[str, Any]) -> bool:
+    """A new-summons GROUP post that waits for the `dot_phase1` flag: only a
+    permit-link match (operator ruling 2026-10-23). BBL and address matches
+    keep today's behaviour and post with the flag off."""
+    return (item.get("kind") == "dot_violation"
+            and how(item.get("rec") or {}) == dot_sync.SUMMONS_PERMIT)
+
+
 def issued_on(row: Dict[str, Any]) -> Optional[date]:
     return dot_embargo.parse_day(row.get("issued_on") or row.get("issue_date"))
 

@@ -452,11 +452,13 @@ def record_confirmed(row: Dict[str, Any]) -> bool:
 #   3 permit   the ticket is a DOT inspection's novnumber (ydkf-mpxb, stored in
 #              dot_nov_permits) whose permit is one of this project's
 #              CONFIRMED permits.
-#   4 segment  the street reads "<ON> BTWN <FROM> AND [<TO>]" (often cut off
-#              at ~30 characters): ON is a confirmed frontage's on-street,
-#              FROM is that frontage's from or to street (a cut-off name
-#              matches as a prefix of at least 6), the borough agrees.
-#              NEEDS CONFIRMATION -- never emailed or posted as the project's.
+#   4 segment  the street reads "<ON> BTWN <FROM> AND [<TO>]": ON is a
+#              confirmed frontage's on-street, FROM is that frontage's from or
+#              to street, the borough agrees. An EXACT street name always
+#              counts; a prefix of at least 6 counts only when DOT cut the text
+#              off at its field width (OATH_STREET_MAX) and FROM is what was
+#              cut (operator ruling 2026-10-23). NEEDS CONFIRMATION -- never
+#              emailed or posted as the project's.
 
 SUMMONS_BBL = "bbl"
 SUMMONS_ADDRESS = "address"
@@ -468,6 +470,9 @@ OWN_MATCHES = (SUMMONS_BBL, SUMMONS_ADDRESS, SUMMONS_PERMIT)
 _BTWN = re.compile(r"\s(?:BTWN|BTW|BTWEEN|BETWEEN|BET|B/T)\s")
 _AND = re.compile(r"\s+(?:AND|&)\s+|\s+(?:AND|&)$")
 NOV_DATASET = "ydkf-mpxb"
+#: DOT's OATH street field is cut at 32 characters (recorded fixture: 4 of 6
+#: rows at 32, 2 at 31 where the cut fell on a space that was then stripped).
+OATH_STREET_MAX = 32
 OATH_BORO = {"1": "MANHATTAN", "2": "BRONX", "3": "BROOKLYN", "4": "QUEENS", "5": "STATEN IS"}
 
 
@@ -494,16 +499,38 @@ def oath_segment(raw: Any, house: Any = "") -> Optional[Dict[str, str]]:
     return {"on": on, "from": fr, "to": to}
 
 
+def oath_street_cut(raw: Any) -> bool:
+    """True when the OATH street text is at DOT's field width, i.e. was
+    (probably) cut off. One short of the width counts: a cut that lands on a
+    space loses the space when the text is stripped."""
+    return len(str(raw or "").strip()) >= OATH_STREET_MAX - 1
+
+
+def _exact_street(a: Any, b: Any) -> bool:
+    """Equal after normalizing, through a renamed street's other names; no
+    prefix allowance."""
+    va, vb = street_variants(a), street_variants(b)
+    return any(x == y for x in va for y in vb)
+
+
 def summons_segment_matches(frontage: Dict[str, Any], boro: str,
-                            seg: Optional[Dict[str, str]]) -> bool:
+                            seg: Optional[Dict[str, str]], cut: bool = False) -> bool:
     """Spec v3 A rule 4: same borough, ON = the frontage's on-street, FROM =
     the frontage's from OR to street. TO is not compared (it is usually cut
-    off)."""
+    off). `cut`: the raw text is at DOT's field width (oath_street_cut).
+
+    An exact name always counts. The cut-name prefix (same_street, at least
+    CUT_OFF_MIN characters) applies only to FROM, and only when the text was
+    cut with FROM last: ON comes before BTWN and cannot have been cut, and a
+    FROM followed by a TO was written whole (operator ruling 2026-10-23:
+    "BLAKE AVE" complete matches; "... BTWN BLAK" cut does not)."""
     if not seg or not boro or str(frontage.get("boro") or "") != str(boro):
         return False
-    if not same_street(frontage.get("on"), seg.get("on")):
+    if not _exact_street(frontage.get("on"), seg.get("on")):
         return False
-    return any(norm_street(x) and same_street(x, seg.get("from"))
+    fr = seg.get("from")
+    prefix_ok = cut and not seg.get("to")
+    return any(norm_street(x) and (_exact_street(x, fr) or (prefix_ok and same_street(x, fr)))
                for x in (frontage.get("from"), frontage.get("to")))
 
 
@@ -523,10 +550,11 @@ def classify_summons(pk: Dict[str, Any], setup: Any, rec: Dict[str, Any],
         return (SUMMONS_PERMIT, STATE_CONFIRMED, permit)
     fronts = confirmed_frontages(setup)
     if fronts:
-        seg = oath_segment(_v(rec, "violation_location_street_name"),
-                           _v(rec, "violation_location_house"))
+        raw_street = _v(rec, "violation_location_street_name")
+        seg = oath_segment(raw_street, _v(rec, "violation_location_house"))
         boro = rk.get("boro") or ""
-        if any(summons_segment_matches(f, boro, seg) for f in fronts):
+        cut = oath_street_cut(raw_street)
+        if any(summons_segment_matches(f, boro, seg, cut) for f in fronts):
             return (SUMMONS_SEGMENT, STATE_NEEDS, None)
     return None
 

@@ -48161,6 +48161,7 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             items = [it for it in items if it["kind"] not in unbaselined]
 
         todo = []
+        dot_flag_on = None
         for it in items:
             why = dob_alert_gate.gc_refusal(it, today)
             if why:
@@ -48170,6 +48171,17 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
                         company_id=company_id, status=f"not_posted_{why}"):
                     report["not_posted"] = report.get("not_posted", 0) + 1
                 continue
+            # A new summons matched only through its permit waits for the
+            # dot_phase1 flag, like its email (ruling 2026-10-23). Left
+            # UNCLAIMED: if the flag comes on inside the 2-day window it
+            # posts, and after that gc_refusal refuses it as too old.
+            if dot_summons.gc_flag_gated(it):
+                if dot_flag_on is None:
+                    dot_flag_on = await feature_flags.is_feature_enabled(
+                        db, dot_summons.FLAG, company_id=company_id or None)
+                if not dot_flag_on:
+                    report["flag_off"] = report.get("flag_off", 0) + 1
+                    continue
             if not wa_alerts.postable(it["kind"], it["rec"]):
                 report["no_number"] += 1
                 continue

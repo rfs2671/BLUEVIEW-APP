@@ -283,15 +283,62 @@ class TheSegmentParse(unittest.TestCase):
                          {"on": "E 98 ST", "from": "LINDEN BLVD", "to": "HEGEMAN AVE"})
 
     def test_the_block_match_through_the_renamed_street_and_a_cut_name(self):
-        seg = dot_sync.oath_segment(OATH["0704197771"]["violation_location_street_name"])
-        self.assertTrue(dot_sync.summons_segment_matches(FRONTAGE, "3", seg))       # Hopkinson = Boyland
+        raw = OATH["0704197771"]["violation_location_street_name"]     # 32 chars: cut
+        self.assertTrue(dot_sync.oath_street_cut(raw))
+        seg = dot_sync.oath_segment(raw)
+        self.assertTrue(dot_sync.summons_segment_matches(FRONTAGE, "3", seg, cut=True))   # Hopkinson = Boyland
         self.assertTrue(dot_sync.summons_segment_matches(
-            FRONTAGE, "3", {"on": "HOPKINSON AVE", "from": "SUTTER", "to": ""}))     # the TO street, 6 chars
+            FRONTAGE, "3", {"on": "HOPKINSON AVE", "from": "SUTTER", "to": ""}, cut=True))  # the TO street, 6
         self.assertFalse(dot_sync.summons_segment_matches(
-            FRONTAGE, "3", {"on": "HOPKINSON AVE", "from": "SUTTE", "to": ""}))      # 5 chars
-        self.assertFalse(dot_sync.summons_segment_matches(FRONTAGE, "4", seg))      # borough
+            FRONTAGE, "3", {"on": "HOPKINSON AVE", "from": "SUTTE", "to": ""}, cut=True))   # 5 chars
+        self.assertFalse(dot_sync.summons_segment_matches(FRONTAGE, "4", seg, cut=True))   # borough
         self.assertFalse(dot_sync.summons_segment_matches(
-            FRONTAGE, "3", {"on": "HOPKINSON AVE", "from": "PITKIN AVE", "to": ""}))
+            FRONTAGE, "3", {"on": "HOPKINSON AVE", "from": "PITKIN AVE", "to": ""}, cut=True))
+
+
+class TheCutRule(unittest.TestCase):
+    """Operator ruling 2026-10-23: an EXACT street name always counts; the
+    6-character prefix applies only when DOT cut the text at its field width
+    (OATH_STREET_MAX, 32) -- and only to the FROM street that was cut."""
+
+    PK = dot_sync.project_keys({"address": "588 Thomas S Boyland St, Brooklyn, NY"})
+
+    def _block(self, street):
+        # The house number, when the text carries one, is in its own field too
+        # (as DOT writes it), so oath_segment strips it off ON.
+        house = street.split()[0] if street.split()[0].isdigit() else None
+        return summons("0704197771", violation_location_house=house,
+                       violation_location_street_name=street)
+
+    def test_blake_ave_written_whole_matches(self):
+        street = "HOPKINSON AVE BTWN BLAKE AVE"                       # 28 chars: whole
+        self.assertFalse(dot_sync.oath_street_cut(street))
+        self.assertEqual(dot_sync.classify_summons(self.PK, SETUP, self._block(street))[:2],
+                         ("segment", "needs_confirmation"))
+
+    def test_blak_cut_at_the_field_width_does_not(self):
+        street = "1234 HOPKINSON AVENUE BTWN BLAK"                    # 31 chars: cut
+        self.assertTrue(dot_sync.oath_street_cut(street))
+        self.assertEqual(dot_sync.oath_segment(street, "1234"),
+                         {"on": "HOPKINSON AVE", "from": "BLAK", "to": ""})   # ON is fine: the prefix fails
+        self.assertIsNone(dot_sync.classify_summons(self.PK, SETUP, self._block(street)))
+
+    def test_a_prefix_counts_only_when_cut(self):
+        whole = "HOPKINSON AVE BTWN SUTTER"                           # SUTTER AVE's 6-char prefix
+        cut = "1234 HOPKINSON AVENUE BTWN SUTTER"                     # 33 chars
+        self.assertIsNone(dot_sync.classify_summons(self.PK, SETUP, self._block(whole)))
+        self.assertEqual(dot_sync.classify_summons(self.PK, SETUP, self._block(cut))[:2],
+                         ("segment", "needs_confirmation"))
+        # A FROM followed by a TO was written whole, so no prefix for it.
+        both = "1234 HOPKINSON AVENUE BTWN SUTTER AND PITKIN"
+        self.assertIsNone(dot_sync.classify_summons(self.PK, SETUP, self._block(both)))
+
+    def test_the_real_rows(self):
+        c = dot_sync.classify_summons
+        # 0704197771, "HOPKINSON AVENUE BTWN BLAKE AVEN": cut mid-word -> block.
+        self.assertEqual(c(self.PK, SETUP, OATH["0704197771"])[:2], ("segment", "needs_confirmation"))
+        # LINKED "HOPKINSON AVENUE BTWN BLAKE" (27, whole): BLAKE is not BLAKE AVE.
+        self.assertIsNone(c(self.PK, SETUP, LINKED))
 
 
 class TheMatchOrder(unittest.TestCase):
@@ -695,6 +742,30 @@ class TheGroupPosts(unittest.TestCase):
         self.assertTrue(any("This DOT summons was marked DEFAULTED" in t and "EN REBELDÍA" in t
                             for t in texts), texts)
         self.assertEqual(sum("#0704197771" in t for t in texts), 1)       # the pending one: once
+
+    def _permit_link_world(self, flag):
+        feature_flags.cache_invalidate()
+        extra = {"feature_flags": [{"flag": "dot_phase1", "enabled_for_companies": [CO_A]}]} if flag else {}
+        return _gc_world(**extra)
+
+    def _new_posts(self, db):
+        add = [_gc_row("0704345548", summons("0704345548", issued=TODAY),
+                       match={"how": "permit", "state": "confirmed"}, permit_number="B022026215B29"),
+               _gc_row("0704345557", ADDR_TODAY, match={"how": "address", "state": "confirmed"})]
+        texts = self._ticks(db, [GC_DAY, GC_DAY + timedelta(minutes=15)], add)
+        feature_flags.cache_invalidate()
+        return texts
+
+    def test_a_permit_link_new_summons_waits_for_the_flag(self):
+        # Ruling 2026-10-23: dot_phase1 gates the permit-link group post only.
+        texts = self._new_posts(self._permit_link_world(flag=False))
+        self.assertFalse(any("#0704345548" in t for t in texts), texts)
+        self.assertEqual(sum("#0704345557" in t for t in texts), 1, texts)   # address: today's behaviour
+
+    def test_with_the_flag_on_it_posts(self):
+        texts = self._new_posts(self._permit_link_world(flag=True))
+        self.assertEqual(sum("#0704345548" in t for t in texts), 1, texts)
+        self.assertEqual(sum("#0704345557" in t for t in texts), 1, texts)
 
 
 if __name__ == "__main__":
