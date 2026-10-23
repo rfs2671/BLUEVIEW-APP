@@ -363,6 +363,38 @@ class TheOperatorIsNeverInferredFromRole(unittest.TestCase):
                 self.assertNotIn('role") == "owner"', code)
 
 
+class ThePurgeTakesEveryDobAlertKey(Base):
+    """The per-BIN first-scan keys (initial_scan_done:dob:<project>:<bin>)
+    end with the BIN, so the purge's old `^initial_scan_done:.*:<pid>$`
+    pattern left them behind; and the 24h throttle is keyed per event now
+    (dob_alert_sent:<project>:<record>:<event>). Both go with the project, and
+    another project's keys stay."""
+
+    def test_the_purge_removes_per_bin_and_per_event_keys(self):
+        # This file's fake matches plain equality only; the purge's key
+        # families are $or + $regex, so this collection uses the shared
+        # matcher that evaluates them (tests/async_fake_mongo.matches).
+        from tests.async_fake_mongo import matches
+
+        class _Cfg(_Coll):
+            async def delete_many(self, query):
+                keep = [d for d in self.docs if not matches(d, query)]
+                n = len(self.docs) - len(keep)
+                self.docs[:] = keep
+                return type("R", (), {"deleted_count": n})()
+
+        self.db.system_config = _Cfg()
+        self.db.system_config.docs = [
+            {"key": f"initial_scan_done:dob:{A_PROJECT}"},
+            {"key": f"initial_scan_done:dob:{A_PROJECT}:3430621"},
+            {"key": f"dob_alert_sent:{A_PROJECT}:3A78809:swo_lifted"},
+            {"key": f"initial_scan_done:dob:{B_PROJECT}:3255362"},
+        ]
+        self.purge(A_PROJECT, _owner("coA"))
+        self.assertEqual([d["key"] for d in self.db.system_config.docs],
+                         [f"initial_scan_done:dob:{B_PROJECT}:3255362"])
+
+
 class TheRetentionBrakeIsAlsoInThePath(Base):
     """THE FIXTURE CONTROL, and the ordering that keeps this file honest.
 

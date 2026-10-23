@@ -42,6 +42,7 @@ import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
+import SheenView from '../../src/components/SheenView';
 // Site device API functions
 const siteDevicesAPI = {
   getAll: async () => {
@@ -479,7 +480,7 @@ export default function SiteDevicesScreen() {
                 Save these credentials for the on-site device:
               </Text>
 
-              <View style={s.credentialsBox}>
+              <SheenView style={s.credentialsBox}>
                 <View style={s.credentialRow}>
                   <Text style={s.credentialLabel}>Project</Text>
                   <Text style={s.credentialValueBold}>{showCredentials?.project_name}</Text>
@@ -492,7 +493,7 @@ export default function SiteDevicesScreen() {
                   <Text style={s.credentialLabel}>Password</Text>
                   <Text style={s.credentialValueMono}>{showCredentials?.password}</Text>
                 </View>
-              </View>
+              </SheenView>
 
               <GlassButton
                 title="Done"

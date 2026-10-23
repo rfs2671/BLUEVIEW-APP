@@ -13,6 +13,7 @@ import { demoAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 
+import SectionLabel from '../src/components/SectionLabel';
 // Contact/email only — deliberately NOT a web page that sells or processes
 // payment (App Store 3.1.1). Change this address to your activation inbox.
 const ACTIVATION_EMAIL = 'activate@blueviewbuilders.com';
@@ -80,7 +81,7 @@ export default function DemoScreen() {
             <Text style={s.ctaEmail}>{ACTIVATION_EMAIL}</Text>
           </GlassCard>
 
-          <Text style={s.sectionLabel}>DEMO PROJECT</Text>
+          <SectionLabel label="DEMO PROJECT" />
 
           {loading ? (
             <View style={s.loading}><ActivityIndicator size="small" color={colors.text.primary} /></View>

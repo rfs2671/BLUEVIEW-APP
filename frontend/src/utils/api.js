@@ -1574,6 +1574,18 @@ export const dobAPI = {
     return response.data;
   },
 
+  // DOT holiday construction embargo (Nov 15 – Jan 2). Returns
+  // { in_window, show, season: {year, start, end},
+  //   missing_waiver: [{number, description, work_start, work_end}], unknown: [...] }.
+  // `show` is true only inside Nov 1 – Jan 2 when an exposed permit is KNOWN
+  // to lack the waiver (stipulation 410); unread stipulations never count.
+  getDotEmbargo: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/${encodeURIComponent(projectId)}/dot/embargo`
+    );
+    return response.data;
+  },
+
   // MR.14 commit 3 — mark a single dob_log as read for the calling user.
   markRead: async (projectId, logId) => {
     const response = await apiClient.post(

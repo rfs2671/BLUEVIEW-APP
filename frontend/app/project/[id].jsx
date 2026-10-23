@@ -84,6 +84,8 @@ import { useIsDesktop } from '../../src/hooks/useIsDesktop';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
+import SectionLabel from '../../src/components/SectionLabel';
+import SheenView from '../../src/components/SheenView';
 // Site device API for project-specific devices
 const siteDevicesAPI = {
   getByProject: async (projectId) => {
@@ -720,7 +722,7 @@ export default function ProjectDetailScreen() {
         <View style={deskStyles.cols}>
           {/* LEFT (primary) — DOB exposure, forecast, operational tiles. */}
           <View style={deskStyles.colLeft}>
-            <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>DOB EXPOSURE</Text>
+            <SectionLabel label="DOB EXPOSURE" />
             {!dobExpLoading && dobExpState !== 'ok' && (
               <OfflineNotice
                 mode={dobExpState}
@@ -747,7 +749,7 @@ export default function ProjectDetailScreen() {
               onUpdated={setProject}
             />
 
-            <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>ON SITE</Text>
+            <SectionLabel label="ON SITE" />
             <View style={deskStyles.tileRow}>
               {/* A read that never landed shows "—". Rendering 0 here would
                   assert an empty site / no tags / no devices. */}
@@ -759,7 +761,7 @@ export default function ProjectDetailScreen() {
 
           {/* RIGHT (secondary) — quick actions as a compact list. */}
           <View style={deskStyles.colRight}>
-            <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>QUICK ACTIONS</Text>
+            <SectionLabel label="QUICK ACTIONS" />
             {quickActions.map((action) => {
               const Icon = action.icon;
               return (
@@ -950,7 +952,7 @@ export default function ProjectDetailScreen() {
           </View>
 
           {/* Quick Actions */}
-          <Text style={s.sectionLabel}>QUICK ACTIONS</Text>
+          <SectionLabel label="QUICK ACTIONS" />
           <View style={s.actionsGrid}>
             {quickActions.map((action) => {
               const Icon = action.icon;
@@ -963,7 +965,9 @@ export default function ProjectDetailScreen() {
                     pressed && s.actionCardPressed,
                   ]}
                 >
-                  <CardSheen radius={borderRadius.xl} />
+                  {({ hovered, pressed }) => (
+                  <>
+                  <CardSheen radius={borderRadius.xl} active={!!(hovered || pressed)} intro />
                   <View style={[s.actionIcon, { backgroundColor: colors.primary }]}>
                     <Icon size={20} strokeWidth={1.8} color={colors.onPrimary} />
                   </View>
@@ -973,6 +977,8 @@ export default function ProjectDetailScreen() {
                       <AlertTriangle size={12} strokeWidth={2} color={semantic.attention} />
                       <Text style={s.actionWarnText}>No BIN</Text>
                     </View>
+                  )}
+                  </>
                   )}
                 </Pressable>
               );
@@ -988,7 +994,7 @@ export default function ProjectDetailScreen() {
               standalone route page. The unread count flows up via
               onUnreadCountChange for the section heading badge. */}
           <View style={s.sectionHeader}>
-            <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>NOTIFICATIONS</Text>
+            <SectionLabel label="NOTIFICATIONS" style={s.headerRuledLabel} />
             {notificationsUnreadCount > 0 && (
               <View style={s.notificationsBadge}>
                 <Text style={s.notificationsBadgeText}>
@@ -1111,7 +1117,7 @@ export default function ProjectDetailScreen() {
           {isAdmin && (
             <>
               <View style={s.sectionHeader}>
-                <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>NFC CHECK-IN TAGS</Text>
+                <SectionLabel label="NFC CHECK-IN TAGS" style={s.headerRuledLabel} />
                 <Pressable
                   onPress={() => setShowAddNfcModal(true)}
                   style={s.headerAddBtn}
@@ -1192,7 +1198,7 @@ export default function ProjectDetailScreen() {
           {isAdmin && (
             <>
               <View style={s.sectionHeader}>
-                <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>SITE DEVICES</Text>
+                <SectionLabel label="SITE DEVICES" style={s.headerRuledLabel} />
                 <Pressable
                   onPress={() => setShowAddDeviceModal(true)}
                   style={s.headerAddBtn}
@@ -1267,7 +1273,7 @@ export default function ProjectDetailScreen() {
               the tree. This row states which it is and taps through. */}
           {isAdmin && (
             <>
-              <Text style={s.sectionLabel}>FILES</Text>
+              <SectionLabel label="FILES" />
               <Pressable
                 onPress={() => router.push(`/projects/${projectId}/files`)}
                 style={({ pressed }) => [pressed && { opacity: 0.7 }]}
@@ -1291,7 +1297,7 @@ export default function ProjectDetailScreen() {
           )}
 
           {/* On-Site Workers */}
-          <Text style={s.sectionLabel}>ON-SITE WORKERS</Text>
+          <SectionLabel label="ON-SITE WORKERS" />
           {workersByCompany.length > 0 ? (
             workersByCompany.map((company) => (
               <GlassCard key={company.name} style={s.companyCard}>
@@ -1346,7 +1352,7 @@ export default function ProjectDetailScreen() {
               button that would 403. */}
           {isAdmin ? (
             <View style={s.sectionHeader}>
-              <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>CHECKLISTS</Text>
+              <SectionLabel label="CHECKLISTS" style={s.headerRuledLabel} />
               <Pressable
                 onPress={() => router.push(`/admin/checklists?assignTo=${encodeURIComponent(projectId)}`)}
                 style={s.headerAddBtn}
@@ -1357,7 +1363,7 @@ export default function ProjectDetailScreen() {
               </Pressable>
             </View>
           ) : (
-            <Text style={s.sectionLabel}>CHECKLISTS</Text>
+            <SectionLabel label="CHECKLISTS" />
           )}
           {loadingChecklists ? (
             <ActivityIndicator size="small" color={colors.text.primary} style={{ marginVertical: spacing.lg }} />
@@ -1677,7 +1683,7 @@ export default function ProjectDetailScreen() {
                 Save these credentials for the on-site device:
               </Text>
 
-              <View style={s.credentialsBox}>
+              <SheenView style={s.credentialsBox}>
                 <View style={s.credentialRow}>
                   <Text style={s.credentialLabel}>Username</Text>
                   <Text style={s.credentialValueMono}>{showCredentials?.username}</Text>
@@ -1686,7 +1692,7 @@ export default function ProjectDetailScreen() {
                   <Text style={s.credentialLabel}>Password</Text>
                   <Text style={s.credentialValueMono}>{showCredentials?.password}</Text>
                 </View>
-              </View>
+              </SheenView>
 
               <GlassButton
                 title="Done"
@@ -1840,6 +1846,9 @@ function buildStyles(colors, isDark) {
   // standalone use; inside the centered sectionHeader row those throw off
   // vertical centering (text jams to the top) and double the left inset.
   // Strip them when the label lives in a header.
+  // A ruled label inside a header row (a badge or an add button sits to its right): it takes the row's width, and the
+  // row supplies the margins.
+  headerRuledLabel: { flex: 1, marginTop: 0, marginBottom: 0, marginRight: spacing.sm },
   sectionHeaderLabel: {
     // The sectionHeader row already supplies marginTop; zero it on the label
     // inside so in-header labels don't double the top margin.

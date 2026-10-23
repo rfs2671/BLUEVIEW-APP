@@ -1,3 +1,4 @@
+# Redeploy marker 2026-10-22: Railway builds of #826 to #843 failed on a Railway platform outage (infrastructure error).
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, Request, BackgroundTasks
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -111,7 +112,9 @@ from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
 from lib import status_history as status_hist  # noqa: E402
 from lib import dot_sync  # noqa: E402
+from lib import dot_embargo  # noqa: E402
 from lib import dob_site_bins  # noqa: E402
+from lib import dob_alert_gate  # noqa: E402
 from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
@@ -18293,6 +18296,9 @@ async def hard_delete_project(
         cfg_res = await db.system_config.delete_many({"$or": [
             {"key": f"dob_sync_last:{project_id}"},
             {"key": {"$regex": f"^initial_scan_done:.*:{pid_re}$"}},
+            # The per-BIN first-scan keys (lib/dob_alert_gate.scan_key) end
+            # with the BIN, not the project, so the pattern above misses them.
+            {"key": {"$regex": f"^initial_scan_done:dob:{pid_re}:"}},
             {"key": {"$regex": f"^dob_alert_sent:{pid_re}:"}},
             {"key": {"$regex": f"^daily_report:{pid_re}:"}},
         ]})
@@ -41163,8 +41169,13 @@ async def _critical_dob_alert_recipients(project: dict) -> List[str]:
     return out
 
 
-async def _send_critical_dob_alert(project: dict, dob_log: dict):
+async def _send_critical_dob_alert(project: dict, dob_log: dict, *, event: str):
     """Send a notification email about a DOB record that needs attention.
+
+    `event` is required, one of lib/dob_alert_gate.EVENTS: "new" for a first
+    sighting that passed new_alert_refusal (not closed, received by DOB within
+    2 days, its BIN past its first pass); "swo" / "vacate" for an update that
+    issued that order. No other update emails (operator ruling 2026-10-22).
 
     Deliberately plain and conversational. All-caps subjects, red
     banners, bracketed "[CRITICAL]" tags, and heavy emoji push spam
@@ -41195,11 +41206,21 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     else:
         detected_str = str(detected_at)
 
+    # Which event, and the record's own facts -- its number, the date DOB
+    # received it and its status -- so a reader can see at a glance how old it
+    # is and whether it is still open (lib/dob_alert_gate.COPY: EN and ES).
+    head_en = dob_alert_gate.headline(event, rt, project_name, "en")
+    head_es = dob_alert_gate.headline(event, rt, project_name, "es")
+    subject, intro, intro_es = head_en["subject"], head_en["intro"], head_es["intro"]
+    line_en = dob_alert_gate.record_line(dob_log, rt, "en")
+    line_es = dob_alert_gate.record_line(dob_log, rt, "es")
+
     # Plaintext alternative: present-tense, human, no urgency language.
     link_line = f"\n\nDetails: {dob_link}" if dob_link else ""
     text_body = (
         f"Hi,\n\n"
-        f"Levelog picked up a new {rt} on {project_name}.\n\n"
+        f"{intro}\n{intro_es}\n\n"
+        f"{line_en}\n{line_es}\n\n"
         f"Summary: {summary}\n\n"
         f"Recommended next step: {next_action}\n\n"
         f"Detected {detected_str}."
@@ -41226,12 +41247,13 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     <tr><td style="padding:24px 28px;">
       <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
       <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">
-        New {rt} on {project_name}
+        {subject}
       </h1>
       <p style="margin:0 0 14px;font-size:15px;">Hi,</p>
-      <p style="margin:0 0 14px;font-size:15px;">
-        Levelog picked up a new {rt} on <strong>{project_name}</strong>. Here are the details:
-      </p>
+      <p style="margin:0 0 4px;font-size:15px;">{intro}</p>
+      <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">{intro_es}</p>
+      <p style="margin:0 0 4px;font-size:15px;"><strong>{line_en}</strong></p>
+      <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">{line_es}</p>
       <p style="margin:0 0 14px;font-size:15px;"><strong>Summary:</strong> {summary}</p>
       <p style="margin:0 0 14px;font-size:15px;"><strong>Recommended next step:</strong> {next_action}</p>
       <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">Detected {detected_str}.</p>
@@ -41246,8 +41268,6 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
   </table>
 </body>
 </html>"""
-
-    subject = f"New {rt} on {project_name}"
 
     # MR.14 fix — route through lib/notifications.send_notification.
     # That helper provides:
@@ -41264,7 +41284,12 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     # idempotency check guarantees one alert per record per recipient
     # per 23 hours, regardless of how many polls fire in between.
     raw_dob_id = dob_log.get("raw_dob_id") or ""
-    entity_id = f"dob_log:{raw_dob_id}" if raw_dob_id else f"project:{project.get('_id')}"
+    # Per record AND event: send_notification's 23h idempotency keys on this
+    # id, so with the bare record id a lift three hours after the issue email
+    # would be swallowed. "new" keeps the historical id, so idempotency for
+    # emails already sent carries across the deploy.
+    entity_id = (f"dob_log:{raw_dob_id}" + ("" if event == "new" else f":{event}")
+                 if raw_dob_id else f"project:{project.get('_id')}")
     from lib.notifications import send_notification
     for recipient in recipients:
         try:
@@ -41282,6 +41307,8 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
                     "record_type": rt_raw,
                     "raw_dob_id": raw_dob_id,
                     "severity": dob_log.get("severity"),
+                    "event": event,
+                    "received_by_dob": str(dob_alert_gate.received_date(dob_log) or ""),
                 },
             )
         except Exception as e:
@@ -41332,6 +41359,63 @@ async def _initial_scan_done(project_id: str, source: str) -> bool:
         return True
 
 
+async def _bin_scan_done(project_id: str, bin_: str, own_bin: str) -> bool:
+    """Has the DOB sync finished a full pass of `bin_` for this project?
+    Keyed per project AND per BIN (lib/dob_alert_gate.scan_key), so a BIN added
+    to a project later has a silent first pass of its own. The legacy
+    per-project key still answers for the project's OWN BIN: those records have
+    been scanned all along, and requiring a new key for them would mute one
+    sync of genuine alerts on every project at deploy."""
+    if not project_id:
+        return False
+    keys = [dob_alert_gate.scan_key(project_id, bin_)] if bin_ else []
+    if not bin_ or bin_ == own_bin:
+        keys.append(f"initial_scan_done:dob:{project_id}")
+    try:
+        return bool(await db.system_config.find_one({"key": {"$in": keys}}))
+    except Exception as e:
+        logger.warning(f"bin scan state read failed: {type(e).__name__}")
+        # As _initial_scan_done: err toward "done" -- the age and closed
+        # rules (lib/dob_alert_gate) still stop a backfilled record.
+        return True
+
+
+async def _stamp_order_issued(row_id, order: str, now: datetime) -> None:
+    """Mark the row an UPDATE put under a Stop Work Order / vacate order, so
+    the GC group alerts can post it once (lib/dob_alert_gate.gc_order_items)."""
+    try:
+        await db.dob_logs.update_one(
+            {"_id": row_id}, {"$set": {"order_issued": {"kind": order, "at": now}}})
+    except Exception as e:
+        logger.warning(f"order stamp failed: {type(e).__name__}")
+
+
+async def _stamp_order_lifted(row_id, which: str, now: datetime) -> None:
+    """Mark the row an UPDATE lifted a SWO / vacate order on in full, so the GC
+    group alerts post it once, in green (lib/dob_alert_gate.gc_order_lifted_items)."""
+    try:
+        await db.dob_logs.update_one(
+            {"_id": row_id}, {"$set": {"order_lifted": {"kind": which, "at": now}}})
+    except Exception as e:
+        logger.warning(f"order-lifted stamp failed: {type(e).__name__}")
+
+
+async def _mark_bins_scanned(project_id: str, bins) -> None:
+    """Record a finished DOB pass for each real BIN in `bins`."""
+    now = datetime.now(timezone.utc)
+    for b in sorted({str(b) for b in (bins or []) if b and not _is_placeholder_bin(str(b))}):
+        key = dob_alert_gate.scan_key(project_id, b)
+        try:
+            await db.system_config.update_one(
+                {"key": key},
+                {"$set": {"key": key, "source": "dob", "project_id": project_id,
+                          "bin": b, "updated_at": now},
+                 "$setOnInsert": {"completed_at": now}},
+                upsert=True)
+        except Exception as e:
+            logger.warning(f"bin scan state write failed: {type(e).__name__}")
+
+
 async def _mark_initial_scan_done(project_id: str, source: str) -> None:
     if not project_id or not source:
         return
@@ -41350,15 +41434,25 @@ async def _mark_initial_scan_done(project_id: str, source: str) -> None:
         logger.warning(f"initial_scan mark failed: {e}")
 
 
+def _dob_alert_key(project_id: str, raw_dob_id: str, event: Optional[str] = None) -> str:
+    """system_config key of the 24h throttle: per project, record AND event
+    (operator ruling 2026-10-22). A Stop Work Order issued and then lifted
+    three hours later is two events, and both email; the same event twice in
+    a day is one."""
+    base = f"dob_alert_sent:{project_id}:{raw_dob_id}"
+    return f"{base}:{event}" if event else base
+
+
 async def _dob_alert_recently_sent(project_id: str, raw_dob_id: str,
-                                     window_hours: int = _DOB_ALERT_THROTTLE_HOURS) -> bool:
-    """Returns True if we've already emailed this (project, record) combo
-    inside the window. Keyed on `dob_alert_sent:{project}:{raw_dob_id}`."""
+                                     window_hours: int = _DOB_ALERT_THROTTLE_HOURS,
+                                     event: Optional[str] = None) -> bool:
+    """Returns True if we've already emailed this (project, record, event)
+    inside the window. Keyed by _dob_alert_key."""
     if not project_id or not raw_dob_id:
         return False
     try:
         doc = await db.system_config.find_one(
-            {"key": f"dob_alert_sent:{project_id}:{raw_dob_id}"}
+            {"key": _dob_alert_key(project_id, raw_dob_id, event)}
         )
         if not doc:
             return False
@@ -41374,14 +41468,16 @@ async def _dob_alert_recently_sent(project_id: str, raw_dob_id: str,
         return False  # on error, err toward sending rather than silent-drop
 
 
-async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str) -> None:
+async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str,
+                               event: Optional[str] = None) -> None:
     if not project_id or not raw_dob_id:
         return
+    key = _dob_alert_key(project_id, raw_dob_id, event)
     try:
         await db.system_config.update_one(
-            {"key": f"dob_alert_sent:{project_id}:{raw_dob_id}"},
+            {"key": key},
             {"$set": {
-                "key":           f"dob_alert_sent:{project_id}:{raw_dob_id}",
+                "key":           key,
                 "last_alert_at": datetime.now(timezone.utc),
             }},
             upsert=True,
@@ -41391,7 +41487,7 @@ async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str) -> None:
 
 
 async def _send_critical_dob_alert_throttled(
-    project: dict, dob_log: dict, source: str = "dob",
+    project: dict, dob_log: dict, source: str = "dob", *, event: str,
 ) -> bool:
     """Wrapper that enforces:
 
@@ -41416,16 +41512,17 @@ async def _send_critical_dob_alert_throttled(
         )
         return False
 
-    # Gate 2 — 24h per-record throttle
-    if await _dob_alert_recently_sent(project_id, raw_dob_id):
+    # Gate 2 — 24h throttle, per record AND event (issue, lift, rescind each
+    # separate: ruling 2026-10-22).
+    if await _dob_alert_recently_sent(project_id, raw_dob_id, event=event):
         logger.info(
             f"DOB alert throttled (within 24h) source={source} "
             f"project={project.get('name')} raw_dob_id={raw_dob_id}"
         )
         return False
 
-    await _send_critical_dob_alert(project, dob_log)
-    await _mark_dob_alert_sent(project_id, raw_dob_id)
+    await _send_critical_dob_alert(project, dob_log, event=event)
+    await _mark_dob_alert_sent(project_id, raw_dob_id, event=event)
     return True
 
 
@@ -41712,8 +41809,24 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
                 # Fire critical alert through the throttled wrapper.
                 # Initial-scan suppression here means the very first 311
                 # poll for a project quietly backfills the historical
-                # complaints without spamming the owner.
-                await _send_critical_dob_alert_throttled(project, doc, source="311")
+                # complaints without spamming the owner. The same rules as
+                # the DOB sync (lib/dob_alert_gate): a first sighting emails
+                # only if open and received within 2 days; a transition only
+                # if it issued a Stop Work Order or a vacate order.
+                if existing is None:
+                    why = dob_alert_gate.new_alert_refusal(
+                        doc, _Date.fromisoformat(eastern_today()))
+                    if why:
+                        logger.info(f"[dob-alert] 311 not sent as new: reason={why} "
+                                    f"project={project_id} raw_dob_id={doc.get('raw_dob_id')}")
+                    else:
+                        await _send_critical_dob_alert_throttled(
+                            project, doc, source="311", event="new")
+                else:
+                    order = dob_alert_gate.update_issues_order(existing, doc)
+                    if order:
+                        await _send_critical_dob_alert_throttled(
+                            project, doc, source="311", event=order)
 
             # V2.3 Commit 6 — predictive inspection surfacing.
             # Spawn a fire-and-forget similar-case correlation
@@ -42267,6 +42380,11 @@ def _classify_resolution_state(rec: dict) -> str:
     # neither current_status nor violation_category exposes, so a won dispute
     # ("Disputed Successfully") read as OPEN until this was added.
     vstatus = str(rec.get("violation_status") or "").upper()
+    # ECB/OATH (6bgk-3dad) carries its state in `ecb_violation_status`
+    # ("ACTIVE" / "RESOLVE" -- no trailing D), which none of the fields above
+    # expose: a resolved ECB violation read as OPEN and severity 'Action', and
+    # 39558663R would have been emailed as new (2026-10-22).
+    ecb = str(rec.get("ecb_violation_status") or "").upper()
     hearing = rec.get("hearing_date_time") or rec.get("hearing_date") or ""
     disp_date = rec.get("disposition_date") or ""
 
@@ -42279,7 +42397,7 @@ def _classify_resolution_state(rec: dict) -> str:
     # `category`, using substrings that DOB itself uses.
     if any(w in cert_status for w in ["CERTIFIED", "CERTIFICATE", "RESOLVE"]):
         return "certified"
-    if "DISMISS" in current_status or "DISMISS" in category:
+    if "DISMISS" in current_status or "DISMISS" in category or "DISMISS" in ecb:
         return "dismissed"
     # A successful dispute (DOB NOW) resolves the violation in the owner's
     # favor. Match the FULL phrase — "Disputed Unsuccessfully" stays open.
@@ -42289,7 +42407,8 @@ def _classify_resolution_state(rec: dict) -> str:
         return "paid"
     if (any(w in current_status for w in ["RESOLVE", "CLOSED", "RESCIND"])
             or any(w in category for w in ["RESOLVE", "CLOSED", "RESCIND"])
-            or any(w in vstatus for w in ["RESOLVE", "CLOSED", "CURED", "COMPLIED"])):
+            or any(w in vstatus for w in ["RESOLVE", "CLOSED", "CURED", "COMPLIED"])
+            or any(w in ecb for w in ["RESOLVE", "CLOSED"])):
         return "resolved"
     if "CURE" in cert_status or "CURE" in current_status:
         return "cure_pending"
@@ -43003,11 +43122,16 @@ def _plan_in_place_refresh(existing: dict, dob_log: dict, now: datetime):
 
 
 async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
-                          answered: Optional[Dict[str, bool]] = None) -> list:
+                          answered: Optional[Dict[str, bool]] = None,
+                          fetched_bins: Optional[list] = None) -> list:
     """`records` plus everything filed under the job site's OTHER building BINs
     (lib/dob_site_bins). A BIN counts only when one of its jobs is also a job
     under the project's BIN; a neighbour's BIN is never fetched. Never raises: a
-    failure leaves the sync exactly as it was."""
+    failure leaves the sync exactly as it was.
+
+    Each record added here is tagged `_site_bin` and each BIN fetched is
+    appended to `fetched_bins`, so the first pass of a newly added BIN is
+    silent (lib/dob_alert_gate.scan_key) like any other backfill."""
     try:
         if not nyc_bin or _is_placeholder_bin(nyc_bin):
             return records
@@ -43015,7 +43139,12 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
         for cand in dob_site_bins.candidate_bins(records, nyc_bin):
             found = await _query_dob_apis(cand, "", answered)
             if dob_site_bins.shares_job(records, nyc_bin, found, cand):
+                for r in found:
+                    if isinstance(r, dict):
+                        r["_site_bin"] = cand
                 added += dob_site_bins.new_records(list(records) + added, found)
+                if fetched_bins is not None:
+                    fetched_bins.append(cand)
                 logger.info(f"[dob-sync] project {project_id}: BIN {cand} is part of the site "
                             f"(shares a job with BIN {nyc_bin}); {len(found)} records")
             else:
@@ -43093,7 +43222,8 @@ async def run_dob_sync_for_project(project: dict) -> list:
             & set(source_sync.DOB_SOURCES))
 
     raw_records = await _query_dob_apis(nyc_bin, project_address, answered)
-    raw_records = await _with_site_bins(project_id, nyc_bin, raw_records, answered)
+    site_bins: list = []
+    raw_records = await _with_site_bins(project_id, nyc_bin, raw_records, answered, site_bins)
 
     # --- BIN auto-heal ---
     # Scan returned records for a real BIN. DOB's datasets expose the
@@ -43259,10 +43389,14 @@ async def run_dob_sync_for_project(project: dict) -> list:
     if not new_records:
         logger.info(f"DOB sync for project {project_id}: no new records")
         await _mark_synced()
+        await _mark_bins_scanned(project_id, [nyc_bin] + site_bins)
         return []
  
     inserted_logs = []
     now = datetime.now(timezone.utc)
+    # DOB dates are New York calendar dates.
+    alert_today = _Date.fromisoformat(eastern_today())
+    bin_scanned: Dict[str, bool] = {}
  
     for raw_id, rec in new_records:
         try:
@@ -43390,11 +43524,26 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # 'Good' and never email as critical. The throttled wrapper
                 # still applies initial-scan suppression and the 24h per-record
                 # dedupe.
-                if changed and not legacy and severity == "Action":
-                    await _send_critical_dob_alert_throttled(
-                        project,
-                        {**existing, **update, "id": str(existing["_id"])},
-                        source="dob")
+                # An UPDATE never emails (operator ruling 2026-10-22) -- unless
+                # it issued a Stop Work Order or a vacate order. Checked on
+                # every non-legacy refresh, not only a status change: DOB
+                # serves an A3 "Full Stop Work Order" as a new DISPOSITION on a
+                # complaint whose status stays ACTIVE. The 24h throttle and the
+                # before/after comparison keep it to one email.
+                if not legacy:
+                    after = {**existing, **dob_log, **(update or {}),
+                             "id": str(existing["_id"])}
+                    order = dob_alert_gate.update_issues_order(existing, after)
+                    if order:
+                        await _stamp_order_issued(existing["_id"], order, now)
+                        await _send_critical_dob_alert_throttled(
+                            project, after, source="dob", event=order)
+                    # ...or lifted one in full: the second update exception.
+                    lifted = dob_alert_gate.update_lifts_order(existing, after)
+                    if lifted:
+                        await _stamp_order_lifted(existing["_id"], lifted, now)
+                        await _send_critical_dob_alert_throttled(
+                            project, after, source="dob", event=f"{lifted}_lifted")
             elif existing and existing.get("current_status") == current_status:
                 # No status change — refresh mutable fields. Don't
                 # insert a duplicate.
@@ -43421,9 +43570,18 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # Only alert if severity escalated to Action — and
                 # route through the throttled wrapper so initial-scan
                 # suppression + 24h dedupe apply.
-                old_severity = existing.get("severity", "")
-                if severity == "Action" and old_severity != "Action":
-                    await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
+                # A field refresh is an update: it emails only when it issued
+                # a Stop Work Order or a vacate order (ruling 2026-10-22).
+                order = dob_alert_gate.update_issues_order(existing, dob_log)
+                if order:
+                    await _stamp_order_issued(existing["_id"], order, now)
+                    await _send_critical_dob_alert_throttled(
+                        project, dob_log, source="dob", event=order)
+                lifted = dob_alert_gate.update_lifts_order(existing, dob_log)
+                if lifted:
+                    await _stamp_order_lifted(existing["_id"], lifted, now)
+                    await _send_critical_dob_alert_throttled(
+                        project, dob_log, source="dob", event=f"{lifted}_lifted")
             else:
                 # Either first time OR status changed. Stamp
                 # transition markers and insert a new row. The
@@ -43461,11 +43619,52 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     and "current_status" not in existing
                 )
                 dob_log["is_seed_transition"] = is_seed_transition
+                site_bin = str(rec.get("_site_bin") or nyc_bin or "")
+                order = lifted = None
+                if existing is None:
+                    # Which BIN it came from, and whether that BIN's first pass
+                    # is under way: the GC group alerts read both from the row
+                    # (silent first pass, one summary per newly added BIN).
+                    if site_bin not in bin_scanned:
+                        bin_scanned[site_bin] = await _bin_scan_done(
+                            project_id, site_bin, nyc_bin)
+                    if rec.get("_site_bin"):
+                        dob_log["site_bin"] = str(rec["_site_bin"])
+                    dob_log["bin_first_pass"] = not bin_scanned[site_bin]
+                elif not is_seed_transition:
+                    # A change row (permit diff / transition): an update.
+                    order = dob_alert_gate.update_issues_order(existing, dob_log)
+                    if order:
+                        dob_log["order_issued"] = {"kind": order, "at": now}
+                    lifted = dob_alert_gate.update_lifts_order(existing, dob_log)
+                    if lifted:
+                        dob_log["order_lifted"] = {"kind": lifted, "at": now}
                 result = await db.dob_logs.insert_one(dob_log)
                 dob_log["id"] = str(result.inserted_id)
                 inserted_logs.append(dob_log)
-                if severity == "Action" and not is_seed_transition:
-                    await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
+                if existing is not None and not is_seed_transition:
+                    if order:
+                        await _send_critical_dob_alert_throttled(
+                            project, dob_log, source="dob", event=order)
+                    if dob_log.get("order_lifted"):
+                        await _send_critical_dob_alert_throttled(
+                            project, dob_log, source="dob",
+                            event=f"{dob_log['order_lifted']['kind']}_lifted")
+                elif severity == "Action" and not is_seed_transition:
+                    if existing is None:
+                        # A FIRST SIGHTING. Announced as new only if the BIN it
+                        # came from has had its first pass, it is not closed,
+                        # and DOB received it within the last 2 days
+                        # (lib/dob_alert_gate). Otherwise stored, not sent.
+                        why = dob_alert_gate.new_alert_refusal(
+                            dob_log, alert_today, bin_scanned=bin_scanned[site_bin])
+                        if why:
+                            logger.info(
+                                f"[dob-alert] not sent as new: reason={why} "
+                                f"project={project_id} bin={site_bin} raw_dob_id={raw_id}")
+                        else:
+                            await _send_critical_dob_alert_throttled(
+                                project, dob_log, source="dob", event="new")
         except Exception as e:
             failed_types.add(rec.get("_record_type"))
             logger.error(f"Failed to process dob_log for raw_id={raw_id} type={rec.get('_record_type')}: {e}", exc_info=True)
@@ -43558,6 +43757,9 @@ async def run_dob_sync_for_project(project: dict) -> list:
     # can send email alerts. The first scan of a newly-tracked project
     # pulls in the entire historical backlog — silent during that run.
     await _mark_initial_scan_done(project_id, "dob")
+    # ...and per BIN: a site BIN fetched for the first time this run is
+    # backfill too, and its first pass ends here.
+    await _mark_bins_scanned(project_id, [nyc_bin] + site_bins)
 
     # Rolling per-project sync freshness. Distinct from first_poll_completed_at,
     # which is written ONCE (guarded above) and therefore answers "has this
@@ -47352,6 +47554,15 @@ async def _gc_ai_line(kind: str, facts: Dict[str, str]) -> Optional[str]:
 
 async def _gc_alert_text(item: dict, address: str, today) -> str:
     kind, rec = item["kind"], item["rec"]
+    if kind == dob_alert_gate.ORDER_LIFTED_KIND:
+        return "\n".join(
+            [f"{wa_alerts.GREEN} {address}"]
+            + dob_alert_gate.lifted_post_lines(item.get("lifted") or "swo", address)
+            + [wa_alerts.record_line(kind, rec), wa_alerts.source_line(kind, rec)])
+    if kind == dob_alert_gate.BIN_ADDED_KIND:
+        return dob_alert_gate.bin_summary_message(
+            address, item.get("bin") or rec.get("site_bin") or "", item.get("open") or [],
+            icon=wa_alerts.ICON.get(kind, wa_alerts.ORANGE))
     ai = await _gc_ai_line(kind, wa_alerts.facts(rec)) if kind in wa_alerts.AI_KINDS else None
     what = wa_alerts.what_line(kind, rec, ai, today=today, exp=item.get("exp"),
                                prev=item.get("prev") or "")
@@ -47475,6 +47686,14 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             logger.warning(f"[wa-gc] record read failed: {type(e).__name__}")
             continue
         items = wa_alerts.collect(dob_rows, dot_rows, today)
+        # The email's rules, for the group too (lib/dob_alert_gate, ruling
+        # 2026-10-22): an update that issued a SWO / vacate order, and ONE
+        # summary per newly added BIN. Everything a rule refuses is claimed
+        # silently below, so it can never post later as a backlog.
+        latest_dob = _gc_latest_per_record(dob_rows)
+        items += dob_alert_gate.gc_order_items(latest_dob, today)
+        items += dob_alert_gate.gc_order_lifted_items(latest_dob, today)
+        items += dob_alert_gate.gc_bin_summary_items(latest_dob)
         report["permits_no_expiry"] += sum(
             1 for r in _gc_latest_per_record(dob_rows)
             if r.get("record_type") == "permit"
@@ -47568,6 +47787,14 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
 
         todo = []
         for it in items:
+            why = dob_alert_gate.gc_refusal(it, today)
+            if why:
+                if await _gc_ledger_claim(
+                        wa_gc.ledger_id(project_id, it["kind"], it["item"]),
+                        kind=f"gc_{it['kind']}", project_id=project_id,
+                        company_id=company_id, status=f"not_posted_{why}"):
+                    report["not_posted"] = report.get("not_posted", 0) + 1
+                continue
             if not wa_alerts.postable(it["kind"], it["rec"]):
                 report["no_number"] += 1
                 continue
@@ -47776,7 +48003,7 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
     now = now or datetime.now(timezone.utc)
     fetch = fetch or _dot_fetch
     report = {"projects": 0, "requests": 0, "failed": 0, "records": 0,
-              "matched": 0, "new": 0, "changed": 0}
+              "matched": 0, "new": 0, "changed": 0, "stipulations_read": 0}
     named = set()
     try:
         # Fixture (is_test) companies are left out, as in every unattended
@@ -47850,6 +48077,12 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
                     continue
                 if res in ("new", "changed"):
                     report[res] += 1
+                    if q["kind"] == "dot_permit":
+                        # A new or changed permit has its stipulations read at
+                        # once (one request), so the holiday-embargo waiver is
+                        # known before the next 07:00 alert run.
+                        report["stipulations_read"] += await _dot_stipulations_for_new(
+                            project_id, log["raw_id"], fetch, now)
         await _mark_sources_synced(
             project_id, company_id,
             source_sync.answered_sources(answered, failed_types))
@@ -47862,6 +48095,320 @@ async def _dot_sync_job() -> None:
         await _dot_sync_tick()
     except Exception as e:
         logger.error(f"[dot-sync] tick failed: {type(e).__name__}: {e}")
+
+
+# ── DOT HOLIDAY EMBARGO (lib/dot_embargo.py is the rule) ───────────────────
+#
+# NYC DOT stops street work Nov 15 - Jan 2 every year unless the permit
+# carries stipulation 410, the waiver. Three pieces live here:
+#   * _dot_stipulations_tick (daily 05:30 New York, and per new/changed permit
+#     inside _dot_sync_tick): reads gsgx-6efw for every matched permit that is
+#     active or starts within 30 days, and stores `stipulations`,
+#     `holiday_waiver`, `stipulations_fetched_at` on its dot_logs row. A FAILED
+#     read writes nothing, so a known waiver is never erased and an unread
+#     permit is never "no waiver".
+#   * _dot_embargo_alert_tick (daily 07:00 New York): emails the DOB-alert
+#     recipients on Nov 1 and Nov 12, and on first sight, about each exposed
+#     permit known to lack the waiver. Once per (project, permit, season,
+#     send date): the dot_alert_ledger row is inserted FIRST and an existing
+#     row means no send. Nothing sends before the project's first DOT permit
+#     pass (source_sync first_synced_at). The GC group post is the
+#     "dot_embargo" kind in lib/wa_alerts.py, posted by _gc_alerts_tick on the
+#     same due dates under the "dot_permit_alerts" switch.
+#   * GET /projects/{project_id}/dot/embargo: the Compliance screen's banner.
+# Fixture (is_test) companies are left out of both sweeps.
+
+
+async def _dot_read_stipulations(row: dict, fetch, now: datetime,
+                                 cache: Optional[dict] = None) -> str:
+    """'read' | 'unknown' | 'failed'. 'failed' writes nothing."""
+    permit = str(row.get("number") or "").strip()
+    if not permit:
+        return "failed"
+    if cache is not None and permit in cache:
+        recs = cache[permit]
+    else:
+        recs = await fetch(dot_embargo.STIPULATION_DATASET,
+                           dot_embargo.stipulation_params(permit))
+        if cache is not None:
+            cache[permit] = recs
+    if recs is None:
+        return "failed"
+    fields = dot_embargo.stipulation_fields(permit, recs)
+    await db.dot_logs.update_one(
+        {"_id": row["_id"]},
+        {"$set": {**fields, "stipulations_fetched_at": now}})
+    return "read" if fields["holiday_waiver"] is not None else "unknown"
+
+
+async def _dot_stipulations_for_new(project_id: str, raw_id: str, fetch,
+                                    now: datetime) -> int:
+    """1 when the just-stored permit's stipulations were read, else 0."""
+    try:
+        row = await db.dot_logs.find_one({"project_id": project_id, "raw_id": raw_id})
+        if not row or not dot_embargo.stipulations_wanted(row, dot_embargo.ny_date(now)):
+            return 0
+        return 1 if await _dot_read_stipulations(row, fetch, now) != "failed" else 0
+    except Exception as e:
+        logger.warning(f"[dot-stipulations] new permit read failed: {type(e).__name__}")
+        return 0
+
+
+async def _dot_live_projects() -> Dict[str, dict]:
+    """{project_id: project} for live projects of real (non-test) companies."""
+    projects = await db.projects.find(
+        await unattended_project_filter(dict(ACTIVE_PROJECT_FILTER))).to_list(5000)
+    test_ids = await test_company_ids()
+    return {str(p.get("_id")): p for p in projects
+            if str(p.get("company_id") or "").strip()
+            and str(p.get("company_id")) not in test_ids}
+
+
+async def _dot_stipulations_tick(now: Optional[datetime] = None, fetch=None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    fetch = fetch or _dot_fetch
+    today = dot_embargo.ny_date(now)
+    report = {"permits": 0, "read": 0, "unknown": 0, "failed": 0}
+    try:
+        live = await _dot_live_projects()
+        # By project only: dot_logs has no is_deleted, and lib/dot_embargo
+        # checks record_type itself (stipulations_wanted / exposed).
+        rows = await db.dot_logs.find(
+            {"project_id": {"$in": sorted(live)}}).to_list(10000)
+    except Exception as e:
+        logger.warning(f"[dot-stipulations] read failed: {type(e).__name__}")
+        return report
+    cache: dict = {}
+    for row in rows:
+        if str(row.get("project_id") or "") not in live:
+            continue
+        if not dot_embargo.stipulations_wanted(row, today):
+            continue
+        report["permits"] += 1
+        try:
+            res = await _dot_read_stipulations(row, fetch, now, cache)
+        except Exception as e:
+            logger.warning(f"[dot-stipulations] store failed: {type(e).__name__}")
+            res = "failed"
+        report[res] += 1
+    logger.info(f"[dot-stipulations] {report}")
+    return report
+
+
+async def _dot_stipulations_job() -> None:
+    try:
+        await _dot_stipulations_tick()
+    except Exception as e:
+        logger.error(f"[dot-stipulations] tick failed: {type(e).__name__}: {e}")
+
+
+_ES_MONTHS = ("ene", "feb", "mar", "abr", "may", "jun",
+              "jul", "ago", "sep", "oct", "nov", "dic")
+
+
+def _dot_day_en(d) -> str:
+    return f"{d:%b} {d.day}, {d.year}" if d else "not stated"
+
+
+def _dot_day_es(d) -> str:
+    return f"{d.day} {_ES_MONTHS[d.month - 1]} {d.year}" if d else "no indicada"
+
+
+def _dot_embargo_email(project: dict, row: dict, season) -> tuple:
+    """(subject, text, html) -- English, then Spanish. Plain and
+    transactional, like _send_critical_dob_alert: no caps, no banners."""
+    import html as _html
+    permit = str(row.get("number") or "")
+    project_name = project.get("name") or "your project"
+    kind = row.get("description") or "DOT street permit"
+    start, end = dot_embargo.work_dates(row)
+    link = row.get("link") or ""
+    subject = (f"Holiday embargo: permit {permit} has no waiver / "
+               f"Embargo navideño: el permiso {permit} no tiene exención")
+    en = [
+        "Hi,",
+        f"DOT permit {permit} on {project_name} is active during NYC DOT's holiday "
+        f"construction embargo, and it has no embargo waiver (stipulation 410). "
+        f"{dot_embargo.ACTION_EN}",
+        f"Permit: {permit}",
+        f"Type: {kind}",
+        f"Work dates: {_dot_day_en(start)} - {_dot_day_en(end)}",
+        f"Embargo: {_dot_day_en(season.start)} - {_dot_day_en(season.end)}",
+        "What to do: apply to DOT (OCMC) for a holiday embargo waiver, or stop work "
+        "on this permit from Nov 15 through Jan 2.",
+        # Coverage limit until DOT Phase 1 B (segment permits): removed with it.
+        dot_embargo.COVERAGE_NOTE_EN,
+    ]
+    es = [
+        "Hola,",
+        f"El permiso del DOT {permit} de {project_name} está activo durante el embargo "
+        f"navideño de construcción del DOT de NYC, y no tiene exención del embargo "
+        f"(estipulación 410). {dot_embargo.ACTION_ES}",
+        f"Permiso: {permit}",
+        f"Tipo: {kind}",
+        f"Fechas de trabajo: {_dot_day_es(start)} - {_dot_day_es(end)}",
+        f"Embargo: {_dot_day_es(season.start)} - {_dot_day_es(season.end)}",
+        "Qué hacer: solicite al DOT (OCMC) una exención del embargo navideño, o detenga "
+        "el trabajo de este permiso del 15 de noviembre al 2 de enero.",
+        dot_embargo.COVERAGE_NOTE_ES,
+    ]
+    footer_en = ("You're receiving this because you're an admin of this company or the "
+                 "assigned project manager on this Levelog project.")
+    footer_es = ("Recibe este correo porque es administrador de esta empresa o el "
+                 "gerente de proyecto asignado a este proyecto en Levelog.")
+    source = f"Source: NYC DOT permit records (NYC Open Data). {link}".strip()
+    text = ("\n\n".join([en[0], en[1], "\n".join(en[2:6]), en[6], en[7]])
+            + "\n\n" + "-" * 8 + "\n\n"
+            + "\n\n".join([es[0], es[1], "\n".join(es[2:6]), es[6], es[7]])
+            + f"\n\n{source}\n\n{footer_en}\n{footer_es}\n\n- Levelog")
+
+    def _p(t, extra=""):
+        return f'<p style="margin:0 0 12px;font-size:15px;{extra}">{_html.escape(t)}</p>'
+
+    def _block(lines):
+        return ('<p style="margin:0 0 12px;font-size:15px;">'
+                + "<br>".join(_html.escape(t) for t in lines) + "</p>")
+
+    link_html = (f'<p style="margin:0 0 12px;font-size:13px;"><a href="{_html.escape(link)}" '
+                 f'style="color:#1d4ed8;text-decoration:none;">View the permit on NYC Open Data</a></p>'
+                 if link else "")
+    html_body = f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2937;line-height:1.55;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" width="560" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
+    <tr><td style="padding:24px 28px;">
+      <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
+      <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">{_html.escape(f"Holiday embargo: permit {permit} has no waiver")}</h1>
+      {_p(en[0])}{_p(en[1])}{_block(en[2:6])}{_p(en[6])}{_p(en[7], "color:#6b7280;font-size:13px;")}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;">
+      <h2 style="margin:0 0 14px;font-size:16px;font-weight:600;color:#111827;">{_html.escape(f"Embargo navideño: el permiso {permit} no tiene exención")}</h2>
+      {_p(es[0])}{_p(es[1])}{_block(es[2:6])}{_p(es[6])}{_p(es[7], "color:#6b7280;font-size:13px;")}
+      {link_html}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
+      <p style="margin:0;font-size:12px;color:#6b7280;">{_html.escape(footer_en)}<br>{_html.escape(footer_es)}</p>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    return subject, text, html_body
+
+
+async def _dot_embargo_alert_tick(now: Optional[datetime] = None) -> dict:
+    """The 07:00 run: the emails due today (lib/dot_embargo.due_sends)."""
+    from lib.notifications import is_email_kill_switch_on, send_notification
+    from pymongo.errors import DuplicateKeyError
+    now = now or datetime.now(timezone.utc)
+    today = dot_embargo.ny_date(now)
+    report = {"date": today.isoformat(), "projects": 0, "due": 0, "sent": 0,
+              "already": 0, "no_recipients": 0, "ledger_failed": 0,
+              "waiting_sync": 0}
+    if not dot_embargo.in_alert_window(today):
+        return report
+    # Checked BEFORE any ledger row is written, so a halted day does not burn
+    # the once-only row (send_notification checks both again at send time).
+    if not RESEND_API_KEY or is_email_kill_switch_on():
+        report["skipped"] = "no_resend_key" if not RESEND_API_KEY else "kill_switch"
+        logger.info(f"[dot-embargo] {report}")
+        return report
+    try:
+        live = await _dot_live_projects()
+    except Exception as e:
+        logger.warning(f"[dot-embargo] project read failed: {type(e).__name__}")
+        return report
+    for project_id, project in live.items():
+        # Nothing sends before the project's first full DOT permit pass
+        # (lib/source_sync.py): until then its permits are not all known, and
+        # the GC group alerts wait for the same moment.
+        try:
+            synced = await _project_first_synced(project_id)
+        except Exception as e:
+            logger.warning(f"[dot-embargo] sync state read failed: {type(e).__name__}")
+            continue
+        if source_sync.DOT_PERMITS not in synced:
+            report["waiting_sync"] += 1
+            continue
+        rows = await db.dot_logs.find({"project_id": project_id}).to_list(2000)
+        due = dot_embargo.due_sends(rows, today)
+        if not due:
+            continue
+        report["projects"] += 1
+        report["due"] += len(due)
+        recipients = await _critical_dob_alert_recipients(project)
+        if not recipients:
+            report["no_recipients"] += len(due)
+            continue
+        for d in due:
+            season = d["season"]
+            lid = dot_embargo.ledger_id(project_id, d["permit"], season.year, d["send_date"])
+            try:
+                await db[dot_embargo.LEDGER].insert_one({
+                    "_id": lid, "project_id": project_id,
+                    "company_id": str(project.get("company_id") or ""),
+                    "permit": d["permit"], "season_year": season.year,
+                    "send_date": d["send_date"].isoformat(), "kind": d["kind"],
+                    "trigger_type": dot_embargo.TRIGGER_TYPE,
+                    "recipients": len(recipients), "created_at": now})
+            except DuplicateKeyError:
+                report["already"] += 1
+                continue
+            except Exception as e:
+                # No ledger row, no send: once-only cannot be promised.
+                logger.warning(f"[dot-embargo] ledger write failed: {type(e).__name__}")
+                report["ledger_failed"] += 1
+                continue
+            subject, text, html_body = _dot_embargo_email(project, d["row"], season)
+            sent = 0
+            for recipient in recipients:
+                try:
+                    await send_notification(
+                        db,
+                        permit_renewal_id=lid,
+                        trigger_type=dot_embargo.TRIGGER_TYPE,
+                        recipient=recipient,
+                        subject=subject,
+                        html=html_body,
+                        text=text,
+                        metadata={
+                            "project_id": project_id,
+                            "project_name": project.get("name"),
+                            "permit": d["permit"],
+                            "season_year": season.year,
+                            "kind": d["kind"],
+                        },
+                    )
+                    sent += 1
+                except Exception as e:
+                    logger.error(f"[dot-embargo] send failed: {type(e).__name__}")
+            report["sent"] += 1 if sent else 0
+            try:
+                await db[dot_embargo.LEDGER].update_one(
+                    {"_id": lid}, {"$set": {"sent_to": sent, "sent_at": datetime.now(timezone.utc)}})
+            except Exception:
+                pass
+    logger.info(f"[dot-embargo] {report}")
+    return report
+
+
+async def _dot_embargo_alert_job() -> None:
+    try:
+        await _dot_embargo_alert_tick()
+    except Exception as e:
+        logger.error(f"[dot-embargo] tick failed: {type(e).__name__}: {e}")
+
+
+@api_router.get("/projects/{project_id}/dot/embargo")
+async def get_dot_embargo(
+    project_id: str,
+    current_user=Depends(get_current_user),
+    project=Depends(require_project_access),
+):
+    """The holiday-embargo banner for one project: inside Nov 1 - Jan 2, the
+    exposed DOT permits known to lack the waiver (stipulation 410). Permits
+    whose stipulations could not be read are listed apart as `unknown` and
+    never counted as missing a waiver."""
+    rows = await db.dot_logs.find(
+        {"project_id": str(project.get("_id") or project_id)}).to_list(2000)
+    return dot_embargo.banner(rows, dot_embargo.ny_date(datetime.now(timezone.utc)))
 
 
 async def _whatsapp_gc_tick() -> None:
@@ -81608,6 +82155,29 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=8),
+    )
+    # DOT holiday embargo (lib/dot_embargo.py). 05:30 New York: read the
+    # stipulations (waiver = 410) of every matched permit that is active or
+    # starts within 30 days. 07:00 New York: email the permits that are exposed
+    # to Nov 15 - Jan 2 without the waiver (Nov 1, Nov 12, first sight; once
+    # each, dot_alert_ledger). The grace time lets a deploy at 07:00 still run.
+    scheduler.add_job(
+        _dot_stipulations_job,
+        CronTrigger(hour=5, minute=30, timezone="America/New_York"),
+        id='dot_stipulations',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _dot_embargo_alert_job,
+        CronTrigger(hour=7, minute=0, timezone="America/New_York"),
+        id='dot_embargo_alerts',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
     )
     # Filing-time photo pipeline: every unjudged photo of a recent filed daily log
     # is judged once and the verdict stored, so reports are instant. Every 20 min.

@@ -17,7 +17,8 @@ OATH Hearings Division Case Status — jz4z-kudi
 
 Street Construction Permits 2022–present — tqtj-sjs8 (daily)
   permitnumber, permittypedesc, permitteename, permitstatusshortdesc,
-  permitissuedate, issuedworkstartdate, issuedworkenddate (the expiry),
+  permitissuedate, issuedworkstartdate (stored as work_start),
+  issuedworkenddate (the expiry, stored as expiration_date),
   boroughname (full name, "STATEN ISLAND"), permithousenumber (~36%
   filled), onstreetname, fromstreetname, tostreetname. NO BIN, NO BBL.
   MATCH: borough + house number + street, all three, exact normalized.
@@ -343,6 +344,9 @@ def to_log(kind: str, rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             return None
         return {"record_type": "dot_permit", "raw_id": f"dotpermit:{num}",
                 "number": num, "issue_date": _v(rec, "permitissuedate") or None,
+                # The work window: start and end. The holiday embargo check
+                # (lib/dot_embargo.py) asks whether it overlaps Nov 15 - Jan 2.
+                "work_start": _v(rec, "issuedworkstartdate") or None,
                 "expiration_date": _v(rec, "issuedworkenddate") or None,
                 "status": _v(rec, "permitstatusshortdesc") or None,
                 "description": _v(rec, "permittypedesc") or None,
