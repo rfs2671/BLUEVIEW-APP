@@ -13,7 +13,13 @@ OATH Hearings Division Case Status — jz4z-kudi
   issuing_agency is "DEPT OF TRANSPORTATION" or "DEPT OF TRAN" for DOT.
   (Respondent street/city fields were removed from the dataset in May 2026
   and are not read.)
-  MATCH: BBL first; then house + street (+ borough) exact normalized.
+  MATCH (classify_summons, DOT Phase 1 A): BBL first (a different BBL
+  stops); then house + street (+ borough) exact normalized; then the permit
+  the summons was written against (ydkf-mpxb inspections: novnumber =
+  ticket_number, stored in dot_nov_permits) when that permit is one of the
+  project's confirmed permits; then the block -- "<ON> BTWN <FROM> AND
+  [<TO>]" against a confirmed frontage -- which is only ever NEEDS
+  CONFIRMATION. Every charge (1-10), the hearing and the money are kept.
 
 Street Construction Permits 2022–present — tqtj-sjs8 (daily)
   permitnumber, permittypedesc, permitteename, permitstatusshortdesc,
@@ -428,6 +434,163 @@ def permit_confirmed(row: Dict[str, Any]) -> bool:
     return match_state(row) == STATE_CONFIRMED
 
 
+def record_confirmed(row: Dict[str, Any]) -> bool:
+    """Is this dot_logs row the project's -- a summons OR a permit? DOT Phase
+    1 A gives summonses a match state too: a SEGMENT-matched summons is "on
+    your block", not "yours", until a person accepts it. A row with no
+    `match` (stored before Phase 1) was matched by BBL or address:
+    confirmed. Every alert, brief, report and answer asks this."""
+    return match_state(row) == STATE_CONFIRMED
+
+
+# ── Summonses (DOT Phase 1 A) ───────────────────────────────────────────────
+#
+# First match wins (operator ruling, spec v3 A):
+#   1 BBL      the summons' borough + block + lot equal the project's BBL. A
+#              DIFFERENT BBL is a non-match and stops here.
+#   2 address  house + street (any alias) + borough, all equal.
+#   3 permit   the ticket is a DOT inspection's novnumber (ydkf-mpxb, stored in
+#              dot_nov_permits) whose permit is one of this project's
+#              CONFIRMED permits.
+#   4 segment  the street reads "<ON> BTWN <FROM> AND [<TO>]" (often cut off
+#              at ~30 characters): ON is a confirmed frontage's on-street,
+#              FROM is that frontage's from or to street (a cut-off name
+#              matches as a prefix of at least 6), the borough agrees.
+#              NEEDS CONFIRMATION -- never emailed or posted as the project's.
+
+SUMMONS_BBL = "bbl"
+SUMMONS_ADDRESS = "address"
+SUMMONS_PERMIT = "permit"
+SUMMONS_SEGMENT = "segment"
+#: The ways a summons is the project's on its own evidence (a new one may email).
+OWN_MATCHES = (SUMMONS_BBL, SUMMONS_ADDRESS, SUMMONS_PERMIT)
+
+_BTWN = re.compile(r"\s(?:BTWN|BTW|BTWEEN|BETWEEN|BET|B/T)\s")
+_AND = re.compile(r"\s+(?:AND|&)\s+|\s+(?:AND|&)$")
+NOV_DATASET = "ydkf-mpxb"
+OATH_BORO = {"1": "MANHATTAN", "2": "BRONX", "3": "BROOKLYN", "4": "QUEENS", "5": "STATEN IS"}
+
+
+def oath_segment(raw: Any, house: Any = "") -> Optional[Dict[str, str]]:
+    """{on, from, to} of an OATH location written as a segment, normalized;
+    None for anything else (a plain street, an intersection "A AND B", an
+    address with no BTWN). TO may be '' (cut off, or never written)."""
+    s = " " + re.sub(r"\s+", " ", str(raw or "").strip().upper()) + " "
+    h = norm_house(house)
+    if h:
+        m = re.match(r"^ (\S+) (.+)$", s)
+        if m and norm_house(m.group(1)) == h:
+            s = " " + m.group(2)
+    m = _BTWN.search(s)
+    if not m:
+        return None
+    on = norm_street(s[:m.start()])
+    rest = s[m.end():].strip()
+    parts = [p for p in _AND.split(rest)] if rest else []
+    fr = norm_street(parts[0]) if parts else ""
+    to = norm_street(parts[1]) if len(parts) > 1 else ""
+    if not on or not fr:
+        return None
+    return {"on": on, "from": fr, "to": to}
+
+
+def summons_segment_matches(frontage: Dict[str, Any], boro: str,
+                            seg: Optional[Dict[str, str]]) -> bool:
+    """Spec v3 A rule 4: same borough, ON = the frontage's on-street, FROM =
+    the frontage's from OR to street. TO is not compared (it is usually cut
+    off)."""
+    if not seg or not boro or str(frontage.get("boro") or "") != str(boro):
+        return False
+    if not same_street(frontage.get("on"), seg.get("on")):
+        return False
+    return any(norm_street(x) and same_street(x, seg.get("from"))
+               for x in (frontage.get("from"), frontage.get("to")))
+
+
+def classify_summons(pk: Dict[str, Any], setup: Any, rec: Dict[str, Any],
+                     nov_links: Optional[Dict[str, str]] = None) -> Optional[tuple]:
+    """(how, state, permit_number) for one DOT OATH record, or None.
+    `nov_links`: {ticket_number: permit_number} for THIS project's confirmed
+    permits only (the server builds it from dot_nov_permits)."""
+    rk = oath_keys(rec)
+    if pk.get("bbl") and rk.get("bbl"):
+        return (SUMMONS_BBL, STATE_CONFIRMED, None) if pk["bbl"] == rk["bbl"] else None
+    if match_oath(pk, rk) == "address":
+        return (SUMMONS_ADDRESS, STATE_CONFIRMED, None)
+    ticket = _v(rec, "ticket_number")
+    permit = (nov_links or {}).get(ticket)
+    if ticket and permit:
+        return (SUMMONS_PERMIT, STATE_CONFIRMED, permit)
+    fronts = confirmed_frontages(setup)
+    if fronts:
+        seg = oath_segment(_v(rec, "violation_location_street_name"),
+                           _v(rec, "violation_location_house"))
+        boro = rk.get("boro") or ""
+        if any(summons_segment_matches(f, boro, seg) for f in fronts):
+            return (SUMMONS_SEGMENT, STATE_NEEDS, None)
+    return None
+
+
+def summons_segment_queries(setup: Any, today: date) -> List[Dict[str, Any]]:
+    """One jz4z-kudi request per confirmed frontage street: DOT summonses in
+    the borough whose location names the street, issued within 24 months,
+    newest first, $limit 400. classify_summons keeps the frontage's."""
+    out, seen = [], set()
+    since = months_ago(today, SEGMENT_MONTHS).isoformat() + "T00:00:00"
+    for f in confirmed_frontages(setup):
+        boro, on = OATH_BORO.get(str(f.get("boro") or "")), norm_street(f.get("on"))
+        if not boro or not on or (boro, on) in seen:
+            continue
+        seen.add((boro, on))
+        words = [max(n.split(), key=len) for n in _renamed(on) if n.split()]
+        like = " OR ".join(f"upper(violation_location_street_name) like '%{_q(w)}%'"
+                           for w in dict.fromkeys(words))
+        out.append({"dataset": OATH_DATASET, "kind": "dot_violation", "segment": True, "params": {
+            "$where": f"{_AGENCY_WHERE} AND violation_location_borough = '{boro}' "
+                      f"AND ({like}) AND violation_date >= '{since}'",
+            "$order": "violation_date DESC", "$limit": SEGMENT_LIMIT}})
+    return out
+
+
+TICKET_CAP = 100
+
+
+def ticket_query(tickets: Iterable[str]) -> Optional[Dict[str, Any]]:
+    """The OATH request for the summonses linked to the project's permits."""
+    t = sorted({str(x).strip() for x in tickets or [] if str(x).strip()})[:TICKET_CAP]
+    if not t:
+        return None
+    return {"dataset": OATH_DATASET, "kind": "dot_violation", "nov": True, "params": {
+        "$where": f"{_AGENCY_WHERE} AND ticket_number in ({', '.join(repr_q(x) for x in t)})",
+        "$order": "violation_date DESC", "$limit": str(TICKET_CAP)}}
+
+
+def repr_q(v: str) -> str:
+    return f"'{_q(str(v))}'"
+
+
+def nov_link_params(permits: Iterable[str]) -> Optional[Dict[str, str]]:
+    """ydkf-mpxb: the inspections of these permits that carry a summons."""
+    p = sorted({str(x).strip() for x in permits or [] if str(x).strip()})[:TICKET_CAP]
+    if not p:
+        return None
+    return {"$where": f"permitnumber in ({', '.join(repr_q(x) for x in p)}) AND novnumber IS NOT NULL",
+            "$select": "permitnumber,novnumber,novcode,inspectiondate,inspectiontype,inspectionresulttype",
+            "$order": "inspectiondate DESC", "$limit": "1000"}
+
+
+def nov_link_row(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """A dot_nov_permits document from one inspection record, or None."""
+    nov, permit = _v(rec, "novnumber"), _v(rec, "permitnumber")
+    if not nov or not permit:
+        return None
+    return {"_id": nov, "permit_number": permit,
+            "inspection_date": _v(rec, "inspectiondate") or None,
+            "inspection_type": _v(rec, "inspectiontype") or None,
+            "inspection_result": _v(rec, "inspectionresulttype") or None,
+            "nov_code": _v(rec, "novcode") or None}
+
+
 # ── Renewal chain ───────────────────────────────────────────────────────────
 
 CHAIN_CAP = 50
@@ -609,6 +772,40 @@ def closed_reason(rec: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _num(v: Any) -> Optional[float]:
+    """A dataset amount as a number (an int when whole), or None."""
+    n = _money(v)
+    if n is None:
+        return None
+    return int(n) if n == int(n) else n
+
+
+def summons_charges(rec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Charges 1-10 that carry a code: [{code, section, description, amount}]."""
+    out = []
+    for i in range(1, 11):
+        code = _v(rec, f"charge_{i}_code")
+        if not code:
+            continue
+        out.append({"code": code, "section": _v(rec, f"charge_{i}_code_section") or None,
+                    "description": _v(rec, f"charge_{i}_code_description") or None,
+                    "amount": _num(rec.get(f"charge_{i}_infraction_amount"))})
+    return out
+
+
+_DEFAULT_WORDS = re.compile(r"\bDEFAULT(?:ED)?\b|\bDOCKET(?:ED)?\b")
+
+
+def default_result(row: Dict[str, Any]) -> Optional[str]:
+    """'DEFAULTED' / 'DOCKETED' when the summons' hearing result (or status:
+    DOT writes DOCKETED there) says so, else None."""
+    words = " ".join(str((row or {}).get(k) or "").upper() for k in ("hearing_result", "hearing_status"))
+    found = {m.group(0)[:6] for m in _DEFAULT_WORDS.finditer(words)}
+    if "DOCKET" in found:          # the later stage wins: docketed after a default
+        return "DOCKETED"
+    return "DEFAULTED" if "DEFAUL" in found else None
+
+
 # ── A stored record ─────────────────────────────────────────────────────────
 
 def to_log(kind: str, rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -631,8 +828,21 @@ def to_log(kind: str, rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 "hearing_result": _v(rec, "hearing_result") or None,
                 "hearing_date": _v(rec, "hearing_date") or None,
                 "compliance_status": _v(rec, "compliance_status") or None,
-                "penalty_imposed": _v(rec, "penalty_imposed") or None,
-                "balance_due": _v(rec, "balance_due") or None,
+                # Phase 1 A: money as numbers (they were strings), every charge,
+                # the hearing in full, and DOT's own date as a calendar date
+                # (issued_on drives the 2-day new-summons rule).
+                "penalty_imposed": _num(rec.get("penalty_imposed")),
+                "balance_due": _num(rec.get("balance_due")),
+                "total_amount": _num(rec.get("total_violation_amount")),
+                "paid_amount": _num(rec.get("paid_amount")),
+                "charges": summons_charges(rec),
+                "issued_on": (_v(rec, "violation_date") or "")[:10] or None,
+                "hearing_time": _v(rec, "hearing_time") or None,
+                "hearing_location": _v(rec, "scheduled_hearing_location") or None,
+                "decision_date": _v(rec, "decision_date") or None,
+                "location": _v(rec, "violation_location_street_name") or None,
+                "house": _v(rec, "violation_location_house") or None,
+                "respondent": _v(rec, "respondent_last_name") or None,
                 "description": desc, "charge": desc,
                 "agency": _v(rec, "issuing_agency") or None,
                 "dataset": OATH_DATASET,

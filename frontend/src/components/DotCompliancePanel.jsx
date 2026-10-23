@@ -7,7 +7,10 @@
 //      tap for a company admin or full-access Site Manager/PM. A
 //      superintendent can only suggest a frontage; a CP reads.
 //   2. #852's holiday-embargo banner (passed in as `embargoBanner`).
-//   3. Needs confirmation: permits by ANOTHER permittee on a confirmed block,
+//   2b. Summonses (DOT Phase 1 A): open first, then settled; every charge,
+//      the hearing, the money, and how the summons was matched.
+//   3. Needs confirmation (block-matched summonses: "It's ours" / "Not ours";
+//      a "Not ours" list can be reopened and accepted later), then permits by ANOTHER permittee on a confirmed block,
 //      "Yours?" / "Not ours" (admin and full-access PM only).
 //   4. Permits: active, then expiring within 14 days, then expired.
 //
@@ -45,6 +48,10 @@ export default function DotCompliancePanel({ projectId, embargoBanner, toast }) 
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [board, setBoard] = useState(null);
+  // Summonses load on their own: a failed read shows its own line and does
+  // not blank the permits (null = failed).
+  const [sumBoard, setSumBoard] = useState(undefined);
+  const [showRejected, setShowRejected] = useState(false);
   const [setupData, setSetupData] = useState(null);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -89,11 +96,13 @@ export default function DotCompliancePanel({ projectId, embargoBanner, toast }) 
   const load = useCallback(async () => {
     setFailed(false);
     try {
-      const [b, st] = await Promise.all([
+      const [b, st, sb] = await Promise.all([
         dobAPI.getDotPermits(projectId),
         dobAPI.getDotSetup(projectId),
+        dobAPI.getDotSummonses(projectId).catch(() => null),
       ]);
       setBoard(b || {});
+      setSumBoard(sb && typeof sb === 'object' ? sb : null);
       setSetupData(st || {});
       buildDrafts(st || {});
     } catch (e) {
@@ -149,6 +158,14 @@ export default function DotCompliancePanel({ projectId, embargoBanner, toast }) 
     setBusy(true);
     try {
       await dobAPI.removeDotFrontage(projectId, index);
+      await load();
+    } catch (e) { fail(); } finally { setBusy(false); }
+  };
+
+  const onReviewSummons = async (ticket, decision) => {
+    setBusy(true);
+    try {
+      await dobAPI.reviewDotSummons(projectId, ticket, decision);
       await load();
     } catch (e) { fail(); } finally { setBusy(false); }
   };
@@ -312,12 +329,120 @@ export default function DotCompliancePanel({ projectId, embargoBanner, toast }) 
     </GlassCard>
   );
 
+  // ── 2b. Summonses ─────────────────────────────────────────────────────────
+  const money = (v) => {
+    if (v === null || v === undefined || v === '') return '—';
+    const n = Number(v);
+    if (Number.isNaN(n)) return String(v);
+    return `$${n.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+  };
+  const hearingText = (n) => (n === 0 ? t('hearingToday') : n === 1 ? t('hearingTomorrow') : fill(t('hearingIn'), { n }));
+  const segText = (x) => (x && x.segment ? frontageLabel(x.segment) : (x && x.location) || '');
+  const matchedText = (x) => (x.how === 'bbl' ? t('matchedByBbl')
+    : x.how === 'address' ? t('matchedByAddress')
+      : x.how === 'permit' ? fill(t('matchedByPermit'), { permit: x.permit_number || '' })
+        : x.how === 'segment' ? t('matchedByBlock') : '');
+  const summonsRow = (x, actions) => {
+    const soon = !x.settled && typeof x.days_to_hearing === 'number' && x.days_to_hearing >= 0 && x.days_to_hearing <= 14;
+    return (
+      <View key={`s-${x.number}`} style={s.permitRow}>
+        <View style={s.rowBetween}>
+          <Text style={s.permitNum}>{x.number}</Text>
+          {x.settled ? (
+            <Text style={[s.days, { color: colors.text.muted }]}>{x.status || t('summonsSettled')}</Text>
+          ) : typeof x.days_to_hearing === 'number' && x.days_to_hearing >= 0 ? (
+            <Text style={[s.days, { color: soon ? semantic.attention : colors.text.secondary }]}>{hearingText(x.days_to_hearing)}</Text>
+          ) : null}
+        </View>
+        {(x.charges || []).map((c, i) => (
+          <Text key={`c-${i}`} style={s.meta}>
+            {[c.code, c.description, c.amount !== null && c.amount !== undefined ? money(c.amount) : null].filter(Boolean).join(' · ')}
+          </Text>
+        ))}
+        <Text style={s.meta}>
+          {[x.issued_on ? fill(t('issuedOn'), { date: formatRecordDate(x.issued_on) }) : null,
+            x.hearing_date ? fill(t('hearingOn'), { date: formatRecordDate(x.hearing_date) }) : null,
+            [x.hearing_time ? String(x.hearing_time).slice(0, 5) : null, x.hearing_location].filter(Boolean).join(' ') || null,
+          ].filter(Boolean).join(' · ')}
+        </Text>
+        {x.hearing_status || x.hearing_result ? (
+          <Text style={s.meta}>{fill(t('hearingStatus'), { status: [x.hearing_status, x.hearing_result].filter(Boolean).join(' · ') })}</Text>
+        ) : null}
+        <Text style={s.meta}>
+          {[fill(t('totalAmount'), { amount: money(x.total_amount) }),
+            fill(t('paidAmount'), { amount: money(x.paid_amount) }),
+            fill(t('balance'), { amount: money(x.balance_due) })].join(' · ')}
+        </Text>
+        {segText(x) ? <Text style={s.meta}>{x.how === 'segment' ? fill(t('summonsOnYourBlock'), { segment: segText(x) }) : segText(x)}</Text> : null}
+        <View style={s.badges}>
+          {matchedText(x) ? (
+            <View style={[s.badge, { borderColor: colors.glass.border }]}>
+              <Text style={[s.badgeText, { color: colors.text.secondary }]}>{matchedText(x)}</Text>
+            </View>
+          ) : null}
+          {x.link ? (
+            <Pressable onPress={() => Linking.openURL(x.link)} hitSlop={6} accessibilityRole="link" style={s.iconBtn}>
+              <ExternalLink size={13} strokeWidth={1.6} color={colors.text.muted} />
+            </Pressable>
+          ) : null}
+        </View>
+        {actions || null}
+      </View>
+    );
+  };
+  const sumList = (sumBoard && Array.isArray(sumBoard.summonses)) ? sumBoard.summonses : [];
+  const sumOpen = sumList.filter((x) => !x.settled);
+  const sumDone = sumList.filter((x) => x.settled);
+  const summonsCard = (
+    <GlassCard style={s.card}>
+      <Text style={s.cardTitle}>{t('summonsesTitle')}</Text>
+      {sumBoard === null ? <Text style={s.metaAttention}>{t('loadFailed')}</Text> : null}
+      {sumBoard && sumList.length === 0 ? <Text style={s.note}>{t('noSummonses')}</Text> : null}
+      {sumOpen.length ? (
+        <View style={s.group}>
+          <Text style={s.section}>{t('summonsOpen')}</Text>
+          {sumOpen.map((x) => summonsRow(x))}
+        </View>
+      ) : null}
+      {sumDone.length ? (
+        <View style={s.group}>
+          <Text style={s.section}>{t('summonsSettled')}</Text>
+          {sumDone.map((x) => summonsRow(x))}
+        </View>
+      ) : null}
+      <Text style={s.note}>{t('lag')}</Text>
+    </GlassCard>
+  );
+
   // ── 3. Needs confirmation ─────────────────────────────────────────────────
   const pending = (board && Array.isArray(board.needs_confirmation)) ? board.needs_confirmation : [];
   const older = (board && board.needs_confirmation_older) || 0;
-  const needsCard = (pending.length || older) ? (
+  const sumPending = (sumBoard && Array.isArray(sumBoard.needs_confirmation)) ? sumBoard.needs_confirmation : [];
+  const sumRejected = (sumBoard && Array.isArray(sumBoard.rejected)) ? sumBoard.rejected : [];
+  const canReviewSummons = !!(sumBoard && sumBoard.can_review);
+  const summonsActions = (x, rejected) => (canReviewSummons ? (
+    <View style={s.actions}>
+      {rejected ? null : (
+        <GlassButton title={t('notOursSummons')} onPress={() => onReviewSummons(x.number, 'reject')} disabled={busy} style={s.smallBtn} />
+      )}
+      <GlassButton variant="primary" title={t('itsOurs')} onPress={() => onReviewSummons(x.number, 'accept')} disabled={busy} style={s.primaryBtn} />
+    </View>
+  ) : null);
+  const needsCard = (pending.length || older || sumPending.length || sumRejected.length) ? (
     <GlassCard style={[s.card, s.attentionCard]}>
       <Text style={[s.cardTitle, { color: semantic.attention }]}>{t('needsTitle')}</Text>
+      {sumPending.map((x) => (
+        <View key={`np-${x.number}`}>
+          <Text style={[s.itemText, s.promptTop]}>{t('summonsNeedsPrompt')}</Text>
+          {summonsRow(x, summonsActions(x, false))}
+        </View>
+      ))}
+      {sumRejected.length ? (
+        <Pressable onPress={() => setShowRejected((v) => !v)} accessibilityRole="button" style={s.toggle}>
+          <Text style={s.toggleText}>{showRejected ? t('rejectedHide') : fill(t('rejectedShow'), { n: sumRejected.length })}</Text>
+        </Pressable>
+      ) : null}
+      {showRejected ? sumRejected.map((x) => summonsRow(x, summonsActions(x, true))) : null}
       {pending.map((p) => (
         <View key={`n-${p.number}`} style={s.permitRow}>
           <Text style={s.itemText}>{fill(t('needsPrompt'), { permittee: p.permittee || t('unknownPermittee') })}</Text>
@@ -411,6 +536,7 @@ export default function DotCompliancePanel({ projectId, embargoBanner, toast }) 
     <View style={s.wrap}>
       {failed ? null : setupCard}
       {embargoBanner || null}
+      {summonsCard}
       {needsCard}
       {permitsCard}
     </View>
@@ -450,5 +576,8 @@ function buildStyles(colors) {
     badges: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, alignItems: 'center', marginTop: 2 },
     badge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 2, borderRadius: borderRadius.full, borderWidth: 1 },
     badgeText: { fontSize: 11, fontWeight: '600' },
+    promptTop: { marginTop: spacing.sm },
+    toggle: { paddingVertical: spacing.xs, alignSelf: 'flex-start' },
+    toggleText: { fontSize: 12, color: colors.text.secondary, textDecorationLine: 'underline' },
   });
 }

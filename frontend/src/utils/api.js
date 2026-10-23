@@ -1635,6 +1635,22 @@ export const dobAPI = {
     );
     return response.data;
   },
+  // DOT Phase 1 A — summonses. { summonses: [view] (open, then settled),
+  //   needs_confirmation: [view] (block matches), rejected: [view], counts, can_review }.
+  getDotSummonses: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/${encodeURIComponent(projectId)}/dot/summonses`
+    );
+    return response.data;
+  },
+  // decision: 'accept' (it's ours) | 'reject' (not ours). A rejected one can be accepted later.
+  reviewDotSummons: async (projectId, ticket, decision) => {
+    const response = await apiClient.post(
+      `/api/projects/${encodeURIComponent(projectId)}/dot/summonses/${encodeURIComponent(ticket)}/review`,
+      { decision }
+    );
+    return response.data;
+  },
   // decision: 'accept' (yours) | 'reject' (not ours)
   reviewDotPermit: async (projectId, permit, decision) => {
     const response = await apiClient.post(
