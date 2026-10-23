@@ -66,6 +66,22 @@ class NoGlibcCodesInTheBackend(unittest.TestCase):
                     bad.append(f"{p.relative_to(BACKEND)}:{n}")
         self.assertEqual(bad, [], "use lib.datefmt.strftime(dt, fmt) for %-d / %-I")
 
+    def test_no_fstring_format_spec_with_a_dash_code(self):
+        """f"{dt:%a %-I:%M %p}" calls dt.__format__, which is strftime with the
+        same glibc codes -- and the census above cannot see it, because the
+        word strftime is not on the line. lib/shabbos.py and a punch reply in
+        server.py were written that way and raised on Windows."""
+        rx = re.compile(r"""\{[^{}'"]*:[^{}]*%-[dmHIMSjy][^{}]*\}""")
+        fstr = re.compile(r"""(?<![A-Za-z0-9_])[rb]?f[rb]?["']""")
+        bad = []
+        for p in BACKEND.rglob("*.py"):
+            if "tests" in p.parts or "__pycache__" in p.parts or "node_modules" in p.parts:
+                continue
+            for n, line in enumerate(p.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+                if fstr.search(line) and rx.search(line):
+                    bad.append(f"{p.relative_to(BACKEND)}:{n}")
+        self.assertEqual(bad, [], "use lib.datefmt.strftime(dt, fmt), not a {dt:%-d} format spec")
+
 
 class TheCallSites(unittest.TestCase):
 
