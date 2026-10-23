@@ -9,30 +9,36 @@ const _dark = {
   selected: '#E3C27A',
   onSelected: '#141A1F',
   chip: '#243746',
-  bar: '#0E161D',
-  onBar: '#E8EDF2',
+  bar: '#131E27',
+  onBar: '#ECEDE9',
   barActive: '#E3C27A',
 
   background: {
-    start:  '#131E27',
-    middle: '#131E27',
-    end:    '#131E27',
+    start:  '#1C2B38',
+    middle: '#1C2B38',
+    end:    '#1C2B38',
   },
 
   glass: {
-    background:      'rgba(28, 43, 56, 0.92)',
-    backgroundHover: 'rgba(36, 55, 70, 0.96)',
-    border:          'rgba(44, 65, 83, 1)',
-    borderHover:     'rgba(157, 170, 182, 0.55)',
-    card:            'rgba(28, 43, 56, 0.92)',
-    cardHover:       'rgba(36, 55, 70, 0.96)',
+    background:      'rgba(36, 55, 70, 0.96)',
+    backgroundHover: 'rgba(44, 65, 83, 0.98)',
+    border:          'rgba(236, 237, 233, 0.22)',
+    borderHover:     'rgba(236, 237, 233, 0.40)',
+    card:            'rgba(36, 55, 70, 0.96)',
+    cardHover:       'rgba(44, 65, 83, 0.98)',
   },
 
   // The card AURA: a very thin rim and a soft halo in the website's steel blue, so a card reads as floating above the
   // ground instead of outlined on it. On navy the halo is a pale blue light with no offset (a dark shadow is invisible
   // there); on paper it is the same blue as a soft shadow that sits a little below the card. Read by src/styles/aura.js.
+  // The card SHEEN (a soft top-down wash plus a hairline highlight that fades at its ends) and the ruled section label
+  // (a short tick, the label, a rule). Each theme takes the OTHER theme's tone: the dark theme's cards catch the light
+  // theme's background beige, the light theme's cards catch the dark theme's blue. See components/CardSheen.jsx.
+  sheen: { color: '#ECEDE9', wash: 0.14 },
+  ruled: { tick: '#ECEDE9', ink: '#ECEDE9', rule: 'rgba(236, 237, 233, 0.30)' },
+
   aura: {
-    rim:     'rgba(140, 186, 222, 0.24)',
+    rim:     'rgba(236, 237, 233, 0.22)',
     color:   '#78ACD6',
     opacity: 0.18,
     radius:  10,
@@ -47,21 +53,21 @@ const _dark = {
   },
 
   border: {
-    subtle: 'rgba(44, 65, 83, 0.6)',
-    medium: 'rgba(44, 65, 83, 1)',
-    strong: 'rgba(157, 170, 182, 0.45)',
+    subtle: 'rgba(236, 237, 233, 0.14)',
+    medium: 'rgba(236, 237, 233, 0.24)',
+    strong: 'rgba(236, 237, 233, 0.40)',
   },
 
   text: {
-    primary:   'rgba(232, 237, 242, 1)',
-    secondary: 'rgba(197, 207, 216, 1)',
+    primary:   'rgba(236, 237, 233, 1)',
+    secondary: 'rgba(217, 219, 214, 1)',
     // 0.40 → 0.55: at 0.40 this was 3.59–3.79:1 on every dark surface, below
     // WCAG AA 4.5:1 for text. 0.55 clears it everywhere (5.44–6.28:1).
-    muted:     'rgba(157, 170, 182, 1)',
+    muted:     'rgba(201, 204, 198, 1)',
     // `subtle` stays at 0.30 (2.6–2.7:1). It is placeholder/disabled/meta-dot
     // text, which WCAG exempts; raising it would collapse the muted/subtle
     // hierarchy and make disabled inputs read as active.
-    subtle:    'rgba(157, 170, 182, 0.6)',
+    subtle:    'rgba(201, 204, 198, 0.6)',
   },
 
   // ── Semantic STATE values, per theme ────────────────────────────────────
@@ -144,15 +150,20 @@ const _light = {
   glass: {
     background:      'rgba(255, 255, 255, 0.96)',
     backgroundHover: 'rgba(242, 243, 240, 0.98)',
-    border:          'rgba(201, 204, 198, 1)',
-    borderHover:     'rgba(166, 170, 163, 1)',
+    border:          'rgba(44, 65, 83, 0.26)',
+    borderHover:     'rgba(44, 65, 83, 0.45)',
     card:            'rgba(255, 255, 255, 0.96)',
     cardHover:       'rgba(242, 243, 240, 0.98)',
     cardGradientEnd: 'rgba(255, 255, 255, 0.96)',
   },
 
+  // EVERY LINE in this theme is one colour, the sheen's #2C4153 (the dark theme's blue), at different strengths; the dark
+  // theme's lines are all #ECEDE9 (the light theme's background). Rims, dividers, rules, ticks, the sheen's hairline.
+  sheen: { color: '#2C4153', wash: 0.14 },
+  ruled: { tick: '#2C4153', ink: '#243746', rule: 'rgba(44, 65, 83, 0.26)' },
+
   aura: {
-    rim:     'rgba(69, 140, 181, 0.18)',
+    rim:     'rgba(44, 65, 83, 0.24)',
     color:   '#458CB5',
     opacity: 0.20,
     radius:  10,
@@ -167,9 +178,9 @@ const _light = {
   },
 
   border: {
-    subtle: 'rgba(201, 204, 198, 0.55)',
-    medium: 'rgba(201, 204, 198, 0.9)',
-    strong: 'rgba(166, 170, 163, 0.9)',
+    subtle: 'rgba(44, 65, 83, 0.16)',
+    medium: 'rgba(44, 65, 83, 0.26)',
+    strong: 'rgba(44, 65, 83, 0.45)',
   },
 
   text: {
@@ -351,8 +362,8 @@ export const outdoor = {
 
   // The glass border — present but soft. GlassCard draws exactly this, so the
   // "no visible border" in the brief is not what the app actually does.
-  line: 'rgba(201, 204, 198, 1)',
-  lineStrong: 'rgba(166, 170, 163, 0.9)',
+  line: 'rgba(44, 65, 83, 0.26)',
+  lineStrong: 'rgba(44, 65, 83, 0.45)',
 
   // The accent the reference screen's count badge uses.
   accent: '#B47C1F',

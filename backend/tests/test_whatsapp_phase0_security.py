@@ -987,7 +987,7 @@ class CriticalDobAlertRecipients(unittest.TestCase):
                 patch.object(server, "RESEND_API_KEY", "re_test"), \
                 patch("lib.notifications.send_notification", _send):
             _run(server._send_critical_dob_alert(
-                PROJ_A, {"record_type": "violation", "raw_dob_id": "v1"}))
+                PROJ_A, {"record_type": "violation", "raw_dob_id": "v1"}, event="new"))
         self.assertEqual(sorted(sent_to), ["admin@a", "pm-on@a"])
 
     def test_the_retired_role_is_gone_from_the_query(self):
@@ -1072,10 +1072,9 @@ class ADirectMessageFromANumberInTwoCompaniesReadsNothing(unittest.TestCase):
                 patch.object(server, "send_whatsapp_message",
                              _recording_send(sent)):
             _run(server._process_whatsapp_message(dm))
-        # No opt-in for this chat: the one line every non-eligible sender
-        # gets (Levelog Assistant in a DM), and nothing read.
-        from lib import wa_assistant
-        self.assertEqual(sent, [(f"{HUMAN}@c.us", wa_assistant.NOT_FOR_YOU_TEXT)])
+        # No opt-in for this chat and no eligible user on this number: no
+        # reply at all, and nothing read.
+        self.assertEqual(sent, [])
         self.assertNotIn(SECRET, str(sent))
 
     def test_a_contact_whose_company_is_not_its_users_reads_nothing(self):

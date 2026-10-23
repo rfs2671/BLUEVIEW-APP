@@ -2145,4 +2145,45 @@ export default {
     actionFailed: 'That did not work. Try again.',
   },
 
+  // ── The Compliance feature label, everywhere a user sees it ───────────────
+  //
+  // ONE NAMESPACE FOR ONE LABEL, not one per screen: the project tile
+  // (app/project/[id].jsx), the screen title (app/project/[id]/dob-logs.jsx),
+  // the delete confirmations (app/projects/index.jsx), the notification
+  // settings subtitle (app/settings.jsx) and two help sentences
+  // (app/help/troubleshooting.jsx) all name the same feature, and renaming it
+  // again should be one edit here. Read by owners, admins and CPs — NOT a
+  // logbook and not a filed record, so it carries Spanish like waGroups.
+  //
+  // `title` is rendered by the screen header through typography.label, which
+  // uppercases it — one key serves the tile ("Compliance") and the header
+  // ("COMPLIANCE"). The route stays /project/:id/dob-logs.
+  //
+  // {name} is the project name, substituted by the caller.
+  compliance: {
+    title: 'Compliance',
+    loadError: 'Could not load compliance data',
+    deleteConfirmWeb: 'Delete "{name}"?\n\nThis will permanently remove the project and all its compliance data. This cannot be undone.',
+    deleteConfirmNative: 'This will permanently remove "{name}" and all its compliance data. This cannot be undone.',
+    notificationPrefsSubtitle: 'Tune which compliance signals reach you and how',
+    helpCheckTracking: 'Open the project\'s Compliance page (gear icon). Confirm "Enable DOB Tracking" is on. If it\'s off, no DOB data will pull for the project.',
+    helpEditBin: 'If the BIN was already auto-resolved to the wrong building, open the Compliance page (gear icon) and edit the BIN field directly.',
+  },
+
+  // ── app/project/[id]/dob-logs.jsx — DOT holiday construction embargo ─────
+  // Shown Nov 1 – Jan 2 when an active DOT permit whose work dates overlap
+  // Nov 15 – Jan 2 has no waiver (stipulation 410). `{n}` and `{list}` are
+  // substituted at the call site. Two keys rather than one with "(s)".
+  dotEmbargo: {
+    banner: 'Holiday embargo Nov 15 – Jan 2: {n} active DOT permits have no waiver.',
+    bannerOne: 'Holiday embargo Nov 15 – Jan 2: 1 active DOT permit has no waiver.',
+    permits: 'Permits: {list}',
+    action: 'Apply for a waiver or stop work Nov 15 – Jan 2.',
+    // Coverage limit. DOT Phase 1 B (segment permits) REMOVES this key;
+    // the email carries the same line (backend lib/dot_embargo.COVERAGE_NOTE_*).
+    coverageNote: 'Checks permits matched to your address. Permits filed by street segment arrive with the next update.',
+    // A permit whose DOT stipulations could not be read: shown, never emailed.
+    unverifiedTitle: 'Holiday embargo Nov 15 – Jan 2: check these permits',
+    unverified: 'Waiver not verified: {list}',
+  },
 };

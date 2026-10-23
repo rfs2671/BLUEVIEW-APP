@@ -90,6 +90,8 @@ import HeaderBrand from '../../../src/components/HeaderBrand';
 import ConfirmDialog from '../../../src/components/ConfirmDialog';
 
 const DROPBOX_BLUE = '#0061FF';
+// The same brand blue, lifted just enough to clear the 3:1 icon floor on the dark theme's navy surfaces (#0061FF is 2.4:1 there).
+const DROPBOX_BLUE_ON_DARK = '#4D8DFF';
 
 const extOf = (filename) => String(filename || '').split('.').pop()?.toLowerCase() || '';
 // PDFs are the only type with an offline story — everything else is handed to
@@ -1062,7 +1064,7 @@ export default function ProjectFilesScreen() {
                         s.linkedRow, pressed && isAdmin && { opacity: 0.7 },
                       ]}
                     >
-                      <FolderOpen size={20} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                      <FolderOpen size={20} strokeWidth={1.5} color={isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE} />
                       <Text style={s.linkedPath} numberOfLines={2}>{linkedFolder}</Text>
                       {isAdmin && (
                         <ChevronRight size={18} strokeWidth={1.5} color={colors.text.muted} />
@@ -1283,7 +1285,7 @@ export default function ProjectFilesScreen() {
                   fileGroups.map(([folderPath, groupFiles]) => (
                   <View key={folderPath} style={s.folderGroup}>
                     <View style={s.folderGroupHeader}>
-                      <Folder size={14} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                      <Folder size={14} strokeWidth={1.5} color={isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE} />
                       <Text style={s.folderGroupName} numberOfLines={1}>
                         {folderLabel(folderPath)}
                       </Text>
@@ -1563,7 +1565,7 @@ export default function ProjectFilesScreen() {
                       onPress={() => fetchFolders(folder.path)}
                       style={({ pressed }) => [s.folderItem, pressed && { opacity: 0.7 }]}
                     >
-                      <Folder size={18} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                      <Folder size={18} strokeWidth={1.5} color={isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE} />
                       <Text style={s.folderName} numberOfLines={1}>{folder.name}</Text>
                       <ChevronRight size={16} strokeWidth={1.5} color={colors.text.subtle} />
                     </Pressable>

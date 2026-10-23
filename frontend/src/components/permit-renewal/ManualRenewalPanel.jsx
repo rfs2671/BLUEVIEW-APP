@@ -47,6 +47,7 @@ import apiClient from '../../utils/api';
 import FilingStatusCard from './FilingStatusCard';
 import StartRenewalPanel from './StartRenewalPanel';
 
+import SheenView from '../SheenView';
 // Local formatDate — matches the helper in
 // frontend/app/project/[id]/permit-renewal.jsx line ~132. Inlined
 // here rather than promoted to a shared util to keep the cross-file
@@ -201,7 +202,7 @@ const ManualRenewalPanel = ({ renewal, onRenewalChange }) => {
   }, [fieldMap, renewalId]);
 
   return (
-    <View style={s.manualRenewalPanel}>
+    <SheenView style={s.manualRenewalPanel}>
       <Text style={s.manualRenewalHeader}>Manual Renewal Required</Text>
       <Text style={s.manualRenewalExplanation}>
         {renewal.issuance_date
@@ -209,12 +210,12 @@ const ManualRenewalPanel = ({ renewal, onRenewalChange }) => {
           : `This permit has reached the one-year mark from original issuance. NYC DOB requires work permits older than one year to be renewed manually, regardless of insurance status. You file at DOB NOW with the licensee's NYC.ID; LeveLog tracks the click and detects completion via the NYC Open Data feed.`}
       </Text>
 
-      <View style={s.manualRenewalFeeBlock}>
+      <SheenView style={s.manualRenewalFeeBlock}>
         <Text style={s.manualRenewalFee}>$130</Text>
         <Text style={s.manualRenewalFeeCaption}>
           paid directly to NYC DOB
         </Text>
-      </View>
+      </SheenView>
 
       <View style={s.manualRenewalDetails}>
         <DetailRow s={s} label="Job Filing Number" value={renewal.job_number || '—'} />
@@ -255,7 +256,7 @@ const ManualRenewalPanel = ({ renewal, onRenewalChange }) => {
       <Text style={s.manualRenewalCitation}>
         Reference: {MANUAL_RENEWAL_RULE_CITATION}
       </Text>
-    </View>
+    </SheenView>
   );
 };
 

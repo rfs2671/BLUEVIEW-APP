@@ -12,17 +12,20 @@ For every active opt-in (or the users matching --user), prints:
               first that refuses is the reason (refusals are otherwise silent).
   3. TIME     brief time and weekend setting, whether the tick saw it as due
               at any 10-minute tick of the day, Shabbos / Yom Tov quiet.
-  4. LEDGER   the day's ledger row (sending / sent / failed + its error /
-              skipped_shabbos). Before the fix a "failed" row stopped every
+  4. LEDGER   the day's whole-brief ledger row (sending / sent / failed + its
+              error / skipped_shabbos). Before the fix a "failed" row stopped every
               later tick that day.
   5. LOG      the day's brief_log row (from this fix on): status, reason,
               error, attempts, next try / final (lib/send_retry: +5, +15,
               then every 30 min until the catch-up window closes), history.
-  6. COMPOSE  builds the brief now (sends nothing) and prints its first lines,
-              or the full traceback when building it fails.
+  6. COMPOSE  builds the brief now (sends nothing): one line per message
+              (one per job, then the reminders / quiet jobs) with its
+              ledger status and first line, or the full traceback when
+              building it fails.
 
---resend --apply sends today's brief now as a proactive DM (window
-"<date>-resend", so it never collides with the morning's ledger key) and
+--resend --apply sends today's brief now as proactive DMs (windows
+"<date>-resend:<part>", so they never collide with the morning's ledger
+keys) and
 logs it as resent. Phone numbers are never printed.
 """
 
@@ -104,23 +107,32 @@ async def _one(db, server, user: dict, day: date, now: datetime, a) -> None:
         print(f"            {_t(h.get('at'))}  {h.get('status')} {h.get('reason') or ''}")
     print("  STATUS  " + _safe(await server._brief_status_for(uid, day.isoformat(), now), 300))
     try:
-        text = await server._brief_for_user(user, now)
-        print("  COMPOSE " + ("None -- no jobs" if not text else
-                              f"{len(text)} chars: " + _safe(text.splitlines()[0], 120)))
+        messages = await server._brief_for_user(user, now)
+        print("  COMPOSE " + ("None -- no jobs" if not messages else
+                              f"{len(messages)} message(s)"))
+        for part, text in messages:
+            pled = await db[server.WA_LEDGER].find_one({"_id": wa_dm.ledger_key(
+                uid, None, server.MORNING_BRIEF_KIND, server._brief_part_window(day.isoformat(), part))})
+            print(f"            {len(text)} chars, ledger {(pled or {}).get('status') or 'none'}: "
+                  + _safe(text.splitlines()[0], 120))
     except Exception:
-        text = None
+        messages = []
         print("  COMPOSE FAILED:\n" + "".join("            " + ln for ln in
                                                traceback.format_exc().splitlines(True)))
-    if a.resend and text:
+    if a.resend and messages:
         if not a.apply:
             print("  RESEND  dry run -- add --apply to send it now")
             return
-        sent = await server.send_whatsapp_dm(uid, text, kind=server.MORNING_BRIEF_KIND,
-                                             window=f"{day.isoformat()}-resend")
+        sent = 0
+        for part, text in messages:
+            if await server.send_whatsapp_dm(uid, text, kind=server.MORNING_BRIEF_KIND,
+                                             window=f"{day.isoformat()}-resend:{part}"):
+                sent += 1
+        ok = sent == len(messages)
         await server._brief_log(uid, user.get("company_id"), day.isoformat(),
-                                "resent" if sent else "failed",
-                                reason=None if sent else "send_failed", now=now)
-        print(f"  RESEND  {'SENT' if sent else 'NOT SENT -- see GATES / LEDGER above'}")
+                                "resent" if ok else "failed",
+                                reason=None if ok else "send_failed", now=now)
+        print(f"  RESEND  {'SENT' if ok else f'{sent}/{len(messages)} SENT -- see GATES / LEDGER above'}")
 
 
 async def main_async(a) -> int:

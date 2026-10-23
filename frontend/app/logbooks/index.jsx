@@ -66,6 +66,8 @@ import BuildMarker from '../../src/components/BuildMarker';
 import { chrome } from '../../src/styles/semanticColors';
 
 
+import SectionLabel from '../../src/components/SectionLabel';
+import CardSheen from '../../src/components/CardSheen';
 // Icon mapping for dynamic logbook types from API
 const ICON_MAP = {
   Building2, Users, HardHat, BookOpen, ShieldCheck, ClipboardList,
@@ -1229,7 +1231,7 @@ export default function LogBooksScreen() {
             </View>
           ) : (
             <View style={styles.logList}>
-              <Text style={styles.sectionLabel}>TODAY'S LOG BOOKS</Text>
+              <SectionLabel label="TODAY'S LOG BOOKS" />
 
               {visibleLogs.length === 0 ? (
                 <GlassCard style={styles.emptyCard}>
@@ -1296,6 +1298,9 @@ export default function LogBooksScreen() {
                         : `Open ${logType.label}`}
                       style={({ pressed }) => [styles.logCard, pressed && styles.logCardPressed]}
                     >
+{({ hovered, pressed }) => (
+<>
+<CardSheen radius={borderRadius.xl} active={!!(hovered || pressed)} intro />
                       <View style={[styles.logIcon, { backgroundColor: logType.bg || (logType.color + '26') }]}>
                         <Icon size={22} strokeWidth={1.5} color={logType.color} />
                       </View>
@@ -1319,7 +1324,8 @@ export default function LogBooksScreen() {
                           <Lock size={16} strokeWidth={1.5} color={colors.text.muted} />
                         )}
                       </View>
-                    </Pressable>
+                    </>)}
+</Pressable>
                     {/* A SECOND ROW, NOT A BUTTON INSIDE THE FIRST.
                         Every other route on this screen goes to the editor,
                         and this is the one that does not — so it is its own
@@ -1349,6 +1355,9 @@ export default function LogBooksScreen() {
                   onPress={() => handleOpenLog('toolbox_talk')}
                   style={({ pressed }) => [styles.logCard, styles.logCardDone, pressed && styles.logCardPressed]}
                 >
+{({ hovered, pressed }) => (
+<>
+<CardSheen radius={borderRadius.xl} active={!!(hovered || pressed)} intro />
                   <View style={[styles.logIcon, { backgroundColor: withAlpha(colors.primary, 0.15) }]}>
                     <BookOpen size={22} strokeWidth={1.5} color={colors.primary} />
                   </View>
@@ -1360,7 +1369,8 @@ export default function LogBooksScreen() {
                     <StatusBadge status="submitted" />
                     <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
                   </View>
-                </Pressable>
+                </>)}
+</Pressable>
               )}
             </View>
           )}

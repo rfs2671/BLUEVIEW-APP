@@ -65,6 +65,8 @@ import { useToast } from '../../../../src/components/Toast';
 import apiClient from '../../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../../src/styles/theme';
 import { semantic, withAlpha } from '../../../../src/styles/semanticColors';
+import SectionLabel from '../../../../src/components/SectionLabel';
+import CardSheen from '../../../../src/components/CardSheen';
 import {
   SIGNAL_FAMILIES,
   SIGNAL_KIND_INDEX,
@@ -218,6 +220,9 @@ const PresetRadioCard = ({ preset, selected, onSelect, styles }) => (
       pressed && { opacity: 0.85 },
     ]}
   >
+{({ hovered, pressed }) => (
+<>
+<CardSheen radius={borderRadius.lg} active={!!(hovered || pressed)} intro />
     <View style={[styles.presetRadio, selected && styles.presetRadioSelected]}>
       {selected && <View style={styles.presetRadioInner} />}
     </View>
@@ -229,7 +234,8 @@ const PresetRadioCard = ({ preset, selected, onSelect, styles }) => (
       <Text style={styles.presetSubtitle}>{preset.subtitle}</Text>
       <Text style={styles.presetBodyHelp}>{preset.bodyHelp}</Text>
     </View>
-  </Pressable>
+  </>)}
+</Pressable>
 );
 
 // ── Page ─────────────────────────────────────────────────────────
@@ -632,7 +638,7 @@ export default function ProjectNotificationPreferencesScreen() {
           />
 
           {/* Section B — Delivery timing */}
-          <Text style={styles.sectionLabel}>DELIVERY TIMING</Text>
+          <SectionLabel label="DELIVERY TIMING" />
           <GlassCard style={styles.timingCard}>
             <View style={styles.timingRow}>
               <Text style={styles.timingLabel}>Daily digest time</Text>
@@ -670,7 +676,7 @@ export default function ProjectNotificationPreferencesScreen() {
           {advancedOpen && (
             <View>
               <View style={styles.advancedHeaderRow}>
-                <Text style={styles.sectionLabel}>ADVANCED — PER-SIGNAL TYPE</Text>
+                <SectionLabel label="ADVANCED — PER-SIGNAL TYPE" />
                 {anchorPreset !== 'custom' && anchorPresetMeta && (
                   <Pressable onPress={handleResetToAnchor} style={styles.resetAnchorLink}>
                     <RotateCcw size={12} strokeWidth={1.5} color={colors.text.muted} />

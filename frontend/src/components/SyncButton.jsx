@@ -8,6 +8,7 @@ import { useToast } from './Toast';
 import { colors, spacing, typography, borderRadius } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
 import { auraRim, auraShadow } from '../styles/aura';
+import CardSheen from './CardSheen';
 
 export default function SyncButton({ showLabel = true, size = 'md' }) {
   const { colors, isDark } = useTheme();
@@ -68,6 +69,7 @@ export default function SyncButton({ showLabel = true, size = 'md' }) {
     // button alone); a count of changes still waiting to upload IS shown, under the button, because it is the one thing
     // that tells someone a sync is needed.
     <View style={[styles.container, auraRim(colors), auraShadow(colors, undefined, { translucent: true })]}>
+      <CardSheen radius={borderRadius.lg} intro />
 
       {/* title=, NOT children. GlassButton renders {title} in its own <Text>
           and never reads children, so the label was discarded and this

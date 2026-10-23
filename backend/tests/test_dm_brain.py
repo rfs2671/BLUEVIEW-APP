@@ -576,6 +576,30 @@ class TheWalkthrough(_Brain):
         self.assertTrue(out[0].startswith("Walkthrough at"), out)
 
 
+class TheBriefAllCommand(_Brain):
+    def test_brief_all_is_code_not_the_model(self):
+        """"brief all" (the brief's "+N more jobs" line): the jobs this
+        morning left out, by the same resend the resend_my_brief tool
+        calls, under the morning's ledger keys; never the model."""
+        jobs = [(f"p{i}", f"job message {i}") for i in range(8)]
+
+        async def brief(user, now, every_job=False):
+            return jobs if every_job else jobs[:6]
+        llm = FakeLLM()
+        today = server.wa_brief.local_now(datetime.now(timezone.utc)).date().isoformat()
+        with _Ctx(db=self.db) as c, patch.object(server, "_brief_for_user", brief):
+            _run(server._brief_send_parts("u_admin", today, jobs[:6]))
+            out = self.say(c, "brief all", llm)
+            again = self.say(c, "Brief all", llm)
+        self.assertEqual(llm.calls, [])
+        self.assertEqual(out, ["job message 6", "job message 7"])
+        self.assertEqual(again, [server.wa_brief.BRIEF_ALL_NOTHING])
+
+    def test_the_tool_can_ask_for_every_job(self):
+        tool = next(t for t in server._DM_BRAIN_EXTRA_TOOLS if t["name"] == "resend_my_brief")
+        self.assertIn("all_jobs", tool["input_schema"]["properties"])
+
+
 class TheEvalMode(unittest.TestCase):
     def test_dry_run_writes_no_state(self):
         db = _db()
@@ -635,6 +659,19 @@ class TheFlag(unittest.TestCase):
         self.assertEqual(plan({"enabled_for_companies": ["co_a", "co_b"]}, on=True, everyone=False,
                               company="co_a"), (False, ["co_b"], None))
         self.assertEqual(plan(None, on=False, everyone=True), (True, [], None))
+
+
+class TheSentPicture(unittest.TestCase):
+    def test_sent_counts_for_the_picture_only_when_it_names_it(self):
+        """Codex on #836: positive -- a sent must name the sheet/picture."""
+        for reply in ("Sent you A-201: EF-3 is the 800 CFM fan.",
+                      "I've sent you the sheet with the spot boxed.",
+                      "EF-3 is on SSP-011.00. Sending the drawing now."):
+            self.assertTrue(dm_brain.sends_only_a_picture(reply), reply)
+        for reply in ("I've sent you the invoice.", "I sent the contract.", "I sent the email.",
+                      "EF-3 is on A-201. I've sent it over.",
+                      "Sent you A-201 and the September report."):
+            self.assertFalse(dm_brain.sends_only_a_picture(reply), reply)
 
 
 class TheLib(unittest.TestCase):

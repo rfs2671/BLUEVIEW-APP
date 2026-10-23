@@ -281,7 +281,7 @@ class ThePhotographs(unittest.TestCase):
         self.assertFalse([p for p in photos if verdicts[p["key"]]["kind"] in ("people", "document", "blurry")])
         self.assertEqual(len({(p["sub"], p["date"], p["where"]) for p in photos}), len(photos))
 
-    def test_never_more_than_two_of_one_sub(self):
+    def test_never_more_than_five_of_one_sub(self):
         cands = []
         for i in range(8):
             cands.append({"key": f"k{i}", "date": date(2026, 10, 2) + timedelta(days=i), "sub": "Arkon Builders",
@@ -290,7 +290,7 @@ class ThePhotographs(unittest.TestCase):
         ver = {c["key"]: {"ok": True, "kind": "progress", "score": 5 + i % 3} for i, c in enumerate(cands)}
         self.assertEqual(len(P.pick_photos(cands, ver)), P.MAX_PER_SUB)
 
-    def test_every_sub_is_represented_before_one_gets_two(self):
+    def test_every_sub_gets_a_row_never_padded(self):
         cands = []
         for sub, n in (("Arkon Builders", 4), ("Quality Plumbing", 2), ("Power Direct", 2)):
             for i in range(n):
@@ -301,7 +301,7 @@ class ThePhotographs(unittest.TestCase):
                for c in cands}
         got = P.pick_photos(cands, ver)
         self.assertEqual({p["sub"] for p in got}, {"Arkon Builders", "Quality Plumbing", "Power Direct"})
-        self.assertEqual(len(got), 6)
+        self.assertEqual(len(got), 8)              # 4 + 2 + 2: every qualifying photo, nothing invented
 
     def test_the_caption_is_fixed_words_for_the_work_seen(self):
         # AUDIT 1: a stair photographed under a plumber's log line was captioned
@@ -349,8 +349,69 @@ class ThePhotographs(unittest.TestCase):
         self.assertTrue(v["ok"])
         self.assertEqual(P.parse_verdict('{"kind":"progress","ok":true,"work":"spaceship"}')["work"], "other")
 
-    def test_four_to_eight_photos(self):
-        self.assertEqual((P.MIN_PHOTOS, P.MAX_PHOTOS), (4, 8))
+    def test_a_row_of_five_per_sub_inside_a_page_budget(self):
+        self.assertEqual((P.MAX_PER_SUB, P.MAX_PHOTOS), (5, 35))
+
+    def row_cands(self, sub, days, per_day=1, trade="Framers"):
+        out = []
+        for d in range(days):
+            for k in range(per_day):
+                out.append({"key": f"{sub}-{d}-{k}", "date": date(2026, 10, 1) + timedelta(days=d), "sub": sub,
+                            "trade": trade, "where": f"floor {k}", "words": "x", "work": "x",
+                            "source": "daily log", "log_id": "l"})
+        return out
+
+    def test_a_row_is_spread_across_the_period_in_date_order(self):
+        cands = self.row_cands("Arkon Builders", 15)
+        ver = {c["key"]: {"ok": True, "kind": "progress", "score": 8, "work": "framing"} for c in cands}
+        got = P.pick_photos(cands, ver)
+        days = [p["date"] for p in got]
+        self.assertEqual(len(got), 5)
+        self.assertEqual(days, sorted(days))
+        self.assertLessEqual(days[0], date(2026, 10, 3))               # the first stretch is represented
+        self.assertGreaterEqual(days[-1], date(2026, 10, 13))          # and the last
+
+    def test_each_stretch_shows_its_strongest_photo(self):
+        cands = self.row_cands("Arkon Builders", 10)
+        ver = {c["key"]: {"ok": True, "kind": "progress", "score": 6, "work": "framing"} for c in cands}
+        ver["Arkon Builders-1-0"]["score"] = 9                         # inside the first stretch (days 0-1)
+        ver["Arkon Builders-8-0"]["score"] = 9                         # inside the last (days 8-9)
+        keys = {p["key"] for p in P.pick_photos(cands, ver)}
+        self.assertIn("Arkon Builders-1-0", keys)
+        self.assertIn("Arkon Builders-8-0", keys)
+
+    def test_a_sub_with_three_good_photos_gets_three(self):
+        cands = self.row_cands("MQ Steel", 3, trade="Steel / Ironwork")
+        ver = {c["key"]: {"ok": True, "kind": "progress", "score": 8, "work": "stairs"} for c in cands}
+        self.assertEqual(len(P.pick_photos(cands, ver)), 3)
+
+    def test_weak_blurry_and_wrong_trade_photos_never_fill_a_row(self):
+        cands = self.row_cands("Arkon Builders", 8)
+        ver = {}
+        for i, c in enumerate(cands):
+            ver[c["key"]] = ({"ok": True, "kind": "progress", "score": 9, "work": "framing"} if i < 2 else
+                             {"ok": True, "kind": "progress", "score": 3, "work": "framing"} if i < 4 else
+                             {"ok": False, "kind": "blurry", "score": 9, "work": "framing"} if i < 6 else
+                             {"ok": True, "kind": "progress", "score": 9, "work": "plumbing"})
+        self.assertEqual(len(P.pick_photos(cands, ver)), 2)
+
+    def test_judging_samples_every_sub_evenly_across_the_period(self):
+        cands = self.row_cands("Arkon Builders", 11, per_day=10) + self.row_cands("MQ Steel", 1, per_day=3)
+        got = P.to_judge(cands)
+        arkon = [c for c in got if c["sub"] == "Arkon Builders"]
+        self.assertEqual(len(arkon), P.JUDGE_PER_SUB)
+        self.assertEqual(arkon[0]["date"], date(2026, 10, 1))          # first day judged
+        self.assertEqual(arkon[-1]["date"], date(2026, 10, 11))        # last day judged
+        self.assertGreater(len({c["date"] for c in arkon}), 8)         # not one day's photos
+        self.assertEqual(len([c for c in got if c["sub"] == "MQ Steel"]), 3)    # all of a small sub's
+
+    def test_judging_stays_inside_its_limit(self):
+        cands = []
+        for n in range(9):
+            cands += self.row_cands(f"Sub {n}", 12, per_day=3)
+        got = P.to_judge(cands, limit=40)
+        self.assertLessEqual(len(got), 40)
+        self.assertEqual({c["sub"] for c in got}, {f"Sub {n}" for n in range(9)})     # nobody dropped
 
     def test_the_whole_photograph_is_shown_never_cropped(self):
         html = RR.render_html([rep()], gc="", title="t", now=F.NOW, images={
@@ -402,20 +463,29 @@ class TheRealWorldFindings(unittest.TestCase):
                          ["portrait", "landscape", "square"])
         self.assertIsNone(report_image.orientation("not an image"))
 
-    def test_portrait_photos_get_four_columns(self):
+    def test_each_sub_has_its_own_row_of_at_most_five_whole_photos(self):
         import base64
         import io
+        import re
         from PIL import Image
         b = io.BytesIO()
-        Image.new("RGB", (300, 600), (120, 130, 140)).save(b, "JPEG")
+        Image.new("RGB", (300, 600), (120, 130, 140)).save(b, "JPEG")        # a portrait phone photo
         uri = "data:image/jpeg;base64," + base64.b64encode(b.getvalue()).decode()
         r = rep()
-        cands = r["photo_candidates"]
+        cands = []
+        for sub, n in (("Arkon Builders", 9), ("Quality Plumbing", 3)):
+            for i in range(n):
+                cands.append({"key": f"{sub}{i}", "date": date(2026, 10, 2) + timedelta(days=i), "sub": sub,
+                              "trade": "Framers", "where": f"floor {i}", "words": "x", "work": "x",
+                              "source": "daily log", "log_id": "l"})
         ver = {c["key"]: {"ok": True, "kind": "progress", "score": 7, "work": "none"} for c in cands}
-        r["photos"] = P.pick_photos(P.to_judge(cands), ver, 8)
-        self.assertGreater(len(r["photos"]), 4)
+        r["photos"] = P.pick_photos(cands, ver)
         html = RR.render_html([r], gc="", title="t", now=F.NOW, images={p["key"]: uri for p in r["photos"]})
-        self.assertIn("class='photos four'", html)
+        rows = re.findall(r"<div class='strip-row'>(.*?)</div></div></div>(?=<div class='strip-row'>|</section>)", html, re.S)
+        self.assertEqual(len(html.split("class='strip-row'")) - 1, 2)                # one row per sub
+        counts = sorted(len(re.findall(r"class='photo'", chunk)) for chunk in html.split("class='strip-row'")[1:])
+        self.assertEqual(counts, [3, 5])                                              # never padded, never above five
+        self.assertIn("object-fit: contain", html)
 
     def test_the_same_expiry_is_one_line(self):
         reg = {"expiring": [{"kind": "DOB permit", "number": "B23173802-S5", "expires": date(2026, 11, 1)}]}

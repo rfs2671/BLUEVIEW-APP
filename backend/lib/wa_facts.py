@@ -476,12 +476,16 @@ _ABOUT_SITE = re.compile(
 
 
 def user_topic(text: Any) -> Optional[str]:
-    """"send_brief" (send it now), "brief" (about it), "settings" (their
+    """"brief_all" (the exact reply "brief all": the jobs this morning's
+    brief left out), "send_brief" (send it now), "brief" (about it), "settings" (their
     brief time / reminders / notifications), or None. These are about the
     person, never a job."""
     t = " ".join(str(text or "").split())
     if not t:
         return None
+    from lib import wa_brief  # its "+N more jobs" line names the command
+    if wa_brief.is_brief_all(t):
+        return "brief_all"
     if _BRIEF_AS_TIME.search(t) or _ABOUT_SITE.search(t):
         # "who came in after the brief", "since your 8:07 brief": the brief
         # is a time there; the question is about the job.

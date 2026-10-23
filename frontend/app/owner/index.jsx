@@ -47,6 +47,7 @@ import apiClient from '../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
+import SheenView from '../../src/components/SheenView';
 import {
   insuranceExpiryState,
   formatInsuranceExpiryShort,
@@ -1323,7 +1324,7 @@ export default function OwnerPortalScreen() {
 
                 <ScrollView style={styles.migrationList}>
                   {unmigratedAdmins.map((admin) => (
-                    <View key={admin.id} style={styles.migrationItem}>
+                    <SheenView key={admin.id} style={styles.migrationItem}>
                       <View style={styles.migrationAdminInfo}>
                         <Text style={styles.migrationAdminName}>{admin.name}</Text>
                         <Text style={styles.migrationAdminEmail}>{admin.email}</Text>
@@ -1351,7 +1352,7 @@ export default function OwnerPortalScreen() {
                           </Pressable>
                         ))}
                       </ScrollView>
-                    </View>
+                    </SheenView>
                   ))}
                 </ScrollView>
 

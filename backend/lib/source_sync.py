@@ -58,6 +58,8 @@ KIND_SOURCE = {
     "permit": DOB_PERMITS, "permit_status": DOB_PERMITS,
     "dot_violation": DOT_OATH,
     "dot_permit": DOT_PERMITS,
+    "dot_embargo": DOT_PERMITS,
+    "order": DOB_VIOLATIONS, "order_lifted": DOB_VIOLATIONS, "bin_added": DOB_VIOLATIONS,
 }
 
 # Projects first polled before per-source tracking shipped have no state

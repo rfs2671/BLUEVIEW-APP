@@ -45,6 +45,7 @@ import ManualRenewalPanel from '../../../src/components/permit-renewal/ManualRen
 import FilingHistorySection from '../../../src/components/permit-renewal/FilingHistorySection';
 import { chrome, withAlpha } from '../../../src/styles/semanticColors';
 
+import SheenView from '../../../src/components/SheenView';
 // ══════════════════════════════════════════════════════════════════════════════
 // INLINE API (mirrors permitRenewalAPI.js)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -312,7 +313,7 @@ export default function PermitRenewalScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   // permitId is the optional dob_log id passed by deep-links from the
-  // DOB compliance tab's Prepare Renewal handler. When present, the
+  // Compliance tab's Prepare Renewal handler. When present, the
   // list page auto-expands the matching renewal card on landing so
   // the operator drops directly onto the right permit (vs. hunting
   // through a list of all the project's renewals). MR.1 polish.
@@ -773,7 +774,7 @@ export default function PermitRenewalScreen() {
               {(renewal.insurance_gl_expiry ||
                 renewal.insurance_wc_expiry ||
                 renewal.insurance_db_expiry) && (
-                <View style={s.insuranceBlock}>
+                <SheenView style={s.insuranceBlock}>
                   <Text style={s.insuranceTitle}>
                     Insurance Coverage
                   </Text>
@@ -807,7 +808,7 @@ export default function PermitRenewalScreen() {
                       </Text>
                     </View>
                   )}
-                </View>
+                </SheenView>
               )}
 
               {/* needs_insurance: soft-prompt CTA sending the admin to Settings */}

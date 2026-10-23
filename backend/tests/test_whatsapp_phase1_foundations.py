@@ -31,7 +31,7 @@ os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 
 import server  # noqa: E402
 from lib import notification_preferences as nprefs  # noqa: E402
-from lib import scheduler_lease, wa_dm, waapi_monitor  # noqa: E402
+from lib import scheduler_lease, wa_dm, wa_welcome, waapi_monitor  # noqa: E402
 from tests._fake_mongo import FakeDb  # noqa: E402
 
 CO_A, CO_B = "co_a", "co_b"
@@ -240,6 +240,16 @@ class StartAndStop(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual((rows[0]["user_id"], rows[0]["status"]),
                          ("u_admin", "active"))
+        # Their first START ever: the welcome, by name (no bot number is
+        # configured here, so no contact card follows).
+        self.assertEqual([p["message"] for p in c.wire.calls],
+                         [wa_welcome.welcome_text("Ada Admin", with_card=False)])
+
+    def test_a_second_start_gets_the_plain_intro(self):
+        with _Ctx() as c:
+            self._process(c, ADMIN_PHONE, "START", "D1")
+            c.wire.calls.clear()
+            self._process(c, ADMIN_PHONE, "START", "D2")
         self.assertEqual([p["message"] for p in c.wire.calls], [wa_dm.INTRO_TEXT])
 
     def test_start_from_a_pm_opts_in(self):
@@ -450,7 +460,8 @@ class TheLeaseRunsAJobOnce(unittest.TestCase):
         src = (Path(server.__file__)).read_text(encoding="utf-8")
         start = src.index("async def startup_event")
         body = src[start:]
-        self.assertEqual(body.count("scheduler.add_job("), 40)   # + project reports
+        # + project reports, + photo pipeline, + DOT stipulations, + DOT embargo alerts
+        self.assertEqual(body.count("scheduler.add_job("), 43)
 
 
 # ══════════════════════════════════════════════════════════════════════════

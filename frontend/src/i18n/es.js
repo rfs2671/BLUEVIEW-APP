@@ -99,4 +99,27 @@ export default {
     offlineBody: 'Este archivo no está guardado en este dispositivo. Vuelva a conectarse e inténtelo de nuevo.',
   },
 
+  // ── La etiqueta de Cumplimiento (ver en.js: una etiqueta, un espacio) ─────
+  // "Enable DOB Tracking" queda en inglés: es el nombre del interruptor tal como
+  // aparece en pantalla, y ese interruptor no está traducido.
+  compliance: {
+    title: 'Cumplimiento',
+    loadError: 'No se pudieron cargar los datos de cumplimiento',
+    deleteConfirmWeb: '¿Eliminar "{name}"?\n\nEsto eliminará permanentemente el proyecto y todos sus datos de cumplimiento. Esta acción no se puede deshacer.',
+    deleteConfirmNative: 'Esto eliminará permanentemente "{name}" y todos sus datos de cumplimiento. Esta acción no se puede deshacer.',
+    notificationPrefsSubtitle: 'Ajuste qué señales de cumplimiento le llegan y cómo',
+    helpCheckTracking: 'Abra la página de Cumplimiento del proyecto (ícono de engranaje). Confirme que "Enable DOB Tracking" esté activado. Si está desactivado, no se obtendrán datos del DOB para el proyecto.',
+    helpEditBin: 'Si el BIN ya se resolvió automáticamente al edificio equivocado, abra la página de Cumplimiento (ícono de engranaje) y edite el campo BIN directamente.',
+  },
+
+  // ── app/project/[id]/dob-logs.jsx — embargo navideño del DOT ─────────────
+  dotEmbargo: {
+    banner: 'Embargo navideño del 15 de nov al 2 de ene: {n} permisos activos del DOT no tienen exención.',
+    bannerOne: 'Embargo navideño del 15 de nov al 2 de ene: 1 permiso activo del DOT no tiene exención.',
+    permits: 'Permisos: {list}',
+    action: 'Solicite una exención o detenga el trabajo del 15 de nov al 2 de ene.',
+    coverageNote: 'Revisa los permisos vinculados a su dirección. Los permisos registrados por tramo de calle llegarán con la próxima actualización.',
+    unverifiedTitle: 'Embargo navideño del 15 de nov al 2 de ene: revise estos permisos',
+    unverified: 'Exención no verificada: {list}',
+  },
 };

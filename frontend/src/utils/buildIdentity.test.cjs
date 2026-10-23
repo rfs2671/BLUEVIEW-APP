@@ -42,7 +42,7 @@ const code = settings
 // green on a card that renders nothing at all. It could not fail for the
 // reason its label gave. The region is extracted first, and the claims below
 // say which of the two destinations they are about.
-const _cardAt = code.indexOf('sectionLabel}>BUILD<');
+const _cardAt = code.indexOf('<SectionLabel label="BUILD"');
 const buildCard = _cardAt > -1
   ? code.slice(_cardAt, code.indexOf('</GlassCard>', _cardAt))
   : '';
@@ -253,7 +253,7 @@ ok(/verdict\.state/.test(copyArg),
 
 console.log('\n-- Reachable, readable, copyable --');
 
-ok(/sectionLabel}>BUILD</.test(settings), 'it is a labelled section in settings');
+ok(/<SectionLabel label="BUILD"/.test(settings), 'it is a labelled section in settings');
 ok(/Clipboard\.setStringAsync/.test(code), 'tappable to copy');
 ok(/minHeight: touchTarget\.min/.test(settings.slice(settings.indexOf('buildRow:'))),
   'the copy row carries the app-wide 56pt minimum');

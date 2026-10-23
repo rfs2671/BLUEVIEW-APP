@@ -13,6 +13,7 @@ from datetime import date, datetime
 import pytest
 
 from lib import schedule_import as S
+from tests import _weasyprint
 from lib.schedule_import import ScheduleImportError, parse_schedule
 
 
@@ -471,7 +472,10 @@ def test_parsing_never_touches_the_network(monkeypatch):
 # ---------------------------------------------------------------- PDF
 
 def _pdf(rows, header=("ID", "Task Name", "Duration", "Start", "Finish"), pre=""):
-    weasyprint = pytest.importorskip("weasyprint")
+    # importorskip lets an OSError (GTK missing) through as an error.
+    if _weasyprint.SKIP:
+        pytest.skip(_weasyprint.REASON)
+    import weasyprint
     try:
         html = (
             "<html><body style='font-family:sans-serif;font-size:10pt'>" + pre
