@@ -1197,6 +1197,10 @@ async def main(args):
     configure_environment()
     locked = GUARD.install()                       # BEFORE the application is imported
     import server                                  # noqa: E402  (after the guard, on purpose)
+    import logging
+    # The jobs log a line per run per slot; the report below carries their
+    # results. Warnings and errors still print.
+    logging.getLogger("server").setLevel(logging.WARNING)
     locked += GUARD.install_app(server)
     print(f"guard: {len(locked)} methods replaced:")
     print("  " + "\n  ".join(locked))
