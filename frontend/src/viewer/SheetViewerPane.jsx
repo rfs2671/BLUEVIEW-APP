@@ -7,7 +7,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { ChevronDown, ChevronUp, Maximize2, Minus, Plus, X } from 'lucide-react-native';
-import SheetPane from './SheetPane';
+import { getSheetPane } from './loadSheetPane';
 import CalloutPortal from './CalloutPortal';
 import { matchLabel, portalBox } from './sheetIndex';
 
@@ -68,6 +68,7 @@ export default function SheetViewerPane({
   }, [controller, fileId, onOpenFile]);
 
   if (!controller) return null;
+  const SheetPane = getSheetPane();
   const st = controller.searchState;
   const prog = controller.indexProgress;
   const status = searchOpen && q.trim()

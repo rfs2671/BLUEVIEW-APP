@@ -9,7 +9,7 @@ const CACHE = 'bv-sheet-tiles-v1';
 const ORIGIN = 'https://sheet-cache.invalid/';
 const purged = new Set();
 
-const open = async () => (typeof caches !== 'undefined' && caches.open ? caches.open(CACHE) : null);
+const open = async () => (globalThis.caches && globalThis.caches.open ? globalThis.caches.open(CACHE) : null);
 const req = (fileId, build, name) => new Request(`${ORIGIN}${encodeURIComponent(fileId)}/${encodeURIComponent(build)}/${name}`);
 
 async function purgeOtherBuilds(c, fileId, build) {

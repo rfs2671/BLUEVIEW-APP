@@ -39,6 +39,7 @@ const T = load(path.join(__dirname, 'tileMath.js'));
 const X = load(path.join(__dirname, 'sheetIndex.js'));
 const C = load(path.join(__dirname, 'tileCache.js'));
 const A = load(path.join(__dirname, 'sheetApi.js'));
+const G = load(path.join(__dirname, 'gestures.js'));
 
 // a manifest like the backend's for a 36x24in sheet (z0..z4)
 function level(z, w, h, blankFrom = null) {
@@ -254,6 +255,26 @@ console.log('tile cache');
     const pb = X.portalBox(ix.callouts[1]);
     ok(pb.page === 2 && pb.exact === false && pb.box.length === 4, 'portal box carries "approximate"');
     ok(X.portalBox(ix.callouts[0]) === null && X.portalBox(null) === null, 'an unresolved callout has no portal');
+  }
+
+  console.log('gestures');
+  {
+    const a = G.pinchState({ x: 0, y: 0 }, { x: 100, y: 0 });
+    const b = G.pinchState({ x: 0, y: 0 }, { x: 200, y: 0 });
+    const d = G.pinchDelta(a, b);
+    ok(d.factor === 2 && d.cx === 100 && d.dx === 50, 'pinch: spreading fingers doubles the zoom and reports the focal travel');
+    ok(G.pinchState({ x: 5, y: 5 }, { x: 5, y: 5 }).dist === 1, 'two touches on one point never divide by zero');
+    ok(G.isTap({ x: 10, y: 10, t: 0 }, { x: 13, y: 12 }, 200) && !G.isTap({ x: 10, y: 10, t: 0 }, { x: 40, y: 10 }, 100) && !G.isTap({ x: 0, y: 0, t: 0 }, { x: 0, y: 0 }, 900), 'a tap is short and nearly still');
+    const v = G.releaseVelocity([{ x: 0, y: 0, t: 0 }, { x: 30, y: 0, t: 30 }, { x: 60, y: 0, t: 60 }], 70);
+    ok(Math.abs(v.vx - 1) < 1e-9 && v.vy === 0, 'release velocity is px per ms over the last moments');
+    ok(G.releaseVelocity([{ x: 0, y: 0, t: 0 }, { x: 60, y: 0, t: 60 }], 5000).vx === 0, 'a drag that paused before release does not fling');
+    let vel = { vx: 2, vy: 0 }; let dist = 0; let n = 0;
+    for (; n < 2000; n += 1) { const st = G.inertiaStep(vel, 16); dist += st.dx; vel = { vx: st.vx, vy: st.vy }; if (!st.moving) break; }
+    ok(n < 2000 && dist > 100 && dist < 2000, `a fling coasts to a stop (${Math.round(dist)}px in ${n} frames)`);
+    ok(G.wheelAction({ deltaX: 0, deltaY: 100, deltaMode: 0, ctrlKey: false }).type === 'pan' && G.wheelAction({ deltaX: 0, deltaY: 100, deltaMode: 0, ctrlKey: false }).dy === -100, 'wheel scrolls (content moves against the wheel)');
+    const zi = G.wheelAction({ deltaX: 0, deltaY: -100, deltaMode: 0, ctrlKey: true });
+    ok(zi.type === 'zoom' && zi.factor > 1 && G.wheelAction({ deltaX: 0, deltaY: 100, deltaMode: 0, metaKey: true }).factor < 1, 'ctrl/cmd + wheel (trackpad pinch) zooms');
+    ok(G.doubleTapTarget(1, 1).factor === G.DOUBLE_TAP_ZOOM && G.doubleTapTarget(5, 1).fit === true, 'double tap zooms in, or returns to fit when already in');
   }
 
   console.log('api client');

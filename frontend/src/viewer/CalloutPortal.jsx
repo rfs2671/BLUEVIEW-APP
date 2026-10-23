@@ -14,7 +14,7 @@ import { ActivityIndicator, PanResponder, Pressable, StyleSheet, Text, View } fr
 import { createSheetController } from './sheetController';
 import { resolveManifest } from './useSheetSession';
 import { manifestUsable } from './sheetApi';
-import SheetPane from './SheetPane';
+import { getSheetPane } from './loadSheetPane';
 
 const SIZES = { small: { w: 300, h: 220 }, large: { w: 520, h: 380 } };
 const PORTAL_CACHE_BYTES = 48 * 1024 * 1024;
@@ -67,6 +67,7 @@ export default function CalloutPortal({
   }, [state.controller, portal.box, portal.page, size]);
 
   const dims = SIZES[size];
+  const SheetPane = state.status === 'ready' ? getSheetPane() : null;
   const pan = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onPanResponderGrant: () => { posRef.current = pos || (bounds ? { x: Math.max(8, bounds.width - dims.w - 12), y: 70 } : { x: 12, y: 70 }); },

@@ -9,11 +9,11 @@ export const platform = {
   name: 'web',
   /** Can this runtime draw tiles at all? */
   available() {
-    return typeof document !== 'undefined' && typeof createImageBitmap === 'function' && !!document.createElement('canvas').getContext;
+    return typeof document !== 'undefined' && typeof globalThis.createImageBitmap === 'function' && !!document.createElement('canvas').getContext;
   },
   async decode(bytes) {
     const blob = new Blob([bytes], { type: 'image/webp' });
-    const bmp = await createImageBitmap(blob);
+    const bmp = await globalThis.createImageBitmap(blob);
     return { image: bmp, bytes: bmp.width * bmp.height * 4 };
   },
   dispose(image) { try { image.close(); } catch (_e) { /* already closed */ } },
