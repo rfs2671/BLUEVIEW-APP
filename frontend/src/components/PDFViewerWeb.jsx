@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, TextInput, ScrollView } from 'react-native';
-import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users } from 'lucide-react-native';
+import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users, Search } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
 import { resolvePdfForIframe } from '../utils/pdfSrc';
@@ -34,6 +34,12 @@ async function resolvePdfSrc(rawUrl, signal) {
   try { token = await AsyncStorage.getItem('blueview_token'); } catch {}
   return resolvePdfForIframe(rawUrl, { apiBase: API_BASE, token, signal });
 }
+import { useFeatureFlag } from '../hooks/useFeatureFlag';
+import { useSheetSession } from '../viewer/useSheetSession';
+import sheetPlatform from '../viewer/sheetPlatform';
+import sheetApi from '../viewer/sheetClient';
+import SheetViewerPane from '../viewer/SheetViewerPane';
+import SheetBoundary from '../viewer/SheetBoundary';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth, isCompanyAdmin } from '../context/AuthContext';
 import { spacing } from '../styles/theme';
@@ -63,6 +69,24 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
   // The blob url (if any) the iframe is showing: revoked when it is replaced or the viewer closes.
   const srcRef = useRef(null);
   const abortRef = useRef(null);
+
+  // ── THE TILE VIEWER, WHEN THIS DRAWING HAS TILES ────────────────────────
+  //
+  // Behind `sheet_tiles_viewer`. A drawing whose tiles are ready draws on a
+  // canvas from WebP tiles (viewer/): no PDF is fetched, so there is no blob to
+  // hand an iframe at all. Anything else (flag off, tiles compiling or failed, an
+  // old backend, no canvas support, a render error) keeps the iframe path below.
+  const tilesFlag = useFeatureFlag('sheet_tiles_viewer');
+  const tileFileId = file?.id || file?._id || null;
+  const session = useSheetSession({
+    enabled: Boolean(visible && tilesFlag && tileFileId && /\.pdf$/i.test(file?.name || '')),
+    projectId, fileId: tileFileId, cacheVersion: file?.cache_version, platform: sheetPlatform, api: sheetApi,
+  });
+  const [tilesFailed, setTilesFailed] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  useEffect(() => { setTilesFailed(false); setSearchOpen(false); }, [visible, tileFileId]);
+  const tiled = session.state === 'tiled' && !tilesFailed;
+  const awaitingTiles = session.state === 'loading' && !tilesFailed;
 
   /**
    * ONE loader, for the first open AND for Try Again.
@@ -100,13 +124,13 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
   }, [projectId, file]);
 
   useEffect(() => {
-    if (visible) loadPdf();
+    if (visible && !tiled && !awaitingTiles) loadPdf();
     return () => {
       if (abortRef.current) abortRef.current.abort();
       if (srcRef.current) { srcRef.current.revoke(); srcRef.current = null; }
       setUrl(null);
     };
-  }, [visible, loadPdf]);
+  }, [visible, loadPdf, tiled, awaitingTiles]);
 
   // Load annotations — direct-upload files use `file:{id}` as the key.
   const docKey = documentKeyFor(file);
@@ -148,6 +172,14 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
     setNewComment('');
   }, [pinModeActive]);
 
+  // The tile viewer reports the page and the spot on it (fractions of that page).
+  const handlePlacePin = useCallback(({ x, y, page }) => {
+    setPendingPosition({ x, y, page });
+    setPinModeActive(false);
+    setShowNotePanel(true);
+    setNewComment('');
+  }, []);
+
   const handleCreateNote = useCallback(async () => {
     if (!pendingPosition) return;
     try {
@@ -155,8 +187,8 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
       // across renames/R2 key changes), fall back to document_path.
       const payload = {
         project_id: projectId,
-        page_number: 1,
-        position: pendingPosition,
+        page_number: pendingPosition.page || 1,
+        position: { x: pendingPosition.x, y: pendingPosition.y },
         comment: newComment || '',
         recipients: selectedRecipientIds.length ? selectedRecipientIds : 'all',
       };
@@ -267,21 +299,29 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
         >
           <MapPin size={20} strokeWidth={1.5} color={pinModeActive ? '#141A1F' : '#fff'} />
         </Pressable>
-        {url && (
+        {tiled && (
+          <Pressable
+            onPress={() => setSearchOpen((v) => !v)} accessibilityRole="button" accessibilityLabel="Search this drawing"
+            style={[styles.closeBtn, searchOpen && { backgroundColor: '#E3C27A' }]}
+          >
+            <Search size={20} strokeWidth={1.5} color={searchOpen ? '#141A1F' : '#fff'} />
+          </Pressable>
+        )}
+        {(url || tiled) && (
           <Pressable onPress={openInBrowser} style={styles.closeBtn}>
             <Download size={20} strokeWidth={1.5} color="#fff" />
           </Pressable>
         )}
       </View>
 
-      {loading && (
+      {loading && !tiled && (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={'#E3C27A'} />
           <Text style={styles.loadingText}>Loading document...</Text>
         </View>
       )}
 
-      {error && (
+      {error && !tiled && (
         <View style={styles.center}>
           <FileText size={48} strokeWidth={1} color="#64748b" />
           <Text style={styles.errorTitle}>Could not load document</Text>
@@ -293,9 +333,23 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
         </View>
       )}
 
-      {!loading && !error && url && (
+      {(tiled || (!loading && !error && url)) && (
         <View style={{ flex: 1, flexDirection: 'row' }}>
-          {/* PDF container with annotations overlay */}
+          {tiled ? (
+            <View style={{ flex: 1 }}>
+              <SheetBoundary onFail={() => setTilesFailed(true)}>
+                <SheetViewerPane
+                  controller={session.controller} manifest={session.manifest} projectId={projectId} fileId={tileFileId}
+                  api={sheetApi} platform={sheetPlatform} annotations={annotations} markerColor={getMarkerColor}
+                  selectedId={selectedAnnotation ? (selectedAnnotation._id || selectedAnnotation.id) : null}
+                  pinModeActive={pinModeActive} onPlacePin={handlePlacePin}
+                  onSelectAnnotation={(ann) => { setSelectedAnnotation(ann); setShowNotePanel(false); setReplyText(''); }}
+                  searchOpen={searchOpen} onCloseSearch={() => setSearchOpen(false)}
+                />
+              </SheetBoundary>
+            </View>
+          ) : (
+          /* PDF container with annotations overlay */
           <div
             ref={containerRef}
             onClick={handleContainerClick}
@@ -365,6 +419,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
               );
             })}
           </div>
+          )}
 
           {/* Note creation panel (right side) */}
           {showNotePanel && (

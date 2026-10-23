@@ -20,6 +20,11 @@ import { semantic, withAlpha } from '../styles/semanticColors';
 import { ensurePdfJsViewer, localViewerHostUrl, pdfJsReadAccessDir } from '../utils/pdfjsViewer';
 import { searchStatusLabel, searchQueryNorm } from '../utils/pdfSearchScript';
 import { ensureCachedDocFile } from '../utils/docCache';
+import { useSheetSession } from '../viewer/useSheetSession';
+import sheetPlatform from '../viewer/sheetPlatform';
+import sheetApi from '../viewer/sheetClient';
+import SheetViewerPane from '../viewer/SheetViewerPane';
+import SheetBoundary from '../viewer/SheetBoundary';
 import {
   isLocalFileUri, pdfSourcePlan, pdfCacheKey,
   PDF_SOURCE_NONE, PDF_SOURCE_LOCAL, PDF_SOURCE_DOWNLOAD,
@@ -126,6 +131,25 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   // mid-session would remount the WebView.
   const probeOn = useFeatureFlag('pdf_viewer_probe');
   const probeLines = useRef([]);
+
+  // ── THE TILE VIEWER, WHEN THIS DRAWING HAS TILES ────────────────────────
+  //
+  // Behind `sheet_tiles_viewer`. A drawing whose tiles are ready opens in the
+  // GPU tile viewer (viewer/): no PDF is downloaded or parsed. Anything else —
+  // flag off, tiles still compiling, a failed compile, an old backend, a runtime
+  // without Skia, a render error — keeps the pdf.js path below exactly as it was.
+  // The decision is made once per open (useSheetSession), so a reader's viewer
+  // never swaps renderers underneath them.
+  const tilesFlag = useFeatureFlag('sheet_tiles_viewer');
+  const tileFileId = file?.id || file?._id || null;
+  const session = useSheetSession({
+    enabled: Boolean(visible && tilesFlag && tileFileId && /\.pdf$/i.test(file?.name || '')),
+    projectId, fileId: tileFileId, cacheVersion: file?.cache_version, platform: sheetPlatform, api: sheetApi,
+  });
+  const [tilesFailed, setTilesFailed] = useState(false);
+  useEffect(() => { setTilesFailed(false); }, [visible, tileFileId]);
+  const tiled = session.state === 'tiled' && !tilesFailed;
+  const awaitingTiles = session.state === 'loading' && !tilesFailed;
 
   // Memoize the WebView source so unrelated state updates (note sheet, reply
   // input, annotation taps) don't create a new object reference and force a
@@ -321,8 +345,9 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   }, [projectId, file]);
 
   useEffect(() => {
-    if (visible) loadPdf();
-  }, [visible, loadPdf]);
+    // while the tile viewer is deciding (or is showing) nothing is downloaded
+    if (visible && !tiled && !awaitingTiles) loadPdf();
+  }, [visible, loadPdf, tiled, awaitingTiles]);
 
   // Load annotations — direct-upload files use `file:{id}` as the key.
   const docKey = documentKeyFor(file);
@@ -372,13 +397,21 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
     setNewComment('');
   }, [pinModeActive, containerLayout]);
 
+  // The tile viewer reports the page and the spot on it (fractions of that page).
+  const handlePlacePin = useCallback(({ x, y, page }) => {
+    setPendingPosition({ x, y, page });
+    setPinModeActive(false);
+    setShowNoteSheet(true);
+    setNewComment('');
+  }, []);
+
   const handleCreateNote = useCallback(async () => {
     if (!pendingPosition) return;
     try {
       const payload = {
         project_id:  projectId,
-        page_number: 1,
-        position:    pendingPosition,
+        page_number: pendingPosition.page || 1,
+        position:    { x: pendingPosition.x, y: pendingPosition.y },
         comment:     newComment || '',
         recipients:  selectedRecipientIds.length ? selectedRecipientIds : 'all',
       };
@@ -459,7 +492,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
           </Pressable>
           <Text numberOfLines={1} style={styles.fileName}>{file?.name || 'Document'}</Text>
           <View style={{ flex: 1 }} />
-          {docReady && (
+          {(docReady || tiled) && (
             <Pressable
               onPress={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
               accessibilityRole="button"
@@ -503,7 +536,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
           )}
         </View>
 
-        {searchOpen && docReady && (
+        {searchOpen && docReady && !tiled && (
           <View style={styles.searchBar}>
             <TextInput
               value={searchQ}
@@ -535,14 +568,14 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
           </View>
         )}
 
-        {loading && (
+        {loading && !tiled && (
           <View style={styles.center}>
             <ActivityIndicator size="large" color={'#E3C27A'} />
             <Text style={styles.loadingText}>Loading document...</Text>
           </View>
         )}
 
-        {error && (
+        {error && !tiled && (
           <View style={styles.center}>
             <FileText size={48} strokeWidth={1} color="#64748b" />
             <Text style={styles.errorTitle}>Could not load document</Text>
@@ -736,6 +769,21 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                 </Pressable>
               );
             })}
+          </View>
+        )}
+
+        {tiled && (
+          <View style={{ flex: 1 }}>
+            <SheetBoundary onFail={() => setTilesFailed(true)}>
+              <SheetViewerPane
+                controller={session.controller} manifest={session.manifest} projectId={projectId} fileId={tileFileId}
+                api={sheetApi} platform={sheetPlatform} annotations={annotations} markerColor={getMarkerColor}
+                selectedId={selectedAnnotation ? (selectedAnnotation._id || selectedAnnotation.id) : null}
+                pinModeActive={pinModeActive} onPlacePin={handlePlacePin}
+                onSelectAnnotation={(ann) => { setSelectedAnnotation(ann); setShowNoteSheet(false); setReplyText(''); }}
+                searchOpen={searchOpen} onCloseSearch={closeSearch}
+              />
+            </SheetBoundary>
           </View>
         )}
 
