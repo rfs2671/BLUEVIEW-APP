@@ -1,0 +1,67 @@
+# THE WEB BUILD GOES LIVE ONLY AFTER THE BACKEND IT CALLS.
+#
+# On 2026-10-21 Railway paused deploys platform-wide after #826. Vercel's git
+# integration kept deploying app.levelog.com on every merge, so the web build
+# ran screens whose endpoints the backend did not have yet. This job replaces
+# that auto-deploy: it waits until /api/version serves a commit that INCLUDES
+# the tip of main, then calls a Vercel Deploy Hook.
+#
+# INERT UNTIL CONFIGURED. Without the VERCEL_DEPLOY_HOOK_URL secret it warns
+# and exits 0, because until git auto-deploy is switched off Vercel still
+# deploys on its own and a red job here would be noise. The switch-over steps
+# (create the hook, add the secret, turn off auto-deploy for main) are in
+# docs/runbooks/frontend-deploy-gate.md.
+#
+# A DEPLOY HOOK BUILDS THE BRANCH TIP, NOT A CHOSEN COMMIT. So the gate waits
+# for the tip, re-reads it after the wait, and only fires if main has not moved
+# meanwhile; if it has, it waits for the new tip. A backend-only merge that
+# lands mid-wait is therefore waited for too (Railway deploys every push).
+name: web deploy (after the backend)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+  workflow_dispatch: {}
+
+concurrency:
+  group: web-deploy-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for the backend, then trigger the Vercel deploy hook
+        env:
+          API_BASE: https://api.levelog.com
+          HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOOK}" ]; then
+            echo "::warning::VERCEL_DEPLOY_HOOK_URL is not set, so this gate is inert and"
+            echo "Vercel's git integration still deploys main on its own. See"
+            echo "docs/runbooks/frontend-deploy-gate.md to switch over."
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            git fetch --quiet origin main
+            TARGET=$(git rev-parse origin/main)
+            echo "waiting for the backend to include main's tip ${TARGET:0:12}"
+            python3 .github/scripts/backend_deploy.py wait --sha "$TARGET" --timeout 1200 --interval 30
+            git fetch --quiet origin main
+            if [ "$(git rev-parse origin/main)" = "$TARGET" ]; then
+              curl -fsS -X POST "$HOOK" > /dev/null
+              echo "Deploy hook triggered for main at ${TARGET:0:12}."
+              exit 0
+            fi
+            echo "main moved during the wait; waiting for the new tip"
+          done
+          echo "::error::main kept moving through three backend waits; the web build was not deployed. Re-run this job."
+          exit 1
