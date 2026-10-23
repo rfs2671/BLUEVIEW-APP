@@ -21,6 +21,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+# Imported ONCE, with the test modules, so the patch lands on the same module
+# object they call. A call-time `import server` re-imported a second copy
+# whenever another test had dropped it from sys.modules.
+import server  # noqa: E402
+
 #: Wednesday 2026-10-07 11:00 New York: a working day, inside the default send
 #: window, clear of Shabbos and of the fall holidays (Simchat Torah was Oct 4).
 WEEKDAY = datetime(2026, 10, 7, 15, 0, tzinfo=timezone.utc)
@@ -53,9 +58,21 @@ def fixed_datetime(at: datetime):
     return _Pinned
 
 
+def never_quiet(test):
+    """For tests whose fixtures are built from the REAL clock (so pinning
+    would skew them) and whose subject is not Shabbos: the quiet-window check
+    answers "not quiet" for the rest of `test`. The window itself is covered
+    by test_shabbos_all_messages; test_whatsapp_gc_alerts' threshold tests
+    already do the same."""
+    async def _not_quiet(*a, **k):
+        return None
+    p = patch.object(server, "_shabbos_quiet", _not_quiet)
+    p.start()
+    test.addCleanup(p.stop)
+
+
 def pin_server_clock(test, at: datetime = WEEKDAY):
     """Pin server.datetime for the rest of `test` (undone by addCleanup)."""
-    import server
     p = patch.object(server, "datetime", fixed_datetime(at))
     p.start()
     test.addCleanup(p.stop)
