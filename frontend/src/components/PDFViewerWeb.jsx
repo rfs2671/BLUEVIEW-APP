@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Pressable, ActivityIndicator, TextInput, Scroll
 import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
-import { authorizedPdfUrl } from '../utils/pdfSrc';
+import { resolvePdfForIframe } from '../utils/pdfSrc';
 import { openSignedDownload } from '../utils/fileDownload';
 import { downloadSource, signedUrlErrorKey } from '../utils/fileDownloadPlan';
 import { useToast } from './Toast';
@@ -25,18 +25,14 @@ function documentKeyFor(file) {
 const API_BASE = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://api.levelog.com';
 
 // Resolve a URL returned by the backend into something an <iframe src> can load.
-// Handles three shapes: relative `/api/...` (backend-proxy), absolute backend proxy,
-// or any other absolute URL (already presigned / Dropbox / R2 public). Backend-proxy
-// URLs get a `?token=` query param appended so the iframe request is authenticated.
-//
-// The rule about WHICH urls may be given the token lives in utils/pdfSrc.js and
-// is shared with the native viewer: only our own origin, checked by origin and
-// not merely by path shape.
-async function resolvePdfSrc(rawUrl) {
+// Our own proxy is fetched with `Authorization: Bearer` into a Blob and the iframe
+// gets a `blob:` url (utils/pdfSrc.js), so the session token is NEVER in a url; a
+// presigned R2 / Dropbox url is used bare. There is no `?token=` anywhere.
+async function resolvePdfSrc(rawUrl, signal) {
   if (!rawUrl) return null;
   let token = null;
   try { token = await AsyncStorage.getItem('blueview_token'); } catch {}
-  return authorizedPdfUrl(rawUrl, { apiBase: API_BASE, token });
+  return resolvePdfForIframe(rawUrl, { apiBase: API_BASE, token, signal });
 }
 import { useTheme } from '../context/ThemeContext';
 import { useAuth, isCompanyAdmin } from '../context/AuthContext';
@@ -64,6 +60,9 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
   const [selectedRecipientIds, setSelectedRecipientIds] = useState([]); // empty = 'all'
   const [showRecipientPicker, setShowRecipientPicker] = useState(false);
   const containerRef = useRef(null);
+  // The blob url (if any) the iframe is showing: revoked when it is replaced or the viewer closes.
+  const srcRef = useRef(null);
+  const abortRef = useRef(null);
 
   /**
    * ONE loader, for the first open AND for Try Again.
@@ -85,7 +84,14 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
         raw = res?.url || null;
       }
       if (!raw) { setError(true); setLoading(false); return; }
-      setUrl(await resolvePdfSrc(raw));
+      if (abortRef.current) abortRef.current.abort();
+      const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      abortRef.current = ctl;
+      const resolved = await resolvePdfSrc(raw, ctl ? ctl.signal : undefined);
+      if (ctl && ctl.signal.aborted) { if (resolved) resolved.revoke(); return; }
+      if (srcRef.current) srcRef.current.revoke();
+      srcRef.current = resolved;
+      setUrl(resolved ? resolved.src : null);
       setLoading(false);
     } catch (_e) {
       setError(true);
@@ -95,7 +101,11 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
 
   useEffect(() => {
     if (visible) loadPdf();
-    return () => { setUrl(null); };
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+      if (srcRef.current) { srcRef.current.revoke(); srcRef.current = null; }
+      setUrl(null);
+    };
   }, [visible, loadPdf]);
 
   // Load annotations — direct-upload files use `file:{id}` as the key.
