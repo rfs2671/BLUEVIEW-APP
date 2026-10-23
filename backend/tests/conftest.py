@@ -90,7 +90,7 @@ def _reset_server_ip_limiters():
     if server is None:
         return
     for name in ("checkin_rate_limiter", "auth_rate_limiter",
-                 "gate_failure_rate_limiter"):
+                 "gate_failure_rate_limiter", "signed_download_refusal_limiter"):
         limiter = getattr(server, name, None)
         reset = getattr(limiter, "reset", None)
         if callable(reset):

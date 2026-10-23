@@ -81,6 +81,24 @@ export default {
     deniedBody: 'Se requiere acceso de propietario, administrador o CP',
   },
 
+  // ── Botón Descargar (Planos y archivos) y abrir en el navegador (web) ─────
+  fileDownload: {
+    downloading: 'Descargando',
+    progress: '{pct}% de {total} MB',
+    progressUnknown: '{done} MB hasta ahora',
+    cancel: 'Cancelar',
+    failTitle: 'La descarga falló',
+    failBody: 'No se pudo descargar el archivo. Inténtelo de nuevo.',
+    network: 'La conexión se cortó antes de terminar el archivo. Inténtelo de nuevo con mejor señal.',
+    noAccess: 'No tiene acceso a este archivo.',
+    notStored: 'Este archivo aún no está disponible para descargar. Puede que todavía se esté sincronizando.',
+    cancelled: 'Descarga cancelada.',
+    popupBlocked: 'Su navegador bloqueó la pestaña de descarga. Permita las ventanas emergentes para Levelog e inténtelo de nuevo.',
+    shareUnavailable: 'Este dispositivo no tiene opción para compartir archivos.',
+    offlineTitle: 'No disponible sin conexión',
+    offlineBody: 'Este archivo no está guardado en este dispositivo. Vuelva a conectarse e inténtelo de nuevo.',
+  },
+
   // ── La etiqueta de Cumplimiento (ver en.js: una etiqueta, un espacio) ─────
   // "Enable DOB Tracking" queda en inglés: es el nombre del interruptor tal como
   // aparece en pantalla, y ese interruptor no está traducido.

@@ -4,6 +4,10 @@ import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users } from 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
 import { authorizedPdfUrl } from '../utils/pdfSrc';
+import { openSignedDownload } from '../utils/fileDownload';
+import { downloadSource, signedUrlErrorKey } from '../utils/fileDownloadPlan';
+import { useToast } from './Toast';
+import { useT } from '../i18n';
 import { semantic, withAlpha } from '../styles/semanticColors';
 
 // Build a stable document identifier for an annotation. Direct-upload files
@@ -41,6 +45,8 @@ import { spacing } from '../styles/theme';
 export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
   const { colors } = useTheme();
   const { user } = useAuth();
+  const toast = useToast();
+  const tDl = useT('fileDownload');
   const [url, setUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -216,6 +222,24 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
     return creatorId === currentUserId || isCompanyAdmin(user);
   };
 
+  // OPEN IN BROWSER. `url` is what the <iframe> loads, and for our own proxy
+  // that carries the session token, so it must never be opened as a page of
+  // its own. A stored file gets a 15-minute signed link instead; anything
+  // else (a Dropbox link) never had a token and opens as it is.
+  const openInBrowser = async () => {
+    try {
+      if (downloadSource(file) === 'stored') {
+        await openSignedDownload(file.id || file._id);
+      } else if (url && !/[?&]token=/.test(url)) {
+        window.open(url, '_blank');
+      } else {
+        toast.error(tDl('failTitle'), tDl('notStored'));
+      }
+    } catch (error) {
+      toast.error(tDl('failTitle'), tDl(error?.code || signedUrlErrorKey(error)));
+    }
+  };
+
   if (!visible) return null;
 
   return (
@@ -234,7 +258,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
           <MapPin size={20} strokeWidth={1.5} color={pinModeActive ? '#141A1F' : '#fff'} />
         </Pressable>
         {url && (
-          <Pressable onPress={() => window.open(url, '_blank')} style={styles.closeBtn}>
+          <Pressable onPress={openInBrowser} style={styles.closeBtn}>
             <Download size={20} strokeWidth={1.5} color="#fff" />
           </Pressable>
         )}
