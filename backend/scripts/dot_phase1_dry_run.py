@@ -1,6 +1,10 @@
 """DOT Phase 1 (#853 + #855) against production data -- READ ONLY: no writes, no sends.
 
     railway run --service Blueview2 python backend/scripts/dot_phase1_dry_run.py [out_dir]
+        [--days N] [--start 2026-10-28T06:00]
+
+--start is an ISO date-time (New York when it carries no offset; default now);
+--days the window's length (default 7). The window is printed.
 
 (Blueview2 is the backend service the repo's other production scripts name;
 add `--environment production` if the linked environment is not production.
@@ -8,9 +12,12 @@ If MONGO_URL is on Railway's private network it will not resolve from this
 machine: set DOT_DRY_RUN_MONGO_URL (and DOT_DRY_RUN_DB) to the public URL.)
 
 WHAT IT ANSWERS. For each project: every email and every WhatsApp group post
-the first 7 days after deploy would produce -- kind, record id (ticket /
+the window (--start, --days) would produce -- kind, record id (ticket /
 permit number), DOT date, match tier, recipient count, flag state, and the rule
-that fired. Covered: the holiday embargo (email + group post), permit expiry
+that fired. Permit expiry and hearing reminders are ONE digest email per
+project per day (and one group post per kind): the row lists every permit /
+ticket in it with its TRUE days left; a reminder held over Shabbos / Yom Tov
+says so and is listed on the day it is delivered. Covered: the holiday embargo (email + group post), permit expiry
 14/3, summons new / hearing 14/7/1 / pending block-match / default-docketed,
 and everything else `_gc_alerts_tick` posts (DOB kinds included, marked DOB).
 DOB EMAILS are not covered: they are sent by the DOB sync, not by a scheduled
@@ -33,7 +40,7 @@ HOW. The REAL code paths, not a re-implementation:
      machine except the Mongo reads and GETs to NYC Open Data (public,
      read-only), cached so both runs see the same answers.
   4. The real `_dot_sync_tick` runs once, then the stipulation and NOV-link
-     reads, then a clock steps through the next 7 days (America/New_York),
+     reads, then a clock steps through the window (America/New_York),
      running each job at its scheduled time: 07:00 embargo + permit expiry +
      hearings, the summons record alerts after the sync and at 09:00, and the
      GC group alerts (plus the Shabbos / Yom Tov queue) hourly 07:00-21:00 --
@@ -962,11 +969,14 @@ async def simulate(server, source, *, label: str, force_flag: bool, start: datet
     guard = guard or GUARD
     guard.run = label
     copydb = CopyDB(source)
-    saved = {k: getattr(server, k) for k in ("db", "RESEND_API_KEY", "_gc_alert_text", "_quiet_enqueue")}
+    saved = {k: getattr(server, k) for k in ("db", "RESEND_API_KEY", "_gc_alert_text", "_quiet_enqueue",
+                                             "_dot_held_release")}
     saved_env = os.environ.get("NOTIFICATIONS_KILL_SWITCH")
     real_text, real_enqueue = server._gc_alert_text, server._quiet_enqueue
+    real_release = server._dot_held_release
     items_by_text: Dict[str, dict] = {}       # the group post's text -> the alert item it says
     held: Dict[str, Any] = {}                 # text -> when a Shabbos / Yom Tov hold ends
+    released: Dict[int, dict] = {}            # id(guard record entry) -> the held DOT reminder it delivers
     first_record = len(guard.blocked)
 
     async def text_and_capture(item, address, today):
@@ -979,6 +989,14 @@ async def simulate(server, source, *, label: str, force_flag: bool, start: datet
             held[spec["message"]] = kw.get("until")
         return await real_enqueue(spec, **kw)
 
+    async def release_and_mark(spec, now=None):
+        n = len(guard.blocked)
+        try:
+            return await real_release(spec, now=now)
+        finally:
+            for e in guard.blocked[n:]:
+                released[id(e)] = spec
+
     reports: List[tuple] = []
     try:
         server.db = copydb
@@ -987,6 +1005,7 @@ async def simulate(server, source, *, label: str, force_flag: bool, start: datet
         server.RESEND_API_KEY = "dry-run"
         server._gc_alert_text = text_and_capture
         server._quiet_enqueue = enqueue_and_mark
+        server._dot_held_release = release_and_mark
         os.environ["NOTIFICATIONS_KILL_SWITCH"] = ""
         feature_flags.cache_invalidate()
         if force_flag:
@@ -1053,27 +1072,41 @@ async def simulate(server, source, *, label: str, force_flag: bool, start: datet
             if e["method"] != "send_notification":
                 continue
             kw = e.get("kwargs") or {}
-            g = grouped.setdefault(kw.get("permit_renewal_id"), {"kw": kw, "at": e["at"], "n": 0})
+            g = grouped.setdefault(kw.get("permit_renewal_id"), {"kw": kw, "at": e["at"], "n": 0, "e": e})
             g["n"] += 1
         for lid, g in grouped.items():
             kw = g["kw"]
             md, trig = kw.get("metadata") or {}, kw.get("trigger_type")
             pid = str(md.get("project_id") or "")
-            num = str(md.get("ticket") or md.get("permit") or "")
-            row = by_num.get((pid, num))
             cid = str((projects.get(pid) or {}).get("company_id") or "")
             cname, is_test = company_of(cid)
-            why = {"dot_embargo_waiver_missing": f"exposed to Nov 15 - Jan 2, no stipulation 410 ({md.get('kind')})",
-                   "dot_permit_expiring": f"{md.get('threshold')}-day threshold before work end {md.get('work_end')}",
-                   "dot_hearing_reminder": f"{md.get('threshold')}-day threshold before hearing {md.get('hearing_date')}",
-                   "dot_summons_pending_hearing": f"pending block match, hearing {md.get('hearing_date')} within 14 days",
-                   "dot_summons_new": "own match, new to Levelog, issued by DOT within 2 days (flag dot_phase1)",
-                   "dot_summons_default": f"confirmed summons changed to {md.get('result')}"}.get(trig, str(trig))
+            items = md.get("items")
+            if isinstance(items, list):          # a DIGEST: every item with its TRUE days left
+                nums = [str(i.get("ticket") or i.get("permit") or "") for i in items]
+                found = [by_num.get((pid, n)) for n in nums]
+                num = " ".join(nums)
+                dot_date = "; ".join(dict.fromkeys(_dot_date(r, trig) for r in found if r))
+                tier = ", ".join(sorted({_tier(r) for r in found}))
+                until = "work end" if trig == "dot_permit_expiring" else "hearing"
+                why = f"digest of {len(items)}: " + "; ".join(
+                    f"{n} {i.get('days_left')} day(s) to {until} {i.get('work_end') or i.get('hearing_date')}"
+                    for n, i in zip(nums, items))
+            else:
+                num = str(md.get("ticket") or md.get("permit") or "")
+                row = by_num.get((pid, num))
+                dot_date, tier = _dot_date(row, trig), _tier(row)
+                why = {"dot_embargo_waiver_missing": f"exposed to Nov 15 - Jan 2, no stipulation 410 ({md.get('kind')})",
+                       "dot_summons_pending_hearing": f"pending block match, hearing {md.get('hearing_date')} within 14 days",
+                       "dot_summons_new": "own match, new to Levelog, issued by DOT within 2 days (flag dot_phase1)",
+                       "dot_summons_default": f"confirmed summons changed to {md.get('result')}"}.get(trig, str(trig))
+            if id(g["e"]) in released:
+                why += f" -- held for Shabbos/Yom Tov ({released[id(g['e'])].get('kind')}), delivered at its end"
             rows.append({"run": label, "project": (projects.get(pid) or {}).get("name") or pid, "project_id": pid,
                          "company": cname, "company_id": cid, "test_company": is_test,
                          "day": g["at"].astimezone(ny_tz()).date().isoformat(), "channel": "email",
                          "area": "DOT", "kind": EMAIL_KIND.get(trig, trig), "record": num,
-                         "dot_date": _dot_date(row, trig), "tier": _tier(row), "recipients": g["n"],
+                         "items": len(items) if isinstance(items, list) else 1,
+                         "dot_date": dot_date, "tier": tier, "recipients": g["n"],
                          "flag": await flag_state(cid), "why": why, "ledger_id": lid})
         for e in record:
             if e["method"] != "send_whatsapp_message":
@@ -1086,20 +1119,28 @@ async def simulate(server, source, *, label: str, force_flag: bool, start: datet
             cid = str((projects.get(pid) or {}).get("company_id") or rec.get("company_id") or "")
             cname, is_test = company_of(cid)
             area = "DOT" if k.startswith("dot_") else "DOB"
-            num = wa_alerts.record_number(rec) or str(rec.get("number") or rec.get("site_bin") or "")
+            members = it.get("members") or [it]
+
+            def _num(r):
+                return wa_alerts.record_number(r) or str(r.get("number") or r.get("site_bin") or "")
+
+            def _why(m):
+                return {"dot_violation": "new summons: own match, issued within 2 days",
+                        "dot_permit": f"permit threshold ({str(m.get('item', '')).rsplit(':', 1)[-1]})",
+                        "dot_embargo": "embargo: exposed, no waiver",
+                        "dot_hearing": f"hearing threshold ({str(m.get('item', '')).split(':hearing:')[-1]})",
+                        "dot_hearing_pending": "pending block match, hearing within 14 days",
+                        "dot_default": f"changed to {m.get('result')}"}.get(k, f"{k} (existing GC alert)")
+            num = " ".join(_num(m.get("rec") or {}) for m in members)
             dot_row = by_raw.get((pid, str(rec.get("raw_id")))) if area == "DOT" else None
-            why = {"dot_violation": "new summons: own match, issued within 2 days",
-                   "dot_permit": f"permit threshold ({str(it.get('item', '')).rsplit(':', 1)[-1]})",
-                   "dot_embargo": "embargo: exposed, no waiver",
-                   "dot_hearing": f"hearing threshold ({str(it.get('item', '')).split(':hearing:')[-1]})",
-                   "dot_hearing_pending": "pending block match, hearing within 14 days",
-                   "dot_default": f"changed to {it.get('result')}"}.get(k, f"{k} (existing GC alert)")
+            why = _why(members[0]) if len(members) == 1 else \
+                f"digest of {len(members)}: " + "; ".join(f"{_num(m.get('rec') or dict())} {_why(m)}" for m in members)
             if e.get("message") in held:
                 why += f" -- held for Shabbos/Yom Tov, delivered after {held[e['message']]}"
             rows.append({"run": label, "project": (projects.get(pid) or {}).get("name") or pid, "project_id": pid,
                          "company": cname, "company_id": cid, "test_company": is_test,
                          "day": e["at"].astimezone(ny_tz()).date().isoformat(), "channel": "whatsapp",
-                         "area": area, "kind": k, "record": num,
+                         "area": area, "kind": k, "record": num, "items": len(members),
                          "dot_date": _dot_date(dot_row or rec, k),
                          "tier": _tier(dot_row) if area == "DOT" else "n/a",
                          "recipients": 1, "flag": await flag_state(cid), "why": why,
@@ -1154,7 +1195,7 @@ async def simulate(server, source, *, label: str, force_flag: bool, start: datet
         feature_flags.cache_invalidate()
 
 
-ROW_FIELDS = ["run", "company", "test_company", "project", "day", "channel", "area", "kind", "record",
+ROW_FIELDS = ["run", "company", "test_company", "project", "day", "channel", "area", "kind", "items", "record",
               "dot_date", "tier", "recipients", "flag", "why", "project_id", "company_id", "ledger_id"]
 PROJECT_FIELDS = ["run", "company", "test_company", "project", "dot_setup", "summonses", "permits",
                   "pending", "rejected", "email_recipients", "flag", "emails", "posts", "by_kind",
@@ -1206,7 +1247,7 @@ def render(runs: List[dict], env_notes: List[str]) -> str:
                                  ["project", "dot_setup", "summonses", "permits", "pending", "email_recipients",
                                   "flag", "emails", "posts"]))
                 cr = [r for r in part if r["company"] == c]
-                out.append(table(cr, ["project", "day", "channel", "area", "kind", "record", "dot_date", "tier",
+                out.append(table(cr, ["project", "day", "channel", "area", "kind", "items", "record", "dot_date", "tier",
                                       "recipients", "flag", "why"]))
             out.append("")
         n_mail = counted(rows, "channel", lambda v: v == "email") if rows else 0
@@ -1249,7 +1290,7 @@ async def run_all(server, source, out_dir: str, *, fetch, start: Optional[dateti
     write_csv(os.path.join(out_dir, "dry_run_rows.csv"), ROW_FIELDS, [r for x in runs for r in x["rows"]])
     write_csv(os.path.join(out_dir, "dry_run_projects.csv"), PROJECT_FIELDS, [r for x in runs for r in x["projects"]])
     notes = list(env_notes or []) + [
-        f"window: {start.astimezone(ny_tz()):%Y-%m-%d %H:%M} New York + {days} days; jobs at their scheduled hours",
+        window_line(start, days) + "; jobs at their scheduled hours",
         f"network allowed (GET only): {json.dumps(guard.allowed)}"]
     text = render(runs, notes)
     text += "\nBLOCKED CALLS (refused and recorded; none was executed)\n"
@@ -1260,6 +1301,31 @@ async def run_all(server, source, out_dir: str, *, fetch, start: Optional[dateti
     write_csv(os.path.join(out_dir, "dry_run_blocked_calls.csv"),
               ["run", "at", "target", "method", "where", "summary"], guard.blocked)
     return {"runs": runs, "text": text}
+
+
+def window_line(start: datetime, days: int) -> str:
+    tz = ny_tz()
+    end = start + timedelta(days=days)
+    return (f"window: {start.astimezone(tz):%a %Y-%m-%d %H:%M} -> {end.astimezone(tz):%a %Y-%m-%d %H:%M} "
+            f"New York ({days} days)")
+
+
+def parse_start(value: Optional[str]) -> datetime:
+    """--start: an ISO date-time; New York when it carries no offset; now when
+    not given. Returned in UTC."""
+    if not value:
+        return datetime.now(timezone.utc)
+    v = value.strip()
+    if v.endswith(("Z", "z")):
+        v = v[:-1] + "+00:00"
+    try:
+        at = datetime.fromisoformat(v)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--start {value!r}: not an ISO date-time (e.g. 2026-10-28T06:00 or 2026-10-28T06:00-04:00)")
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=ny_tz())
+    return at.astimezone(timezone.utc)
 
 
 def env_notes() -> List[str]:
@@ -1279,11 +1345,17 @@ def parse_args(argv):
     ap.add_argument("out_dir", nargs="?",
                     default=os.path.join(BACKEND, "..", "docs", "samples", "dot_dry_run"))
     ap.add_argument("--days", type=int, default=7)
-    return ap.parse_args(argv)
+    ap.add_argument("--start", type=parse_start, default=None,
+                    help="ISO date-time the window starts at; New York when no offset is given; default now")
+    args = ap.parse_args(argv)
+    if args.start is None:
+        args.start = parse_start(None)
+    return args
 
 
 async def main(args):
     configure_environment()
+    print(window_line(args.start, args.days))
     locked = GUARD.install()                       # BEFORE the application is imported
     import server                                  # noqa: E402  (after the guard, on purpose)
     import logging
@@ -1301,7 +1373,7 @@ async def main(args):
         return await server._dot_fetch(dataset, params)
 
     got = await run_all(server, prod, os.path.abspath(args.out_dir), fetch=live_fetch,
-                        days=args.days, env_notes=env_notes())
+                        start=args.start, days=args.days, env_notes=env_notes())
     print(got["text"])
     print(f"wrote {os.path.abspath(args.out_dir)}: dry_run_rows.csv, dry_run_projects.csv, "
           f"dry_run_blocked_calls.csv, dry_run_report.txt")

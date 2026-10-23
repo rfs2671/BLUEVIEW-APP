@@ -7,9 +7,11 @@ NYC Open Data reads are answered from those fixtures. The guard is installed
 for the run and removed after.
 
 What the run must list, in the first 7 days from Mon 2026-10-26 09:00 New York:
-the embargo email + group post (Nov 1), a permit expiry email (3-day), a hearing
-reminder (7-day), the pending block-match email, a default email, and -- only
-with dot_phase1 on -- the new-summons email. A test company's project gets
+the embargo email + group post (Nov 1), a permit expiry DIGEST (Tuesday 07:00:
+two permits, 2 and 7 days left -- the true days), the 3-day reminder due Saturday
+Oct 31 HELD over Shabbos and delivered that night, a hearing reminder (7-day),
+the pending block-match email, a default email, and -- only with dot_phase1 on
+-- the new-summons email. A test company's project gets
 nothing and is listed apart. SYNTHETIC dates are recorded records with their
 dates moved into the window.
 """
@@ -98,7 +100,12 @@ def seeded_source():
                "match": {"how": "address", "state": "confirmed"}, "detected_at": long_ago}
     to_default = {**dot_sync.to_log("dot_violation", summons("0704345557")), "_id": "d4", "project_id": "p1",
                   "company_id": "c1", "match": {"how": "address", "state": "confirmed"}, "detected_at": long_ago}
-    db.dot_logs.docs += [embargo, expiring, hearing, to_default,
+    # SYNTHETIC: a second expiring permit, 7 days out at the first 07:00 run
+    # (Tue; the 14-day window: a catch-up, labelled 7) and 3 days out on
+    # Saturday Oct 31 (held over Shabbos).
+    saturday = {**expiring, "_id": "d5", "number": "B022026215B32", "raw_id": "dotpermit:B022026215B32",
+                "expiration_date": "2026-11-03T23:59:59.000", "work_end": "2026-11-03T23:59:59.000"}
+    db.dot_logs.docs += [embargo, expiring, saturday, hearing, to_default,
                          {**embargo, "_id": "dt", "project_id": "pt", "company_id": "ct"}]
     db.notification_preferences.docs.append(
         {"_id": "np1", "user_id": None, "scope": "project", "project_id": "p1", "company_id": "c1",
@@ -184,9 +191,56 @@ class TheSeededDryRun(unittest.TestCase):
         self.assertIn("BLOCKED CALLS", self.got["text"])
         self.assertTrue(os.path.exists(os.path.join(self.dir, "dry_run_blocked_calls.csv")))
 
+    def test_permit_expiry_is_one_digest_with_the_true_days(self):
+        exp = [r for r in self.rows if r["kind"] == "permit expiry" and r["run"].startswith("flags")]
+        tuesday = [r for r in exp if r["day"] == "2026-10-27"]   # the first 07:00 run
+        self.assertEqual(len(tuesday), 1, exp)
+        self.assertEqual((tuesday[0]["items"], tuesday[0]["record"]), ("2", "B022026215B31 B022026215B32"))
+        self.assertIn("B022026215B31 2 day(s) to work end 2026-10-29", tuesday[0]["why"])
+        self.assertIn("B022026215B32 7 day(s) to work end 2026-11-03", tuesday[0]["why"])
+        self.assertEqual(tuesday[0]["ledger_id"], "dot:p1:expiry_digest:-:-:2026-10-27")
+
+    def test_the_saturday_reminder_is_held_and_listed_when_it_goes(self):
+        exp = [r for r in self.rows if r["kind"] == "permit expiry" and r["run"].startswith("flags")]
+        sat = [r for r in exp if r["day"] == "2026-10-31"]
+        self.assertEqual(len(sat), 1, exp)
+        self.assertIn("B022026215B32 3 day(s) to work end 2026-11-03", sat[0]["why"])
+        self.assertIn("held for Shabbos/Yom Tov (expiry)", sat[0]["why"])
+        at = [e["at"] for e in self.guard.blocked if e["method"] == "send_notification"
+              and (e.get("kwargs") or {}).get("permit_renewal_id") == sat[0]["ledger_id"]]
+        self.assertTrue(at and all(a.astimezone(D.ny_tz()).hour >= 18 for a in at), at)   # after havdalah
+
+    def test_the_window_is_printed(self):
+        self.assertIn("window: Mon 2026-10-26 09:00 -> Mon 2026-11-02 08:00 New York (7 days)", self.got["text"])
+
     def test_no_confirmed_setup_is_said(self):
         self.assertIn("none confirmed", self.got["text"])           # the test company's job
         self.assertIn("confirmed, 1 frontage(s)", self.got["text"])
+
+
+class TheStartArgument(unittest.TestCase):
+
+    def test_no_offset_is_new_york(self):
+        a = D.parse_args(["out", "--days", "21", "--start", "2026-10-28T06:00"])
+        self.assertEqual((a.start, a.days), (datetime(2026, 10, 28, 10, 0, tzinfo=UTC), 21))
+        self.assertEqual(D.parse_start("2026-11-07T06:00"), datetime(2026, 11, 7, 11, 0, tzinfo=UTC))  # EST
+
+    def test_an_offset_is_kept(self):
+        self.assertEqual(D.parse_start("2026-10-28T06:00Z"), datetime(2026, 10, 28, 6, 0, tzinfo=UTC))
+        self.assertEqual(D.parse_start("2026-10-28T06:00-04:00"), datetime(2026, 10, 28, 10, 0, tzinfo=UTC))
+
+    def test_default_is_now(self):
+        a = D.parse_args(["out"])
+        self.assertLess(abs((a.start - datetime.now(UTC)).total_seconds()), 60)
+        self.assertEqual(a.days, 7)
+
+    def test_garbage_is_refused(self):
+        import contextlib
+        import io
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(err):
+            D.parse_args(["out", "--start", "next tuesday"])
+        self.assertIn("not an ISO date-time", err.getvalue())
 
 
 if __name__ == "__main__":
