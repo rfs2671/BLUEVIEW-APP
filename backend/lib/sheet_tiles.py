@@ -63,6 +63,8 @@ import os
 import sys
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from lib.pdfium_lock import PDFIUM_LOCK
+
 __all__ = ["TILE", "Z0_LONG", "MAX_Z", "level_geometry", "choose_max_z", "pyramid",
            "is_blank", "present_bitmap", "bit_is_set", "compile_page", "page_sizes", "parse_levels",
            "SCHEMA"]
@@ -74,6 +76,10 @@ MAX_Z = 4                 # z = 0..4 -> 1024 .. 16384 px
 MAX_SIDE = 16384
 TARGET_DPI = 400          # a level is built only while it is at most this sharp
 BAND_ROWS = 1024          # pixel rows rendered at once (two tile rows)
+# A band is at most width x BAND_ROWS pixels, so the biggest bitmap pdfium ever holds is
+# 16384 x 1024 x 4 = 64 MB (never the 1 GB+ of a whole 16384 x 16384 level). The cap below
+# is the guard: a band that would be larger is cut into fewer rows, or refused.
+MAX_BAND_BYTES = 96 * 1024 * 1024
 WEBP_QUALITY = 86
 PREVIEW_LONG = 512
 PREVIEW_QUALITY = 70
@@ -155,7 +161,17 @@ def parse_levels(spec: Optional[str], z_max: int) -> List[int]:
 
 def _open_pdf(source: Any):
     import pypdfium2 as pdfium          # lazily: the geometry above needs no PDF library
-    return pdfium.PdfDocument(source)
+    with PDFIUM_LOCK:
+        return pdfium.PdfDocument(source)
+
+
+def band_rows(width: int) -> int:
+    """Pixel rows to render at once for a level `width` pixels wide: BAND_ROWS, or fewer
+    (a multiple of TILE) so that width x rows x 4 bytes stays under MAX_BAND_BYTES."""
+    fit = (MAX_BAND_BYTES // (max(1, width) * 4)) // TILE * TILE
+    if fit < TILE:
+        raise ValueError(f"a level {width}px wide cannot be rendered in a {MAX_BAND_BYTES >> 20} MB band")
+    return min(BAND_ROWS, fit)
 
 
 def page_sizes(source: Any) -> List[Tuple[float, float]]:
@@ -164,14 +180,16 @@ def page_sizes(source: Any) -> List[Tuple[float, float]]:
     try:
         out = []
         for i in range(len(pdf)):
-            page = pdf[i]
-            try:
-                out.append(tuple(float(v) for v in page.get_size()))
-            finally:
-                page.close()
+            with PDFIUM_LOCK:
+                page = pdf[i]
+                try:
+                    out.append(tuple(float(v) for v in page.get_size()))
+                finally:
+                    page.close()
         return out
     finally:
-        pdf.close()
+        with PDFIUM_LOCK:
+            pdf.close()
 
 
 def _fit(im: Any, width: int, height: int) -> Any:
@@ -193,13 +211,14 @@ def _render_rows(page: Any, level: Dict[str, Any], width_pt: float, height_pt: f
     scale = level["scale"]
     top = max(0.0, y0 / scale)
     bottom = max(0.0, height_pt - y1 / scale)
-    bm = page.render(scale=scale, crop=(0, bottom, 0, top))
-    try:
-        im = bm.to_pil().convert("RGB")
-    finally:
-        close = getattr(bm, "close", None)
-        if close:
-            close()
+    if level["width"] * (y1 - y0) * 4 > MAX_BAND_BYTES:
+        raise ValueError(f"a {level['width']} x {y1 - y0} band exceeds {MAX_BAND_BYTES >> 20} MB")
+    with PDFIUM_LOCK:
+        bm = page.render(scale=scale, crop=(0, bottom, 0, top))
+        try:
+            im = bm.to_pil().convert("RGB")
+        finally:
+            bm.close()
     return _fit(im, level["width"], y1 - y0)
 
 
@@ -230,9 +249,11 @@ def compile_page(source: Any, page_index: int,
     try:
         if not 0 <= page_index < len(pdf):
             raise IndexError(f"page {page_index} is not in a {len(pdf)}-page document")
-        page = pdf[page_index]
+        with PDFIUM_LOCK:
+            page = pdf[page_index]
         try:
-            width_pt, height_pt = (float(v) for v in page.get_size())
+            with PDFIUM_LOCK:
+                width_pt, height_pt = (float(v) for v in page.get_size())
             if width_pt <= 0 or height_pt <= 0:
                 raise ValueError("page has no size")
             full = pyramid(width_pt, height_pt)
@@ -244,8 +265,9 @@ def compile_page(source: Any, page_index: int,
                     continue
                 level = full[z]
                 present: List[Tuple[int, int]] = []
-                for y0 in range(0, level["height"], BAND_ROWS):
-                    y1 = min(y0 + BAND_ROWS, level["height"])
+                rows_at_once = band_rows(level["width"])
+                for y0 in range(0, level["height"], rows_at_once):
+                    y1 = min(y0 + rows_at_once, level["height"])
                     band = _render_rows(page, level, width_pt, height_pt, y0, y1)
                     for ty in range(y0 // TILE, -(-y1 // TILE)):
                         for tx in range(level["cols"]):
@@ -264,16 +286,22 @@ def compile_page(source: Any, page_index: int,
             preview = None
             if put_preview and (levels is None or 0 in want):
                 scale = PREVIEW_LONG / max(width_pt, height_pt)
-                bm = page.render(scale=scale)
-                pim = bm.to_pil().convert("RGB")
+                with PDFIUM_LOCK:
+                    bm = page.render(scale=scale)
+                    try:
+                        pim = bm.to_pil().convert("RGB")
+                    finally:
+                        bm.close()
                 put_preview(_webp(pim, PREVIEW_QUALITY), pim.width, pim.height)
                 preview = {"width": pim.width, "height": pim.height}
             return {"schema": SCHEMA, "tile": TILE, "width_pt": width_pt, "height_pt": height_pt,
                     "z_max": z_max, "levels": built, "preview": preview}
         finally:
-            page.close()
+            with PDFIUM_LOCK:
+                page.close()
     finally:
-        pdf.close()
+        with PDFIUM_LOCK:
+            pdf.close()
 
 
 # ── command line: the server runs this in a subprocess ───────────────────────

@@ -24,6 +24,21 @@ Every route takes `Authorization: Bearer` only (`get_current_user_header_only`);
 `?token=` is refused. Tile and preview requests must carry the current `b=<build>`.
 Same tenancy checks as `/content`.
 
+## Hardening notes
+
+- **pdfium is single-file.** `lib/pdfium_lock.py` is the one lock around every pypdfium2 call in
+  the API process (`plan_page`, `sheet_tiles`). The tile compile itself runs in a child process,
+  one child at a time per process, with each page rendered in bands (never a whole 16k bitmap:
+  at most 64 MB, capped at 96 MB). Every document, page and bitmap is closed in a `finally`.
+- **Tiles are not re-proxied.** Immutable `Cache-Control`, `ETag` + 304 before R2, an in-process
+  byte LRU, and a 20 s memory of the tenancy decision for tile/preview reads. A presigned-URL
+  redirect was not used (needs R2 CORS; leaves our auth).
+- **Offline quota.** The native tile store keeps a usage index and holds the device to 500 MB,
+  evicting whole least-recently-used drawings, never the open one.
+- **Native images** are freed 500 ms after eviction so a frame never draws a freed texture.
+- **Skia 2.2.12** is the version Expo SDK 54 vets; it ships old-architecture sources and its peer
+  ranges accept RN 0.81.5 and Reanimated 3.19.5 (`src/viewer/skiaCompat.test.cjs`).
+
 ## Rollout
 
 1. Deploy the backend. Nothing changes for users: tiles compile in the background
@@ -39,7 +54,8 @@ Same tenancy checks as `/content`.
 
 - A file with no tiles, tiles compiling, a failed compile, or more than 600 pages opens in the
   existing PDF viewer. The decision is made once per open.
-- Callout portal crops are estimates (`crop_exact: false`) and labelled "approx."
+- Callout portal crops are estimates (`crop_exact: false`) and labelled "approx." The portal loads the
+  whole target sheet and uses the crop (plus a 40% margin) only for its first view.
 - Notes created in the tile viewer store `page_number` and page-fraction `{x, y}`. Notes created
   in the old viewer stored fractions of the viewer window, not the page; the tile viewer shows
   them as page-1 fractions, which is approximate for those older notes.

@@ -1,13 +1,12 @@
 /**
  * The callout "portal": tap a detail callout (3/A-402) and a small floating
  * viewport opens over the drawing, already framed on that detail. It is a second
- * tile viewer: draggable by its title bar, pinch/zoom/pan inside it like the main
- * one, and confined to its detail so it cannot be dragged off into the sheet.
- * The sheet underneath does not move and nothing navigates.
- *
- * The crop is an ESTIMATE until a detail's real extent is known (the backend marks
- * it `crop_exact: false`); the title says "approx." and "Open sheet" goes to the
- * whole page.
+ * tile viewer: draggable by its title bar, with pinch/zoom/pan inside it like the main
+ * one. It loads the WHOLE target sheet; the detail's crop (an estimate until a
+ * detail's real extent is known, `crop_exact: false`) only chooses where the camera
+ * starts, with a 40% margin, so nothing is ever clipped and the reader can look
+ * anywhere on that sheet. The title says "approx." for an estimated crop, and "Open
+ * sheet" goes to the page in the main viewer. The sheet underneath does not move.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -18,6 +17,7 @@ import { getSheetPane } from './loadSheetPane';
 
 const SIZES = { small: { w: 300, h: 220 }, large: { w: 520, h: 380 } };
 const PORTAL_CACHE_BYTES = 48 * 1024 * 1024;
+export const CROP_MARGIN = 0.4;                          // framing margin around the estimated crop
 
 export default function CalloutPortal({
   portal, projectId, currentFileId, currentManifest, api, platform, bounds, onClose, onOpenSheet,
@@ -52,15 +52,19 @@ export default function CalloutPortal({
     return () => { cancelled = true; if (controller) controller.destroy(); };
   }, [portal.file_id, portal.page, sameFile, targetFileId, projectId, api, platform, currentManifest]);
 
-  // Frame the detail as soon as the pane has measured itself (and again if the panel is resized).
+  // THE WHOLE TARGET SHEET IS LOADED; THE CROP ONLY FRAMES THE FIRST VIEW. The crop is an
+  // estimate (`crop_exact: false`), so clipping to it would cut off whatever the estimate
+  // missed. The camera starts on the crop with a 40% margin around it and the reader can
+  // pan and zoom across the entire sheet from there. The camera is confined to the target
+  // PAGE (not to the crop, and not into the other pages of the file).
   useEffect(() => {
     const c = state.controller;
     if (!c) return undefined;
     const frame = () => {
       if (c.viewport.width <= 0) return;
-      const box = portal.box || [0, 0, 1, 1];
-      c.setBounds(portal.page, box, portal.box ? 0.12 : 0);
-      c.frameBox(portal.page, box, portal.box ? 0.04 : 0);
+      c.setBounds(portal.page, [0, 0, 1, 1], 0);
+      if (portal.box) c.frameBox(portal.page, portal.box, CROP_MARGIN);
+      else c.frameBox(portal.page, [0, 0, 1, 1], 0.02);
     };
     frame();
     return c.on('change', (() => { let done = -1; return () => { if (done !== c.viewport.width && c.viewport.width > 0) { done = c.viewport.width; frame(); } }; })());

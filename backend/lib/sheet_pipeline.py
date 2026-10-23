@@ -113,26 +113,53 @@ def is_pdf_name(name: Any) -> bool:
 
 # ── injected IO ──────────────────────────────────────────────────────────────
 
+_render_gate: Optional[asyncio.Lock] = None
+
+
+def _gate() -> asyncio.Lock:
+    """One pdfium child at a time per process, however the compile was triggered
+    (upload, open, sweep, manual): pdfium is not thread-safe, and two 16k renders at once
+    are the memory spike this pipeline is built to avoid. Created on first use so it
+    belongs to the running loop."""
+    global _render_gate
+    if _render_gate is None:
+        _render_gate = asyncio.Lock()
+    return _render_gate
+
+
+async def _run_cli(args: Sequence[str], timeout: float, what: str) -> bytes:
+    """Run `python -m lib.sheet_tiles <args>` in a child process and return its stdout.
+    A pdfium crash or a memory spike kills the child, never the API."""
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    async with _gate():
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "lib.sheet_tiles", *args,
+            cwd=backend_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError(f"{what} took longer than {timeout:.0f}s")
+        except BaseException:                                    # cancelled: do not leave the child running
+            proc.kill()
+            await proc.wait()
+            raise
+    if proc.returncode != 0:
+        raise RuntimeError(f"{what} failed: {(err or b'').decode('utf-8', 'replace')[-300:]}")
+    return out or b""
+
+
 async def _default_page_info(pdf_path: str) -> List[Tuple[float, float]]:
-    return await asyncio.to_thread(sheet_tiles.page_sizes, pdf_path)
+    out = await _run_cli(["info", pdf_path], 120, "reading the page sizes")
+    return [(float(p["width_pt"]), float(p["height_pt"])) for p in json.loads(out.decode("utf-8"))["pages"]]
 
 
 async def _default_run_compile(pdf_path: str, page_index: int, out_dir: str, levels: Sequence[int]) -> Dict[str, Any]:
-    """The render, in a child process: a pdfium crash or a memory spike takes the
-    child down, never the API. Returns the manifest the child wrote."""
+    """The render, in a child process. Returns the manifest the child wrote."""
     spec = ",".join(str(z) for z in levels)
-    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "lib.sheet_tiles", "compile", pdf_path, str(page_index), out_dir, "--levels", spec,
-        cwd=backend_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=PAGE_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise RuntimeError(f"render of page {page_index + 1} took longer than {PAGE_TIMEOUT_SECONDS}s")
-    if proc.returncode != 0:
-        raise RuntimeError(f"render of page {page_index + 1} failed: {(err or b'').decode('utf-8', 'replace')[-300:]}")
+    await _run_cli(["compile", pdf_path, str(page_index), out_dir, "--levels", spec], PAGE_TIMEOUT_SECONDS,
+                   f"render of page {page_index + 1}")
     with open(os.path.join(out_dir, "manifest.json"), encoding="utf-8") as f:
         return json.load(f)
 

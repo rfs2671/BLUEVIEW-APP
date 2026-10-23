@@ -38,6 +38,7 @@ const idx = (page) => ({ page, own_sheet: `A-10${page}`, words: [
   { text: 'DOOR', bbox: [0.1, 0.1, 0.15, 0.12], line: 1 }, { text: 'A-402', bbox: [0.5, 0.5, 0.56, 0.52], line: 2 }],
   callouts: [{ label: '3/A-402', bbox: [0.5, 0.5, 0.56, 0.52], target: { file_id: 'f1', page: 2, sheet: 'A-102', crop: [0.4, 0.4, 0.7, 0.7], crop_exact: false } }] });
 
+let decodes = 0;
 function harness(over = {}) {
   const log = { tiles: [], previews: [], indexes: [], disposed: [] };
   const api = {
@@ -47,7 +48,7 @@ function harness(over = {}) {
     ...over.api,
   };
   const c = K.createSheetController({
-    api, projectId: 'p1', fileId: 'f1', manifest, decode: async (bytes, d) => ({ image: { tag: d.key || `p${d.page}` }, bytes: 10 }),
+    api, projectId: 'p1', fileId: 'f1', manifest, decode: async (bytes, d) => { decodes += 1; return { image: { tag: `${d.key || `p${d.page}`}#${decodes}` }, bytes: 10 }; },
     dispose: (img) => log.disposed.push(img.tag), dpr: 1, ...over.opts,
   });
   return { c, log };
@@ -165,20 +166,50 @@ function harness(over = {}) {
     ok(c.calloutRects().length >= 1, 'callout boxes are listed for painting');
     c.destroy();
   }
-  console.log('portal bounds');
+  console.log('portal: whole sheet, crop only frames');
   {
     const { c } = harness();
     c.setViewport(300, 200); await settle();
-    c.setBounds(2, [0.4, 0.4, 0.7, 0.7]);
-    c.frameBox(2, [0.4, 0.4, 0.7, 0.7]);
-    for (let t = 0; t < 5 && c.tick(Date.now() + t * 20); t += 1);
+    const crop = [0.4, 0.4, 0.7, 0.7];
+    c.setBounds(2, [0, 0, 1, 1], 0);
+    c.frameBox(2, crop, 0.4);
     const pg = c.layout.pages[1];
-    const crop = T.boxToWorld(pg, [0.4, 0.4, 0.7, 0.7]);
-    ok(Math.abs(c.camera.x - (crop.x + crop.w / 2)) < 1 && Math.abs(c.camera.y - (crop.y + crop.h / 2)) < 1, 'the portal frames its crop');
-    c.panBy(-1e6, 1e6);
-    ok(c.camera.x < crop.x + crop.w * 2 && c.camera.y > crop.y - crop.h * 2, 'the portal cannot be dragged away from its detail');
-    ok(c.limits.min > 0.1, 'the portal cannot zoom out past its crop');
+    const cw = T.boxToWorld(pg, crop);
+    ok(Math.abs(c.camera.x - (cw.x + cw.w / 2)) < 1 && Math.abs(c.camera.y - (cw.y + cw.h / 2)) < 1, 'the first view is centred on the crop');
+    const vis = T.visibleWorldRect(c.camera, c.viewport);
+    ok(vis.w >= cw.w * 1.79 && vis.h >= cw.h * 1.79, 'the first view shows the crop with a 40% margin on every side');
+    ok(vis.x < cw.x && vis.y < cw.y && vis.x + vis.w > cw.x + cw.w && vis.y + vis.h > cw.y + cw.h, 'the crop is inside the view, with room around it');
+    // the estimate is wrong: the real detail is outside the crop. The reader can still get there.
+    const far = T.boxToWorld(pg, [0.02, 0.02, 0.1, 0.1]);
+    c.setCamera({ x: far.x + far.w / 2, y: far.y + far.h / 2, zoom: c.camera.zoom });
+    const v2 = T.visibleWorldRect(c.camera, c.viewport);
+    ok(v2.x <= far.x && v2.y <= far.y && v2.x + v2.w >= far.x + far.w && v2.y + v2.h >= far.y + far.h, 'the camera can leave the crop: the far corner of the sheet comes into view');
+    c.setCamera({ x: far.x + far.w / 2, y: far.y + far.h / 2, zoom: c.limits.max });
+    await settle();
+    ok(c.frame().tiles.some((t) => t.z >= 3), 'tiles outside the crop load at full depth');
+    c.panBy(1e7, 1e7);
+    ok(c.camera.x >= pg.x - 1000 && c.camera.y >= pg.y - 1000, 'it stays on the target sheet');
+    c.setCamera({ x: 500, y: -1e6, zoom: c.limits.min });
+    ok(c.camera.y >= pg.y - 1 || c.camera.y > c.layout.pages[0].y, 'and never wanders into the other pages of the file');
+    ok(c.limits.min > 0.1 && c.limits.min <= 300 / 1000 + 1e-9, 'it can zoom out until the whole sheet fits the portal');
     c.destroy();
+  }
+  console.log('eviction never leaves a freed image on screen');
+  {
+    const freed = new Set();
+    const { c } = harness({ opts: { maxBytes: 25, dispose: (img) => freed.add(img.tag) } });
+    c.setViewport(1000, 700); await settle();
+    const seen = [];
+    for (const [f, sx, sy] of [[6, 300, 200], [2, 800, 500], [0.2, 100, 100], [9, 700, 150], [0.3, 400, 400]]) {
+      c.zoomAt(f, sx, sy); await settle();
+      const fr = c.frame();
+      seen.push(...fr.tiles.map((t) => t.image.tag), ...fr.previews.map((p) => p.image.tag));
+      ok(fr.tiles.every((t) => !freed.has(t.image.tag)) && fr.previews.every((p) => !freed.has(p.image.tag)), `frame after zoom x${f} holds no freed image`);
+    }
+    ok(freed.size > 0, 'a small budget really did evict and free tiles');
+    const held = c.frame().tiles.map((t) => t.image.tag);
+    c.destroy();
+    ok(held.every((tag) => freed.has(tag)), 'destroy frees what was still held');
   }
   console.log('destroy');
   {

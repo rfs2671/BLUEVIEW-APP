@@ -72,6 +72,8 @@ export function useSheetSession({ enabled, projectId, fileId, cacheVersion, plat
         disk: platform.disk, dpr: platform.dpr(), maxBytes: platform.maxBytes,
       });
       ctlRef.current = controller;
+      // keep the offline store inside its quota; never blocks opening the drawing
+      if (platform.disk && platform.disk.sweep) Promise.resolve(platform.disk.sweep({ activeFileId: fileId })).catch(() => {});
       setSession({ state: 'tiled', controller, offline, manifest });
     })();
     return () => {

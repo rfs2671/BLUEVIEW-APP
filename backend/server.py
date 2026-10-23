@@ -73,7 +73,7 @@ from lib.report import view as report_view
 # WhatsApp tenant boundary + webhook authentication. The rules are in the
 # module; server.py only supplies the database reads they need.
 from lib import wa_security  # noqa: E402
-from lib import sheet_pipeline, sheet_tiles  # noqa: E402
+from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
@@ -29933,6 +29933,7 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
     )
 
     try:
+        _SHEET_DECISIONS.forget_file(str(file_id))
         pages_deleted += await sheet_pipeline.purge(db, _sheet_delete_keys, str(file_id))
         await db[sheet_pipeline.JOBS].delete_one({"_id": str(file_id)})
     except Exception as e:
@@ -64189,8 +64190,29 @@ async def _sheet_tiles_sweep_job() -> None:
         logger.error(f"[sheet-tiles] sweep failed: {type(e).__name__}: {e}")
 
 
-async def _sheet_file_or_403(project_id: str, file_id: str, current_user: dict) -> dict:
-    """The same gate as `stream_project_file`, with the header-only user."""
+_SHEET_DECISIONS = sheet_serve.DecisionCache()
+_SHEET_BYTES = sheet_serve.ByteLru()
+
+
+async def _sheet_file_or_403(project_id: str, file_id: str, current_user: dict, *, remember: bool = False) -> dict:
+    """The same gate as `stream_project_file`, with the header-only user.
+
+    `remember=True` (tile and preview reads only) reuses a passing decision for a few
+    seconds per (user, project, file): a deep zoom is dozens of requests and each would
+    otherwise cost three database reads. Nothing that writes, and not the manifest or
+    the index, ever uses it."""
+    key = (str(current_user.get("id") or current_user.get("_id") or ""), project_id, file_id)
+    if remember and key[0]:
+        hit = _SHEET_DECISIONS.get(key)
+        if hit is not None:
+            return hit
+    rec = await _sheet_file_checked(project_id, file_id, current_user)
+    if remember and key[0]:
+        _SHEET_DECISIONS.put(key, rec)
+    return rec
+
+
+async def _sheet_file_checked(project_id: str, file_id: str, current_user: dict) -> dict:
     await _assert_project_access(project_id, current_user)
     try:
         rec = await db.project_files.find_one({"_id": ObjectId(file_id), "project_id": project_id})
@@ -64236,34 +64258,53 @@ async def get_sheet_index(project_id: str, file_id: str, page: int, b: str,
     return JSONResponse(index, headers={"Cache-Control": "private, max-age=300"})
 
 
-async def _sheet_image(project_id: str, file_id: str, page: int, b: str, key_fn, current_user) -> Response:
-    rec = await _sheet_file_or_403(project_id, file_id, current_user)
+async def _sheet_image(request: Request, project_id: str, file_id: str, page: int, b: str, key_fn, etag_parts,
+                       current_user) -> Response:
+    """Serve one immutable tile or preview.
+
+    NOT A PROXY ON EVERY REQUEST. The object is named by its build, so it never
+    changes: the client keeps it for a year (immutable) and revalidates with
+    If-None-Match, which is answered 304 here, after the access check and before R2 is
+    touched. A miss is served from a byte-bounded in-process LRU before R2 is asked.
+    (A redirect to a presigned R2 URL was considered and not used: it needs R2 CORS for
+    the web viewer and sends the app off our auth for the one request that matters.)"""
+    rec = await _sheet_file_or_403(project_id, file_id, current_user, remember=True)
     tiles = rec.get("tiles") or {}
     if tiles.get("build") != b or tiles.get("status") not in ("ready", "complete"):
         raise HTTPException(status_code=404, detail="Stale build")
-    data = await _sheet_fetch_object(key_fn(project_id, file_id, b))
-    if not data:
-        raise HTTPException(status_code=404, detail="No such tile")
-    return Response(content=data, media_type="image/webp",
-                    headers={"Cache-Control": "private, max-age=31536000, immutable"})
+    headers = {"Cache-Control": sheet_serve.IMMUTABLE}
+    etag = sheet_serve.etag_for(b, file_id, *etag_parts)
+    headers["ETag"] = etag
+    if sheet_serve.matches_etag(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    key = key_fn(project_id, file_id, b)
+    data = _SHEET_BYTES.get(key)
+    if data is None:
+        data = await _sheet_fetch_object(key)
+        if not data:
+            raise HTTPException(status_code=404, detail="No such tile")
+        _SHEET_BYTES.put(key, data)
+    return Response(content=data, media_type="image/webp", headers=headers)
 
 
 @api_router.get("/projects/{project_id}/files/{file_id}/sheets/{page}/tiles/{z}/{x}/{y}")
-async def get_sheet_tile(project_id: str, file_id: str, page: int, z: int, x: int, y: int, b: str,
+async def get_sheet_tile(request: Request, project_id: str, file_id: str, page: int, z: int, x: int, y: int, b: str,
                          current_user=Depends(get_current_user_header_only)):
     if not (0 <= z <= sheet_tiles.MAX_Z and x >= 0 and y >= 0 and page >= 1):
         raise HTTPException(status_code=404, detail="No such tile")
-    return await _sheet_image(project_id, file_id, page, b,
-                              lambda p, f, bb: sheet_pipeline.tile_key(p, f, bb, page, z, x, y), current_user)
+    return await _sheet_image(request, project_id, file_id, page, b,
+                              lambda p, f, bb: sheet_pipeline.tile_key(p, f, bb, page, z, x, y),
+                              (page, z, x, y), current_user)
 
 
 @api_router.get("/projects/{project_id}/files/{file_id}/sheets/{page}/preview")
-async def get_sheet_preview(project_id: str, file_id: str, page: int, b: str,
+async def get_sheet_preview(request: Request, project_id: str, file_id: str, page: int, b: str,
                             current_user=Depends(get_current_user_header_only)):
     if page < 1:
         raise HTTPException(status_code=404, detail="No such page")
-    return await _sheet_image(project_id, file_id, page, b,
-                              lambda p, f, bb: sheet_pipeline.preview_key(p, f, bb, page), current_user)
+    return await _sheet_image(request, project_id, file_id, page, b,
+                              lambda p, f, bb: sheet_pipeline.preview_key(p, f, bb, page),
+                              (page, "preview"), current_user)
 
 
 @api_router.post("/projects/{project_id}/files/{file_id}/sheets/compile")

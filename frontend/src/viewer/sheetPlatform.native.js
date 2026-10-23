@@ -32,7 +32,16 @@ export const platform = {
     if (!image) throw new Error('tile could not be decoded');
     return { image, bytes: image.width() * image.height() * 4 };
   },
-  dispose(image) { try { if (image && image.dispose) image.dispose(); } catch (_e) { /* already freed */ } },
+  // A decoded tile is a native Skia image (GPU texture). Freeing it is DEFERRED by a
+  // short grace period: the scene the canvas is drawing can still hold an evicted tile
+  // (or a fallback ancestor) for a frame or two, and drawing a freed image crashes in
+  // native code. The controller has already dropped its own reference by now; nothing
+  // else holds one: the Reanimated shared values carry only numbers and plain rects.
+  disposeDelayMs: 500,
+  dispose(image) {
+    if (!image || !image.dispose) return;
+    setTimeout(() => { try { image.dispose(); } catch (_e) { /* already freed */ } }, platform.disposeDelayMs);
+  },
   disk: sheetTileStore,
   dpr() { return Math.min(3, PixelRatio.get() || 1); },
   maxBytes: 96 * 1024 * 1024,
