@@ -252,6 +252,29 @@ class _Env:
         return self.call(server.get_dot_permits, "p1", current_user=user, project=self.project)
 
 
+def _expiry_items(env, permit=None):
+    """[(item, email)] across the expiry DIGEST emails (one email per project
+    per day lists every permit due: metadata.items)."""
+    out = []
+    for m in env.emails("dot_permit_expiring"):
+        for i in m["metadata"]["items"]:
+            if permit is None or i["permit"] == permit:
+                out.append((i, m))
+    return out
+
+
+def _permits_in(mails):
+    """Every permit an email is about: an embargo email's `permit`, a
+    digest's `items`."""
+    out = set()
+    for m in mails:
+        md = m["metadata"]
+        if md.get("permit"):
+            out.add(md["permit"])
+        out |= {i["permit"] for i in md.get("items") or []}
+    return out
+
+
 def _days(a: date, b: date):
     return [a + timedelta(days=i) for i in range((b - a).days + 1)]
 
@@ -509,7 +532,7 @@ class TheNeedsConfirmation(unittest.TestCase):
         self.assertEqual(row["review"]["state"], "pending")
         self.assertIs(row["holiday_waiver"], False)      # read, so a "yours" knows it
         env.alerts(_days(date(2026, 10, 23), date(2026, 11, 21)))
-        mine = {m["metadata"]["permit"] for m in env.emails()}
+        mine = _permits_in(env.emails())
         self.assertNotIn(OTHER["permitnumber"], mine)
         board = env.permits()
         self.assertIn(OTHER["permitnumber"], [p["number"] for p in board["needs_confirmation"]])
@@ -525,24 +548,25 @@ class TheNeedsConfirmation(unittest.TestCase):
         self.assertEqual(env.row(OTHER["permitnumber"])["match"]["state"], "confirmed")
         env.alerts(_days(date(2026, 10, 23), date(2026, 11, 21)))
         num = OTHER["permitnumber"]
-        exp = [m for m in env.emails("dot_permit_expiring") if m["metadata"]["permit"] == num]
-        self.assertEqual([m["metadata"]["threshold"] for m in exp], [14, 3])
-        self.assertEqual(exp[0]["permit_renewal_id"], f"dot:p1:expiry:{num}:14:2026-11-20")
-        self.assertEqual(exp[0]["subject"], f"DOT permit {num} expires in 14 days / "
-                                            f"El permiso del DOT {num} vence en 14 días")
-        self.assertEqual(exp[1]["subject"], f"DOT permit {num} expires in 3 days / "
-                                            f"El permiso del DOT {num} vence en 3 días")
-        text = exp[0]["text"]
-        for piece in (num, "TRIBUTARY INSTALL - ELECTRIC", "STREET OPENING PERMIT",
-                      "Work dates: Nov 3, 2026 - Nov 20, 2026",
+        # One digest a day per project (ruling 2026-10-23): OURS ends the same
+        # day, so both permits ride in the same two digests.
+        exp = _expiry_items(env, num)
+        self.assertEqual([i["days_left"] for i, _m in exp], [14, 3])
+        first = exp[0][1]
+        self.assertEqual(first["permit_renewal_id"], "dot:p1:expiry_digest:-:-:2026-11-06")
+        self.assertEqual(first["subject"], "2 DOT permits expiring on 588 Thomas S Boyland / "
+                                           "2 permisos del DOT por vencer en 588 Thomas S Boyland")
+        text = first["text"]
+        for piece in (num, "TRIBUTARY INSTALL - ELECTRIC (STREET OPENING PERMIT)",
+                      "Ends Nov 20, 2026 (in 14 days):", "Work Nov 3, 2026 - Nov 20, 2026",
                       "Segment: HOPKINSON AVE from BLAKE AVE to SUTTER AVE, Brooklyn",
-                      "Renewal: DOT shows no renewal of this permit yet",
-                      "Fechas de trabajo: 3 nov 2026 - 20 nov 2026",
+                      "Renewal: renew each permit before its end date",
+                      "Termina el 20 nov 2026 (en 14 días):", "Trabajo 3 nov 2026 - 20 nov 2026",
                       "Tramo: HOPKINSON AVE de BLAKE AVE a SUTTER AVE, Brooklyn",
-                      "Renovación: el DOT aún no muestra una renovación"):
+                      "Renovación: renueve cada permiso"):
             self.assertIn(piece, text, piece)
         self.assertLess(text.index("Renewal:"), text.index("Renovación:"))
-        self.assertEqual({m["recipient"] for m in exp}, {"admin@blueelm.test"})   # never the CP
+        self.assertEqual({m["recipient"] for _i, m in exp}, {"admin@blueelm.test"})   # never the CP
         emb = [m for m in env.emails("dot_embargo_waiver_missing") if m["metadata"]["permit"] == num]
         self.assertEqual([m["permit_renewal_id"].rsplit(":", 1)[1] for m in emb],
                          ["2026-11-01", "2026-11-12"])
@@ -559,7 +583,7 @@ class TheNeedsConfirmation(unittest.TestCase):
         nums = [p["number"] for p in board["permits"] + board["needs_confirmation"]]
         self.assertNotIn(OTHER["permitnumber"], nums)
         env.alerts(_days(date(2026, 10, 23), date(2026, 11, 21)))
-        self.assertNotIn(OTHER["permitnumber"], {m["metadata"]["permit"] for m in env.emails()})
+        self.assertNotIn(OTHER["permitnumber"], _permits_in(env.emails()))
         with self.assertRaises(HTTPException) as ctx:          # decided: no second answer
             env.review(OTHER["permitnumber"], "accept")
         self.assertEqual(ctx.exception.status_code, 409)
@@ -587,8 +611,7 @@ class TheRenewalBetween14And3(unittest.TestCase):
         env.confirm()
         env.sync()
         env.alerts([date(2026, 11, 6)])                   # 14 days out: sent
-        renewed = env.emails("dot_permit_expiring")
-        self.assertEqual([m["metadata"]["permit"] for m in renewed], [OURS["permitnumber"]])
+        self.assertEqual([i["permit"] for i, _m in _expiry_items(env)], [OURS["permitnumber"]])
         env.sync(now=datetime(2026, 11, 10, 15, 0, tzinfo=UTC),
                  segment=SEGMENT + [OTHER, OFF_BLOCK] + list(renewal_segment), chain=chain)
         env.alerts(_days(date(2026, 11, 11), date(2026, 11, 20)))
@@ -600,22 +623,21 @@ class TheRenewalBetween14And3(unittest.TestCase):
                           previouspermitnumber=OURS["permitnumber"])
         env = self._run(renewal_segment=[ours_renewed], chain=[renewal])
         self.assertEqual(env.row(OURS["permitnumber"])["renewed_by"], "B012026314X09")
-        self.assertEqual(len(env.emails("dot_permit_expiring")), 1)
+        self.assertEqual(len(_expiry_items(env)), 1)
 
     def test_another_permit_naming_it_previous_stops_the_3_day_email(self):
         renewal = _permit("B012026314X09", "SOMEONE ELSE LLC", start="2026-11-21", end="2026-12-20",
                           previouspermitnumber=OURS["permitnumber"])
         env = self._run(renewal_segment=[OURS], chain=[renewal])     # read by the chain request
         self.assertEqual(env.row(OURS["permitnumber"])["renewed_by"], "B012026314X09")
-        self.assertEqual(len(env.emails("dot_permit_expiring")), 1)
+        self.assertEqual(len(_expiry_items(env)), 1)
 
     def test_a_voided_renewal_still_lets_the_3_day_email_go(self):
         voided = _permit("B012026314X09", "BLUE ELM INC.", previouspermitnumber=OURS["permitnumber"],
                          permitstatusshortdesc="VOIDED AFTER ISSUE")
         env = self._run(renewal_segment=[{**OURS, "nextpermitnumber": "B012026314X09"}], chain=[voided])
         self.assertIsNone(env.row(OURS["permitnumber"]).get("renewed_by"))
-        self.assertEqual([m["metadata"]["threshold"] for m in env.emails("dot_permit_expiring")
-                          if m["metadata"]["permit"] == OURS["permitnumber"]], [14, 3])
+        self.assertEqual([i["days_left"] for i, _m in _expiry_items(env, OURS["permitnumber"])], [14, 3])
 
 
 class TheFirstPassGate(unittest.TestCase):
@@ -640,8 +662,8 @@ class TheFirstPassGate(unittest.TestCase):
             _run(server._dot_permit_expiry_tick(now=_at(date(2026, 11, 6))))
             _run(server._dot_permit_expiry_tick(now=_at(date(2026, 11, 6)) + timedelta(hours=2)))
         self.assertEqual(len(env.emails()), 1)                  # once: the ledger
-        self.assertEqual(env.db.dot_alert_ledger.docs[0]["_id"],
-                         f"dot:p1:expiry:{OURS['permitnumber']}:14:2026-11-20")
+        self.assertIn(f"dot:p1:expiry:{OURS['permitnumber']}:14d:2026-11-20",
+                      [d["_id"] for d in env.db.dot_alert_ledger.docs])
 
     def test_the_07_00_job_runs_both(self):
         _need()
@@ -818,8 +840,7 @@ class TheUnverifiedWaiver(unittest.TestCase):
                if m["metadata"]["permit"] == OURS["permitnumber"]]
         self.assertEqual(emb, [])
         # (The expiry email is about the work end, not the waiver: it still goes.)
-        self.assertEqual([m["metadata"]["threshold"] for m in env.emails("dot_permit_expiring")
-                          if m["metadata"]["permit"] == OURS["permitnumber"]], [14, 3])
+        self.assertEqual([i["days_left"] for i, _m in _expiry_items(env, OURS["permitnumber"])], [14, 3])
 
     def test_the_label_is_in_en_and_es(self):
         en = (FE / "src" / "i18n" / "en.js").read_text(encoding="utf-8")

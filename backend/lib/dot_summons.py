@@ -14,8 +14,14 @@ THE RULES (operator rulings 2026-10-22, spec v3 A; `today` is a New York date):
                    match), not settled, hearing not completed: the smallest
                    threshold the days left have reached (14 from 14 days out,
                    7 from 7, 1 from 1 day out through the hearing day), so a
-                   missed day still sends. Once per ticket x threshold x
-                   hearing date: a rescheduled hearing gets fresh reminders.
+                   missed day still sends. Once per ticket x threshold window
+                   x hearing date: a rescheduled hearing gets fresh reminders.
+                   ONE DIGEST email per project per day lists every hearing
+                   due, grouped by hearing date (ruling 2026-10-23), each
+                   labelled with its TRUE days left -- a hearing caught up at
+                   1 day says "1 day", and its ledger key and metadata say 1,
+                   never the missed 7. Held over Shabbos / Yom Tov to the
+                   window's end, like the pending-hearing email.
   PENDING HEARING  a segment match still PENDING review, not settled, hearing
                    within 14 days: ONE email per ticket x hearing date, "A DOT
                    summons on your block has a hearing on {date}. Confirm
@@ -173,6 +179,49 @@ def default_due(rows: Iterable[Dict[str, Any]], today: date) -> List[Dict[str, A
             continue
         out.append({"ticket": str(r["number"]), "result": ev.get("result") or "DEFAULTED", "row": r})
     return sorted(out, key=lambda x: x["ticket"])
+
+
+def hearing_ledger_id(project_id: str, ticket: str, days_left: int, hearing: date) -> str:
+    """dot:<project>:hearing:<ticket>:<TRUE days left>d:<hearing date>."""
+    return f"dot:{project_id}:hearing:{ticket}:{days_left}d:{hearing.isoformat()}"
+
+
+def hearing_digest_text(project_name: str, items: List[Dict[str, Any]], today: date) -> Dict[str, Any]:
+    """{subject, en: [lines], es: [lines]}: ONE email for every hearing
+    reminder due today, grouped by hearing date. The subject says the count."""
+    n = len(items)
+    subj = (f"{n} DOT hearing{'s' if n != 1 else ''} coming up on {project_name} / "
+            f"{n} audiencia{'s' if n != 1 else ''} del DOT {'próximas' if n != 1 else 'próxima'} "
+            f"en {project_name}")
+    groups: Dict[date, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault(it["hearing"], []).append(it)
+    out: Dict[str, Any] = {"subject": subj}
+    for lang in ("en", "es"):
+        c = COPY[lang]
+        lines = [(f"{n} DOT summons{'es' if n != 1 else ''} on {project_name} "
+                  f"{'have hearings' if n != 1 else 'has a hearing'} coming up.") if lang == "en" else
+                 (f"{n} citación{'es' if n != 1 else ''} del DOT de {project_name} "
+                  f"{'tienen audiencias' if n != 1 else 'tiene una audiencia'} próximamente.")]
+        for d in sorted(groups):
+            days = (d - today).days
+            lead = (f"Hearing {date_label(d, 'en')} ({'today' if days == 0 else 'in ' + days_label(days, 'en')}):"
+                    if lang == "en" else
+                    f"Audiencia el {date_label(d, 'es')} ({'hoy' if days == 0 else 'en ' + days_label(days, 'es')}):")
+            lines.append(lead)
+            for it in sorted(groups[d], key=lambda x: x["ticket"]):
+                row = it["row"]
+                m = row.get("match") if isinstance(row.get("match"), dict) else {}
+                charges = "; ".join(" ".join(x for x in (str(g.get("code") or ""), str(g.get("description") or ""))
+                                             if x) for g in row.get("charges") or []) \
+                    or (row.get("description") or c["not_stated"])
+                when = " ".join(x for x in (str(row.get("hearing_time") or "")[:5],
+                                            str(row.get("hearing_location") or "")) if x)
+                hw = c["how"].get(how(row), how(row) or c["not_stated"]).format(permit=m.get("permit_number") or "")
+                lines.append(f"  {it['ticket']} · {charges}" + (f" · {when}" if when else "")
+                             + f" · {c['balance']}: {money(row.get('balance_due'))} · {c['matched']}: {hw}")
+        out[lang] = lines
+    return out
 
 
 def ledger_id(project_id: str, kind: str, ticket: str, threshold: Any = "-",
