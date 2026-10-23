@@ -236,14 +236,17 @@ class TheShippedSuite(unittest.TestCase):
         self.s = ev.load_suite(str(BACKEND / "eval" / "boyland.json"))
         self.by_id = {c["id"]: c for c in self.s["cases"]}
 
-    def test_the_fourth_floor_case_claims_2_per_unit_and_refuses_the_rest(self):
+    def test_the_fourth_floor_case_claims_the_whole_apartment(self):
+        """Rewritten 2026-10-23: each duplex has 3 (A-103.00 + the mezzanine
+        #747 links), and A-103.00's half - the 2 it once claimed - is refused."""
         c = self.by_id.get("exhaust-fans-per-unit-fourth-floor")
         self.assertIsNotNone(c, "the case is not in the suite")
         self.assertEqual(c["expect"]["claims"],
-                         [{"subject": "exhaust fans", "value": 2, "scope": SCOPE}])
-        self.assertEqual(c["expect"]["sheets"], ["M-103.00"])
+                         [{"subject": "exhaust fans", "value": 3, "scope": SCOPE}])
+        self.assertEqual(c["expect"]["sheets"], ["M-103.00", "M-104.00"])
         self.assertEqual(c["expect"]["refused"],
-                         [{"subject": "EF-1", "value": 2},
+                         [{"subject": "exhaust fans", "value": 2, "scope": SCOPE},
+                          {"subject": "EF-1", "value": 2},
                           {"subject": "exhaust fans", "value": 32}])
 
     def test_vent_fan_is_narrowed_not_deleted(self):

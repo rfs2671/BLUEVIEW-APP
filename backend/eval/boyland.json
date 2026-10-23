@@ -698,15 +698,16 @@
       "kind": "answer",
       "expect": {
         "sheets": [
-          "M-103.00"
+          "M-103.00",
+          "M-104.00"
         ],
         "values": [
-          2
+          3
         ],
         "claims": [
           {
             "subject": "exhaust fans",
-            "value": 2,
+            "value": 3,
             "scope": {
               "floor": "A-103.00",
               "per": "unit"
@@ -714,6 +715,14 @@
           }
         ],
         "refused": [
+          {
+            "subject": "exhaust fans",
+            "value": 2,
+            "scope": {
+              "floor": "A-103.00",
+              "per": "unit"
+            }
+          },
           {
             "subject": "EF-1",
             "value": 2
@@ -726,8 +735,54 @@
       },
       "truth": {
         "how": "by_eye",
-        "source": "MH - 7.2.26.pdf p5 (M-103.00, FOURTH FLOOR HVAC PLANS) against AR - 8.18.26.pdf (A-103.00, FOURTH FLOOR PLAN)",
-        "evidence": "M-103.00 prints 8 exhaust-fan symbols, each labelled beside it: four EF-1(50) at bathrooms and four EF-2(100) at kitchenettes. A-103.00's occupancy table lists four apartments, 4A-4D, each with one bathroom and one kitchenette. Pinned from render reads in tests/test_a_unit_is_answered_or_refused_never_wrong.py, TRUTH['A-103.00']: EF-1 and EF-2 once each in 4A, 4B, 4C and 4D. Re-read by eye 2026-10-07 on the placement review renders review_06/07.png, tiles #55-#62 - the kitchenette tiles show APT 4A, 4B, 4C, 4D printed beside the EF-2 placement. So 2 per unit, and the claim is SCOPED: the building total is not claimable, because M-104.00 (mezzanine, no unit tags) and M-106.00 (no architectural partner) were refused by the pass. Hence the two refused claims: 'There are 2 EF-1.' is the partial count the gate bound on 2026-10-06 (2 of 16 rows returned), and 32 is a building total over refused sheets."
+        "source": "MH - 7.2.26.pdf p5 (M-103.00) and p6 (M-104.00) against Owners set - 6.9.26.pdf p4 (A-103.00) and p5 (A-104.00)",
+        "evidence": "4A-4D are DUPLEXES. A-103.00 prints each '1 BEDROOM APT. LOWER' with a private stair labelled UP; A-104.00 (MEZZANINE PLAN, Owners set p5) names no unit, and M-104.00 (MEZZANINE FLOOR HVAC PLANS, MH - 7.2.26.pdf p6) prints one EF-1(50) in each of its four quadrants - read by eye 2026-10-07 on m104_crop.png, and placed into 4A-4D by stair seeding (#747), render-checked 2026-10-11 on stair_seed_A104.png: one quadrant per unit. On A-103.00 each of 4A-4D has one EF-1(50) at the bathroom and one EF-2(100) at the kitchenette (TRUTH['A-103.00'] in tests/test_a_unit_is_answered_or_refused_never_wrong.py; review_06/07.png tiles #55-#62). So each apartment has 3 exhaust fans: EF-1 2, EF-2 1. A unit is the whole apartment (operator ruling 2026-10-07), and a floor named alongside says which units, not which part - so 'each apartment on the fourth floor' is 3. REWRITTEN 2026-10-23: it claimed 2 per unit (A-103.00's half of each apartment); #671 made that refuse by design, and #747 made the whole apartment answerable. 2 per unit is now a refused claim. 'There are 2 EF-1.' is the partial count the gate bound on 2026-10-06; 32 is a building total that is not the building's (36 since the rebuilds)."
+      }
+    },
+    {
+      "id": "exhaust-fans-in-duplex-4a",
+      "question": "how many exhaust fans does apartment 4A have",
+      "subject": "exhaust fans",
+      "intent": "count",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "M-103.00",
+          "M-104.00"
+        ],
+        "values": [
+          3
+        ],
+        "claims": [
+          {
+            "subject": "exhaust fans",
+            "value": 3,
+            "scope": {
+              "unit": "4A"
+            }
+          }
+        ],
+        "refused": [
+          {
+            "subject": "exhaust fans",
+            "value": 2,
+            "scope": {
+              "unit": "4A"
+            }
+          },
+          {
+            "subject": "exhaust fans",
+            "value": 1,
+            "scope": {
+              "unit": "4A"
+            }
+          }
+        ]
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p5 (M-103.00) and p6 (M-104.00) against Owners set - 6.9.26.pdf p4 (A-103.00) and p5 (A-104.00)",
+        "evidence": "4A-4D are DUPLEXES. A-103.00 prints each '1 BEDROOM APT. LOWER' with a private stair labelled UP; A-104.00 (MEZZANINE PLAN, Owners set p5) names no unit, and M-104.00 (MEZZANINE FLOOR HVAC PLANS, MH - 7.2.26.pdf p6) prints one EF-1(50) in each of its four quadrants - read by eye 2026-10-07 on m104_crop.png, and placed into 4A-4D by stair seeding (#747), render-checked 2026-10-11 on stair_seed_A104.png: one quadrant per unit. On A-103.00 each of 4A-4D has one EF-1(50) at the bathroom and one EF-2(100) at the kitchenette (TRUTH['A-103.00'] in tests/test_a_unit_is_answered_or_refused_never_wrong.py; review_06/07.png tiles #55-#62). So each apartment has 3 exhaust fans: EF-1 2, EF-2 1. 4A: EF-1 and EF-2 on A-103.00 (2), EF-1 on A-104.00 (1) = 3. The two halves are refused: 2 is A-103.00's part alone (what the gate bound before #671), 1 is A-104.00's."
       }
     },
     {

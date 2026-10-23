@@ -259,19 +259,26 @@ def validate_suite(suite: Dict[str, Any]) -> None:
 #: What a claim's scope may say. A located-symbol count binds only at the
 #: scope its clause names (plan_search.glyph_values), so a case that claims
 #: one says which: the floor, by its architectural sheet number, and
-#: optionally `per: unit` for a figure every apartment on it shares.
-SCOPE_KEYS = ("floor", "per")
+#: optionally `per: unit` for a figure every apartment on it shares - or ONE
+#: APARTMENT by its tag (`unit: "4A"`), whose count is the whole apartment
+#: across every sheet its stair links (2026-10-11, #747).
+SCOPE_KEYS = ("floor", "per", "unit")
 
 
 def _check_scope(cid: str, claim: Dict[str, Any]) -> None:
     scope = claim.get("scope")
     if scope is None:
         return
-    if (not isinstance(scope, dict) or set(scope) - set(SCOPE_KEYS)
-            or not str(scope.get("floor") or "").strip()
-            or scope.get("per") not in (None, "unit")):
-        raise SuiteError(f"{cid}: a claim's scope is {{floor, per: unit}}; "
-                         f"got {scope!r}")
+    ok = isinstance(scope, dict) and not (set(scope) - set(SCOPE_KEYS))
+    if ok and "unit" in scope:
+        # one apartment, alone: a floor beside it says which units, not
+        # which part, so it would add nothing the claim could be checked by
+        ok = set(scope) == {"unit"} and bool(str(scope["unit"] or "").strip())
+    elif ok:
+        ok = bool(str(scope.get("floor") or "").strip()) and scope.get("per") in (None, "unit")
+    if not ok:
+        raise SuiteError(f"{cid}: a claim's scope is {{floor, per: unit}} or "
+                         f"{{unit}}; got {scope!r}")
 
 
 def known_failure_classes(suite: Dict[str, Any]) -> Dict[str, str]:
@@ -320,6 +327,8 @@ def _sentence(anchor: str, value: Any, scope: Optional[Dict[str, Any]] = None) -
     # only at the scope its clause names, so "exhaust fans: 2." is refused
     # whatever the number - the check would be about the sentence's shape,
     # which is the vacuous-probe mistake _invented_number's note records.
+    if scope and anchor and scope.get("unit"):
+        return f"{scope['unit']} has {value} {anchor}."
     if scope and anchor:
         floor = str(scope["floor"])
         if scope.get("per") == "unit":
