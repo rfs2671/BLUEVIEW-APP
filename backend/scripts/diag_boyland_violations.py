@@ -1,5 +1,5 @@
 """READ-ONLY diagnosis: why GET /projects/dob-summary returned open_violations=0
-for 588 Boyland while the DOB Compliance screen shows "1 VIOLATION".
+for 588 Boyland while the Compliance screen shows "1 VIOLATION".
 
 The screen tile is a resolution-BLIND raw ROW count
 (dob-logs.jsx: allLogs.filter(record_type in {violation,swo}).length, no

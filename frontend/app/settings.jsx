@@ -53,6 +53,7 @@ import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { useToast, ToastHost } from '../src/components/Toast';
 import { useAuth, isCompanyAdmin, isAccountAdmin, isPlatformOperator } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
+import { useT } from '../src/i18n';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../src/utils/retentionCopy';
 import apiClient, { authAPI, versionAPI } from '../src/utils/api';
 import { buildVerdict } from '../src/utils/buildVerdict';
@@ -128,6 +129,7 @@ export default function SettingsScreen() {
   const { isDark, toggleTheme, themeForced, colors } = useTheme();
   const datePalette = { error: colors.status.error, hint: colors.text.muted };
   const toast = useToast();
+  const tc = useT('compliance');
 
   // ── BUILD IDENTITY ──────────────────────────────────────────────────
   // `jsCommit` is a slot EAS fills at build time (app.json extra.jsCommit).
@@ -720,7 +722,7 @@ export default function SettingsScreen() {
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={s.settingTitle}>Notification Preferences</Text>
                     <Text style={s.settingSubtitle}>
-                      Tune which DOB compliance signals reach you and how
+                      {tc('notificationPrefsSubtitle')}
                     </Text>
                   </View>
                 </View>
