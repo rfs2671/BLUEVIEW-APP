@@ -28,7 +28,22 @@ York dates), for CONFIRMED and ACTIVE permits only -- never a renewed, voided or
 already expired one. The threshold due is the smallest one reached (14 from 14
 days out, 3 from 3 days out, through the last day), so a run that misses a day
 still sends; once per (project, permit, threshold, work end) in
-dot_alert_ledger (`expiry_ledger_id`).
+dot_alert_ledger.
+
+THE DIGEST (operator rulings 2026-10-23):
+  * ONE email per project per day lists every permit due that day, grouped by
+    work-end date (`digest_id`); the subject says the count. Each permit still
+    has its own ledger row (`expiry_ledger_id`, field `bucket` = the threshold
+    window), so nothing sends twice and a failure part-way never re-sends the
+    rest.
+  * LABELLED WITH THE TRUE DAYS LEFT. A permit first seen (or caught up) past
+    a threshold -- 1 day left, so both 14 and 3 have passed -- gets ONE
+    reminder saying "1 day"; its ledger key and metadata say 1 (`days_left`),
+    never the missed 3. The `bucket` field is what stops a second reminder in
+    the same window.
+  * SHABBOS / YOM TOV (spec decision 6): a reminder due inside the quiet
+    window is held to the window's end (`hold_id`; the server queues it on
+    the Shabbos queue) and nothing is ledgered as sent until it goes.
 """
 
 from __future__ import annotations
@@ -105,8 +120,28 @@ def expiry_due(rows: Iterable[Dict[str, Any]], today: date) -> List[Dict[str, An
     return sorted(out, key=lambda d: (d["days"], d["permit"]))
 
 
-def expiry_ledger_id(project_id: str, permit: str, threshold: int, end: date) -> str:
-    return f"dot:{project_id}:expiry:{permit}:{threshold}:{end.isoformat()}"
+def expiry_ledger_id(project_id: str, permit: str, days_left: int, end: date) -> str:
+    """dot:<project>:expiry:<permit>:<TRUE days left>d:<work end>."""
+    return f"dot:{project_id}:expiry:{permit}:{days_left}d:{end.isoformat()}"
+
+
+def digest_id(project_id: str, kind: str, day: date) -> str:
+    """One digest per project per day per kind."""
+    return f"dot:{project_id}:{kind}_digest:-:-:{day.isoformat()}"
+
+
+def hold_id(project_id: str, kind: str, day: date) -> str:
+    """A day's reminders held over Shabbos / Yom Tov (queued once)."""
+    return f"dot:{project_id}:{kind}_hold:-:-:{day.isoformat()}"
+
+
+def group_by_date(items: Iterable[Dict[str, Any]], key: str) -> List[tuple]:
+    """[(date, [items])], earliest date first; within a date by number."""
+    groups: Dict[date, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault(it[key], []).append(it)
+    return [(d, sorted(groups[d], key=lambda x: str(x.get("permit") or x.get("ticket") or "")))
+            for d in sorted(groups)]
 
 
 # ── The permits screen ──────────────────────────────────────────────────────
