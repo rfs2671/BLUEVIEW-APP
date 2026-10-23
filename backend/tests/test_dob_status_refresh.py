@@ -180,7 +180,10 @@ class TestSwoRescindedRefresh(unittest.TestCase):
         self.assertEqual(r["status_changed_at"], r["status_history"][-1]["at"])
         self.assertEqual(_hist(r), [("ACTIVE", "first_seen"), ("RESCINDED", "sync")])
         self.assertLessEqual(r["status_history"][0]["at"], r["status_history"][1]["at"])
-        s.alert.assert_not_awaited()          # closed outcome never emails
+        # AMENDED 2026-10-22 (operator ruling): lifting a SWO is the second
+        # update exception -- it emails once, as a lift, never as "new".
+        s.alert.assert_awaited_once()
+        self.assertEqual(s.alert.await_args.kwargs["event"], "swo_lifted")
 
     def test_swo_rescinded_alert_fires_for_refreshed_row_but_not_a_seed(self):
         """The GC `swo_rescinded` alert is previous_status based: it can now
@@ -293,8 +296,12 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
     def test_legacy_change_to_action_does_not_alert_then_genuine_change_does(self):
         """The migration-day rule. NEGATIVE CONTROL: if the legacy branch were
         not marked `legacy`, the first assert_not_awaited fails (the 2026-05-03
-        storm); if genuine changes were silenced too, the later assert_awaited
-        fails."""
+        storm).
+
+        AMENDED 2026-10-22 (operator ruling, lib/dob_alert_gate): a genuine
+        status change no longer emails at all -- only an update that ISSUES a
+        Stop Work Order or a vacate order does. So the later change to PENALTY
+        stays silent, and a change that issues a SWO alerts once."""
         s = _Sync()
         self._legacy_violation(s)
         # ACTIVE -> HEARING: still Action severity, i.e. WOULD alert if genuine.
@@ -309,18 +316,24 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
         self.assertEqual(r["status_history"][0]["at"], datetime(2026, 3, 1, tzinfo=timezone.utc))
         s.alert.assert_not_awaited()
 
-        # a LATER genuine change to Action severity alerts, once, through the
-        # throttled wrapper, and un-seeds the row.
+        # a LATER genuine status change un-seeds the row -- and, since
+        # 2026-10-22, does not email: an update is not news.
         s.sync(_project(), [_viol_rec(category="V*-DOB VIOLATION - PENALTY")])
         (r,) = s.rows()
         self.assertFalse(r["is_seed_transition"])
         self.assertEqual([x[1] for x in _hist(r)], ["first_seen", "legacy_first_refresh", "sync"])
+        s.alert.assert_not_awaited()
+
+        # ...an update that ISSUES a Stop Work Order emails, once.
+        s.sync(_project(), [_viol_rec(category="V*-DOB VIOLATION - PENALTY",
+                                      description="Full Stop Work Order")])
         s.alert.assert_awaited_once()
         sent_project, sent_log = s.alert.await_args.args
         self.assertEqual(sent_project["_id"], "p1")
         self.assertEqual(sent_log["raw_dob_id"], "555")
         self.assertEqual(sent_log["current_status"], "V*-DOB VIOLATION - PENALTY")
         self.assertEqual(s.alert.await_args.kwargs["source"], "dob")
+        self.assertEqual(s.alert.await_args.kwargs["event"], "swo")
 
     def test_legacy_unchanged_status_only_gains_history(self):
         s = _Sync()
@@ -343,7 +356,12 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
     def test_genuine_change_goes_through_real_throttled_path(self):
         """Through the REAL _send_critical_dob_alert_throttled: initial-scan
         suppression still applies to the refresh path, and once the scan is
-        done a genuine change emails exactly once."""
+        done an update that may email does so exactly once.
+
+        AMENDED 2026-10-22 (operator ruling, lib/dob_alert_gate): a plain
+        status change (ACTIVE -> HEARING) no longer emails at all, so the
+        change driven here is one that ISSUES a Stop Work Order -- the update
+        exception. The plain change is asserted silent separately below."""
         for scan_done, expect in ((False, 0), (True, 1)):
             with self.subTest(initial_scan_done=scan_done):
                 s = _Sync()
@@ -351,7 +369,8 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
                 sender = AsyncMock()
                 with patch.object(server, "db", s.db), \
                         patch.object(server, "_query_dob_apis", AsyncMock(
-                            return_value=[_viol_rec(category="V*-DOB VIOLATION - HEARING")])), \
+                            return_value=[_viol_rec(category="V*-DOB VIOLATION - HEARING",
+                                                    description="Full Stop Work Order")])), \
                         patch.object(server, "_initial_scan_done", AsyncMock(return_value=scan_done)), \
                         patch.object(server, "_dob_alert_recently_sent", AsyncMock(return_value=False)), \
                         patch.object(server, "_mark_dob_alert_sent", AsyncMock()), \
@@ -360,13 +379,42 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
                     _run(server.run_dob_sync_for_project(_project()))   # no further change
                 self.assertEqual(sender.await_count, expect)
 
-    def test_rescinded_closed_outcomes_never_alert(self):
+    def test_a_plain_status_change_never_emails_even_after_the_first_scan(self):
+        s = _Sync()
+        s.sync(_project(), [_viol_rec()])
+        sender = AsyncMock()
+        with patch.object(server, "db", s.db), \
+                patch.object(server, "_query_dob_apis", AsyncMock(
+                    return_value=[_viol_rec(category="V*-DOB VIOLATION - HEARING")])), \
+                patch.object(server, "_initial_scan_done", AsyncMock(return_value=True)), \
+                patch.object(server, "_dob_alert_recently_sent", AsyncMock(return_value=False)), \
+                patch.object(server, "_mark_dob_alert_sent", AsyncMock()), \
+                patch.object(server, "_send_critical_dob_alert", sender):
+            _run(server.run_dob_sync_for_project(_project()))
+        self.assertEqual(sender.await_count, 0)
+
+    def test_a_lifted_swo_alerts_once_as_a_lift(self):
+        """AMENDED 2026-10-22: was 'rescinded closed outcomes never alert'. The
+        operator ruled that an update lifting a SWO (or rescinding a vacate
+        order) emails and posts -- once, as a lift."""
         s = _Sync()
         s.sync(_project(), [_swo_rec(status="Active")])
         s.alert.reset_mock()
         s.sync(_project(), [_swo_rec(status="Lifted")])
-        s.alert.assert_not_awaited()
+        s.alert.assert_awaited_once()
+        self.assertEqual(s.alert.await_args.kwargs["event"], "swo_lifted")
         self.assertEqual(s.rows()[0]["severity"], "Good")
+
+    def test_a_legacy_swo_rows_first_refresh_stays_silent_even_when_lifted(self):
+        """The migration-day rule outranks the lift exception: a row written
+        before status_history existed was a first-sight snapshot, so its first
+        refresh (seed) never alerts, lifted or not."""
+        s = _Sync()
+        s.seed_legacy(record_type="swo", raw_dob_id="SWO1", severity="Action",
+                      stop_work_order_number="SWO1", status="Active",
+                      current_status="ACTIVE", description="Full Stop Work Order")
+        s.sync(_project(), [_swo_rec(status="Lifted")])
+        s.alert.assert_not_awaited()
 
 
 # ═══ project scoping ═════════════════════════════════════════════════════════
