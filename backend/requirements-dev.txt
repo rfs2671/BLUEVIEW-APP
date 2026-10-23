@@ -1,0 +1,23 @@
+# Local development and the test suite, on any OS:
+#
+#     pip install -r backend/requirements-dev.txt
+#
+# Everything production installs, under production's constraints -- so the
+# suite runs against the same versions the image does. Two of those are the
+# usual reasons a laptop's run differs from CI's:
+#
+#   openpyxl  the schedule importer's .xlsx reader (lib/schedule_import.py);
+#             the progress-report and schedule tests need it. Added in #829,
+#             so an environment set up before then is missing it.
+#   tzdata    zoneinfo's time zone database. Linux reads the system's;
+#             Windows has none, so America/New_York does not resolve without it.
+#
+# Both are pinned ONCE, in ../requirements.txt (which the image installs), and
+# come in through the line below rather than a second pin here that could
+# drift from production's.
+#
+# Not installable by pip: WeasyPrint's GTK runtime. Without it the tests that
+# render a PDF SKIP off CI with the reason (tests/_weasyprint.py) and FAIL
+# under CI=1, where the image's GTK is expected.
+-r ../requirements.txt
+-c constraints.txt

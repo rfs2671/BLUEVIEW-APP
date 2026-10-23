@@ -328,14 +328,20 @@ class NoDoublePermissiveLineSurvives(unittest.TestCase):
         under `if not is_platform_operator(admin)`, which the six above have no
         need of because none of them is an admin route. THE CARVE-OUT DOES NOT
         MAKE IT A DIFFERENT CHECK -- the company comparison is still this one,
-        which is the whole claim being counted."""
+        which is the whole claim being counted.
+
+        THE EIGHTH IS THE SIGNED DOWNLOAD. `_project_file_for` serves both
+        GET /files/{id}/signed-url and the header-less /files/{id}/download,
+        which re-runs it against the principal re-loaded from the link -- so a
+        user moved to another company after a link was minted is refused by
+        this same comparison."""
         tree = ast.parse(self.SRC)
         calls = sum(
             1 for n in ast.walk(tree)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
             and n.func.id == "_same_company_or_403")
         self.assertGreaterEqual(calls, 3)
-        self.assertEqual(calls, 7)
+        self.assertEqual(calls, 8)
 
     def test_the_helper_treats_empty_string_as_absent(self):
         """The mechanism, not just the outcome: both sides are coerced and

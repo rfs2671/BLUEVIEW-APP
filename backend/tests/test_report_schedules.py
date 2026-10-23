@@ -32,6 +32,7 @@ from tests.test_project_reports import _Reports  # noqa: E402
 from tests.test_whatsapp_dm_assistant import THOMAS, _optin  # noqa: E402
 from tests.test_whatsapp_morning_brief import _world  # noqa: E402
 from tests.test_whatsapp_phase1_foundations import ADMIN_PHONE, CO_A, PM_PHONE, _Ctx, _run  # noqa: E402
+from tests import _weasyprint  # noqa: E402
 
 NY = R.NY
 ADMIN = {"_id": "u_admin", "id": "u_admin", "company_id": CO_A, "role": "admin",
@@ -218,6 +219,7 @@ class TheDailyReport(_World, unittest.TestCase):
                                  "check_in_time": ny(2026, 10, 15, 7)})
         return db
 
+    @unittest.skipIf(_weasyprint.SKIP, _weasyprint.REASON)
     def test_by_whatsapp_the_pdf_and_kept_in_the_list(self):
         db = self.daily_world(whatsapp=True, email=False)
         c, sent = self.run_daily(db, ny(2026, 10, 15, 18, 0))
@@ -229,6 +231,7 @@ class TheDailyReport(_World, unittest.TestCase):
         self.assertTrue(msgs[0].endswith("Full report (PDF) attached."), msgs[0])
         self.assertEqual(len(self.media), 1)
 
+    @unittest.skipIf(_weasyprint.SKIP, _weasyprint.REASON)
     def test_by_email_with_the_list(self):
         db = self.daily_world(whatsapp=False, email=True)
         c, sent = self.run_daily(db, ny(2026, 10, 15, 18, 0), resend_key="k")

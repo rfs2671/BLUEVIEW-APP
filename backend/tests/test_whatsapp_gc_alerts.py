@@ -58,7 +58,7 @@ def _violation(raw, **kw):
     row = {"_id": f"v_{raw}", "project_id": "proj_a", "company_id": CO_A,
            "record_type": "violation", "raw_dob_id": raw,
            "violation_number": f"V{raw}", "description": "Failure to maintain",
-           "penalty_amount": "1,200", "violation_date": "2026-10-01",
+           "penalty_amount": "1,200", "violation_date": "2026-10-06",
            "status": "ACTIVE", "resolution_state": "open",
            "dob_link": f"https://dob.example/{raw}",
            "detected_at": NOON}

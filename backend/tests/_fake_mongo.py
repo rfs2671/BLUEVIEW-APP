@@ -193,7 +193,7 @@ class Coll:
 
     async def insert_one(self, doc):
         doc = dict(doc)
-        doc.setdefault("_id", f"oid{next(_ids)}")
+        doc.setdefault("_id", f"oid{next(_ids):010d}")  # fixed width: sorts in insertion order, like an ObjectId
         self._check_unique(doc)
         self.rows.append(doc)
         return _Res(inserted_id=doc["_id"])

@@ -115,6 +115,7 @@ from lib import dot_sync  # noqa: E402
 from lib import dot_embargo  # noqa: E402
 from lib import dot_permits  # noqa: E402
 from lib import dob_site_bins  # noqa: E402
+from lib import dob_alert_gate  # noqa: E402
 from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
@@ -146,6 +147,7 @@ from lib.logbook.signature_provenance import (  # noqa: E402
 )
 import re
 import hashlib
+import hmac
 from urllib.parse import quote_plus
 import json
 from dob_complaint_codes import classify_complaint, get_disposition_label, get_category_label, violation_type_display
@@ -1960,6 +1962,13 @@ class RateLimiter:
             return False
         self._hits[key].append(now)
         return True
+
+    def recent(self, key: str) -> int:
+        """Hits for `key` inside the window, WITHOUT recording one. For a
+        limiter that counts only failures and must be read on every attempt."""
+        now = _time.time()
+        self._hits[key] = [t for t in self._hits[key] if now - t < self.window]
+        return len(self._hits[key])
 
     def reset(self) -> None:
         """Clear all state. Used by tests; should not be called in
@@ -7513,7 +7522,19 @@ async def get_current_user(
     elif token:
         raw_token = token
 
+    # A JWT IN THE QUERY STRING IS STILL ACCEPTED, AND EVERY USE IS COUNTED.
+    # Downloads moved to /files/{id}/signed-url; the ?token= path stays until
+    # the OTA carrying that is adopted, and these lines are how "adopted" gets
+    # measured. Only a request that actually leaned on it -- no header, and
+    # `token` present in its own query string -- is logged. Never the value.
+    # getattr: the direct callers (and their tests) pass a request stand-in
+    # that has headers and a url but no query string to read.
+    via_query = (not credentials
+                 and "token" in (getattr(request, "query_params", None) or {}))
+
     if not raw_token:
+        if via_query:
+            _log_query_token_use(request, None, "empty")
         logger.error("❌ AUTH FAIL: No token provided")
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -7521,6 +7542,9 @@ async def get_current_user(
         payload = jwt.decode(raw_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("sub")
         site_mode = payload.get("site_mode", False)
+
+        if via_query:
+            _log_query_token_use(request, user_id, "ok")
 
         if not user_id:
             logger.error("❌ AUTH FAIL: No user_id in token")
@@ -7623,12 +7647,30 @@ async def get_current_user(
         return user_data
 
     except jwt.ExpiredSignatureError:
+        if via_query:
+            _log_query_token_use(request, None, "expired")
         logger.error("❌ AUTH FAIL: Token expired")
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError as e:
+        if via_query:
+            _log_query_token_use(request, None, "invalid")
         logger.error(f"❌ AUTH FAIL: Invalid token - {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid token")
-		
+
+
+def _log_query_token_use(request, user_id, outcome: str) -> None:
+    """One `[query-token]` line per request that authenticated (or tried to)
+    with ?token=. Path without its query string, the subject when the token
+    verified, and the client build, so adoption of the OTA that stops sending
+    it can be read straight off the logs. A logging failure changes nothing."""
+    try:
+        client = (request.headers.get("x-client-version") or "-").strip()[:32]
+        logger.info("[query-token] path=%s user=%s outcome=%s client=%s",
+                    request.url.path, user_id or "-", outcome, client or "-")
+    except Exception:
+        pass
+
+
 async def get_admin_user(current_user = Depends(get_current_user)):
     """THE COMPANY-WIDE ADMIN GATE. admin and owner, and nobody else.
 
@@ -18296,6 +18338,9 @@ async def hard_delete_project(
         cfg_res = await db.system_config.delete_many({"$or": [
             {"key": f"dob_sync_last:{project_id}"},
             {"key": {"$regex": f"^initial_scan_done:.*:{pid_re}$"}},
+            # The per-BIN first-scan keys (lib/dob_alert_gate.scan_key) end
+            # with the BIN, not the project, so the pattern above misses them.
+            {"key": {"$regex": f"^initial_scan_done:dob:{pid_re}:"}},
             {"key": {"$regex": f"^dob_alert_sent:{pid_re}:"}},
             {"key": {"$regex": f"^daily_report:{pid_re}:"}},
         ]})
@@ -28013,6 +28058,9 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
                 "modified": rec.get("modified", ""),
                 "r2_url": proxy_url or stored_url,
                 "cache_version": rec.get("cache_version", 0),
+                # Dropbox's hash of the bytes; the phone keys its download
+                # cache on it. "" for a direct upload, which has none.
+                "content_hash": rec.get("dropbox_content_hash") or "",
                 "source": rec.get("source", "dropbox_sync"),
                 # "Combined set — skipped" in Plans & Files, with its reason.
                 "index_status": _public_index_status(rec.get("index_status")),
@@ -29430,6 +29478,332 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
     if obj.get("ContentLength"):
         headers["Content-Length"] = str(obj["ContentLength"])
     return StreamingResponse(_iter(), media_type=content_type, headers=headers)
+
+
+# ── A DOWNLOAD LINK WORTH FIFTEEN MINUTES, NOT THIRTY DAYS ─────────────────
+#
+# WHAT WAS WRONG. The Download button built `/content?token=<JWT>` from
+# window.localStorage. A phone has no window.localStorage, so the token was
+# empty and the browser opened on {"detail":"Not authenticated"} -- the four
+# non-webhook `token=` lines in the retained Railway logs (2026-10-15..21) are
+# exactly those 401s. On the web it "worked" by putting the 30-day session
+# token in a URL: history, the address bar, anything it was pasted into.
+#
+# WHAT REPLACES IT. The app calls GET /files/{id}/signed-url with its bearer
+# header and gets back a link to /api/files/{id}/download whose HMAC names the
+# file, the principal and an expiry 15 minutes out. NOT SINGLE-USE, ON
+# PURPOSE: a PDF viewer comes back for byte ranges of the same document, and a
+# link that died on its first use would break the second range.
+#
+# THE SIGNATURE IS NOT THE PERMISSION. It proves this server issued the link
+# to this principal for this file. The download re-loads the principal (a
+# deleted user, a pending account, a removed device all refuse) and re-runs the
+# project, company and device allow-list checks the /content route runs, so
+# access revoked inside the fifteen minutes is revoked.
+#
+# THE KEY IS DERIVED FROM JWT_SECRET UNDER ITS OWN LABEL, so a MAC from here
+# can never be presented as anything else signed with that secret.
+FILE_DOWNLOAD_LINK_TTL_SECONDS = 900
+_FILE_DOWNLOAD_KEY_LABEL = b"levelog/file-download-link/v1"
+_FILE_DOWNLOAD_FILE_ID = re.compile(r"^[0-9a-f]{24}$")
+_FILE_DOWNLOAD_SUBJECT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_FILE_DOWNLOAD_EXP = re.compile(r"^\d{1,12}$")
+_FILE_DOWNLOAD_SIG = re.compile(r"^[0-9a-f]{64}$")
+# One range, the only shape R2 answers with a single 206. A multi-range ask
+# is served whole (200), which every client must accept.
+_SINGLE_BYTE_RANGE = re.compile(r"^bytes=(\d+-\d*|-\d+)$")
+
+# FORGED SIGNATURES ARE COUNTED PER ADDRESS, AND NOTHING ELSE IS. The MAC is
+# checked first; only a link whose signature does not verify is counted, and
+# after this many in a minute that address's further forgeries get a 429. An
+# expired link this server did sign is a 401 and never counted; a valid,
+# unexpired link is never refused here, so a PDF viewer's byte ranges -- or an
+# office behind one NAT where another tab sent junk -- always get through. A
+# forged MAC is not reachable by guessing at any rate: this bounds the noise,
+# not the odds. The per-address cap on ALL requests to the route is the
+# middleware's (lib/rate_limits.py).
+SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE = 20
+signed_download_refusal_limiter = RateLimiter(
+    max_requests=SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE, window_seconds=60)
+
+
+def _file_download_signature(file_id: str, kind: str, subject: str, exp: int) -> str:
+    key = hmac.new(JWT_SECRET.encode(), _FILE_DOWNLOAD_KEY_LABEL,
+                   hashlib.sha256).digest()
+    msg = f"{file_id}|{kind}|{subject}|{int(exp)}".encode()
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+def _file_download_principal(current_user: dict) -> tuple:
+    """("d", device id) for a site device, ("u", user id) for a person. The
+    kind is signed too: an id names a row in ONE collection, and a link issued
+    to a device must not be redeemable as a user of the same id."""
+    kind = "d" if _is_site_device(current_user) else "u"
+    return kind, str(current_user.get("id") or current_user.get("_id") or "")
+
+
+def _sign_file_download_path(file_id: str, current_user: dict,
+                             now: Optional[float] = None) -> tuple:
+    """(path, exp). The path is relative so the client joins it to whatever
+    API base it already talks to."""
+    kind, subject = _file_download_principal(current_user)
+    exp = int(_time.time() if now is None else now) + FILE_DOWNLOAD_LINK_TTL_SECONDS
+    sig = _file_download_signature(file_id, kind, subject, exp)
+    return (f"/api/files/{file_id}/download?k={kind}&u={subject}&e={exp}&s={sig}",
+            exp)
+
+
+def _check_file_download_signature(file_id: str, kind: str, subject: str,
+                                   exp: str, sig: str,
+                                   now: Optional[float] = None) -> Optional[str]:
+    """None for a good link, else "invalid" or "expired".
+
+    Shape first, so a malformed field never reaches the message; the MAC before
+    the clock, so a forged link learns nothing about expiry."""
+    if (kind not in ("u", "d")
+            or not _FILE_DOWNLOAD_FILE_ID.match(file_id or "")
+            or not _FILE_DOWNLOAD_SUBJECT.match(subject or "")
+            or not _FILE_DOWNLOAD_EXP.match(exp or "")
+            or not _FILE_DOWNLOAD_SIG.match(sig or "")):
+        return "invalid"
+    expected = _file_download_signature(file_id, kind, subject, int(exp))
+    if not hmac.compare_digest(expected, sig):
+        return "invalid"
+    if int(exp) < int(_time.time() if now is None else now):
+        return "expired"
+    return None
+
+
+def _site_device_is_live(device: dict) -> bool:
+    """A removed or switched-off tablet gets no download link. get_current_user
+    does not ask this of a device JWT; this path does, because a link is the
+    one thing here that outlives the request that minted it."""
+    return not device.get("is_deleted") and device.get("is_active", True) is not False
+
+
+async def _file_download_principal_row(kind: str, subject: str,
+                                       request: Request) -> Optional[dict]:
+    """The principal a link was signed for, re-read NOW, shaped the way
+    get_current_user shapes it so the access helpers read it the same way.
+    None when it no longer exists. A pending/demo user raises the same
+    HTTPException get_current_user would."""
+    if kind == "d":
+        device = await db.site_devices.find_one({"_id": to_query_id(subject)})
+        if not device or not _site_device_is_live(device):
+            return None
+        data = serialize_id(device)
+        data["site_mode"] = True
+        data["role"] = "site_device"
+        if device.get("project_id"):
+            project = await db.projects.find_one(
+                {"_id": to_query_id(device["project_id"])})
+            if project:
+                data["company_id"] = project.get("company_id")
+        return data
+    user = await db.users.find_one(
+        {"_id": to_query_id(subject), "is_deleted": {"$ne": True}})
+    if not user:
+        return None
+    data = serialize_id(user)
+    data["site_mode"] = False
+    _refuse_unapproved_principal(data, request)
+    return data
+
+
+async def _project_file_for(file_id: str, current_user: dict) -> dict:
+    """The project_files row, or the HTTPException the /content route raises:
+    project access, then same company, then the device allow-list. The
+    project comes from the ROW here, not the caller, so there is no
+    caller-supplied id to agree with."""
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one({"_id": rec_oid})
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    project = await _assert_project_access(str(rec.get("project_id") or ""),
+                                           current_user)
+    _same_company_or_403(rec, current_user)
+    if _is_site_device(current_user):
+        device = await db.site_devices.find_one(
+            {"_id": to_query_id(current_user.get("id") or "")})
+        if not device or not _site_device_is_live(device):
+            raise HTTPException(status_code=403, detail="Access denied to this file")
+    if not _site_device_may_retrieve(project, current_user,
+                                     rec.get("dropbox_path") or ""):
+        raise HTTPException(status_code=403, detail="Access denied to this file")
+    return rec
+
+
+@api_router.get("/files/{file_id}/signed-url")
+async def get_file_signed_url(file_id: str, current_user = Depends(get_current_user)):
+    """A 15-minute link to one stored file, for the caller only. See the
+    note above FILE_DOWNLOAD_LINK_TTL_SECONDS."""
+    rec = await _project_file_for(file_id, current_user)
+    if not rec.get("r2_key"):
+        raise HTTPException(status_code=404, detail="File not stored in R2")
+    path, exp = _sign_file_download_path(str(rec["_id"]), current_user)
+    return {
+        "path": path,
+        "url": f"{PUBLIC_API_BASE_URL}{path}",
+        "expires_in": FILE_DOWNLOAD_LINK_TTL_SECONDS,
+        "expires_at": datetime.fromtimestamp(exp, timezone.utc).isoformat(),
+        "filename": rec.get("name") or "file",
+    }
+
+
+# Shown in a browser tab, where the app's locale is not known, so both
+# languages are on the page. (status, EN title, EN hint, ES title, ES hint)
+_DOWNLOAD_REFUSAL_COPY = {
+    # 401, not 403: the link was genuine and has lapsed -- ask again.
+    "expired": (401,
+                "This download link has expired.",
+                "Go back to Levelog and tap Download again.",
+                "Este enlace de descarga ha caducado.",
+                "Vuelva a Levelog y toque Descargar otra vez."),
+    "invalid": (403,
+                "This download link is not valid.",
+                "Go back to Levelog and tap Download again.",
+                "Este enlace de descarga no es válido.",
+                "Vuelva a Levelog y toque Descargar otra vez."),
+    "denied": (403,
+               "You do not have access to this file.",
+               "If you think this is wrong, ask your admin.",
+               "No tiene acceso a este archivo.",
+               "Si cree que es un error, consulte a su administrador."),
+    "missing": (404,
+                "This file is not available for download.",
+                "It may have been removed or may still be syncing. Try again from Levelog.",
+                "Este archivo no está disponible para descargar.",
+                "Puede que se haya eliminado o que aún se esté sincronizando. Inténtelo de nuevo desde Levelog."),
+    "storage": (502,
+                "The file could not be fetched right now.",
+                "Try again in a minute.",
+                "No se pudo obtener el archivo en este momento.",
+                "Inténtelo de nuevo en un minuto."),
+    "throttled": (429,
+                  "Too many download attempts from this connection.",
+                  "Wait a minute, then go back to Levelog and tap Download again.",
+                  "Demasiados intentos de descarga desde esta conexión.",
+                  "Espere un minuto, vuelva a Levelog y toque Descargar otra vez."),
+}
+
+
+def _download_refusal_page(reason: str):
+    from fastapi.responses import HTMLResponse
+    status_code, en_t, en_h, es_t, es_h = _DOWNLOAD_REFUSAL_COPY.get(
+        reason, _DOWNLOAD_REFUSAL_COPY["invalid"])
+    html = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Levelog</title>"
+        "<style>body{font-family:system-ui,sans-serif;max-width:32rem;"
+        "margin:3rem auto;padding:0 1rem;color:#1f2937;background:#fff}"
+        "h1{font-size:1.15rem;margin:0 0 .4rem}p{margin:0 0 1.6rem;color:#4b5563}"
+        "@media(prefers-color-scheme:dark){body{background:#111827;color:#f3f4f6}"
+        "p{color:#9ca3af}}</style></head><body>"
+        f"<h1>{en_t}</h1><p>{en_h}</p>"
+        f"<h1 lang='es'>{es_t}</h1><p lang='es'>{es_h}</p>"
+        "</body></html>")
+    return HTMLResponse(content=html, status_code=status_code,
+                        headers={"Cache-Control": "private, no-store"})
+
+
+@app.get("/api/files/{file_id}/download")
+async def download_signed_file(file_id: str, request: Request,
+                               k: str = "", u: str = "", e: str = "",
+                               s: str = "", dl: str = ""):
+    """Serve one stored file to the holder of a link from /signed-url.
+
+    ON `app`, NOT `api_router`, because the request carries no bearer header:
+    the link IS the credential, and it is checked here before anything else.
+    Honours a single `Range`, so a PDF viewer can fetch the pages it needs.
+    `dl=1` asks for an attachment instead of inline display."""
+    # THE SIGNATURE FIRST, THEN THE LIMITER, AND ONLY FOR A FORGERY. An HMAC
+    # is cheap; refusing a real link is not. An expired link this server
+    # signed is a person who was slow (401, never counted), and a valid,
+    # unexpired one is served whatever its address has been doing -- an
+    # office behind one NAT must not lose its download to somebody else's
+    # junk requests.
+    reason = _check_file_download_signature(file_id, k, u, e, s)
+    if reason == "invalid":
+        from lib.rate_limits import _client_ip
+        client_ip = _client_ip(request)
+        if signed_download_refusal_limiter.recent(client_ip) >= SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE:
+            logger.warning("[signed-download] throttled ip=%s", client_ip)
+            page = _download_refusal_page("throttled")
+            page.headers["Retry-After"] = "60"
+            return page
+        signed_download_refusal_limiter.is_allowed(client_ip)  # records the forgery
+    if reason:
+        logger.info("[signed-download] refused file=%s reason=%s", file_id[:24], reason)
+        return _download_refusal_page(reason)
+    try:
+        principal = await _file_download_principal_row(k, u, request)
+        if principal is None:
+            raise HTTPException(status_code=403, detail="principal gone")
+        rec = await _project_file_for(file_id, principal)
+    except HTTPException as exc:
+        reason = "missing" if exc.status_code == 404 else "denied"
+        logger.info("[signed-download] refused file=%s kind=%s user=%s reason=%s",
+                    file_id, k, u, reason)
+        return _download_refusal_page(reason)
+
+    r2_key = rec.get("r2_key") or ""
+    if not r2_key or not _r2_client or not R2_BUCKET_NAME:
+        return _download_refusal_page("missing")
+
+    get_kwargs = {"Bucket": R2_BUCKET_NAME, "Key": r2_key}
+    asked_range = (request.headers.get("range") or "").strip()
+    if _SINGLE_BYTE_RANGE.match(asked_range):
+        get_kwargs["Range"] = asked_range
+    try:
+        obj = await asyncio.to_thread(_r2_client.get_object, **get_kwargs)
+    except Exception as exc:
+        code = ((getattr(exc, "response", None) or {}).get("Error") or {}).get("Code")
+        if code == "InvalidRange":
+            return Response(status_code=416, headers={
+                "Content-Range": f"bytes */{rec.get('size') or '*'}"})
+        logger.error(f"signed download R2 get failed key={r2_key}: {exc!r}")
+        return _download_refusal_page("storage")
+
+    body = obj["Body"]
+
+    def _iter():
+        try:
+            for chunk in iter(lambda: body.read(65536), b""):
+                yield chunk
+        finally:
+            try:
+                body.close()
+            except Exception:
+                pass
+
+    from urllib.parse import quote as _quote
+    name = str(rec.get("name") or "file")
+    ascii_name = (name.encode("ascii", "ignore").decode() or "file").replace('"', "")
+    disposition = "attachment" if dl == "1" else "inline"
+    headers = {
+        "Content-Disposition": (f'{disposition}; filename="{ascii_name}"; '
+                                f"filename*=UTF-8''{_quote(name)}"),
+        "Accept-Ranges": "bytes",
+        # The bytes are a private project document; nothing shared may keep them.
+        "Cache-Control": "private, no-store",
+    }
+    status_code = 200
+    if obj.get("ContentRange"):
+        headers["Content-Range"] = obj["ContentRange"]
+        status_code = 206
+    if obj.get("ContentLength") is not None:
+        headers["Content-Length"] = str(obj["ContentLength"])
+    content_type = (obj.get("ContentType")
+                    or mimetypes.guess_type(name)[0]
+                    or "application/octet-stream")
+    logger.info("[signed-download] file=%s kind=%s user=%s status=%s",
+                file_id, k, u, status_code)
+    return StreamingResponse(_iter(), status_code=status_code,
+                             media_type=content_type, headers=headers)
 
 
 @api_router.delete("/projects/{project_id}/files/{file_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
@@ -41166,8 +41540,13 @@ async def _critical_dob_alert_recipients(project: dict) -> List[str]:
     return out
 
 
-async def _send_critical_dob_alert(project: dict, dob_log: dict):
+async def _send_critical_dob_alert(project: dict, dob_log: dict, *, event: str):
     """Send a notification email about a DOB record that needs attention.
+
+    `event` is required, one of lib/dob_alert_gate.EVENTS: "new" for a first
+    sighting that passed new_alert_refusal (not closed, received by DOB within
+    2 days, its BIN past its first pass); "swo" / "vacate" for an update that
+    issued that order. No other update emails (operator ruling 2026-10-22).
 
     Deliberately plain and conversational. All-caps subjects, red
     banners, bracketed "[CRITICAL]" tags, and heavy emoji push spam
@@ -41198,11 +41577,21 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     else:
         detected_str = str(detected_at)
 
+    # Which event, and the record's own facts -- its number, the date DOB
+    # received it and its status -- so a reader can see at a glance how old it
+    # is and whether it is still open (lib/dob_alert_gate.COPY: EN and ES).
+    head_en = dob_alert_gate.headline(event, rt, project_name, "en")
+    head_es = dob_alert_gate.headline(event, rt, project_name, "es")
+    subject, intro, intro_es = head_en["subject"], head_en["intro"], head_es["intro"]
+    line_en = dob_alert_gate.record_line(dob_log, rt, "en")
+    line_es = dob_alert_gate.record_line(dob_log, rt, "es")
+
     # Plaintext alternative: present-tense, human, no urgency language.
     link_line = f"\n\nDetails: {dob_link}" if dob_link else ""
     text_body = (
         f"Hi,\n\n"
-        f"Levelog picked up a new {rt} on {project_name}.\n\n"
+        f"{intro}\n{intro_es}\n\n"
+        f"{line_en}\n{line_es}\n\n"
         f"Summary: {summary}\n\n"
         f"Recommended next step: {next_action}\n\n"
         f"Detected {detected_str}."
@@ -41229,12 +41618,13 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     <tr><td style="padding:24px 28px;">
       <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
       <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">
-        New {rt} on {project_name}
+        {subject}
       </h1>
       <p style="margin:0 0 14px;font-size:15px;">Hi,</p>
-      <p style="margin:0 0 14px;font-size:15px;">
-        Levelog picked up a new {rt} on <strong>{project_name}</strong>. Here are the details:
-      </p>
+      <p style="margin:0 0 4px;font-size:15px;">{intro}</p>
+      <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">{intro_es}</p>
+      <p style="margin:0 0 4px;font-size:15px;"><strong>{line_en}</strong></p>
+      <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">{line_es}</p>
       <p style="margin:0 0 14px;font-size:15px;"><strong>Summary:</strong> {summary}</p>
       <p style="margin:0 0 14px;font-size:15px;"><strong>Recommended next step:</strong> {next_action}</p>
       <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">Detected {detected_str}.</p>
@@ -41249,8 +41639,6 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
   </table>
 </body>
 </html>"""
-
-    subject = f"New {rt} on {project_name}"
 
     # MR.14 fix — route through lib/notifications.send_notification.
     # That helper provides:
@@ -41267,7 +41655,12 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     # idempotency check guarantees one alert per record per recipient
     # per 23 hours, regardless of how many polls fire in between.
     raw_dob_id = dob_log.get("raw_dob_id") or ""
-    entity_id = f"dob_log:{raw_dob_id}" if raw_dob_id else f"project:{project.get('_id')}"
+    # Per record AND event: send_notification's 23h idempotency keys on this
+    # id, so with the bare record id a lift three hours after the issue email
+    # would be swallowed. "new" keeps the historical id, so idempotency for
+    # emails already sent carries across the deploy.
+    entity_id = (f"dob_log:{raw_dob_id}" + ("" if event == "new" else f":{event}")
+                 if raw_dob_id else f"project:{project.get('_id')}")
     from lib.notifications import send_notification
     for recipient in recipients:
         try:
@@ -41285,6 +41678,8 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
                     "record_type": rt_raw,
                     "raw_dob_id": raw_dob_id,
                     "severity": dob_log.get("severity"),
+                    "event": event,
+                    "received_by_dob": str(dob_alert_gate.received_date(dob_log) or ""),
                 },
             )
         except Exception as e:
@@ -41335,6 +41730,63 @@ async def _initial_scan_done(project_id: str, source: str) -> bool:
         return True
 
 
+async def _bin_scan_done(project_id: str, bin_: str, own_bin: str) -> bool:
+    """Has the DOB sync finished a full pass of `bin_` for this project?
+    Keyed per project AND per BIN (lib/dob_alert_gate.scan_key), so a BIN added
+    to a project later has a silent first pass of its own. The legacy
+    per-project key still answers for the project's OWN BIN: those records have
+    been scanned all along, and requiring a new key for them would mute one
+    sync of genuine alerts on every project at deploy."""
+    if not project_id:
+        return False
+    keys = [dob_alert_gate.scan_key(project_id, bin_)] if bin_ else []
+    if not bin_ or bin_ == own_bin:
+        keys.append(f"initial_scan_done:dob:{project_id}")
+    try:
+        return bool(await db.system_config.find_one({"key": {"$in": keys}}))
+    except Exception as e:
+        logger.warning(f"bin scan state read failed: {type(e).__name__}")
+        # As _initial_scan_done: err toward "done" -- the age and closed
+        # rules (lib/dob_alert_gate) still stop a backfilled record.
+        return True
+
+
+async def _stamp_order_issued(row_id, order: str, now: datetime) -> None:
+    """Mark the row an UPDATE put under a Stop Work Order / vacate order, so
+    the GC group alerts can post it once (lib/dob_alert_gate.gc_order_items)."""
+    try:
+        await db.dob_logs.update_one(
+            {"_id": row_id}, {"$set": {"order_issued": {"kind": order, "at": now}}})
+    except Exception as e:
+        logger.warning(f"order stamp failed: {type(e).__name__}")
+
+
+async def _stamp_order_lifted(row_id, which: str, now: datetime) -> None:
+    """Mark the row an UPDATE lifted a SWO / vacate order on in full, so the GC
+    group alerts post it once, in green (lib/dob_alert_gate.gc_order_lifted_items)."""
+    try:
+        await db.dob_logs.update_one(
+            {"_id": row_id}, {"$set": {"order_lifted": {"kind": which, "at": now}}})
+    except Exception as e:
+        logger.warning(f"order-lifted stamp failed: {type(e).__name__}")
+
+
+async def _mark_bins_scanned(project_id: str, bins) -> None:
+    """Record a finished DOB pass for each real BIN in `bins`."""
+    now = datetime.now(timezone.utc)
+    for b in sorted({str(b) for b in (bins or []) if b and not _is_placeholder_bin(str(b))}):
+        key = dob_alert_gate.scan_key(project_id, b)
+        try:
+            await db.system_config.update_one(
+                {"key": key},
+                {"$set": {"key": key, "source": "dob", "project_id": project_id,
+                          "bin": b, "updated_at": now},
+                 "$setOnInsert": {"completed_at": now}},
+                upsert=True)
+        except Exception as e:
+            logger.warning(f"bin scan state write failed: {type(e).__name__}")
+
+
 async def _mark_initial_scan_done(project_id: str, source: str) -> None:
     if not project_id or not source:
         return
@@ -41353,15 +41805,25 @@ async def _mark_initial_scan_done(project_id: str, source: str) -> None:
         logger.warning(f"initial_scan mark failed: {e}")
 
 
+def _dob_alert_key(project_id: str, raw_dob_id: str, event: Optional[str] = None) -> str:
+    """system_config key of the 24h throttle: per project, record AND event
+    (operator ruling 2026-10-22). A Stop Work Order issued and then lifted
+    three hours later is two events, and both email; the same event twice in
+    a day is one."""
+    base = f"dob_alert_sent:{project_id}:{raw_dob_id}"
+    return f"{base}:{event}" if event else base
+
+
 async def _dob_alert_recently_sent(project_id: str, raw_dob_id: str,
-                                     window_hours: int = _DOB_ALERT_THROTTLE_HOURS) -> bool:
-    """Returns True if we've already emailed this (project, record) combo
-    inside the window. Keyed on `dob_alert_sent:{project}:{raw_dob_id}`."""
+                                     window_hours: int = _DOB_ALERT_THROTTLE_HOURS,
+                                     event: Optional[str] = None) -> bool:
+    """Returns True if we've already emailed this (project, record, event)
+    inside the window. Keyed by _dob_alert_key."""
     if not project_id or not raw_dob_id:
         return False
     try:
         doc = await db.system_config.find_one(
-            {"key": f"dob_alert_sent:{project_id}:{raw_dob_id}"}
+            {"key": _dob_alert_key(project_id, raw_dob_id, event)}
         )
         if not doc:
             return False
@@ -41377,14 +41839,16 @@ async def _dob_alert_recently_sent(project_id: str, raw_dob_id: str,
         return False  # on error, err toward sending rather than silent-drop
 
 
-async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str) -> None:
+async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str,
+                               event: Optional[str] = None) -> None:
     if not project_id or not raw_dob_id:
         return
+    key = _dob_alert_key(project_id, raw_dob_id, event)
     try:
         await db.system_config.update_one(
-            {"key": f"dob_alert_sent:{project_id}:{raw_dob_id}"},
+            {"key": key},
             {"$set": {
-                "key":           f"dob_alert_sent:{project_id}:{raw_dob_id}",
+                "key":           key,
                 "last_alert_at": datetime.now(timezone.utc),
             }},
             upsert=True,
@@ -41394,7 +41858,7 @@ async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str) -> None:
 
 
 async def _send_critical_dob_alert_throttled(
-    project: dict, dob_log: dict, source: str = "dob",
+    project: dict, dob_log: dict, source: str = "dob", *, event: str,
 ) -> bool:
     """Wrapper that enforces:
 
@@ -41419,16 +41883,17 @@ async def _send_critical_dob_alert_throttled(
         )
         return False
 
-    # Gate 2 — 24h per-record throttle
-    if await _dob_alert_recently_sent(project_id, raw_dob_id):
+    # Gate 2 — 24h throttle, per record AND event (issue, lift, rescind each
+    # separate: ruling 2026-10-22).
+    if await _dob_alert_recently_sent(project_id, raw_dob_id, event=event):
         logger.info(
             f"DOB alert throttled (within 24h) source={source} "
             f"project={project.get('name')} raw_dob_id={raw_dob_id}"
         )
         return False
 
-    await _send_critical_dob_alert(project, dob_log)
-    await _mark_dob_alert_sent(project_id, raw_dob_id)
+    await _send_critical_dob_alert(project, dob_log, event=event)
+    await _mark_dob_alert_sent(project_id, raw_dob_id, event=event)
     return True
 
 
@@ -41715,8 +42180,24 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
                 # Fire critical alert through the throttled wrapper.
                 # Initial-scan suppression here means the very first 311
                 # poll for a project quietly backfills the historical
-                # complaints without spamming the owner.
-                await _send_critical_dob_alert_throttled(project, doc, source="311")
+                # complaints without spamming the owner. The same rules as
+                # the DOB sync (lib/dob_alert_gate): a first sighting emails
+                # only if open and received within 2 days; a transition only
+                # if it issued a Stop Work Order or a vacate order.
+                if existing is None:
+                    why = dob_alert_gate.new_alert_refusal(
+                        doc, _Date.fromisoformat(eastern_today()))
+                    if why:
+                        logger.info(f"[dob-alert] 311 not sent as new: reason={why} "
+                                    f"project={project_id} raw_dob_id={doc.get('raw_dob_id')}")
+                    else:
+                        await _send_critical_dob_alert_throttled(
+                            project, doc, source="311", event="new")
+                else:
+                    order = dob_alert_gate.update_issues_order(existing, doc)
+                    if order:
+                        await _send_critical_dob_alert_throttled(
+                            project, doc, source="311", event=order)
 
             # V2.3 Commit 6 — predictive inspection surfacing.
             # Spawn a fire-and-forget similar-case correlation
@@ -42270,6 +42751,11 @@ def _classify_resolution_state(rec: dict) -> str:
     # neither current_status nor violation_category exposes, so a won dispute
     # ("Disputed Successfully") read as OPEN until this was added.
     vstatus = str(rec.get("violation_status") or "").upper()
+    # ECB/OATH (6bgk-3dad) carries its state in `ecb_violation_status`
+    # ("ACTIVE" / "RESOLVE" -- no trailing D), which none of the fields above
+    # expose: a resolved ECB violation read as OPEN and severity 'Action', and
+    # 39558663R would have been emailed as new (2026-10-22).
+    ecb = str(rec.get("ecb_violation_status") or "").upper()
     hearing = rec.get("hearing_date_time") or rec.get("hearing_date") or ""
     disp_date = rec.get("disposition_date") or ""
 
@@ -42282,7 +42768,7 @@ def _classify_resolution_state(rec: dict) -> str:
     # `category`, using substrings that DOB itself uses.
     if any(w in cert_status for w in ["CERTIFIED", "CERTIFICATE", "RESOLVE"]):
         return "certified"
-    if "DISMISS" in current_status or "DISMISS" in category:
+    if "DISMISS" in current_status or "DISMISS" in category or "DISMISS" in ecb:
         return "dismissed"
     # A successful dispute (DOB NOW) resolves the violation in the owner's
     # favor. Match the FULL phrase — "Disputed Unsuccessfully" stays open.
@@ -42292,7 +42778,8 @@ def _classify_resolution_state(rec: dict) -> str:
         return "paid"
     if (any(w in current_status for w in ["RESOLVE", "CLOSED", "RESCIND"])
             or any(w in category for w in ["RESOLVE", "CLOSED", "RESCIND"])
-            or any(w in vstatus for w in ["RESOLVE", "CLOSED", "CURED", "COMPLIED"])):
+            or any(w in vstatus for w in ["RESOLVE", "CLOSED", "CURED", "COMPLIED"])
+            or any(w in ecb for w in ["RESOLVE", "CLOSED"])):
         return "resolved"
     if "CURE" in cert_status or "CURE" in current_status:
         return "cure_pending"
@@ -43006,11 +43493,16 @@ def _plan_in_place_refresh(existing: dict, dob_log: dict, now: datetime):
 
 
 async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
-                          answered: Optional[Dict[str, bool]] = None) -> list:
+                          answered: Optional[Dict[str, bool]] = None,
+                          fetched_bins: Optional[list] = None) -> list:
     """`records` plus everything filed under the job site's OTHER building BINs
     (lib/dob_site_bins). A BIN counts only when one of its jobs is also a job
     under the project's BIN; a neighbour's BIN is never fetched. Never raises: a
-    failure leaves the sync exactly as it was."""
+    failure leaves the sync exactly as it was.
+
+    Each record added here is tagged `_site_bin` and each BIN fetched is
+    appended to `fetched_bins`, so the first pass of a newly added BIN is
+    silent (lib/dob_alert_gate.scan_key) like any other backfill."""
     try:
         if not nyc_bin or _is_placeholder_bin(nyc_bin):
             return records
@@ -43018,7 +43510,12 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
         for cand in dob_site_bins.candidate_bins(records, nyc_bin):
             found = await _query_dob_apis(cand, "", answered)
             if dob_site_bins.shares_job(records, nyc_bin, found, cand):
+                for r in found:
+                    if isinstance(r, dict):
+                        r["_site_bin"] = cand
                 added += dob_site_bins.new_records(list(records) + added, found)
+                if fetched_bins is not None:
+                    fetched_bins.append(cand)
                 logger.info(f"[dob-sync] project {project_id}: BIN {cand} is part of the site "
                             f"(shares a job with BIN {nyc_bin}); {len(found)} records")
             else:
@@ -43096,7 +43593,8 @@ async def run_dob_sync_for_project(project: dict) -> list:
             & set(source_sync.DOB_SOURCES))
 
     raw_records = await _query_dob_apis(nyc_bin, project_address, answered)
-    raw_records = await _with_site_bins(project_id, nyc_bin, raw_records, answered)
+    site_bins: list = []
+    raw_records = await _with_site_bins(project_id, nyc_bin, raw_records, answered, site_bins)
 
     # --- BIN auto-heal ---
     # Scan returned records for a real BIN. DOB's datasets expose the
@@ -43262,10 +43760,14 @@ async def run_dob_sync_for_project(project: dict) -> list:
     if not new_records:
         logger.info(f"DOB sync for project {project_id}: no new records")
         await _mark_synced()
+        await _mark_bins_scanned(project_id, [nyc_bin] + site_bins)
         return []
  
     inserted_logs = []
     now = datetime.now(timezone.utc)
+    # DOB dates are New York calendar dates.
+    alert_today = _Date.fromisoformat(eastern_today())
+    bin_scanned: Dict[str, bool] = {}
  
     for raw_id, rec in new_records:
         try:
@@ -43393,11 +43895,26 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # 'Good' and never email as critical. The throttled wrapper
                 # still applies initial-scan suppression and the 24h per-record
                 # dedupe.
-                if changed and not legacy and severity == "Action":
-                    await _send_critical_dob_alert_throttled(
-                        project,
-                        {**existing, **update, "id": str(existing["_id"])},
-                        source="dob")
+                # An UPDATE never emails (operator ruling 2026-10-22) -- unless
+                # it issued a Stop Work Order or a vacate order. Checked on
+                # every non-legacy refresh, not only a status change: DOB
+                # serves an A3 "Full Stop Work Order" as a new DISPOSITION on a
+                # complaint whose status stays ACTIVE. The 24h throttle and the
+                # before/after comparison keep it to one email.
+                if not legacy:
+                    after = {**existing, **dob_log, **(update or {}),
+                             "id": str(existing["_id"])}
+                    order = dob_alert_gate.update_issues_order(existing, after)
+                    if order:
+                        await _stamp_order_issued(existing["_id"], order, now)
+                        await _send_critical_dob_alert_throttled(
+                            project, after, source="dob", event=order)
+                    # ...or lifted one in full: the second update exception.
+                    lifted = dob_alert_gate.update_lifts_order(existing, after)
+                    if lifted:
+                        await _stamp_order_lifted(existing["_id"], lifted, now)
+                        await _send_critical_dob_alert_throttled(
+                            project, after, source="dob", event=f"{lifted}_lifted")
             elif existing and existing.get("current_status") == current_status:
                 # No status change — refresh mutable fields. Don't
                 # insert a duplicate.
@@ -43424,9 +43941,18 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # Only alert if severity escalated to Action — and
                 # route through the throttled wrapper so initial-scan
                 # suppression + 24h dedupe apply.
-                old_severity = existing.get("severity", "")
-                if severity == "Action" and old_severity != "Action":
-                    await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
+                # A field refresh is an update: it emails only when it issued
+                # a Stop Work Order or a vacate order (ruling 2026-10-22).
+                order = dob_alert_gate.update_issues_order(existing, dob_log)
+                if order:
+                    await _stamp_order_issued(existing["_id"], order, now)
+                    await _send_critical_dob_alert_throttled(
+                        project, dob_log, source="dob", event=order)
+                lifted = dob_alert_gate.update_lifts_order(existing, dob_log)
+                if lifted:
+                    await _stamp_order_lifted(existing["_id"], lifted, now)
+                    await _send_critical_dob_alert_throttled(
+                        project, dob_log, source="dob", event=f"{lifted}_lifted")
             else:
                 # Either first time OR status changed. Stamp
                 # transition markers and insert a new row. The
@@ -43464,11 +43990,52 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     and "current_status" not in existing
                 )
                 dob_log["is_seed_transition"] = is_seed_transition
+                site_bin = str(rec.get("_site_bin") or nyc_bin or "")
+                order = lifted = None
+                if existing is None:
+                    # Which BIN it came from, and whether that BIN's first pass
+                    # is under way: the GC group alerts read both from the row
+                    # (silent first pass, one summary per newly added BIN).
+                    if site_bin not in bin_scanned:
+                        bin_scanned[site_bin] = await _bin_scan_done(
+                            project_id, site_bin, nyc_bin)
+                    if rec.get("_site_bin"):
+                        dob_log["site_bin"] = str(rec["_site_bin"])
+                    dob_log["bin_first_pass"] = not bin_scanned[site_bin]
+                elif not is_seed_transition:
+                    # A change row (permit diff / transition): an update.
+                    order = dob_alert_gate.update_issues_order(existing, dob_log)
+                    if order:
+                        dob_log["order_issued"] = {"kind": order, "at": now}
+                    lifted = dob_alert_gate.update_lifts_order(existing, dob_log)
+                    if lifted:
+                        dob_log["order_lifted"] = {"kind": lifted, "at": now}
                 result = await db.dob_logs.insert_one(dob_log)
                 dob_log["id"] = str(result.inserted_id)
                 inserted_logs.append(dob_log)
-                if severity == "Action" and not is_seed_transition:
-                    await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
+                if existing is not None and not is_seed_transition:
+                    if order:
+                        await _send_critical_dob_alert_throttled(
+                            project, dob_log, source="dob", event=order)
+                    if dob_log.get("order_lifted"):
+                        await _send_critical_dob_alert_throttled(
+                            project, dob_log, source="dob",
+                            event=f"{dob_log['order_lifted']['kind']}_lifted")
+                elif severity == "Action" and not is_seed_transition:
+                    if existing is None:
+                        # A FIRST SIGHTING. Announced as new only if the BIN it
+                        # came from has had its first pass, it is not closed,
+                        # and DOB received it within the last 2 days
+                        # (lib/dob_alert_gate). Otherwise stored, not sent.
+                        why = dob_alert_gate.new_alert_refusal(
+                            dob_log, alert_today, bin_scanned=bin_scanned[site_bin])
+                        if why:
+                            logger.info(
+                                f"[dob-alert] not sent as new: reason={why} "
+                                f"project={project_id} bin={site_bin} raw_dob_id={raw_id}")
+                        else:
+                            await _send_critical_dob_alert_throttled(
+                                project, dob_log, source="dob", event="new")
         except Exception as e:
             failed_types.add(rec.get("_record_type"))
             logger.error(f"Failed to process dob_log for raw_id={raw_id} type={rec.get('_record_type')}: {e}", exc_info=True)
@@ -43561,6 +44128,9 @@ async def run_dob_sync_for_project(project: dict) -> list:
     # can send email alerts. The first scan of a newly-tracked project
     # pulls in the entire historical backlog — silent during that run.
     await _mark_initial_scan_done(project_id, "dob")
+    # ...and per BIN: a site BIN fetched for the first time this run is
+    # backfill too, and its first pass ends here.
+    await _mark_bins_scanned(project_id, [nyc_bin] + site_bins)
 
     # Rolling per-project sync freshness. Distinct from first_poll_completed_at,
     # which is written ONCE (guarded above) and therefore answers "has this
@@ -47355,6 +47925,15 @@ async def _gc_ai_line(kind: str, facts: Dict[str, str]) -> Optional[str]:
 
 async def _gc_alert_text(item: dict, address: str, today) -> str:
     kind, rec = item["kind"], item["rec"]
+    if kind == dob_alert_gate.ORDER_LIFTED_KIND:
+        return "\n".join(
+            [f"{wa_alerts.GREEN} {address}"]
+            + dob_alert_gate.lifted_post_lines(item.get("lifted") or "swo", address)
+            + [wa_alerts.record_line(kind, rec), wa_alerts.source_line(kind, rec)])
+    if kind == dob_alert_gate.BIN_ADDED_KIND:
+        return dob_alert_gate.bin_summary_message(
+            address, item.get("bin") or rec.get("site_bin") or "", item.get("open") or [],
+            icon=wa_alerts.ICON.get(kind, wa_alerts.ORANGE))
     ai = await _gc_ai_line(kind, wa_alerts.facts(rec)) if kind in wa_alerts.AI_KINDS else None
     what = wa_alerts.what_line(kind, rec, ai, today=today, exp=item.get("exp"),
                                prev=item.get("prev") or "")
@@ -47478,6 +48057,14 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             logger.warning(f"[wa-gc] record read failed: {type(e).__name__}")
             continue
         items = wa_alerts.collect(dob_rows, dot_rows, today)
+        # The email's rules, for the group too (lib/dob_alert_gate, ruling
+        # 2026-10-22): an update that issued a SWO / vacate order, and ONE
+        # summary per newly added BIN. Everything a rule refuses is claimed
+        # silently below, so it can never post later as a backlog.
+        latest_dob = _gc_latest_per_record(dob_rows)
+        items += dob_alert_gate.gc_order_items(latest_dob, today)
+        items += dob_alert_gate.gc_order_lifted_items(latest_dob, today)
+        items += dob_alert_gate.gc_bin_summary_items(latest_dob)
         report["permits_no_expiry"] += sum(
             1 for r in _gc_latest_per_record(dob_rows)
             if r.get("record_type") == "permit"
@@ -47571,6 +48158,14 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
 
         todo = []
         for it in items:
+            why = dob_alert_gate.gc_refusal(it, today)
+            if why:
+                if await _gc_ledger_claim(
+                        wa_gc.ledger_id(project_id, it["kind"], it["item"]),
+                        kind=f"gc_{it['kind']}", project_id=project_id,
+                        company_id=company_id, status=f"not_posted_{why}"):
+                    report["not_posted"] = report.get("not_posted", 0) + 1
+                continue
             if not wa_alerts.postable(it["kind"], it["rec"]):
                 report["no_number"] += 1
                 continue
@@ -56171,12 +56766,17 @@ def _dm_chat_ids(dm_chat: str) -> list:
 
 async def _dm_history(dm_chat: str, now: datetime) -> list:
     """This chat's last 20 messages within 4 hours, oldest first: theirs and
-    Levelog's (answers, menus, the morning brief)."""
+    Levelog's (answers, menus, the morning brief).
+
+    ORDERED ON (created_at, _id): a question and the reply stored in the same
+    clock tick must come back in the order they were written, or the repeat
+    guard pairs an answer with the wrong question. An ObjectId grows with
+    insertion; tests/test_history_ties.py injects the tie."""
     try:
         rows = await db.whatsapp_messages.find(
             {"group_id": {"$in": _dm_chat_ids(dm_chat)}, "is_dm": True,
              "created_at": {"$gte": now - timedelta(hours=wa_assistant.HISTORY_HOURS)}}
-        ).sort([("created_at", -1)]).to_list(wa_assistant.HISTORY_MAX)
+        ).sort([("created_at", -1), ("_id", -1)]).to_list(wa_assistant.HISTORY_MAX)
     except Exception as e:
         logger.warning(f"[wa-assistant] history read failed: {type(e).__name__}")
         return []
@@ -58295,7 +58895,7 @@ async def _dm_brain_history(dm_chat: str, now: datetime, before: Optional[dateti
     if before:
         q["created_at"]["$lt"] = before
     try:
-        rows = await db.whatsapp_messages.find(q).sort([("created_at", -1)]).to_list(
+        rows = await db.whatsapp_messages.find(q).sort([("created_at", -1), ("_id", -1)]).to_list(
             dm_brain.HISTORY_TURNS)
     except Exception as e:
         logger.warning(f"[dm-brain] history read failed: {type(e).__name__}")
@@ -72464,7 +73064,7 @@ async def _punch_post(sess: dict, group_id: str, batches: List[dict]) -> str:
         from lib import shabbos as _shabbos
         await _punch_save(sess, queued_until=quiet)     # "was it sent?": held, not sent
         lines.append(f"It's Shabbos / Yom Tov: these go out after it ends "
-                     f"({quiet.astimezone(_shabbos.NY):%a %-I:%M %p}).")
+                     f"({datefmt.strftime(quiet.astimezone(_shabbos.NY), '%a %-I:%M %p')}).")
     if failed:
         await _punch_save(sess, status="resend",
                           undelivered=[r["pid"] for b in failed for r in b["items"]])

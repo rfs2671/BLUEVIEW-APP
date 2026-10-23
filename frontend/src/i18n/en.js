@@ -2047,6 +2047,25 @@ export default {
     deniedBody: 'Owner, admin or CP access required',
   },
 
+  // ── Download button (Plans & Files) and the web viewer's open-in-browser ──
+  // Keys named by fileDownloadPlan.signedUrlErrorKey and fileDownload.js's
+  // error codes are looked up by those names; keep them in step.
+  fileDownload: {
+    downloading: 'Downloading',
+    progress: '{pct}% of {total} MB',
+    progressUnknown: '{done} MB so far',
+    cancel: 'Cancel',
+    failTitle: 'Download failed',
+    failBody: 'The file could not be downloaded. Try again.',
+    network: 'The connection dropped before the file finished. Try again with a better signal.',
+    noAccess: 'You do not have access to this file.',
+    notStored: 'This file is not available for download yet. It may still be syncing.',
+    cancelled: 'Download cancelled.',
+    popupBlocked: 'Your browser blocked the download tab. Allow pop-ups for Levelog and try again.',
+    shareUnavailable: 'This device has no share option for files.',
+    offlineTitle: 'Not available offline',
+    offlineBody: 'This file is not saved on this device. Reconnect and try again.',
+  },
 
   // ── app/projects/[id]/schedule.jsx — import and confirm the project schedule ─
   //
@@ -2124,6 +2143,31 @@ export default {
     stopAction: 'Stop using schedule',
     stopped: 'Schedule no longer used',
     actionFailed: 'That did not work. Try again.',
+  },
+
+  // ── The Compliance feature label, everywhere a user sees it ───────────────
+  //
+  // ONE NAMESPACE FOR ONE LABEL, not one per screen: the project tile
+  // (app/project/[id].jsx), the screen title (app/project/[id]/dob-logs.jsx),
+  // the delete confirmations (app/projects/index.jsx), the notification
+  // settings subtitle (app/settings.jsx) and two help sentences
+  // (app/help/troubleshooting.jsx) all name the same feature, and renaming it
+  // again should be one edit here. Read by owners, admins and CPs — NOT a
+  // logbook and not a filed record, so it carries Spanish like waGroups.
+  //
+  // `title` is rendered by the screen header through typography.label, which
+  // uppercases it — one key serves the tile ("Compliance") and the header
+  // ("COMPLIANCE"). The route stays /project/:id/dob-logs.
+  //
+  // {name} is the project name, substituted by the caller.
+  compliance: {
+    title: 'Compliance',
+    loadError: 'Could not load compliance data',
+    deleteConfirmWeb: 'Delete "{name}"?\n\nThis will permanently remove the project and all its compliance data. This cannot be undone.',
+    deleteConfirmNative: 'This will permanently remove "{name}" and all its compliance data. This cannot be undone.',
+    notificationPrefsSubtitle: 'Tune which compliance signals reach you and how',
+    helpCheckTracking: 'Open the project\'s Compliance page (gear icon). Confirm "Enable DOB Tracking" is on. If it\'s off, no DOB data will pull for the project.',
+    helpEditBin: 'If the BIN was already auto-resolved to the wrong building, open the Compliance page (gear icon) and edit the BIN field directly.',
   },
 
   // ── app/project/[id]/dob-logs.jsx — DOT holiday construction embargo ─────
