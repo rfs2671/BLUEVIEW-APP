@@ -429,8 +429,11 @@ class TestServerAdminEndpoints(unittest.TestCase):
         )
         e = self.text.find("@api_router", s + 1)
         slice_ = self.text[s:e if e > s else s + 1500]
-        # The admin seat: platform-wide weights are not a full-access PM's.
-        self.assertIn("Depends(get_admin_seat_user)", slice_)
+        # THE OPERATOR'S (security audit P3, 2026-10-13). Platform-wide, so
+        # not any company's admin -- get_admin_seat_user admitted every one.
+        # test_operator_gate.py asserts the 404 over HTTP.
+        self.assertIn("Depends(require_operator_404)", slice_)
+        self.assertNotIn("get_admin_seat_user", slice_)
         self.assertIn("compute_calibration_stats", slice_)
 
     def test_weights_endpoint_present(self):
@@ -444,8 +447,11 @@ class TestServerAdminEndpoints(unittest.TestCase):
         )
         e = self.text.find("@api_router", s + 1)
         slice_ = self.text[s:e if e > s else s + 1500]
-        # The admin seat: platform-wide weights are not a full-access PM's.
-        self.assertIn("Depends(get_admin_seat_user)", slice_)
+        # THE OPERATOR'S (security audit P3, 2026-10-13). Platform-wide, so
+        # not any company's admin -- get_admin_seat_user admitted every one.
+        # test_operator_gate.py asserts the 404 over HTTP.
+        self.assertIn("Depends(require_operator_404)", slice_)
+        self.assertNotIn("get_admin_seat_user", slice_)
         self.assertIn("set_trigger_prior", slice_)
 
 

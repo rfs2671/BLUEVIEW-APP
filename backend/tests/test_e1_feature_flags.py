@@ -392,16 +392,41 @@ class TestNormalizePayload(unittest.TestCase):
 
 
 def _setup_admin_client(*, role="admin", user_id="u_admin", company_id="co_a"):
+    """A client signed in AS THE PLATFORM OPERATOR, for the handler tests.
+
+    The flag routes are the operator's since security audit P3 (2026-10-13):
+    get_admin_seat_user admitted any company's admin, and these act on every
+    tenant. require_operator_404 calls get_current_user directly, so the gate
+    is overridden here, not get_current_user. The GATE is proven over HTTP in
+    test_operator_gate.py and in _non_operator_status below.
+    """
     import server
     user = {"id": user_id, "_id": user_id, "role": role,
-            "company_id": company_id}
+            "company_id": company_id, "is_platform_operator": True}
 
-    async def _fake_user():
+    async def _fake_operator():
         return user
 
-    server.app.dependency_overrides[server.get_current_user] = _fake_user
+    server.app.dependency_overrides[server.require_operator_404] = _fake_operator
     return TestClient(server.app, raise_server_exceptions=False), \
         lambda: server.app.dependency_overrides.clear()
+
+
+def _non_operator_status(db, method, path, role, **kw):
+    """Status for a REAL token of a non-operator through the REAL gate."""
+    import server
+    from bson import ObjectId
+    uid = ObjectId()
+    db.users = MagicMock()
+    db.users.find_one = AsyncMock(return_value={
+        "_id": uid, "email": "x@co-a.test", "role": role,
+        "company_id": "co_a", "account_status": "approved"})
+    tok = server.create_token(str(uid), "x@co-a.test", role, company_id="co_a")
+    client = TestClient(server.app, raise_server_exceptions=False)
+    with patch.object(server, "db", db):
+        return client.request(method, path,
+                              headers={"Authorization": f"Bearer {tok}"},
+                              **kw).status_code
 
 
 class TestAdminEndpoints(unittest.TestCase):
@@ -450,18 +475,13 @@ class TestAdminEndpoints(unittest.TestCase):
             restore()
 
     def test_create_rejects_non_admin(self):
-        import server
-        db = _build_db(find_one=None)
-        client, restore = _setup_admin_client(role="worker")
-        try:
-            with patch.object(server, "db", db):
-                r = client.post(
-                    "/api/admin/feature-flags",
-                    json={"flag": "v2_x"},
-                )
-                self.assertEqual(r.status_code, 403)
-        finally:
-            restore()
+        """A COMPANY ADMIN TOO: that was the hole (security audit A)."""
+        for role in ("worker", "cp", "admin"):
+            db = _build_db(find_one=None)
+            st = _non_operator_status(db, "POST", "/api/admin/feature-flags",
+                                      role, json={"flag": "v2_x"})
+            self.assertEqual(st, 404, role)
+            self.assertFalse(db.feature_flags.insert_one.called, role)
 
     def test_update_invalidates_cache(self):
         """PATCH MUST clear the in-memory cache for the affected
@@ -523,15 +543,12 @@ class TestAdminEndpoints(unittest.TestCase):
             restore()
 
     def test_list_admin_only(self):
-        import server
-        db = _build_db(find_results=[])
-        client, restore = _setup_admin_client(role="cp")  # not admin
-        try:
-            with patch.object(server, "db", db):
-                r = client.get("/api/admin/feature-flags")
-                self.assertEqual(r.status_code, 403)
-        finally:
-            restore()
+        """Operator only: the list carries every tenant's company and user
+        ids. A company admin gets 404 like anyone else."""
+        for role in ("cp", "admin"):
+            st = _non_operator_status(_build_db(find_results=[]), "GET",
+                                      "/api/admin/feature-flags", role)
+            self.assertEqual(st, 404, role)
 
 
 class TestMeEndpoint(unittest.TestCase):
