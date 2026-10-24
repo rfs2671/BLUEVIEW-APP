@@ -104,7 +104,12 @@ def _project_write_routes():
             decorator_src = ast.unparse(dec)
             body_src = ast.unparse(fn)
             how = None
-            if "require_project_access" in decorator_src:
+            # require_project_admin_access (2026-10-24) IS a project gate:
+            # project_access_ok for everyone but the platform operator, who
+            # is admitted only with an audit row
+            # (tests/test_operator_project_admin_access.py proves the 403s).
+            if ("require_project_access" in decorator_src
+                    or "require_project_admin_access" in decorator_src):
                 how = "dependency"
             else:
                 for g in _BODY_GUARDS:
