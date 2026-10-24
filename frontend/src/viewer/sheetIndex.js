@@ -30,39 +30,60 @@ export function unionBox(boxes) {
 
 const MAX_MATCHES = 5000;
 
+// CAD text is often tracked out one glyph at a time ("B U L K H EA D"), so a search is
+// run over each LINE as one string (letters and digits only) and a hit is mapped back to
+// the words it covers. That finds "bulkhead" in spaced letters, "a402" in "A 402", and a
+// phrase across words, with one rule.
+const _lines = new WeakMap();
+function linesOf(index) {
+  let cached = _lines.get(index);
+  if (cached) return cached;
+  const words = (index && index.words) || [];
+  const byLine = new Map();
+  words.forEach((w, i) => {
+    const k = w.line == null ? `w${i}` : w.line;
+    if (!byLine.has(k)) byLine.set(k, []);
+    byLine.get(k).push(i);
+  });
+  cached = [];
+  for (const ids of byLine.values()) {
+    ids.sort((a, b) => words[a].bbox[0] - words[b].bbox[0]);
+    let text = '';
+    const owner = [];
+    for (const wi of ids) {
+      const n = norm(words[wi].text);
+      for (let c = 0; c < n.length; c += 1) owner.push(wi);
+      text += n;
+    }
+    if (text) cached.push({ text, owner });
+  }
+  _lines.set(index, cached);
+  return cached;
+}
+
 /**
- * Every place `query` occurs. A one-word query matches inside words ("402" finds
- * "A-402"); a phrase matches consecutive words of one line, the first as an ending,
- * the middle ones whole, the last as a beginning. Returns
- * [{page, bbox, text, boxes}] in reading order (page, then line, then position).
+ * Every place `query` occurs, in reading order (page, then line order of the index). A
+ * hit may start or end inside a word ("402" finds "A-402") and may span words of one
+ * line. Returns [{page, bbox, text, boxes}].
  */
 export function searchIndexes(indexes, query) {
-  const toks = queryTokens(query);
-  if (!toks.length) return [];
+  const q = queryTokens(query).join('');
+  if (!q) return [];
   const out = [];
   const pages = Array.from(indexes.keys()).sort((a, b) => a - b);
   for (const page of pages) {
-    const words = (indexes.get(page) || {}).words || [];
-    const nw = words.map((w) => norm(w.text));
-    for (let i = 0; i < words.length; i += 1) {
-      if (toks.length === 1) {
-        if (nw[i].includes(toks[0])) out.push({ page, bbox: words[i].bbox, text: words[i].text, boxes: [words[i].bbox] });
-      } else if (nw[i].endsWith(toks[0]) && nw[i] !== '') {
-        const boxes = [words[i].bbox];
-        const texts = [words[i].text];
-        let ok = true;
-        for (let k = 1; k < toks.length; k += 1) {
-          const w = words[i + k];
-          const n = nw[i + k];
-          if (!w || w.line !== words[i].line || !n) { ok = false; break; }
-          const last = k === toks.length - 1;
-          if (last ? !n.startsWith(toks[k]) : n !== toks[k]) { ok = false; break; }
-          boxes.push(w.bbox);
-          texts.push(w.text);
-        }
-        if (ok) out.push({ page, bbox: unionBox(boxes), text: texts.join(' '), boxes });
+    const index = indexes.get(page);
+    if (!index || !index.words) continue;
+    const words = index.words;
+    for (const { text, owner } of linesOf(index)) {
+      let at = text.indexOf(q);
+      while (at !== -1) {
+        const ids = Array.from(new Set(owner.slice(at, at + q.length)));
+        const boxes = ids.map((wi) => words[wi].bbox);
+        out.push({ page, bbox: unionBox(boxes), text: ids.map((wi) => words[wi].text).join(' '), boxes });
+        if (out.length >= MAX_MATCHES) return out;
+        at = text.indexOf(q, at + q.length);
       }
-      if (out.length >= MAX_MATCHES) return out;
     }
   }
   return out;
