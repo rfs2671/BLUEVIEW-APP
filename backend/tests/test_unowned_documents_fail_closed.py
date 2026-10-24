@@ -334,14 +334,21 @@ class NoDoublePermissiveLineSurvives(unittest.TestCase):
         GET /files/{id}/signed-url and the header-less /files/{id}/download,
         which re-runs it against the principal re-loaded from the link -- so a
         user moved to another company after a link was minted is refused by
-        this same comparison."""
+        this same comparison.
+
+        THE NINTH SETS A DRAWING SET'S TRACK. PUT /projects/{id}/files/
+        {file_id}/drawing-track marks a file filed or post-CO, which the glyph
+        pass copies onto every row and the render then names in answers. It
+        holds the file to the admin's company with this same comparison, so
+        another tenant's admin cannot relabel - or quietly un-label - someone
+        else's drawings."""
         tree = ast.parse(self.SRC)
         calls = sum(
             1 for n in ast.walk(tree)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
             and n.func.id == "_same_company_or_403")
         self.assertGreaterEqual(calls, 3)
-        self.assertEqual(calls, 8)
+        self.assertEqual(calls, 9)
 
     def test_the_helper_treats_empty_string_as_absent(self):
         """The mechanism, not just the outcome: both sides are coerced and
