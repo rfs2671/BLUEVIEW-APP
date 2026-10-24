@@ -236,21 +236,31 @@ class TheShippedSuite(unittest.TestCase):
         self.s = ev.load_suite(str(BACKEND / "eval" / "boyland.json"))
         self.by_id = {c["id"]: c for c in self.s["cases"]}
 
-    def test_the_fourth_floor_case_claims_2_per_unit_and_refuses_the_rest(self):
+    def test_the_fourth_floor_case_claims_the_whole_apartment(self):
+        """Rewritten 2026-10-23: each duplex has 3 (A-103.00 + the mezzanine
+        #747 links), and A-103.00's half - the 2 it once claimed - is refused."""
         c = self.by_id.get("exhaust-fans-per-unit-fourth-floor")
         self.assertIsNotNone(c, "the case is not in the suite")
         self.assertEqual(c["expect"]["claims"],
-                         [{"subject": "exhaust fans", "value": 2, "scope": SCOPE}])
-        self.assertEqual(c["expect"]["sheets"], ["M-103.00"])
+                         [{"subject": "exhaust fans", "value": 3, "scope": SCOPE}])
+        self.assertEqual(c["expect"]["sheets"], ["M-103.00", "M-104.00"])
         self.assertEqual(c["expect"]["refused"],
-                         [{"subject": "EF-1", "value": 2},
+                         [{"subject": "exhaust fans", "value": 2, "scope": SCOPE},
+                          {"subject": "EF-1", "value": 2},
                           {"subject": "exhaust fans", "value": 32}])
 
-    def test_vent_fan_is_narrowed_not_deleted(self):
+    def test_vent_fan_is_the_located_building_count(self):
+        """Rewritten 2026-10-23 (operator ruling): since #679 the located 36
+        binds at building scope and is true. The failure the case was written
+        for - '3 vent fans' counted off schedule rows - and the 2 fan types
+        are its refused claims; it is not deleted."""
         c = self.by_id.get("vent-fan-count-not-stated")
         self.assertIsNotNone(c, "vent-fan-count-not-stated was deleted")
-        self.assertTrue(c["expect"].get("no_unscoped_count"))
-        self.assertNotIn("no_stated_count", c["expect"])
+        self.assertEqual(c["kind"], "answer")
+        self.assertEqual(c["expect"]["claims"], [{"subject": "exhaust fans", "value": 36}])
+        self.assertEqual(c["expect"]["refused"], [{"subject": "exhaust fans", "value": 3},
+                                                  {"subject": "exhaust fans", "value": 2}])
+        self.assertNotIn("no_unscoped_count", c["expect"])
 
 
 if __name__ == "__main__":
