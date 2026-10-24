@@ -60,7 +60,11 @@ SOURCE = "plan_takeoff"
 #: mechanical sheet's sweep locates, before any architectural sheet is read.
 #: Each track's rows of a sheet must number exactly that (plan_search, the
 #: two-track invariant); totals count each mechanical symbol once.
-EMIT_VERSION = 7
+#: 8 (2026-10-24): a walled open-to-below void joins the unit beneath it
+#: (plan_voids, plan_glyph_pass.assign_voids); payload.units.voids records
+#: each, per unit: its box, what marked it, the floor below, the share of
+#: its cells over that unit.
+EMIT_VERSION = 8
 
 #: the citation fields a row carries from its page (as _write_page_records)
 CITE = ("project_id", "company_id", "file_id", "file_hash", "file_name",
@@ -136,7 +140,7 @@ def glyph_rows(result: Dict[str, Any], *, mech: Dict[str, Any],
                                    "usable", "best_peak_anchors", "best_peak",
                                    "spread", "refused")},
         "units": {k: units.get(k) for k in ("tags", "method", "zero_units",
-                                            "multi_level", "seeded") if k in units},
+                                            "multi_level", "seeded", "voids") if k in units},
         "widest_door_in": widest_door.get("inches"),
         "mech_count": mech_count,
     }

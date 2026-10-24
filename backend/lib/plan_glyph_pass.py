@@ -191,6 +191,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         f["stairs"] = derive.unit_stairs(arch_pg.directed_words, member.at,
                                          f["units"]["tags"])
     summary["stair_seeds"] = seed_from_stairs(floors_in, open_page, door["inches"])
+    summary["voids"] = assign_voids(floors_in)
 
     for f in floors_in:
         arch_p, mech_p, a_sheet, m_sheet = f["arch_p"], f["mech_p"], f["a_sheet"], f["m_sheet"]
@@ -212,6 +213,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
             floor["seeded"] = units["seeded"]
         if units.get("linked"):
             floor["linked"] = units["linked"]
+        if units.get("voids"):
+            floor["voids"] = units["voids"]
         summary["floors"].append(floor)
         mech_sheet = f.get("mech_data") or load_sheet(mech_pg)
         reads = reads_of(mech_p, mech_pg, mech_sheet["segs"])
@@ -368,6 +371,77 @@ def seed_from_stairs(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str
                       "why": None, "multi_level": multi, "seeded": seeded}
     for n in notes:
         log.info("glyph pass stair seeding: %s", n)
+    return notes
+
+
+def assign_voids(floors: List[Dict[str, Any]]) -> List[str]:
+    """A MARKED OPEN-TO-BELOW VOID JOINS THE UNIT BENEATH IT (ruling
+    2026-10-24, lib.plan_voids). For every region of a floor's room map that
+    no unit holds and that is marked open to below, the floor beneath - the
+    next plan down the series, confirmed by the title ordinals as a stair's
+    target is (plan_derive.stair_target) - must register usably, and of the
+    region's cells carried onto it, those that land in a unit must all land
+    in EXACTLY ONE. Cells over a wall or over space no unit holds are not a
+    second unit: on the filed A-103.00 each bay's edge overhangs 4A's own
+    bedroom closet by 14-16 of its ~4,000 cells - a closet whose bifold door
+    the room map does not read as a doorway, so no unit holds it. That unit's
+    region on THIS sheet then takes the void, so a symbol on its walls is
+    that unit's.
+
+    The unit must be one this sheet names: a void over a unit this sheet does
+    not list would place a symbol in an apartment on a floor the apartment's
+    other rows never reach, and its whole-apartment count would miss it.
+    Returns a line per decision."""
+    from lib.plan_sheet import register
+    from lib import plan_voids as V
+
+    notes: List[str] = []
+    plans = [f["arch_p"] for f in floors]
+    by_sheet = {f["a_sheet"]: f for f in floors}
+    for f in floors:
+        sp = f.get("space")
+        if not sp or (f.get("units") or {}).get("tags") is None:
+            continue
+        found, why = V.marked_voids(sp, f["data"])
+        notes += [f"{f['a_sheet']} {w}" for w in why]
+        if not found:
+            continue
+        tgt, why_t = derive.stair_target(f["arch_p"], "DN", plans)
+        g = by_sheet.get((tgt or {}).get("sheet_number"))
+        if g is None or not g.get("space"):
+            notes += [f"{f['a_sheet']} void at {v['box'][:2]}: no floor below to read - "
+                      f"{why_t or 'it was not read'} - not assigned" for v in found]
+            continue
+        reg_ = register(f["data"], g["data"])
+        if not reg_["usable"]:
+            notes += [f"{f['a_sheet']} void at {v['box'][:2]}: {f['a_sheet']} -> {g['a_sheet']} "
+                      f"does not register ({reg_.get('refused')}) - not assigned" for v in found]
+            continue
+        lab = sp["closed_lab"]
+        for v in found:
+            hits, wall = V.beneath(lab, v["room"], sp["lo"], sp["cell_pt"], g["space"],
+                                   reg_["dx"], reg_["dy"])
+            units = sorted(u for u in hits if u)
+            where = f"{f['a_sheet']} void at ({round(v['box'][0])}, {round(v['box'][1])})"
+            if len(units) != 1:
+                notes.append(f"{where}: beneath it on {g['a_sheet']} lie "
+                             f"{', '.join(units) or 'no unit'} - exactly one unit or not assigned")
+                continue
+            (u,) = units
+            if u not in (sp.get("units") or {}):
+                notes.append(f"{where}: over {u} on {g['a_sheet']}, but {f['a_sheet']} names "
+                             f"no {u} - not assigned")
+                continue
+            sp["units"][u] = sp["units"][u] | (lab == v["room"])
+            share = round(100 * hits[u] / (sum(hits.values()) + wall))
+            f["units"].setdefault("voids", {}).setdefault(u, []).append(
+                {"box": v["box"], "marked_by": v["how"], "below": g["a_sheet"],
+                 "beneath_pct": share})
+            notes.append(f"{where}: marked open to below ({'an X on its BELOW layer' if v['how'] == 'x' else repr(v.get('mark'))}), "
+                         f"over {u} on {g['a_sheet']} ({share}% of its cells; the rest over wall or space "
+                         f"no unit holds) - joins {u}")
+    for n in notes:
+        log.info("glyph pass voids: %s", n)
     return notes
 
 
