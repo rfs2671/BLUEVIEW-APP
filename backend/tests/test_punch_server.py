@@ -26,6 +26,7 @@ from fastapi import HTTPException  # noqa: E402
 
 import server  # noqa: E402
 from tests import _punch_detailed  # noqa: E402
+from tests._pinned_clock import never_quiet  # noqa: E402
 from lib import punch  # noqa: E402
 from scripts import punch_dry_run as dry  # noqa: E402
 
@@ -116,6 +117,9 @@ class TheDraftStaysWithTheWalker(unittest.TestCase):
 
 
 class Sending(unittest.TestCase):
+
+    def setUp(self):
+        never_quiet(self)          # live posts: see test_punch_walkthrough_2303._Live
 
     def test_live_posts_one_message_per_assignee_with_the_photos(self):
         sc = _sc()
@@ -213,6 +217,9 @@ class Closing(unittest.TestCase):
 
 class CodexRound1(unittest.TestCase):
     """Who may move an item, ids per project, live sends that fail."""
+
+    def setUp(self):
+        never_quiet(self)          # live posts: see test_punch_walkthrough_2303._Live
 
     def _sent(self):
         return Closing._sent(self)

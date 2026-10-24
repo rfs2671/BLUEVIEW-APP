@@ -400,6 +400,10 @@ class PeoplePhone(unittest.TestCase):
 class TheDryRuns(unittest.TestCase):
 
     def test_punch_live_every_post_mentions_exactly_its_tokens(self):
+        # Live punch posts go out at server.py's clock: PINNED to a weekday,
+        # or every Friday evening the Shabbos hold queues all 4 (0 != 4).
+        from tests._pinned_clock import pin_server_clock
+        pin_server_clock(self)
         import json as _json
         from scripts import punch_dry_run as pdry
         sc = _json.loads((Path(pdry.__file__).parent / "dry_run_punch"
