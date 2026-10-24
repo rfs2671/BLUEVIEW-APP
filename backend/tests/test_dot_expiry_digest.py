@@ -90,11 +90,84 @@ class _World:
     def queue(self, now):
         return self._go(server._quiet_queue_tick, now)
 
+    def late(self, now):
+        """The run after each DOT sync (`_dot_sync_job`)."""
+        return self._go(lambda now: server._dot_permit_expiry_tick(now=now, late_only=True), now)
+
+    def add(self, row):
+        self.db.dot_logs.docs.append(row)
+
     def emails(self):
         return [c.kwargs for c in self.send.await_args_list if c.kwargs["trigger_type"] == "dot_permit_expiring"]
 
 
 NUMS = [f"B022026299X{i:02d}" for i in range(1, 17)]
+
+
+def _ny(d: date, hour: int) -> datetime:
+    """A New York wall time (EST: November after the change)."""
+    return datetime(d.year, d.month, d.day, hour + 5, 0, tzinfo=UTC)
+
+
+class LateItems(unittest.TestCase):
+    """Operator ruling 2026-10-24: once today's digest has gone, an item with
+    <= 1 day left found later is sent AT ONCE, in its own email (the Shabbos
+    hold still applies); anything with more days left waits for tomorrow's."""
+
+    TUE = date(2026, 11, 10)
+
+    def test_digest_at_0700_then_a_permit_expiring_tomorrow_found_at_1000_is_one_email_at_1000(self):
+        w = _World([_row("A1", self.TUE + timedelta(days=10))])
+        w.expiry(_ny(self.TUE, 7))                                  # the 07:00 digest: A1
+        self.assertEqual(len(w.emails()), 1)
+        w.add(_row("B1", self.TUE + timedelta(days=1)))              # the sync finds B1 at 10:00
+        r = w.late(_ny(self.TUE, 10))
+        mails = w.emails()
+        self.assertEqual(len(mails), 2, [m["subject"] for m in mails])
+        late = mails[1]
+        self.assertTrue(late["subject"].startswith("1 DOT permit expiring on"), late["subject"])
+        self.assertIn("B1", late["text"])
+        self.assertIn("(in 1 day):", late["text"])
+        self.assertNotIn("A1", late["text"])                         # not the digest again
+        self.assertEqual(late["permit_renewal_id"], "dot:p1:expiry_late:B1:-:2026-11-10")
+        self.assertEqual(r["late"], 1)
+        w.late(_ny(self.TUE, 12))                                   # the next sync: nothing more
+        w.expiry(_ny(self.TUE + timedelta(days=1), 7))              # tomorrow's digest: not B1 again
+        self.assertFalse(any("B1" in m["text"] for m in w.emails()[2:]))
+
+    def test_a_later_item_with_more_days_waits_for_tomorrows_digest(self):
+        w = _World([_row("A2", self.TUE + timedelta(days=10))])
+        w.expiry(_ny(self.TUE, 7))
+        w.add(_row("C2", self.TUE + timedelta(days=2)))              # 2 days left: can wait
+        r = w.late(_ny(self.TUE, 10))
+        self.assertEqual((len(w.emails()), r["wait_tomorrow"]), (1, 1))
+        w.expiry(_ny(self.TUE + timedelta(days=1), 7))              # tomorrow: in the digest
+        self.assertEqual(len(w.emails()), 2)
+        self.assertIn("C2", w.emails()[1]["text"])
+
+    def test_before_the_0700_run_the_late_run_sends_nothing(self):
+        w = _World([_row("B3", self.TUE + timedelta(days=1))])
+        r = w.late(_ny(self.TUE, 5))                                # a 05:00 sync
+        self.assertEqual((w.emails(), r.get("skipped")), ([], "before_digest_run"))
+        w.expiry(_ny(self.TUE, 7))                                  # the digest takes it
+        (m,) = w.emails()
+        self.assertEqual(m["permit_renewal_id"], "dot:p1:expiry_digest:-:-:2026-11-10")
+
+    def test_a_late_item_on_shabbos_is_held_to_havdalah(self):
+        sat = date(2026, 11, 7)
+        w = _World([])                                              # keeps Shabbos (chase_shabbos_off)
+        w.expiry(_ny(sat, 7))                                       # nothing due: the run marker only
+        w.add(_row("B4", sat + timedelta(days=1)))                  # found Saturday 10:00
+        r = w.late(_ny(sat, 10))
+        self.assertEqual((w.emails(), r["held"]), ([], 1))
+        until = shabbos.quiet_until(_ny(sat, 10))
+        w.queue(until - timedelta(minutes=5))
+        self.assertEqual(w.emails(), [])
+        w.queue(until + timedelta(minutes=1))                       # havdalah: it goes, once
+        w.queue(until + timedelta(hours=2))
+        (m,) = w.emails()
+        self.assertIn("B4", m["text"])
+        self.assertIn("(in 1 day):", m["text"])
 
 
 class ADigestADay(unittest.TestCase):
