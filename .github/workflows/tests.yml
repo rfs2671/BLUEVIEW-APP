@@ -245,6 +245,18 @@ jobs:
         working-directory: frontend
         run: node scripts/find-unbound-identifiers.cjs
 
+      # AND EVERY .js / .jsx FILE PARSES, config files included. Merging main
+      # into #849 (2026-10-23) auto-merged the same `import { useT }` line from
+      # both sides into dob-logs.jsx with no conflict marker: a binding
+      # declared twice does not parse. The sweep above fails on that too, but
+      # only under app/ and src/; app.config.js, babel.config.js,
+      # metro.config.js and scripts/*.js were reached by nothing. --self-test
+      # first: it proves the gate rejects that exact merge before the sweep's
+      # pass is allowed to mean anything.
+      - name: Every .js / .jsx file parses (no binding imported twice)
+        working-directory: frontend
+        run: node scripts/find-unparseable.cjs --self-test && node scripts/find-unparseable.cjs
+
       # AND NO PINNED PALETTE KEY THAT NOTHING PAINTS. `outdoor` is the app's
       # light look, frozen, worn by the ten logbook editors because a CP fills
       # a compliance log in direct sun. The pin was applied to the CONTENT and
