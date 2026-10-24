@@ -213,5 +213,67 @@ class EveryAnswerRestingOnTheOwnersSetNamesIt(unittest.TestCase):
         self.assertNotIn(LABEL, S.render_glyph_evidence(_tracked(version=False)))
 
 
+# ── the real pass, on the real sheets, with the track set - no stub ───────
+
+class TheRealPassCarriesTheTrack(unittest.TestCase):
+    """run_pass end to end on A-101.00 (Owners set, marked post_co) and
+    M-101.00, with A-400.00's door schedule: the CAD-layer space map, the OCR
+    sweep, placement and emit all run for real. Every row placed against the
+    Owner's set says so, and the render names it on the second floor - whose
+    apartments sit on one sheet, so it prints a per-apartment figure (the
+    fourth floor's duplexes need the mezzanine linked to print one)."""
+
+    def test_rows_and_render(self):
+        _present()
+        from lib.plan_page import PlanPage
+        from lib import plan_glyph_pass as G
+        from tests.fixture_pdfs import require as require_pdf
+        pid = "6a5f63bc147407d3261df2c7"
+
+        def page(fname, n, sheet, title, disc, track=None, label=None):
+            return {"project_id": pid, "company_id": "c1", "file_id": fname, "file_hash": None,
+                    "file_name": fname, "page_id": f"{fname}#{n}", "page_number": n,
+                    "sheet_number": sheet, "sheet_title": title, "discipline": disc,
+                    "drawing_track": track or "filed", "drawing_track_label": label}
+        a101 = page("Owners set - 6.9.26.pdf", 2, "A-101.00", "SECOND FLOOR PLAN", "AR",
+                    "post_co", LABEL)
+        m101 = page("MH - 7.2.26.pdf", 3, "M-101.00", "SECOND FLOOR HVAC PLANS", "ME")
+        a400 = page("AR - 3.28.25.pdf", 23, "A-400.00", "WINDOW SCHEDULE", "AR")
+        # M-200.00's EXHAUST FAN SCHEDULE as production stores its OCR-grid
+        # reading (the CFM ratings corroborate the labels, EF-1(50), EF-2(100))
+        sched = [{"name": "EXHAUST FAN SCHEDULE", "tier": "ocr_grid_cell", "sheet_number": "M-200.00",
+                  "columns": [{"header": "TAG", "role": "identifier"}, {"header": "MANUF.", "role": None},
+                              {"header": "MODEL", "role": "model"}, {"header": "CFM", "role": None}],
+                  "rows": [["EF-1", "NUTONE", "AEN110", "50"], ["EF-2", "BROAN", "BRN503", "100"]]}]
+        opened = {}
+
+        def open_page(p):
+            k = (p["file_name"], p["page_number"])
+            if k not in opened:
+                opened[k] = PlanPage(str(require_pdf(p["file_name"])), p["page_number"])
+            return opened[k]
+        try:
+            out = G.run_pass([a101, m101], open_page, sched, [a400])
+        finally:
+            for pg in opened.values():
+                pg.close()
+        located = [r for r in out["rows"] if r.get("label")]
+        self.assertEqual(len(located), 8, out["summary"])          # 4 EF-1 + 4 EF-2
+        for r in located:
+            self.assertEqual(r["payload"]["emit_version"], E.EMIT_VERSION)
+            self.assertEqual((r["payload"]["arch"]["drawing_track"],
+                              r["payload"]["arch"]["drawing_track_label"]), ("post_co", LABEL))
+        rows = out["rows"]
+        pages = sorted({r["page_id"] for r in rows})
+        c = S.glyph_census("family", pid, pages, 0, family="EXHAUST FAN SCHEDULE", tags=["EF-1", "EF-2"])
+        census = [S.glyph_census("family", pid, pages, sum(S.glyph_in_census(r, c) for r in rows),
+                                 family="EXHAUST FAN SCHEDULE", tags=["EF-1", "EF-2"])]
+        c = S.glyph_census("refusals", pid, pages, 0)
+        census.append(S.glyph_census("refusals", pid, pages, sum(S.glyph_in_census(r, c) for r in rows)))
+        line = next(l for l in S.render_glyph_evidence(rows + census).splitlines()
+                    if "SECOND FLOOR" in l)
+        self.assertIn(f"per {LABEL}", line)
+
+
 if __name__ == "__main__":
     unittest.main()
