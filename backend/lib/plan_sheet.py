@@ -312,22 +312,36 @@ def load_sheet(page) -> dict:
             "rotation": page.rotation}
 
 
-def plan_unit_tags(corners_arr, words, unit_tags: Sequence[str]
-                   ) -> Dict[str, Tuple[float, float]]:
+def plan_unit_tags(corners_arr, words, unit_tags: Sequence[str],
+                   inside=None) -> Dict[str, Tuple[float, float]]:
     """The unit tags ON THE PLAN, not in the occupancy table.
 
     A-103.00 prints 4A-4D twice: on the plan and in the LIGHT & AIR /
     OCCUPANCY tables. The first occurrence inside the plan's corner extent
     (1st-99th percentile) is the plan's. A dict comprehension once kept the
     LAST - the table - and every placement came back 491-782in off.
+
+    ── FIRST IN THE EXTENT WAS THE PLAN'S BY LAYOUT, NOT BY RULE ──────────
+
+    Measured 2026-10-24 over every architectural plan sheet with unit tags
+    (22 read, 15 tagged): on two - the filed mezzanine A-104.00 (AR 3.28.25)
+    and the second set's A.1.5 - the occupancy table sits INSIDE the corner
+    extent and comes first, so 4A-4D were "placed" in table cells outside
+    the building and got no region (8 tags). So the caller that has the
+    room map passes `inside(x, y)`: an occurrence in a room of the plan is
+    preferred over one outdoors or on a wall. With no occurrence inside, or
+    no predicate, the first in the extent stands, as before.
     """
     lo, hi = np.percentile(corners_arr, [1, 99], axis=0)
     wanted = set(unit_tags)
-    out: Dict[str, Tuple[float, float]] = {}
+    first: Dict[str, Tuple[float, float]] = {}
+    indoors: Dict[str, Tuple[float, float]] = {}
     for t, x, y in words:
         if t in wanted and lo[0] <= x <= hi[0] and lo[1] <= y <= hi[1]:
-            out.setdefault(t, (x, y))
-    return out
+            first.setdefault(t, (x, y))
+            if inside is not None and t not in indoors and inside(x, y):
+                indoors[t] = (x, y)
+    return {t: indoors.get(t, p) for t, p in first.items()}
 
 
 def offset_census(A, B, span_pt=360.0, radius_in=1.0, chunk=64):
