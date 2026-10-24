@@ -53,3 +53,70 @@ export function wheelAction(e) {
 export function doubleTapTarget(zoom, fitZoom) {
   return zoom > fitZoom * 1.6 ? { fit: true } : { factor: DOUBLE_TAP_ZOOM };
 }
+
+/**
+ * Pointer bookkeeping for the web renderer: one finger pans, two pinch, a short still
+ * press is a tap, a quick release flings. Lifting one finger of a pinch hands the
+ * remaining finger back as a pan (never a tap, never an error), and a move from a
+ * pointer that was never pressed is ignored.
+ *
+ *   down(id, p, t)        p = {x, y} in the canvas, t = ms
+ *   move(id, p, t)   ->   {type:'pan', dx, dy} | {type:'pinch', factor, cx, cy, dx, dy} | null
+ *   up(id, p, t)     ->   {type:'tap', x, y} | {type:'fling', v} | {type:'none'}
+ */
+export function createPointerTracker() {
+  const pointers = new Map();
+  let pinch = null;
+  let down = null;
+  let samples = [];
+
+  const seed = (p, t) => { down = { x: p.x, y: p.y, t }; samples = [{ x: p.x, y: p.y, t }]; };
+
+  return {
+    get count() { return pointers.size; },
+    down(id, p, t) {
+      pointers.set(id, p);
+      if (pointers.size === 1) seed(p, t);
+      else if (pointers.size === 2) {
+        const [a, b] = Array.from(pointers.values());
+        pinch = pinchState(a, b);
+        down = null;                                   // two fingers are never a tap
+      }
+    },
+    move(id, p, t) {
+      const prev = pointers.get(id);
+      if (!prev) return null;
+      pointers.set(id, p);
+      if (pointers.size >= 2) {
+        if (!pinch) return null;
+        const [a, b] = Array.from(pointers.values());
+        const cur = pinchState(a, b);
+        const d = pinchDelta(pinch, cur);
+        pinch = cur;
+        return { type: 'pinch', ...d };
+      }
+      if (!down) return null;
+      samples.push({ x: p.x, y: p.y, t });
+      if (samples.length > 12) samples.shift();
+      return { type: 'pan', dx: p.x - prev.x, dy: p.y - prev.y };
+    },
+    up(id, p, t) {
+      if (!pointers.has(id)) return { type: 'none' };
+      const wasPinch = pointers.size >= 2;
+      pointers.delete(id);
+      if (wasPinch) {
+        pinch = null;
+        down = null;
+        const rest = Array.from(pointers.values())[0];
+        if (rest) { seed(rest, t); down.t = -Infinity; }   // keeps panning, can never count as a tap
+        return { type: 'none' };
+      }
+      const d = down;
+      down = null;
+      if (!d) return { type: 'none' };
+      if (isTap(d, p, t)) return { type: 'tap', x: p.x, y: p.y };
+      const v = releaseVelocity(samples, t);
+      return Math.hypot(v.vx, v.vy) > 0.15 ? { type: 'fling', v } : { type: 'none' };
+    },
+  };
+}

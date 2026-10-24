@@ -20,7 +20,7 @@ import { semantic, withAlpha } from '../styles/semanticColors';
 import { ensurePdfJsViewer, localViewerHostUrl, pdfJsReadAccessDir } from '../utils/pdfjsViewer';
 import { searchStatusLabel, searchQueryNorm } from '../utils/pdfSearchScript';
 import { ensureCachedDocFile } from '../utils/docCache';
-import { useSheetSession } from '../viewer/useSheetSession';
+import { useSheetSession, viewerMode } from '../viewer/useSheetSession';
 import sheetPlatform from '../viewer/sheetPlatform';
 import sheetApi from '../viewer/sheetClient';
 import SheetViewerPane from '../viewer/SheetViewerPane';
@@ -142,14 +142,16 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   // never swaps renderers underneath them.
   const tilesFlag = useFeatureFlag('sheet_tiles_viewer');
   const tileFileId = file?.id || file?._id || null;
+  const tilesEnabled = Boolean(visible && tilesFlag && tileFileId && /\.pdf$/i.test(file?.name || ''));
   const session = useSheetSession({
-    enabled: Boolean(visible && tilesFlag && tileFileId && /\.pdf$/i.test(file?.name || '')),
+    enabled: tilesEnabled,
     projectId, fileId: tileFileId, cacheVersion: file?.cache_version, platform: sheetPlatform, api: sheetApi,
   });
   const [tilesFailed, setTilesFailed] = useState(false);
   useEffect(() => { setTilesFailed(false); }, [visible, tileFileId]);
-  const tiled = session.state === 'tiled' && !tilesFailed;
-  const awaitingTiles = session.state === 'loading' && !tilesFailed;
+  const mode = viewerMode({ enabled: tilesEnabled, state: session.state, failed: tilesFailed });
+  const tiled = mode === 'tiled';
+  const awaitingTiles = mode === 'pending';
 
   // Memoize the WebView source so unrelated state updates (note sheet, reply
   // input, annotation taps) don't create a new object reference and force a
@@ -600,7 +602,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
 
         {/* `webViewSource` is null while the offline viewer is still staging —
             gate on it so the WebView is never mounted with a null source. */}
-        {!loading && !error && url && webViewSource && (
+        {!loading && !error && !tiled && url && webViewSource && (
           <View
             style={{ flex: 1 }}
             onLayout={(e) => setContainerLayout(e.nativeEvent.layout)}

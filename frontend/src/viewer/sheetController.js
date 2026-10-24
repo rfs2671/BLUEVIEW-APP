@@ -186,6 +186,35 @@ export function createSheetController({
       updateNeeded();
       changed();
     },
+    /**
+     * The backend finished more levels (the second compile pass) or more pages. Fold them
+     * into the live layout without touching the camera or the tiles already held, so
+     * deep zoom becomes available mid-session.
+     */
+    refreshManifest(next) {
+      if (destroyed || !next || !Array.isArray(next.pages) || next.build !== build) return false;
+      let grew = false;
+      for (const mp of next.pages) {
+        const pg = layout.pages.find((p) => p.page === mp.page);
+        if (!pg) continue;
+        const levels = (mp.levels || []).slice().sort((a, b) => a.z - b.z);
+        if (levels.length > pg.levels.length || (mp.ready && !pg.ready)) grew = true;
+        if (levels.length >= pg.levels.length) {
+          pg.levels = levels;
+          pg.zMax = levels.length ? levels[levels.length - 1].z : -1;
+        }
+        pg.ready = Boolean(mp.ready);
+        pg.preview = mp.preview || pg.preview;
+      }
+      if (!grew) return false;
+      const keep = bounds;
+      limits = zoomLimits(layout, vp, dpr);
+      if (keep) { const k = keep; bounds = null; limits = { ...limits, min: Math.max(limits.min, fitRectCamera(k, vp, 0).zoom) }; bounds = k; }
+      neededSig = '';
+      updateNeeded();
+      changed();
+      return true;
+    },
     setCamera,
     /** Gestures call these; they are plain functions of the camera so a worklet can do the same maths. */
     panBy(dx, dy) { setCamera(panCamera(cam, dx, dy)); },

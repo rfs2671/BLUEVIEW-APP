@@ -290,6 +290,24 @@ class Pipeline(unittest.TestCase):
         _, _, status = self._drive()
         self.assertEqual(status, "cancelled")
 
+    def test_a_forced_rebuild_really_rebuilds(self):
+        self._enqueue()
+        self._drive()
+        built = dict(self.store.objs)
+        self.assertTrue(built)
+        # damage the stored result: lose some tiles and the index
+        lost = [k for k in built if "/z1/" in k or k.endswith("index.json.gz")]
+        self.assertTrue(lost)
+        for k in lost:
+            del self.store.objs[k]
+        self.assertEqual(self._enqueue(), "already", "without force a finished file is left alone")
+        self.assertEqual(self._enqueue(force=True), "queued")
+        self._drive()
+        for k in lost:
+            self.assertIn(k, self.store.objs, f"force did not restore {k}")
+        self.assertEqual(set(self.store.objs), set(built))
+        self.assertEqual(self.db.project_files.rows[0]["tiles"]["status"], "complete")
+
     def test_a_new_version_replaces_the_old_build_and_deletes_its_objects(self):
         self._enqueue()
         self._drive()

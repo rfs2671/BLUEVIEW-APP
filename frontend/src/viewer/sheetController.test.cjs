@@ -48,7 +48,7 @@ function harness(over = {}) {
     ...over.api,
   };
   const c = K.createSheetController({
-    api, projectId: 'p1', fileId: 'f1', manifest, decode: async (bytes, d) => { decodes += 1; return { image: { tag: `${d.key || `p${d.page}`}#${decodes}` }, bytes: 10 }; },
+    api, projectId: 'p1', fileId: 'f1', manifest: (over.opts && over.opts.manifest) || manifest, decode: async (bytes, d) => { decodes += 1; return { image: { tag: `${d.key || `p${d.page}`}#${decodes}` }, bytes: 10 }; },
     dispose: (img) => log.disposed.push(img.tag), dpr: 1, ...over.opts,
   });
   return { c, log };
@@ -210,6 +210,24 @@ function harness(over = {}) {
     const held = c.frame().tiles.map((t) => t.image.tag);
     c.destroy();
     ok(held.every((tag) => freed.has(tag)), 'destroy frees what was still held');
+  }
+  console.log('second pass arrives mid-session');
+  {
+    const first = { ...manifest, status: 'ready', pages: manifest.pages.map((p) => ({ ...p, levels: p.levels.filter((l) => l.z <= 2) })) };
+    const { c, log } = harness({ opts: { manifest: first } });
+    c.setViewport(1000, 700); await settle();
+    const lim0 = c.limits.max;
+    c.zoomAt(1000, 500, 350); await settle();
+    ok(c.frame().tiles.every((t) => t.z <= 2), 'on the first pass only levels 0-2 can be drawn');
+    ok(c.refreshManifest(manifest) === true, 'a manifest with more levels is accepted');
+    const camBefore = { ...c.camera };
+    await settle();
+    ok(c.limits.max > lim0, 'the zoom limit deepens');
+    ok(c.frame().tiles.some((t) => t.z >= 3), 'deep tiles are fetched and drawn without reopening');
+    ok(c.refreshManifest(manifest) === false, 'the same manifest again changes nothing');
+    ok(c.refreshManifest({ ...manifest, build: 'OTHER' }) === false, 'a manifest of another build is ignored');
+    ok(Math.abs(c.camera.zoom - camBefore.zoom) < 1e-9, 'the camera is not moved by a refresh');
+    c.destroy();
   }
   console.log('destroy');
   {

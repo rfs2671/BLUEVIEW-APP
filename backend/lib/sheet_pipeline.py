@@ -215,6 +215,12 @@ async def enqueue(db: Any, project_id: str, company_id: str, file_rec: Dict[str,
     tiles = file_rec.get("tiles") or {}
     if not force and tiles.get("build") == build and tiles.get("status") in ("queued", "compiling", "ready", "complete"):
         return "already"
+    if force:
+        # A forced build must REDO the work. The page records say which levels and indexes are
+        # done (that is how a crashed compile resumes), and the build id is unchanged, so without
+        # this the job would find everything "done" and rebuild nothing: the endpoint could not
+        # repair a missing or corrupted object. The old objects are overwritten key for key.
+        await db[PAGES].delete_many({"file_id": file_id, "build": build})
     jobs = db[JOBS]
     cur = await jobs.find_one({"_id": file_id, "project_id": project_id}, {"status": 1, "lease_until": 1})
     lease = _as_utc((cur or {}).get("lease_until"))

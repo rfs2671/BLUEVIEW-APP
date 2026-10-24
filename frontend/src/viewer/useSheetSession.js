@@ -17,6 +17,8 @@ import { createSheetController } from './sheetController';
 import { manifestUsable } from './sheetApi';
 
 export const MANIFEST_TIMEOUT_MS = 6000;
+export const REFRESH_EVERY_MS = 6000;
+export const REFRESH_MAX_TRIES = 200;                 // about 20 minutes of the second pass
 
 function withTimeout(promise, ms) {
   let t;
@@ -45,12 +47,27 @@ export async function resolveManifest({ api, platform, projectId, fileId, cacheV
   }
 }
 
+/**
+ * Which viewer a drawing is showing: 'tiled', 'legacy' (the PDF viewer) or 'pending'
+ * (the decision has not been made yet). `state` is 'idle' for the one render before the
+ * session's effect has run, so an enabled-but-idle session is PENDING, not legacy:
+ * treating it as legacy started a full PDF download that was never needed and could
+ * later mount beside the tile viewer.
+ */
+export function viewerMode({ enabled, state, failed }) {
+  if (!enabled || failed) return 'legacy';
+  if (state === 'tiled') return 'tiled';
+  if (state === 'legacy') return 'legacy';
+  return 'pending';
+}
+
 export function useSheetSession({ enabled, projectId, fileId, cacheVersion, platform, api }) {
   const [session, setSession] = useState({ state: 'idle', controller: null, offline: false });
   const ctlRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
+    let refreshTimer = null;
     if (!enabled || !projectId || !fileId || !platform || !api) {
       setSession({ state: 'idle', controller: null, offline: false });
       return undefined;
@@ -75,9 +92,29 @@ export function useSheetSession({ enabled, projectId, fileId, cacheVersion, plat
       // keep the offline store inside its quota; never blocks opening the drawing
       if (platform.disk && platform.disk.sweep) Promise.resolve(platform.disk.sweep({ activeFileId: fileId })).catch(() => {});
       setSession({ state: 'tiled', controller, offline, manifest });
+      // Opened on the first pass ("ready"): keep asking until the deep levels are done, so
+      // zoom past level 2 works in this same session without reopening the drawing.
+      if (manifest.status === 'ready' && !offline) {
+        let tries = 0;
+        const tick = async () => {
+          if (cancelled || tries >= REFRESH_MAX_TRIES) return;
+          tries += 1;
+          try {
+            const m = await api.manifest(projectId, fileId);
+            if (cancelled) return;
+            if (m && m.build === manifest.build && manifestUsable(m)) {
+              controller.refreshManifest(m);
+              if (m.status === 'complete') return;
+            } else if (m && m.status === 'failed') return;
+          } catch (_e) { /* try again next time */ }
+          refreshTimer = setTimeout(tick, REFRESH_EVERY_MS);
+        };
+        refreshTimer = setTimeout(tick, REFRESH_EVERY_MS);
+      }
     })();
     return () => {
       cancelled = true;
+      if (refreshTimer) clearTimeout(refreshTimer);
       if (ctlRef.current) { ctlRef.current.destroy(); ctlRef.current = null; }
     };
   }, [enabled, projectId, fileId, cacheVersion, platform, api]);

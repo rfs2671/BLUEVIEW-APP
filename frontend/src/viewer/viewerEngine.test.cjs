@@ -281,6 +281,31 @@ console.log('tile cache');
     ok(G.doubleTapTarget(1, 1).factor === G.DOUBLE_TAP_ZOOM && G.doubleTapTarget(5, 1).fit === true, 'double tap zooms in, or returns to fit when already in');
   }
 
+  console.log('pointer tracker');
+  {
+    {
+      const tr = G.createPointerTracker();
+      tr.down(1, { x: 100, y: 100 }, 0); tr.down(2, { x: 200, y: 100 }, 5);
+      const pz = tr.move(2, { x: 300, y: 100 }, 20);
+      ok(pz.type === 'pinch' && pz.factor === 2, 'tracker: two fingers pinch');
+      ok(tr.up(1, { x: 100, y: 100 }, 40).type === 'none', 'tracker: lifting one finger of a pinch is not a tap');
+      let threw = false; let pan = null;
+      try { pan = tr.move(2, { x: 310, y: 120 }, 60); } catch (e) { threw = true; }
+      ok(!threw && pan && pan.type === 'pan' && pan.dx === 10 && pan.dy === 20, 'tracker: the remaining finger keeps panning (no TypeError)');
+      ok(tr.up(2, { x: 310, y: 120 }, 80).type !== 'tap', 'tracker: and its release is never a tap');
+      ok(tr.move(2, { x: 1, y: 1 }, 90) === null && tr.move(9, { x: 1, y: 1 }, 90) === null, 'tracker: moves from a finger that is not down are ignored');
+      const t2 = G.createPointerTracker();
+      t2.down(1, { x: 10, y: 10 }, 0);
+      const tap = t2.up(1, { x: 11, y: 10 }, 100);
+      ok(tap.type === 'tap' && tap.x === 11, 'tracker: a short still press is a tap');
+      const t3 = G.createPointerTracker();
+      t3.down(1, { x: 0, y: 0 }, 0); t3.move(1, { x: 40, y: 0 }, 20); t3.move(1, { x: 80, y: 0 }, 40);
+      const fl = t3.up(1, { x: 80, y: 0 }, 45);
+      ok(fl.type === 'fling' && fl.v.vx > 1, 'tracker: a quick drag release flings');
+      t3.down(5, { x: 0, y: 0 }, 1000); ok(t3.up(5, { x: 0, y: 0 }, 1900).type === 'none', 'tracker: a long press is neither tap nor fling');
+    }
+  }
+
   console.log('api client');
   {
     const seen = [];

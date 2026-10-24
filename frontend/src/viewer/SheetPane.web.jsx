@@ -7,7 +7,7 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { worldToScreen } from './tileMath';
 import {
-  DOUBLE_TAP_MS, doubleTapTarget, inertiaStep, isTap, pinchDelta, pinchState, releaseVelocity, wheelAction,
+  DOUBLE_TAP_MS, createPointerTracker, doubleTapTarget, inertiaStep, wheelAction,
 } from './gestures';
 
 const BG = '#131E27';
@@ -116,7 +116,7 @@ export default function SheetPane({
   const dirty = useRef(true);
   const raf = useRef(0);
   const inertia = useRef(null);
-  const g = useRef({ pointers: new Map(), pinch: null, down: null, samples: [], lastTap: 0, moved: false });
+  const g = useRef({ tracker: createPointerTracker(), lastTap: 0 });
 
   const schedule = useCallback(() => {
     dirty.current = true;
@@ -182,50 +182,26 @@ export default function SheetPane({
     if (!interactive || !controller) return;
     canvasRef.current.setPointerCapture && canvasRef.current.setPointerCapture(e.pointerId);
     inertia.current = null;
-    const st = g.current;
-    const p = pos(e);
-    st.pointers.set(e.pointerId, p);
-    if (st.pointers.size === 1) {
-      st.down = { ...p, t: Date.now() };
-      st.samples = [{ ...p, t: Date.now() }];
-      st.moved = false;
-    } else if (st.pointers.size === 2) {
-      const [a, b] = Array.from(st.pointers.values());
-      st.pinch = pinchState(a, b);
-      st.moved = true;
-    }
+    g.current.tracker.down(e.pointerId, pos(e), Date.now());
   };
 
   const onPointerMove = (e) => {
-    const st = g.current;
-    if (!st.pointers.has(e.pointerId)) return;
-    const p = pos(e);
-    const prev = st.pointers.get(e.pointerId);
-    st.pointers.set(e.pointerId, p);
-    if (st.pointers.size >= 2 && st.pinch) {
-      const [a, b] = Array.from(st.pointers.values());
-      const cur = pinchState(a, b);
-      const d = pinchDelta(st.pinch, cur);
-      controller.panBy(d.dx, d.dy);
-      controller.zoomAt(d.factor, d.cx, d.cy);
-      st.pinch = cur;
-      return;
+    const a = g.current.tracker.move(e.pointerId, pos(e), Date.now());
+    if (!a) return;
+    if (a.type === 'pinch') {
+      controller.panBy(a.dx, a.dy);
+      controller.zoomAt(a.factor, a.cx, a.cy);
+    } else {
+      controller.panBy(a.dx, a.dy);
     }
-    if (Math.hypot(p.x - st.down.x, p.y - st.down.y) > 4) st.moved = true;
-    controller.panBy(p.x - prev.x, p.y - prev.y);
-    st.samples.push({ ...p, t: Date.now() });
-    if (st.samples.length > 12) st.samples.shift();
   };
 
   const onPointerUp = (e) => {
     const st = g.current;
-    if (!st.pointers.has(e.pointerId)) return;
-    const wasPinch = st.pointers.size >= 2;
-    st.pointers.delete(e.pointerId);
-    if (wasPinch) { st.pinch = null; st.down = null; return; }
     const p = pos(e);
-    const now = Date.now();
-    if (st.down && isTap(st.down, p, now)) {
+    const a = st.tracker.up(e.pointerId, p, Date.now());
+    if (a.type === 'tap') {
+      const now = Date.now();
       if (now - st.lastTap < DOUBLE_TAP_MS) {
         st.lastTap = 0;
         const target = doubleTapTarget(controller.camera.zoom, controller.viewport.width / 1000);
@@ -235,11 +211,10 @@ export default function SheetPane({
         st.lastTap = now;
         if (onTap) onTap(controller.hitTest(p.x, p.y), p);
       }
-    } else if (st.down) {
-      const v = releaseVelocity(st.samples, now);
-      if (Math.hypot(v.vx, v.vy) > 0.15) { inertia.current = { v, t: 0 }; schedule(); }
+    } else if (a.type === 'fling') {
+      inertia.current = { v: a.v, t: 0 };
+      schedule();
     }
-    st.down = null;
   };
 
   // React attaches wheel listeners passively; a zoom must be able to preventDefault.

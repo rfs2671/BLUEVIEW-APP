@@ -35,7 +35,7 @@ async function resolvePdfSrc(rawUrl, signal) {
   return resolvePdfForIframe(rawUrl, { apiBase: API_BASE, token, signal });
 }
 import { useFeatureFlag } from '../hooks/useFeatureFlag';
-import { useSheetSession } from '../viewer/useSheetSession';
+import { useSheetSession, viewerMode } from '../viewer/useSheetSession';
 import sheetPlatform from '../viewer/sheetPlatform';
 import sheetApi from '../viewer/sheetClient';
 import SheetViewerPane from '../viewer/SheetViewerPane';
@@ -78,15 +78,17 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
   // old backend, no canvas support, a render error) keeps the iframe path below.
   const tilesFlag = useFeatureFlag('sheet_tiles_viewer');
   const tileFileId = file?.id || file?._id || null;
+  const tilesEnabled = Boolean(visible && tilesFlag && tileFileId && /\.pdf$/i.test(file?.name || ''));
   const session = useSheetSession({
-    enabled: Boolean(visible && tilesFlag && tileFileId && /\.pdf$/i.test(file?.name || '')),
+    enabled: tilesEnabled,
     projectId, fileId: tileFileId, cacheVersion: file?.cache_version, platform: sheetPlatform, api: sheetApi,
   });
   const [tilesFailed, setTilesFailed] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   useEffect(() => { setTilesFailed(false); setSearchOpen(false); }, [visible, tileFileId]);
-  const tiled = session.state === 'tiled' && !tilesFailed;
-  const awaitingTiles = session.state === 'loading' && !tilesFailed;
+  const mode = viewerMode({ enabled: tilesEnabled, state: session.state, failed: tilesFailed });
+  const tiled = mode === 'tiled';
+  const awaitingTiles = mode === 'pending';
 
   /**
    * ONE loader, for the first open AND for Try Again.
