@@ -157,8 +157,12 @@ class TestUploadCoiObjects(unittest.TestCase):
         fake_server.R2_BUCKET_NAME = "test-bucket"
         fake_server.R2_PUBLIC_URL = "https://r2.example.com"
         fake_server.R2_ENDPOINT_URL = "https://endpoint.r2.example.com"
-        _sys.modules["server"] = fake_server
-        try:
+        # patch.dict RESTORES the real module. A bare `del sys.modules
+        # ["server"]` removed it for the rest of the suite: every later
+        # `import server` built a SECOND copy of server.py, so a patch made
+        # through that copy never reached the module the tests already held
+        # (it hid the GC confirm tests' pinned clock -- 2026-10-23).
+        with patch.dict(_sys.modules, {"server": fake_server}):
             result = coi_storage.upload_coi_objects(
                 pdf_bytes=b"PDFBODY",
                 preview_bytes=b"JPGBODY",
@@ -168,8 +172,6 @@ class TestUploadCoiObjects(unittest.TestCase):
                 insurance_type="general_liability",
                 company_id="co1",
             )
-        finally:
-            del _sys.modules["server"]
 
         self.assertEqual(mock_client.put_object.call_count, 2)
         calls = mock_client.put_object.call_args_list

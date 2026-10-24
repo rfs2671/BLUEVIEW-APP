@@ -35,6 +35,7 @@ from tests.test_whatsapp_phase1_foundations import (  # noqa: E402
     ADMIN_PHONE, CO_A, CO_B, _Ctx, _users, _start,
 )
 from tests._fake_mongo import FakeDb  # noqa: E402
+from tests._pinned_clock import pin_server_clock  # noqa: E402
 
 G_GC = "120363000000000101@g.us"
 G_PLUMB = "120363000000000102@g.us"
@@ -260,13 +261,16 @@ class PermitThresholds(unittest.TestCase):
 
 class TheConfirmFlow(unittest.TestCase):
 
+    def setUp(self):
+        # The reply is handled at server.py's clock (_handle_gc_confirm_reply
+        # reads datetime.now), so it is PINNED to NOON with the question:
+        # never expired (the old fixed NOON failed from Oct 10, 72 h on), and
+        # never inside the Shabbos / Yom Tov window, where the bot holds the
+        # question (the real clock failed every Friday evening -- Oct 23).
+        pin_server_clock(self, NOON)
+
     def _ask(self, c, now=None):
-        # The real clock by default: the reply is handled at the real time
-        # (_handle_gc_confirm_reply reads datetime.now), so a question asked
-        # at a fixed past moment expires under the test once that moment is
-        # more than the proposal's lifetime ago (this failed from Oct 10 2026,
-        # 72 h after the old fixed NOON).
-        return _run(server._gc_propose_tick(now or datetime.now(timezone.utc)))
+        return _run(server._gc_propose_tick(now or NOON))
 
     def test_the_main_admin_is_asked_once_with_the_picked_group(self):
         with _Ctx(db=_world()) as c:
@@ -725,14 +729,17 @@ class TheSettingsEndpoints(unittest.TestCase):
 
 class TheAppPickAndTheDmAnswerAtOnce(unittest.TestCase):
 
+    def setUp(self):
+        pin_server_clock(self, NOON)        # see TheConfirmFlow.setUp
+
     def test_a_dm_yes_landing_mid_request_stands(self):
         # Codex review on #757: the DM "yes" confirmed the proposed group
         # after the app read the settings; the app then wrote its own group
         # over it while the proposal said the DM had won.
         with _Ctx(db=_world()):
             _start(ADMIN_PHONE)
-            # The real clock: the reply is handled at the real time.
-            _run(server._gc_propose_tick(datetime.now(timezone.utc)))
+            # Asked and answered at the pinned clock (setUp).
+            _run(server._gc_propose_tick(NOON))
             proposed = _settings()["gc_proposal"]["group_id"]
             real = server._whatsapp_project_settings
             fired = []
