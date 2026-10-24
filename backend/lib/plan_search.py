@@ -1772,6 +1772,37 @@ def _apartment_count(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
     return total
 
 
+def _track_labels(fam: GlyphFamily, floors: Iterable[str]) -> List[str]:
+    """How the render names each NON-FILED drawing track the family's rows on
+    `floors` were placed against (payload.arch.drawing_track, EMIT_VERSION 6).
+
+    A PER-APARTMENT FIGURE RESTS ON THE ARCHITECTURAL SHEET IT WAS PLACED
+    AGAINST, and on 588 Boyland floors 2 to the mezzanine are placed against
+    the Owner's set - the owner's post-CO additions, not the governing filed
+    AR set (operator ruling 2026-10-24: label, don't refuse). Floor and
+    building totals rest on the mechanical sheets alone and carry no label.
+    A row written before the track was read says nothing about it."""
+    wanted, out = set(floors), []
+    for r in fam.rows:
+        if _row_floor(r) not in wanted:
+            continue
+        a = (r.get("payload") or {}).get("arch") or {}
+        tr = a.get("drawing_track")
+        if tr and tr != "filed":
+            lab = a.get("drawing_track_label") or f"the {tr} set ({a.get('file_name')})"
+            if lab not in out:
+                out.append(lab)
+    return out
+
+
+def _track_note(book: GlyphBook, fam: GlyphFamily, k: str, units: Iterable[str]) -> str:
+    floors = {k}
+    for u in units:
+        floors |= set(_apartment_floors(book, u) or [])
+    labels = _track_labels(fam, floors)
+    return f"; these per-apartment figures are per {' and '.join(labels)}" if labels else ""
+
+
 def _floor_label(book: GlyphBook, k: str) -> str:
     return " / ".join(sorted(book.sheets.get(k) or [])) or k
 
@@ -2031,7 +2062,8 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
                          "predate the reading of which units continue on "
                          "another sheet)")
             elif per is not None:
-                line += f"; each unit ({', '.join(counts)}) has {per}" + _whole_note(book, counts)
+                line += (f"; each unit ({', '.join(counts)}) has {per}" + _whole_note(book, counts)
+                         + _track_note(book, fam, k, counts))
             elif cont and any(cont.values()) and not counts:
                 line += (f"; {', '.join(u for u in book.units[k] if cont.get(u))} "
                          f"continue on another sheet, so no per-apartment figure")
@@ -2040,6 +2072,7 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
                 # a figure either.
                 line += "; per unit " + ", ".join(f"{u} {n}" for u, n in counts.items() if n)
                 line += _whole_note(book, [u for u, n in counts.items() if n])
+                line += _track_note(book, fam, k, [u for u, n in counts.items() if n])
                 none = [u for u, n in counts.items() if not n]
                 if none:
                     line += f"; none placed in {', '.join(none)}"

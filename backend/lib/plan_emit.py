@@ -51,7 +51,10 @@ SOURCE = "plan_takeoff"
 #: from, its region's area beside the unit's NET on its own floor), and the
 #: multi_level evidence on both sheets names the other ("reaches <sheet>" /
 #: "seeded from <sheet>") - the link the gate sums a duplex across.
-EMIT_VERSION = 5
+#: 6 (2026-10-24): payload.arch carries the drawing track of the page the row
+#: was placed against (drawing_track "filed" | "post_co", and its label) -
+#: so an answer resting on the owner's post-CO set can name it.
+EMIT_VERSION = 6
 
 #: the citation fields a row carries from its page (as _write_page_records)
 CITE = ("project_id", "company_id", "file_id", "file_hash", "file_name",
@@ -116,7 +119,8 @@ def glyph_rows(result: Dict[str, Any], *, mech: Dict[str, Any],
     # A sheet counted at sheet scope has no architectural page to cite.
     arch_ref = ({k: arch.get(k) for k in ("page_id", "file_id", "file_hash",
                                           "file_name", "page_number",
-                                          "sheet_number")} if arch else None)
+                                          "sheet_number", "drawing_track",
+                                          "drawing_track_label")} if arch else None)
     common = {
         "pass_key": pass_key, "family": family, "arch": arch_ref,
         "method": result.get("method"),
