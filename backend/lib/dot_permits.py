@@ -56,6 +56,11 @@ from lib import dot_embargo, dot_sync
 
 TRIGGER_TYPE = "dot_permit_expiring"
 EXPIRY_THRESHOLDS = (14, 3)
+#: LATE ITEMS (operator ruling 2026-10-24). Once today's digest run has gone,
+#: an item found later with this many days left or fewer cannot wait for
+#: tomorrow's digest: it is sent at once, in its own email (`late_id`; the
+#: Shabbos hold still applies). Anything with more days left waits.
+LATE_SEND_MAX_DAYS = 1
 EXPIRING_DAYS = 14            # the screen's "expiring" section
 SUGGEST_MONTHS = 24
 
@@ -128,6 +133,23 @@ def expiry_ledger_id(project_id: str, permit: str, days_left: int, end: date) ->
 def digest_id(project_id: str, kind: str, day: date) -> str:
     """One digest per project per day per kind."""
     return f"dot:{project_id}:{kind}_digest:-:-:{day.isoformat()}"
+
+
+def late_id(project_id: str, kind: str, day: date, numbers: Iterable[str]) -> str:
+    """A late item's own email: the items one later run found, after the
+    day's digest had gone (LATE_SEND_MAX_DAYS)."""
+    return f"dot:{project_id}:{kind}_late:{'+'.join(sorted(numbers))}:-:{day.isoformat()}"
+
+
+def run_marker_id(kind: str, day: date) -> str:
+    """system_config key written when the day's scheduled digest run has gone; after it, a
+    later run sends only late items (LATE_SEND_MAX_DAYS)."""
+    return f"dot:-:{kind}_run:-:-:{day.isoformat()}"
+
+
+def late_items(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The items that cannot wait for tomorrow's digest."""
+    return [d for d in items if d.get("days") is not None and d["days"] <= LATE_SEND_MAX_DAYS]
 
 
 def hold_id(project_id: str, kind: str, day: date) -> str:

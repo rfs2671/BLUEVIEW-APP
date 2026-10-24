@@ -48689,6 +48689,12 @@ async def _dot_sync_job() -> None:
         await _dot_summons_record_alert_tick()
     except Exception as e:
         logger.error(f"[dot-summons] record alerts failed: {type(e).__name__}: {e}")
+    # A permit this sync found with <= 1 day left cannot wait for tomorrow's
+    # digest (ruling 2026-10-24); before today's 07:00 run it does nothing.
+    try:
+        await _dot_permit_expiry_tick(late_only=True)
+    except Exception as e:
+        logger.error(f"[dot-expiry] late tick failed: {type(e).__name__}: {e}")
 
 
 # ── DOT HOLIDAY EMBARGO (lib/dot_embargo.py is the rule) ───────────────────
@@ -49180,21 +49186,35 @@ async def _dot_held_release(spec: dict, now: Optional[datetime] = None) -> bool:
 
 async def _dot_permit_expiry_tick(now: Optional[datetime] = None,
                                   project_ids: Optional[List[str]] = None,
-                                  release: bool = False) -> dict:
+                                  release: bool = False, late_only: bool = False) -> dict:
     """Part of the 07:00 New York run: ONE digest email per project listing
     every permit expiry reminder due today (lib/dot_permits). Reads dot_logs
-    only -- no network. `release`: the Shabbos queue delivering a held day."""
+    only -- no network. `release`: the Shabbos queue delivering a held day.
+    `late_only`: the run after each DOT sync -- once today's digest run has
+    gone, an item with <= 1 day left found since is sent now, on its own;
+    everything else waits for tomorrow's digest (ruling 2026-10-24)."""
     from lib.notifications import is_email_kill_switch_on, send_notification
     from pymongo.errors import DuplicateKeyError
     now = now or datetime.now(timezone.utc)
     today = dot_embargo.ny_date(now)
     report = {"date": today.isoformat(), "projects": 0, "due": 0, "sent": 0, "digests": 0,
-              "already": 0, "no_recipients": 0, "ledger_failed": 0, "waiting_sync": 0, "held": 0}
+              "already": 0, "no_recipients": 0, "ledger_failed": 0, "waiting_sync": 0, "held": 0,
+              "late": 0, "wait_tomorrow": 0}
     # Checked BEFORE any ledger row is written (as the embargo run does).
     if not RESEND_API_KEY or is_email_kill_switch_on():
         report["skipped"] = "no_resend_key" if not RESEND_API_KEY else "kill_switch"
         logger.info(f"[dot-expiry] {report}")
         return report
+    marker = dot_permits.run_marker_id("expiry", today)
+    if late_only:
+        # Before today's digest run, everything is the digest's to send.
+        try:
+            if not await db.system_config.find_one({"key": marker}, {"_id": 1}):
+                report["skipped"] = "before_digest_run"
+                return report
+        except Exception as e:
+            logger.warning(f"[dot-expiry] run marker read failed: {type(e).__name__}")
+            return report
     try:
         live = await _dot_live_projects()
     except Exception as e:
@@ -49236,13 +49256,29 @@ async def _dot_permit_expiry_tick(now: Optional[datetime] = None,
             report["no_recipients"] += len(fresh)
             continue
         did = dot_permits.digest_id(project_id, "expiry", today)
+        digest_kind = "permit_expiry_digest"
+        try:
+            went = late_only or bool(await db[dot_embargo.LEDGER].find_one({"_id": did}, {"_id": 1}))
+        except Exception as e:
+            logger.warning(f"[dot-expiry] digest read failed: {type(e).__name__}")
+            continue
+        if went:
+            # Today's digest has gone: an item with <= 1 day left cannot wait
+            # for tomorrow's -- it goes now, in its own email. The rest wait.
+            urgent = dot_permits.late_items(fresh)
+            report["wait_tomorrow"] += len(fresh) - len(urgent)
+            if not urgent:
+                continue
+            fresh = urgent
+            did = dot_permits.late_id(project_id, "expiry", today, [d["permit"] for d in urgent])
+            digest_kind = "permit_expiry_late"
         try:
             await db[dot_embargo.LEDGER].insert_one({
                 "_id": did, "project_id": project_id, "company_id": str(project.get("company_id") or ""),
-                "kind": "permit_expiry_digest", "send_date": today.isoformat(),
+                "kind": digest_kind, "send_date": today.isoformat(),
                 "trigger_type": dot_permits.TRIGGER_TYPE, "recipients": len(recipients), "created_at": now})
         except DuplicateKeyError:
-            report["already"] += len(fresh)      # today's digest went: the rest wait a day
+            report["already"] += len(fresh)
             continue
         except Exception as e:
             logger.warning(f"[dot-expiry] ledger write failed: {type(e).__name__}")
@@ -49291,7 +49327,10 @@ async def _dot_permit_expiry_tick(now: Optional[datetime] = None,
             except Exception as e:
                 logger.error(f"[dot-expiry] send failed: {type(e).__name__}")
         report["sent"] += len(claimed) if sent else 0
-        report["digests"] += 1 if sent else 0
+        if digest_kind == "permit_expiry_late":
+            report["late"] += 1 if sent else 0
+        else:
+            report["digests"] += 1 if sent else 0
         try:
             at = datetime.now(timezone.utc)
             await db[dot_embargo.LEDGER].update_one({"_id": did}, {"$set": {
@@ -49302,6 +49341,16 @@ async def _dot_permit_expiry_tick(now: Optional[datetime] = None,
                     {"$set": {"sent_to": sent, "sent_at": at}})
         except Exception:
             pass
+    if not late_only and not project_ids:
+        # Today's digest run has gone (whether or not a project had anything):
+        # from now on the sync's late run may send <= 1-day items on their own.
+        # In system_config, not dot_alert_ledger: a run is not an alert.
+        try:
+            await db.system_config.update_one(
+                {"key": marker}, {"$setOnInsert": {"value": True, "send_date": today.isoformat(),
+                                                   "created_at": now}}, upsert=True)
+        except Exception as e:
+            logger.warning(f"[dot-expiry] run marker write failed: {type(e).__name__}")
     logger.info(f"[dot-expiry] {report}")
     return report
 
