@@ -162,6 +162,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         # complete - and so a row that predates the reading says nothing.
         member = Units(f["space"]["units"], f["space"]["lo"], f["space"]["cell_pt"],
                        f["space"]["refused"], f["space"], f["space"]["tags"])
+        f["member"] = member
         f["units"] = dict(f["units"], multi_level=derive.multi_level_units(
             arch_pg.directed_words, member.at, f["units"]["tags"]))
         f["stairs"] = derive.unit_stairs(arch_pg.directed_words, member.at,
@@ -186,8 +187,10 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                  "fallback_reason": space.get("fallback_reason")}
         if units.get("seeded"):
             floor["seeded"] = units["seeded"]
+        if units.get("linked"):
+            floor["linked"] = units["linked"]
         summary["floors"].append(floor)
-        mech_sheet = load_sheet(mech_pg)
+        mech_sheet = f.get("mech_data") or load_sheet(mech_pg)
         reads = sweep(mech_pg, mech_sheet["segs"])
         for name, fam in run_fams.items():
             key = f"{a_sheet}|{m_sheet}|{name}"
@@ -227,7 +230,13 @@ def seed_from_stairs(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str
 
     Each seeded region's area is reported beside the unit's NET on its own
     floor (informational, as the existing ratios are); a seeded region is
-    otherwise checked only by render. Returns a line per decision."""
+    otherwise checked only by render.
+
+    A plan that DOES name its own units is linked, not seeded (ruling
+    2026-10-24): see link_refusal. Every stair between two sheets for one
+    unit must pass, or there is no link - one end refusing is a
+    contradiction, never outvoted by the other. Returns a line per
+    decision."""
     from lib.plan_sheet import register
     from lib.plan_space import build_space
 
@@ -235,6 +244,13 @@ def seed_from_stairs(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str
     plans = [f["arch_p"] for f in floors]
     by_sheet = {f["a_sheet"]: f for f in floors}
     wanted: Dict[str, Dict[str, list]] = {}
+    links: Dict[tuple, list] = {}
+    regs: Dict[tuple, Dict[str, Any]] = {}
+
+    def reg_of(a, b):
+        if (a["a_sheet"], b["a_sheet"]) not in regs:
+            regs[(a["a_sheet"], b["a_sheet"])] = register(a["data"], b["data"])
+        return regs[(a["a_sheet"], b["a_sheet"])]
     for f in floors:
         for u, labs in (f.get("stairs") or {}).items():
             if not labs:
@@ -253,8 +269,9 @@ def seed_from_stairs(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str
                 notes.append(f"{f['a_sheet']} {u}: {tgt_p.get('sheet_number')} was not read")
                 continue
             if (t.get("units") or {}).get("tags") is not None:
-                notes.append(f"{f['a_sheet']} {u}: {t['a_sheet']} names its own units - "
-                             f"not seeded")
+                why, lands = link_refusal(f, t, u, lab, x, y, reg_of, open_page)
+                links.setdefault((*sorted((f["a_sheet"], t["a_sheet"])), u), []).append(
+                    (f, t, lab, x, y, lands, why))
                 continue
             reg_ = register(f["data"], t["data"])
             if not reg_["usable"]:
@@ -263,6 +280,29 @@ def seed_from_stairs(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str
                 continue
             wanted.setdefault(t["a_sheet"], {}).setdefault(u, []).append(
                 (x + reg_["dx"], y + reg_["dy"], f, lab, x, y))
+
+    for (_lo, _hi, u), evals in sorted(links.items(), key=lambda kv: kv[0]):
+        bad = [(f, t, lab, why) for f, t, lab, _x, _y, _l, why in evals if why]
+        if bad:
+            for f, t, lab, why in bad:
+                notes.append(f"{f['a_sheet']} {u}: {t['a_sheet']} names its own units - "
+                             f"not seeded; stair {lab} not linked to its {u}: {why}")
+            if len(bad) < len(evals):
+                notes.append(f"{_lo} / {_hi} {u}: not linked - every stair between the two "
+                             f"sheets must pass, and {len(bad)} of {len(evals)} refused")
+            continue
+        for f, t, lab, x, y, (lx, ly), _w in evals:
+            key = f"stair label {lab} at ({round(x)}, {round(y)})"
+            ml = f["units"]["multi_level"]
+            ml[u] = [e + f" reaches {t['a_sheet']}" if e == key else e for e in ml.get(u, [])]
+            t["units"].setdefault("multi_level", {}).setdefault(u, []).append(
+                f"linked from {f['a_sheet']}: {key}")
+            f["units"].setdefault("linked", {}).setdefault(u, []).append(
+                {"to": t["a_sheet"], "stair": lab, "at": [round(x, 1), round(y, 1)],
+                 "lands": [round(lx, 1), round(ly, 1)]})
+            notes.append(f"{f['a_sheet']} {u}: linked to {t['a_sheet']}'s own {u} - stair "
+                         f"{lab} at ({round(x)}, {round(y)}) lands at ({round(lx)}, "
+                         f"{round(ly)}), inside it")
 
     for tgt, by_unit in wanted.items():
         t = by_sheet[tgt]
@@ -304,3 +344,84 @@ def seed_from_stairs(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str
     for n in notes:
         log.info("glyph pass stair seeding: %s", n)
     return notes
+
+
+def _level_words(f: Dict[str, Any], u: str) -> List[str]:
+    """The LOWER / UPPER words printed inside unit u on floor f."""
+    out = []
+    for e in ((f.get("units") or {}).get("multi_level") or {}).get(u) or []:
+        if e.startswith("level word "):
+            w = e.split()[2]
+            if w in ("LOWER", "UPPER"):
+                out.append(w)
+    return out
+
+
+def _partner_registration(f: Dict[str, Any], open_page) -> Dict[str, Any]:
+    """The floor's architectural sheet registered to its mechanical partner,
+    read once; the partner sheet is kept for the placement that follows."""
+    if "partner_reg" not in f:
+        from lib.plan_sheet import load_sheet, register
+        f["mech_data"] = load_sheet(open_page(f["mech_p"]))
+        f["partner_reg"] = register(f["data"], f["mech_data"])
+    return f["partner_reg"]
+
+
+def link_refusal(src: Dict[str, Any], tgt: Dict[str, Any], u: str, lab: str,
+                 x: float, y: float, reg_of, open_page):
+    """(None, (lx, ly)) when the stair labelled `lab` at (x, y) in unit u on
+    `src` links u to the unit tagged u on `tgt` - else (why not, None).
+
+    A STAIR LINKS ITS UNIT TO THE SAME UNIT ON A PLAN THAT NAMES IT (ruling
+    2026-10-24). The filed mezzanine A-104.00 (AR 3.28.25) prints 4A-4D
+    itself, so it is not seeded, and the whole-apartment count refused. The
+    stair now links u to the unit tagged u there only if ALL hold:
+      1. the target is the plan the stair reaches by the seeding rule (series
+         + title ordinals; the caller's plan_derive.stair_target);
+      2. exactly one unit is tagged u on the target - u has a region there,
+         nothing refused or incomplete, and no label u lies in another unit;
+      3. registration is usable on both sheets: source -> target (which
+         carries the landing point), and each sheet to its mechanical partner;
+      4. the stair's registered landing point falls inside u's region there;
+      5. any LOWER / UPPER words agree: the lower level's unit says LOWER or
+         nothing, the upper's UPPER or nothing (UP from the source makes the
+         source the lower level, DN the upper). A contradiction refuses.
+    Measured 2026-10-24 on the filed set: all four of 4A-4D pass every
+    condition, from both ends (A-103's UP and A-104's DN); the landings sit
+    30 pt (4A, 4B) and 15 pt (4C, 4D) inside the unit's wall by the public
+    stair core, by render."""
+    t_sheet = tgt["a_sheet"]
+    tsp, member = tgt.get("space") or {}, tgt.get("member")
+    if u not in ((tgt.get("units") or {}).get("tags") or []):
+        return f"{t_sheet} names no unit {u}", None
+    held = {t for r in tsp.get("refused") or []
+            if isinstance(r, (list, tuple)) and len(r) > 1 for t in r[1]}
+    if (u not in (tsp.get("units") or {}) or u in (tsp.get("incomplete") or {})
+            or u in held or member is None):
+        return f"{u} has no region of its own on {t_sheet}", None
+    elsewhere = sorted({member.at(wx, wy) for w, wx, wy in tgt["data"].get("words") or []
+                        if w == u} - {u, ""})
+    if elsewhere:
+        return (f"{t_sheet} prints {u} in more than one unit "
+                f"({', '.join([u] + elsewhere)})"), None
+    lower, upper = (src, tgt) if lab.upper() == "UP" else (tgt, src)
+    for f, want in ((lower, "LOWER"), (upper, "UPPER")):
+        bad = [w for w in _level_words(f, u) if w != want]
+        if bad:
+            return (f"{f['a_sheet']} calls {u} {bad[0]}, but the stair makes it the "
+                    f"{want.lower()} level"), None
+    reg_ = reg_of(src, tgt)
+    if not reg_["usable"]:
+        return (f"{src['a_sheet']} -> {t_sheet} does not register "
+                f"({reg_.get('refused')})"), None
+    for f in (src, tgt):
+        pr = _partner_registration(f, open_page)
+        if not pr.get("usable"):
+            return (f"{f['a_sheet']} -> {f.get('m_sheet')} does not register "
+                    f"({pr.get('refused')})"), None
+    lx, ly = x + reg_["dx"], y + reg_["dy"]
+    at = member.at(lx, ly)
+    if at != u:
+        return (f"the stair lands at ({round(lx)}, {round(ly)}) on {t_sheet}, in "
+                f"{at or 'no unit'}, not {u}"), None
+    return None, (lx, ly)
