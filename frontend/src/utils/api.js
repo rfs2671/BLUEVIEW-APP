@@ -1596,6 +1596,54 @@ export const dobAPI = {
     return response.data;
   },
 
+  // DOT Phase 1 B — the DOT tab. GET .../dot/permits returns
+  // { permits: [view], needs_confirmation: [view], needs_confirmation_older,
+  //   counts, setup_status, can_review }; a view carries number, series,
+  //   permit_type, status, permittee, work_start, work_end, days_left,
+  //   group ('active'|'expiring'|'expired'), segment {on, from, to, boro_name},
+  //   renewed_by, waiver_missing.
+  getDotPermits: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/${encodeURIComponent(projectId)}/dot/permits`
+    );
+    return response.data;
+  },
+  // { setup, suggestions: {permittees, frontages}, fallback, can_confirm, can_suggest, ... }
+  getDotSetup: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/${encodeURIComponent(projectId)}/dot/setup`
+    );
+    return response.data;
+  },
+  // Company admin / full-access PM. body: { permittees?: [name], frontages?: [{boro,on,from,to}] }
+  confirmDotSetup: async (projectId, body) => {
+    const response = await apiClient.post(
+      `/api/projects/${encodeURIComponent(projectId)}/dot/setup/confirm`, body || {}
+    );
+    return response.data;
+  },
+  // A superintendent's call is a suggestion; an admin's is confirmed at once.
+  addDotFrontage: async (projectId, frontage) => {
+    const response = await apiClient.post(
+      `/api/projects/${encodeURIComponent(projectId)}/dot/setup/frontage`, frontage
+    );
+    return response.data;
+  },
+  removeDotFrontage: async (projectId, index) => {
+    const response = await apiClient.delete(
+      `/api/projects/${encodeURIComponent(projectId)}/dot/setup/frontage/${encodeURIComponent(index)}`
+    );
+    return response.data;
+  },
+  // decision: 'accept' (yours) | 'reject' (not ours)
+  reviewDotPermit: async (projectId, permit, decision) => {
+    const response = await apiClient.post(
+      `/api/projects/${encodeURIComponent(projectId)}/dot/permits/${encodeURIComponent(permit)}/review`,
+      { decision }
+    );
+    return response.data;
+  },
+
   // MR.14 commit 3 — mark a single dob_log as read for the calling user.
   markRead: async (projectId, logId) => {
     const response = await apiClient.post(

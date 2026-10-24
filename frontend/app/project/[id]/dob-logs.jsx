@@ -30,6 +30,7 @@ import {
   ExternalLink,
   FileCheck,
   ShieldAlert,
+  MapPin,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
@@ -47,6 +48,8 @@ import { useT } from '../../../src/i18n';
 import OfflineNotice from '../../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../../src/utils/offlineState';
 import InfoTooltip from '../../../src/components/InfoTooltip';
+// DOT Phase 1 B: the DOT tab (setup, needs confirmation, permits).
+import DotCompliancePanel from '../../../src/components/DotCompliancePanel';
 // daysUntil moved to a shared util so workers/[id].jsx can use the SAME
 // definition and threshold for credential expiry (it previously had none).
 import { daysUntil } from '../../../src/utils/expiry';
@@ -91,11 +94,13 @@ export default function DOBLogsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { id: projectId } = useLocalSearchParams();
+  // `tab=dot` opens the DOT tab directly (a deep link, and the mount smoke).
+  const { id: projectId, tab: initialTab } = useLocalSearchParams();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
   const tc = useT('compliance');
   const tEmbargo = useT('dotEmbargo');
+  const tDot = useT('dotCompliance');
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -111,7 +116,7 @@ export default function DOBLogsScreen() {
   // the window (Nov 1 – Jan 2, New York) and `show`; null = not loaded, and
   // a failed read shows nothing rather than a claim either way.
   const [embargo, setEmbargo] = useState(null);
-  const [activeTab, setActiveTab] = useState('all');
+  const [activeTab, setActiveTab] = useState(initialTab === 'dot' ? 'dot' : 'all');
   const [expandedLogId, setExpandedLogId] = useState(null);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [configBin, setConfigBin] = useState('');
@@ -326,7 +331,7 @@ export default function DOBLogsScreen() {
   // Filtered logs for display. Inspections are excluded everywhere: their
   // ingest was removed (rodent-data mislabel) and dob-summary doesn't count
   // them, so there's no tile/tab — don't leave orphan inspection cards in "all".
-  const filteredLogs = openFirstSort(
+  const filteredLogs = activeTab === 'dot' ? [] : openFirstSort(
     activeTab === 'all' ? allLogs.filter(l => l.record_type !== 'inspection')
     : activeTab === 'violation' ? allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo')
     : allLogs.filter(l => l.record_type === activeTab)
@@ -361,6 +366,41 @@ export default function DOBLogsScreen() {
     const days = daysUntil(l.expiration_date);
     return days !== null && days < 0;
   });
+
+  // DOT holiday embargo: an active, CONFIRMED permit exposed to Nov 15 –
+  // Jan 2 with no waiver (stipulation 410), or whose stipulations could not be
+  // read ("Waiver not verified" -- shown, never emailed). Only inside Nov 1 –
+  // Jan 2. One element: outside the DOT tab it sits above the renewal banner;
+  // inside it, DotCompliancePanel places it between setup and permits.
+  const embargoBanner = (
+    <>
+      {(embargoMissing.length > 0 || embargoUnverified.length > 0) && (
+        <GlassCard style={s.renewalBanner}>
+          <View style={s.renewalBannerHeader}>
+            <ShieldAlert size={16} strokeWidth={2} color={semantic.attention} />
+            <Text style={[s.renewalBannerTitle, s.embargoTitle]}>
+              {embargoMissing.length === 0
+                ? tEmbargo('unverifiedTitle')
+                : embargoMissing.length === 1
+                  ? tEmbargo('bannerOne')
+                  : tEmbargo('banner').replace('{n}', String(embargoMissing.length))}
+            </Text>
+          </View>
+          {embargoMissing.length > 0 && (
+            <Text style={s.embargoLine}>
+              {tEmbargo('permits').replace('{list}', embargoMissing.map((p) => p.number).join(', '))}
+            </Text>
+          )}
+          {embargoUnverified.length > 0 && (
+            <Text style={s.embargoLine}>
+              {tEmbargo('unverified').replace('{list}', embargoUnverified.map((p) => p.number).join(', '))}
+            </Text>
+          )}
+          <Text style={s.embargoLine}>{tEmbargo('action')}</Text>
+        </GlassCard>
+      )}
+    </>
+  );
 
   const handlePrepareRenewal = async (log) => {
     setPreparingId(log.id);
@@ -1001,6 +1041,15 @@ export default function DOBLogsScreen() {
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Open Complaints</Text>
               </GlassCard>
             </Pressable>
+            {/* DOT Phase 1 B: DOT street permits — setup, needs confirmation,
+                permits (src/components/DotCompliancePanel.jsx). */}
+            <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'dot' ? 'all' : 'dot'); setExpandedLogId(null); }}>
+              <GlassCard style={[s.navCard, activeTab === 'dot' && s.navCardActive]}>
+                <MapPin size={22} strokeWidth={1.5} color={activeTab === 'dot' ? chrome.brand : colors.text.muted} />
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'dot' && s.navCountActive]}>DOT</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'dot' && s.navLabelActive]}>{tDot('tabLabel')}</Text>
+              </GlassCard>
+            </Pressable>
           </View>
 
           {/* Disclosure: permits with no expiry date are excluded from the
@@ -1016,47 +1065,26 @@ export default function DOBLogsScreen() {
             <Pressable onPress={() => setActiveTab('all')}>
               <View style={s.filterBanner}>
                 <Text style={s.filterText}>
-                  Showing: {activeTab === 'permit' ? 'Permits' : activeTab === 'violation' ? 'Violations' : activeTab === 'inspection' ? 'Inspections' : 'Complaints'}
+                  {activeTab === 'dot'
+                    ? tDot('showing')
+                    : `Showing: ${activeTab === 'permit' ? 'Permits' : activeTab === 'violation' ? 'Violations' : activeTab === 'inspection' ? 'Inspections' : 'Complaints'}`}
                 </Text>
                 <Text style={s.filterClear}>Show All</Text>
               </View>
             </Pressable>
           )}
 
-          {/* DOT holiday embargo: an active permit exposed to Nov 15 – Jan 2
-              with no waiver (stipulation 410), or whose stipulations could not be
-              read ("Waiver not verified" -- shown, never emailed). Only inside
-              Nov 1 – Jan 2. */}
-          {(embargoMissing.length > 0 || embargoUnverified.length > 0) && (
-            <GlassCard style={s.renewalBanner}>
-              <View style={s.renewalBannerHeader}>
-                <ShieldAlert size={16} strokeWidth={2} color={semantic.attention} />
-                <Text style={[s.renewalBannerTitle, s.embargoTitle]}>
-                  {embargoMissing.length === 0
-                    ? tEmbargo('unverifiedTitle')
-                    : embargoMissing.length === 1
-                      ? tEmbargo('bannerOne')
-                      : tEmbargo('banner').replace('{n}', String(embargoMissing.length))}
-                </Text>
-              </View>
-              {embargoMissing.length > 0 && (
-                <Text style={s.embargoLine}>
-                  {tEmbargo('permits').replace('{list}', embargoMissing.map((p) => p.number).join(', '))}
-                </Text>
-              )}
-              {embargoUnverified.length > 0 && (
-                <Text style={s.embargoLine}>
-                  {tEmbargo('unverified').replace('{list}', embargoUnverified.map((p) => p.number).join(', '))}
-                </Text>
-              )}
-              <Text style={s.embargoLine}>{tEmbargo('action')}</Text>
-              {/* Coverage limit until DOT Phase 1 B (segment permits); removed with it. */}
-              <Text style={s.embargoNote}>{tEmbargo('coverageNote')}</Text>
-            </GlassCard>
+          {/* DOT holiday embargo (outside the DOT tab; inside it, the
+              panel places it between the setup card and the permits). */}
+          {activeTab !== 'dot' && embargoBanner}
+
+          {/* The DOT tab (DOT Phase 1 B). */}
+          {activeTab === 'dot' && (
+            <DotCompliancePanel projectId={projectId} embargoBanner={embargoBanner} toast={toast} />
           )}
 
           {/* Renewal status banner */}
-          {renewablePermits.length > 0 && (
+          {activeTab !== 'dot' && renewablePermits.length > 0 && (
             <GlassCard style={s.renewalBanner}>
               <View style={s.renewalBannerHeader}>
                 <ShieldAlert size={16} strokeWidth={2} color={semantic.attention} />
@@ -1105,6 +1133,8 @@ export default function DOBLogsScreen() {
             // ambiguous between "still loading", "BIN not configured", "BIN set
             // but no DOB records", and "filter excludes everything").
             if (loading) return null; // RefreshControl / spinner covers this
+            // The DOT tab renders its own sections in the header.
+            if (activeTab === 'dot') return null;
 
             // (0) The read FAILED — outranks every empty state below. Showing
             // "BIN Has No DOB Records" here would assert a clean DOB history
@@ -1301,7 +1331,6 @@ function buildStyles(colors, isDark) {
     // DOT holiday embargo banner (shares the renewal banner's card).
     embargoTitle: { flex: 1, flexShrink: 1 },
     embargoLine: { fontSize: 13, color: colors.text.secondary, marginTop: spacing.xs },
-    embargoNote: { fontSize: 12, color: colors.text.muted, marginTop: spacing.xs },
     renewalStatsRow: { flexDirection: 'row', gap: spacing.lg, marginBottom: spacing.sm },
     renewalStat: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
     renewalStatNum: { fontSize: 18, fontWeight: '700' },

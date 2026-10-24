@@ -15,6 +15,9 @@ them. The sync stores them on the permit's dot_logs row as
 `stipulations: [{id, text}]` and `holiday_waiver`.
 
 THE RULE. A project's DOT permit is EXPOSED for a season when it is
+  * CONFIRMED as the project's (dot_sync.permit_confirmed: address-matched,
+    permittee + frontage, or a "needs confirmation" permit a person accepted);
+    a pending or rejected permit is never exposed;
   * active: status starts with ISSUED (dot_sync.permit_is_active) or EMERGENCY;
   * its work dates (work_start = issuedworkstartdate, expiration_date =
     issuedworkenddate) overlap Nov 15 .. Jan 2, both ends inclusive.
@@ -64,15 +67,11 @@ ACTION_EN = "No street work Nov 15 - Jan 2 unless DOT grants one."
 ACTION_ES = ("No se permite trabajo en la calle del 15 de nov al 2 de ene salvo que "
              "el DOT otorgue una exención.")
 
-#: COVERAGE LIMIT -- TEMPORARY. Only permits matched to the project's address
-#: (borough + house + street) are checked; segment permits (no house number)
-#: are not matched yet. The embargo email and the app banner (i18n
-#: dotEmbargo.coverageNote) say so. DOT Phase 1 B REMOVES THIS: it adds permits
-#: matched by permittee + frontage segment, after which the note is untrue.
-COVERAGE_NOTE_EN = ("Checks permits matched to your address. Permits filed by street "
-                    "segment arrive with the next update.")
-COVERAGE_NOTE_ES = ("Revisa los permisos vinculados a su dirección. Los permisos "
-                    "registrados por tramo de calle llegarán con la próxima actualización.")
+# COVERAGE. The temporary "address-matched permits only" note (COVERAGE_NOTE_*,
+# i18n dotEmbargo.coverageNote) was removed by DOT Phase 1 B: permits filed by
+# street segment are matched by permittee + confirmed frontage
+# (dot_sync.classify_permit). Only CONFIRMED permits are checked -- a permit
+# by another permittee on the block waits for a person's "yours" first.
 LEDGER = "dot_alert_ledger"
 
 
@@ -143,6 +142,8 @@ def exposed(row: Dict[str, Any], season: Season) -> bool:
     work end date nothing can be said, so it is not exposed."""
     if (row.get("record_type") or "dot_permit") != "dot_permit":
         return False
+    if not dot_sync.permit_confirmed(row):
+        return False
     if not is_active(row.get("status")):
         return False
     start, end = work_dates(row)
@@ -168,6 +169,10 @@ def stipulations_wanted(row: Dict[str, Any], today: date) -> bool:
     """A matched permit whose stipulations should be read: active, or its work
     starts within UPCOMING_DAYS."""
     if (row.get("record_type") or "") != "dot_permit" or not row.get("number"):
+        return False
+    # A "not ours" permit is never read again. A pending one IS read, so a
+    # permit someone accepts already knows its waiver.
+    if dot_sync.match_state(row) == dot_sync.STATE_REJECTED:
         return False
     if is_active(row.get("status")):
         return True
