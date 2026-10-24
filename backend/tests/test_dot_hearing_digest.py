@@ -73,6 +73,45 @@ class ADigestADay(unittest.TestCase):
         self.assertEqual(len(led), 3)
 
 
+class LateHearings(unittest.TestCase):
+    """Operator ruling 2026-10-24: after today's digest, a hearing <= 1 day
+    away found later goes at once, in its own email; the rest wait."""
+
+    MON = date(2026, 12, 14)
+
+    def _late(self, env, now):
+        return env._mail(lambda now: server._dot_hearing_tick(now=now, late_only=True), now)
+
+    def test_digest_at_0700_then_a_hearing_tomorrow_found_at_1000_is_one_email_at_1000(self):
+        env = _Env()
+        a = summons("0704345548", hearing=self.MON + timedelta(days=10))          # SYNTHETIC dates
+        env.first_pass(address=[a])
+        env.hearing_alerts([self.MON])                                          # 07:00 EST: the digest
+        self.assertEqual(len(env.emails("dot_hearing_reminder")), 1)
+        b = summons("0704345557", hearing=self.MON + timedelta(days=1))
+        env.sync(now=datetime(2026, 12, 14, 14, 30, tzinfo=UTC), address=[a, b])   # the 09:30 sync finds b
+        r = self._late(env, datetime(2026, 12, 14, 15, 0, tzinfo=UTC))           # 10:00 EST
+        mails = env.emails("dot_hearing_reminder")
+        self.assertEqual(len(mails), 2, [m["subject"] for m in mails])
+        late = mails[1]
+        self.assertIn("0704345557", late["text"])
+        self.assertIn("(in 1 day):", late["text"])
+        self.assertNotIn("0704345548", late["text"])
+        self.assertEqual(late["permit_renewal_id"], "dot:p1:hearing_late:0704345557:-:2026-12-14")
+        self.assertEqual(r["late"], 1)
+        self._late(env, datetime(2026, 12, 14, 17, 0, tzinfo=UTC))               # the next sync: nothing
+        self.assertEqual(len(env.emails("dot_hearing_reminder")), 2)
+
+    def test_a_later_hearing_further_out_waits_and_none_before_0700(self):
+        env = _Env()
+        b = summons("0704345557", hearing=self.MON + timedelta(days=1))
+        env.first_pass(address=[b])
+        r = self._late(env, datetime(2026, 12, 14, 10, 0, tzinfo=UTC))           # 05:00 EST sync
+        self.assertEqual((env.emails("dot_hearing_reminder"), r.get("skipped")), ([], "before_digest_run"))
+        env.hearing_alerts([self.MON])                                          # the digest takes b
+        self.assertEqual(len(env.emails("dot_hearing_reminder")), 1)
+
+
 class CatchUp(unittest.TestCase):
 
     def test_two_days_out_at_first_sight_says_two_days(self):
