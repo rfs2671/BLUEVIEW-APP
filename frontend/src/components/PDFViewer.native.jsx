@@ -778,7 +778,8 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
           <View style={{ flex: 1 }}>
             <SheetBoundary onFail={() => setTilesFailed(true)}>
               <SheetViewerPane
-                controller={session.controller} manifest={session.manifest} projectId={projectId} fileId={tileFileId}
+                controller={session.controller} webview={session.mode === 'webview'} onFail={() => setTilesFailed(true)}
+                manifest={session.manifest} projectId={projectId} fileId={tileFileId}
                 api={sheetApi} platform={sheetPlatform} annotations={annotations} markerColor={getMarkerColor}
                 selectedId={selectedAnnotation ? (selectedAnnotation._id || selectedAnnotation.id) : null}
                 pinModeActive={pinModeActive} onPlacePin={handlePlacePin}

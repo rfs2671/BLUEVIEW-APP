@@ -220,6 +220,7 @@ export function createSheetController({
     panBy(dx, dy) { setCamera(panCamera(cam, dx, dy)); },
     zoomAt(factor, sx, sy) { setCamera(zoomCamera(cam, factor, sx, sy, vp, limits)); },
     fit() { flyTo(fitWidthCamera(layout, vp)); },
+    zoomBy(factor, ms = 200) { flyTo({ ...cam, zoom: cam.zoom * factor }, ms); },
     flyTo,
     tick(t) { return stepAnim(t); },
 
@@ -253,7 +254,10 @@ export function createSheetController({
         }
       }
       const fb = Array.from(fallbacks.values()).sort((a, b) => a.z - b.z);
-      return { previews: prev, tiles: fb.concat(exact) };
+      // `complete`: every tile the screen needs is here at its own level, so nothing underneath
+      // (the whole-page preview, coarser tiles) can show through and need not be painted
+      const complete = fb.length === 0 && exact.length === needed.length;
+      return { previews: complete ? [] : prev, tiles: fb.concat(exact), complete };
     },
     /** True while tiles the screen needs are still on their way (for a quiet progress hint). */
     get loading() { return needed.some((t) => !tiles.has(t.key) && !tiles.isMissing(t.key)); },

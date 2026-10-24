@@ -7,6 +7,7 @@ import { tileDisk } from './tileDisk.web';
 
 export const platform = {
   name: 'web',
+  mode() { return platform.available() ? 'canvas' : null; },
   /** Can this runtime draw tiles at all? */
   available() {
     return typeof document !== 'undefined' && typeof globalThis.createImageBitmap === 'function' && !!document.createElement('canvas').getContext;

@@ -66,9 +66,12 @@ function harness(over = {}) {
     ok(log.previews.length >= 1 && log.previews.includes(1), 'the page preview is fetched');
     ok(log.indexes.includes(1), 'the visible page index is fetched in the background');
     const f = c.frame();
-    ok(f.previews.length >= 1 && f.tiles.length === log.tiles.length, 'frame has the preview and every level 0 tile');
+    ok(f.tiles.length === log.tiles.length && f.complete === true && f.previews.length === 0, 'with every level 0 tile in, the frame is complete and the preview underneath is not painted');
     ok(changes > 0, 'listeners hear about arrivals');
     ok(!c.loading, 'nothing left loading');
+    c.zoomAt(8, 500, 350);
+    const g = c.frame();
+    ok(g.complete === false && g.previews.length >= 1, 'while deeper tiles are still on their way the preview stays underneath');
     c.destroy();
   }
   console.log('zoom, fallbacks');
