@@ -31,6 +31,7 @@ from unittest.mock import patch
 from tests.test_punch_walkthrough_2031 import CO, GROUP, NOW, P588, _Walk, _world  # noqa: F401
 import server
 from tests import _punch_detailed  # noqa: E402
+from tests._pinned_clock import never_quiet  # noqa: E402
 from lib import punch, wa_chase
 
 GROUP_NAME = "588 Thomas s boyland - tets"
@@ -43,6 +44,11 @@ class _Live(_Walk):
 
     def setUp(self):
         super().setUp()
+        # Live posts go through the Shabbos / Yom Tov hold; these walks are
+        # built at the REAL clock, so the window is switched off rather than
+        # the clock pinned (else every Friday evening they failed: "these go
+        # out after it ends"). The window: test_shabbos_all_messages.
+        never_quiet(self)
         self.db.whatsapp_groups.rows.append({"_id": "g588", "wa_group_id": GROUP,
                                              "group_name": GROUP_NAME, "project_id": "p588",
                                              "company_id": CO})
