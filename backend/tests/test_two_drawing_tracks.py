@@ -313,6 +313,15 @@ class TheInvariant(unittest.TestCase):
         recs = rows + _census(rows, "filed")
         self.assertFalse(_ok("The first floor has 5 PTAC units.", recs))
 
+    def test_a_census_that_names_no_track(self):
+        """Beside one track's rows it is that track's census; beside two it
+        counts both tracks' rows, matches neither, and refuses."""
+        _present()
+        one = _numbered(_rows("filed", "100", FILED_100))
+        self.assertTrue(_ok("The first floor has 5 PTAC units.", one + _census(one, None)))
+        both = _numbered(_rows("filed", "100", FILED_100) + _rows("post_co", "100", OWNER_100))
+        self.assertFalse(_ok("The first floor has 5 PTAC units.", both + _census(both, None)))
+
     def test_rows_before_version_7_are_not_checked(self):
         _present()
         rows = _numbered(_rows("filed", "100", FILED_100, v7=False))

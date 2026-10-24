@@ -1724,7 +1724,10 @@ def glyph_books(records: Sequence[Dict[str, Any]]) -> GlyphBooks:
     rows = [r for r in records or [] if r.get("tier") == _GLYPH_TIER
             and r.get("record_type") == "glyph"]
     censuses = [r for r in records or [] if r.get("record_type") == GLYPH_CENSUS]
-    tracks = sorted({_row_track(r) for r in rows} | {c.get("track") for c in censuses},
+    # THE TRACKS ARE THE ROWS'. A census that names none counts every
+    # track's rows (glyph_in_census): beside one track it is that track's;
+    # beside two it counts both, matches neither, and refuses - fail closed.
+    tracks = sorted({_row_track(r) for r in rows} or {c.get("track") for c in censuses},
                     key=lambda t: (t != _FILED, str(t)))
     inv = _invariant(rows)
     if len(tracks) <= 1:
@@ -1735,7 +1738,7 @@ def glyph_books(records: Sequence[Dict[str, Any]]) -> GlyphBooks:
     per: Dict[Optional[str], GlyphBook] = {}
     for t in tracks:
         b = glyph_book([r for r in rows if _row_track(r) == t]
-                       + [c for c in censuses if c.get("track") == t])
+                       + [c for c in censuses if c.get("track") in (t, None)])
         per[t] = b._replace(invariant={k: w for (tt, k), w in inv.items() if tt == t})
     # EACH MECHANICAL SHEET'S ROWS FROM ONE TRACK: the filed where it has any
     on: Dict[str, set] = {}
@@ -1745,7 +1748,7 @@ def glyph_books(records: Sequence[Dict[str, Any]]) -> GlyphBooks:
     chosen = [r for r in rows if _row_track(r) == gov[str(r.get("page_id"))]]
     synth: List[Dict[str, Any]] = []
     for c in censuses:
-        if c.get("track") != tracks[0]:
+        if c.get("track") not in (tracks[0], None):
             continue                    # one per kind and family, as counted below
         c2 = {k: v for k, v in c.items() if k != "track"}
         c2["count"] = sum(1 for r in chosen if glyph_in_census(r, c2))
