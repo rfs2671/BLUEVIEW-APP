@@ -1483,6 +1483,11 @@ def _title_level(title: Any) -> Optional[Any]:
     return m.group(1).lower() if m else None
 
 
+#: A family's census matched and nothing was located: a fact about the rows
+#: in hand, not about whether they are complete (glyph_books).
+_NO_LOCATED = "no located symbols"
+
+
 class GlyphFamily(NamedTuple):
     name: str
     tags: List[str]
@@ -1550,7 +1555,7 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
             # from another one: the pass and the schedule disagree.
             why = "a row's tag and its schedule disagree"
         elif not any(r.get("glyph_status") == _tally.RESOLVED for r in located):
-            why = "no located symbols"
+            why = _NO_LOCATED
         families[name] = GlyphFamily(name, tags, located, why,
                                      dict(c.get("qty") or {}))
 
@@ -1750,8 +1755,13 @@ def glyph_books(records: Sequence[Dict[str, Any]]) -> GlyphBooks:
     for name, fam in totals.families.items():
         why = fam.why
         for t, b in per.items():
+            # A TRACK THAT DOES NOT COVER A SHEET DOES NOT VETO ITS TOTAL:
+            # M-106.00 (the bulkhead, SAF-1's only sheet) is read by the
+            # filed track alone, so the owner's track locates no SAF-1. Only
+            # a track's incompleteness refuses the totals.
             f = b.families.get(name)
-            why = why or (f.why if f else f"no census of the {t} track")
+            why = why or (f.why if f and f.why != _NO_LOCATED else None
+                          if f else f"no census of the {t} track")
         fams[name] = fam._replace(why=why)
     totals = totals._replace(
         families=fams,
@@ -2188,13 +2198,16 @@ def glyph_values(clause: str, book) -> set:
     if len(named) == 1:
         (t,) = named
         return _book_values(bare, books.tracks[t]) if t in books.tracks else set()
-    vals = [v for v in (_book_values(bare, b) for b in books.tracks.values()) if v]
+    # A ZERO IS AN ANSWER HERE, though never a bound figure: the filed 1A
+    # holds no PTAC-1 and the owner's holds one - the sets DIFFER, and the
+    # owner's 1 is not "one track only".
+    vals = [v for v in (_book_values(bare, b, zero=True) for b in books.tracks.values()) if v]
     if not vals:
         return set()
-    return set(vals[0]) if all(v == vals[0] for v in vals) else set()
+    return set(vals[0]) - {"0"} if all(v == vals[0] for v in vals) else set()
 
 
-def _book_values(clause: str, book: GlyphBook) -> set:
+def _book_values(clause: str, book: GlyphBook, zero: bool = False) -> set:
     """The located-symbol counts this one clause may state, from one book.
 
     Scope, most specific first: named units; 'each/every/per' (a uniform
@@ -2216,7 +2229,7 @@ def _book_values(clause: str, book: GlyphBook) -> set:
                 if keys and not (keys & set(_apartment_floors(book, u) or [k])):
                     continue            # '4A on the third floor'
                 v = _apartment_count(book, fam, tags, u)
-                if v:
+                if v or (zero and v == 0):
                     out.add(str(v))
         elif _PER_UNIT.search(clause):
             if keys:

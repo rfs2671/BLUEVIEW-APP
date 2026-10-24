@@ -50,7 +50,9 @@ PT = "ROOMS PTAC UNITS SCHEDULE"
 TAGS = ["PTAC-1", "PTAC-2", "PTAC-3"]
 LABEL = "the owner's post-CO set, 6/9/26"
 FLOORS = {"100": ("FIRST FLOOR HVAC PLANS", ["1A", "1B", "1C", "1D"]),
-          "101": ("SECOND FLOOR HVAC PLANS", ["2A", "2B", "2C", "2D"])}
+          "101": ("SECOND FLOOR HVAC PLANS", ["2A", "2B", "2C", "2D"]),
+          "106": ("BULKHEAD HVAC PLANS", [])}
+SAF = "FAN SCHEDULE"
 
 
 def _present():
@@ -64,7 +66,7 @@ def _ok(sentence, records):
 
 # ── rows, by the real emitter ─────────────────────────────────────────────
 
-def _rows(track, level, placed, mech_count=None, v7=True):
+def _rows(track, level, placed, mech_count=None, v7=True, family=PT):
     """One track's rows of M-{level}.00, placed against its own A-{level}.
     `placed` is [(tag, unit)] - unit None for a symbol not placed."""
     title, units = FLOORS[level]
@@ -81,8 +83,8 @@ def _rows(track, level, placed, mech_count=None, v7=True):
                            "symbol_at": (6, 7), "at_arch": (9, 9), "label_at": (2, 3)}
                           for t, u in placed],
               "method": "layers", "registration": {"anchors": 900, "usable": True}}
-    rows = E.glyph_rows(result, mech=mech, arch=arch, family=PT,
-                        pass_key=f"A-{level}.00|M-{level}.00|{PT}",
+    rows = E.glyph_rows(result, mech=mech, arch=arch, family=family,
+                        pass_key=f"A-{level}.00|M-{level}.00|{family}",
                         units={"tags": units, "method": "plan_tags", "zero_units": False,
                                "multi_level": {u: [] for u in units}},
                         widest_door={"inches": 56.0})
@@ -259,6 +261,26 @@ class TotalsCountEachSymbolOnce(unittest.TestCase):
         self.assertTrue(_ok("1B has 1 PTAC unit.", short))       # the filed set's, alone
 
 
+class ASheetOneTrackDoesNotReadKeepsItsTotal(unittest.TestCase):
+
+    def test_the_bulkhead_fan_counts_on_the_filed_track_alone(self):
+        """M-106.00 has no architectural partner on the owner's track, so
+        that track locates no SAF-1 - which is not a reason to refuse it."""
+        _present()
+        base = [r for r in _world() if r.get("record_type") == "glyph"]
+        saf = _rows("filed", "106", [("SAF-1", None)], family=SAF)
+        rows = _numbered(base + saf)
+        recs = list(rows)
+        pages = sorted({r["page_id"] for r in rows})
+        for t in ("filed", "post_co"):
+            recs += _census(rows, t)
+            c = _gc("family", pages, 0, t, family=SAF, tags=["SAF-1"])
+            recs.append(_gc("family", pages, sum(S.glyph_in_census(r, c) for r in rows), t,
+                            family=SAF, tags=["SAF-1"]))
+        self.assertTrue(_ok("There is 1 SAF-1.", recs))
+        self.assertTrue(_ok("The bulkhead has 1 SAF-1.", recs))
+
+
 class TheInvariant(unittest.TestCase):
     """On every floor each track's located rows must number the mechanical
     sheet's count; else that floor's totals refuse, and it is logged."""
@@ -325,6 +347,15 @@ class PerApartment(unittest.TestCase):
                   "1A has 2 PTAC units per the owner's set.",
                   f"1A has 2 PTAC units per {LABEL}."):
             self.assertTrue(_ok(s, recs), s)
+
+    def test_a_zero_is_an_answer_so_the_sets_differ(self):
+        """1A holds no PTAC-3 on the filed set and one on the owner's: a zero
+        is never a bound figure, but it is an answer - not "one track only"."""
+        _present()
+        recs = _world()
+        self.assertFalse(_ok("1A has 1 PTAC-3.", recs))
+        self.assertTrue(_ok("1A has 1 PTAC-3 per the owner's set.", recs))
+        self.assertFalse(_ok("1A has 1 PTAC-3 in the filed set.", recs))
 
     def test_one_track_only_binds_its_figure(self):
         _present()
