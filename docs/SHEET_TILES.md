@@ -10,7 +10,7 @@ its words and callouts. The viewer draws tiles; it never parses a PDF.
 | `backend/lib/sheet_tiles.py` | pypdfium2 band renderer: levels z0..z4 (long side 1024·2^z px), 512 px tiles, blank tiles skipped, `present` bitmap per level |
 | `backend/lib/sheet_index.py` | pdfplumber words (upright and rotated), callouts (`3/A-402`), detail markers, callout resolution against `document_page_index` |
 | `backend/lib/sheet_pipeline.py` | queue (`sheet_tile_jobs`), resumable two-pass compile (levels 0-2 + index → `ready`, 3-4 → `complete`), manifest, purge by known key |
-| `backend/server.py` (SHEET TILES) | header-only routes under `/projects/{p}/files/{f}/sheets`, worker, 30-minute sweep, upload and delete hooks |
+| `backend/server.py` (SHEET TILES) | header-only routes under `/projects/{p}/files/{f}/sheets`, worker, 10-minute sweep (lowest priority), upload and delete hooks |
 | `backend/scripts/backfill_sheet_tiles.py` | queue existing PDFs (dry run by default) |
 | `frontend/src/viewer/` | geometry, tile cache, controller, search, portal, Canvas2D (web) and Skia (native) renderers |
 | `frontend/src/utils/sheetTileStore.js` | progressive offline tile store (native) |

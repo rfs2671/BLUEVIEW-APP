@@ -138,7 +138,11 @@ export default function SheetPane({
       if (dirty.current) {
         dirty.current = false;
         const ctx = canvasRef.current && canvasRef.current.getContext('2d');
-        if (ctx) paint(ctx, c, dprRef.current, { background, showCallouts });
+        if (ctx) {
+          const t0 = globalThis.__sheetPerf ? performance.now() : 0;
+          paint(ctx, c, dprRef.current, { background, showCallouts });
+          if (globalThis.__sheetPerf) globalThis.__sheetPerf.paints.push(performance.now() - t0);
+        }
       }
       if (again) raf.current = requestAnimationFrame(loop);
     });

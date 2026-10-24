@@ -64183,7 +64183,7 @@ async def _sheet_tiles_sweep_job() -> None:
     if SHEET_TILES_OFF or not _r2_client:
         return
     try:
-        rows = await sheet_pipeline.files_needing_tiles(db, limit=10, skip=is_generated_report, to_query_id=to_query_id)
+        rows = await sheet_pipeline.files_needing_tiles(db, limit=40, skip=is_generated_report, to_query_id=to_query_id)
         for r in rows:
             await _enqueue_sheet_tiles(str(r["project_id"]), str(r.get("company_id") or ""), r, source="sweep")
     except Exception as e:
@@ -82813,10 +82813,11 @@ async def startup_event():
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
     )
-    # Queue drawings that have no tiles yet (10 per run).
+    # Queue drawings that have no tiles yet (40 per run). Queued at the lowest priority: a drawing someone
+    # opens, or a fresh upload, is compiled first.
     scheduler.add_job(
         _sheet_tiles_sweep_job,
-        IntervalTrigger(minutes=30),
+        IntervalTrigger(minutes=10),
         id='sheet_tiles_sweep',
         replace_existing=True,
         max_instances=1,

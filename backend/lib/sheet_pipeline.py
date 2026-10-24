@@ -116,6 +116,19 @@ def is_pdf_name(name: Any) -> bool:
 _render_gate: Optional[asyncio.Lock] = None
 
 
+RENDER_NICE = 10
+
+
+def _lower_priority() -> None:
+    """Run in the child before exec: a compile is minutes of CPU, and it shares the container
+    with the API. At a lower priority it uses what is idle and yields to requests, so a reader
+    zooming a drawing is not slowed by one being compiled."""
+    try:
+        os.nice(RENDER_NICE)
+    except OSError:
+        pass
+
+
 def _gate() -> asyncio.Lock:
     """One pdfium child at a time per process, however the compile was triggered
     (upload, open, sweep, manual): pdfium is not thread-safe, and two 16k renders at once
@@ -134,7 +147,8 @@ async def _run_cli(args: Sequence[str], timeout: float, what: str) -> bytes:
     async with _gate():
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "lib.sheet_tiles", *args,
-            cwd=backend_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            cwd=backend_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            preexec_fn=_lower_priority if os.name == "posix" else None)
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -200,6 +214,15 @@ async def set_summary(db: Any, project_id: str, file_id: str, to_query_id: Calla
         {"$set": {f"tiles.{k}": v for k, v in fields.items()}})
 
 
+# Who is waiting decides the order. Someone has the drawing open (or an admin asked): first.
+# An upload: next. The background sweep and the backfill: whenever nothing else is waiting.
+PRIORITY = {"open": 3, "manual": 3, "upload": 2}
+
+
+def priority_of(source: str) -> int:
+    return PRIORITY.get(source, 1)
+
+
 async def enqueue(db: Any, project_id: str, company_id: str, file_rec: Dict[str, Any], *, source: str,
                   to_query_id: Callable[[str], Any], skip: Optional[Callable[[str], bool]] = None,
                   force: bool = False, now: Optional[datetime] = None) -> str:
@@ -213,7 +236,12 @@ async def enqueue(db: Any, project_id: str, company_id: str, file_rec: Dict[str,
     now = now or _utcnow()
     build = build_id(file_rec)
     tiles = file_rec.get("tiles") or {}
+    prio = priority_of(source)
     if not force and tiles.get("build") == build and tiles.get("status") in ("queued", "compiling", "ready", "complete"):
+        if tiles.get("status") == "queued":
+            # already waiting (say, from the sweep) and now someone opened it: move it up the line
+            await db[JOBS].update_one({"_id": file_id, "project_id": project_id, "status": "queued", "priority": {"$lt": prio}},
+                                      {"$set": {"priority": prio, "source": source, "updated_at": now}})
         return "already"
     if force:
         # A forced build must REDO the work. The page records say which levels and indexes are
@@ -229,7 +257,7 @@ async def enqueue(db: Any, project_id: str, company_id: str, file_rec: Dict[str,
     await jobs.update_one(
         {"_id": file_id, "project_id": project_id},
         {"$set": {"project_id": project_id, "company_id": company_id, "file_name": file_rec.get("name"),
-                  "status": "queued", "source": source, "build": build, "attempts": 0, "error": None,
+                  "status": "queued", "source": source, "priority": prio, "build": build, "attempts": 0, "error": None,
                   "worker": None, "lease_until": None, "enqueued_at": now, "updated_at": now},
          "$setOnInsert": {"created_at": now}}, upsert=True)
     await set_summary(db, project_id, file_id, to_query_id, status="queued", build=build, error=None, updated_at=now)
@@ -244,7 +272,7 @@ async def claim(db: Any, worker: str, *, now: Optional[datetime] = None) -> Opti
         {"$set": {"status": "running", "worker": worker, "started_at": now, "updated_at": now,
                   "lease_until": now + timedelta(seconds=LEASE_SECONDS)},
          "$inc": {"attempts": 1}},
-        sort=[("enqueued_at", 1)], return_document=ReturnDocument.AFTER)
+        sort=[("priority", -1), ("enqueued_at", 1)], return_document=ReturnDocument.AFTER)
 
 
 async def _heartbeat(ctx: Ctx, file_id: str, project_id: str, worker: str) -> None:

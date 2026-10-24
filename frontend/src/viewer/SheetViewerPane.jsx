@@ -38,7 +38,17 @@ export default function SheetViewerPane({
     }));
   }, [controller, annotations, selectedId]);
 
-  useEffect(() => (controller ? controller.on('change', () => force((n) => (n + 1) % 1e6)) : undefined), [controller]);
+  // The pane only needs to re-render for the search status label and the zoom buttons, not for every
+  // frame of a pan or pinch (the canvas repaints itself): at most a few times a second.
+  useEffect(() => {
+    if (!controller) return undefined;
+    let timer = null;
+    const off = controller.on('change', () => {
+      if (timer) return;
+      timer = setTimeout(() => { timer = null; force((n) => (n + 1) % 1e6); }, 250);
+    });
+    return () => { off(); if (timer) clearTimeout(timer); };
+  }, [controller]);
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
   useEffect(() => { if (!searchOpen && controller) { controller.clearSearch(); setQ(''); } }, [searchOpen, controller]);
 

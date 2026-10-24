@@ -727,3 +727,46 @@ class Serving(unittest.TestCase):
         _run(server._sheet_file_or_403("p", "f", {}, remember=True))
         _run(server._sheet_file_or_403("p", "f", {}, remember=True))
         self.assertEqual(calls["n"], 7, "a caller with no id is never cached")
+
+
+class Order(unittest.TestCase):
+    def _q(self, db, fid, source, name=None):
+        rec = {"_id": fid, "project_id": "p1", "company_id": "c1", "name": name or f"{fid}.pdf", "r2_key": "k", "size": 1, "cache_version": 1}
+        db.project_files.rows.append(dict(rec))
+        return _run(SP.enqueue(db, "p1", "c1", dict(rec), source=source, to_query_id=lambda x: x))
+
+    def test_an_opened_drawing_jumps_the_sweep_and_the_upload_queue(self):
+        db = FakeDb()
+        for fid, src in (("a", "sweep"), ("b", "sweep"), ("c", "upload"), ("d", "open"), ("e", "sweep")):
+            self.assertEqual(self._q(db, fid, src), "queued")
+        order = []
+        while True:
+            j = _run(SP.claim(db, "w"))
+            if not j:
+                break
+            order.append(j["_id"])
+            db[SP.JOBS].rows[[r["_id"] for r in db[SP.JOBS].rows].index(j["_id"])]["status"] = "done"
+        self.assertEqual(order, ["d", "c", "a", "b", "e"], "open, then upload, then the sweep in the order it queued")
+
+    def test_opening_a_drawing_the_sweep_already_queued_moves_it_up(self):
+        db = FakeDb()
+        for fid in ("a", "b", "c"):
+            self._q(db, fid, "sweep")
+        row = dict(next(r for r in db.project_files.rows if r["_id"] == "c"))
+        row["tiles"] = {"status": "queued", "build": SP.build_id(row)}
+        self.assertEqual(_run(SP.enqueue(db, "p1", "c1", row, source="open", to_query_id=lambda x: x)), "already")
+        self.assertEqual(_run(SP.claim(db, "w"))["_id"], "c")
+
+    def test_the_render_child_runs_at_a_lower_priority(self):
+        import inspect
+        self.assertIn("preexec_fn", inspect.getsource(SP._run_cli))
+        before = os.nice(0)
+        pid = os.fork()
+        if pid == 0:
+            try:
+                SP._lower_priority()
+                os._exit(0 if os.nice(0) > before else 1)
+            except BaseException:
+                os._exit(2)
+        _, status = os.waitpid(pid, 0)
+        self.assertEqual(os.WEXITSTATUS(status), 0)
