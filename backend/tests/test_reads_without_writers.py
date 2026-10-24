@@ -62,6 +62,14 @@ BASELINE = {
     ("daily_panels", "project_id"),
     ("dob_logs", "complaint_date"),
     ("dob_logs", "expiration_date"),
+    # The Compliance card's plain-line sweep (lib/dob_plain_lines.sweep) builds
+    # each row's answer in `fields` and writes update_one(..., {"$set": fields})
+    # -- a variable, so the sweep sees the reads (its own undecided-rows filter,
+    # and _prior's "already asked" lookup) and no writer. NOT HAND-AUDITED AND
+    # LEFT AT THAT: test_dob_plain_lines_generation.py asserts both land on the
+    # row, and that a second sweep finds nothing to do (2026-10-24).
+    ("dob_logs", "plain_line_check"),
+    ("dob_logs", "plain_line_version"),
     ("document_page_index", "file_hash"),
     ("document_page_index", "file_id"),
     ("document_page_index", "index_version"),

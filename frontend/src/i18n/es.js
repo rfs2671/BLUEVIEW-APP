@@ -110,6 +110,18 @@ export default {
     notificationPrefsSubtitle: 'Ajuste qué señales de cumplimiento le llegan y cómo',
     helpCheckTracking: 'Abra la página de Cumplimiento del proyecto (ícono de engranaje). Confirme que "Enable DOB Tracking" esté activado. Si está desactivado, no se obtendrán datos del DOB para el proyecto.',
     helpEditBin: 'Si el BIN ya se resolvió automáticamente al edificio equivocado, abra la página de Cumplimiento (ícono de engranaje) y edite el campo BIN directamente.',
+    showDobText: 'Mostrar texto del DOB',
+    hideDobText: 'Ocultar texto del DOB',
+    plainLineAi: 'Resumen escrito por IA a partir del texto del DOB',
+    hearingAt: 'Audiencia el {date} a las {time}',
+    hearingOn: 'Audiencia el {date}',
+    penalty: 'Multa',
+    penaltySetAtHearing: 'La multa se fija en la audiencia',
+    balanceDue: 'Saldo pendiente {amount}',
+    binOne: 'BIN del edificio: {bin}',
+    binMany: 'BIN de los edificios: {list}',
+    renewalOne: '1 permiso necesita renovación',
+    renewalMany: '{n} permisos necesitan renovación',
   },
 
   // ── app/project/[id]/dob-logs.jsx — embargo navideño del DOT ─────────────

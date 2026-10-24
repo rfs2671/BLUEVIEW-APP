@@ -115,6 +115,8 @@ from lib import dot_sync  # noqa: E402
 from lib import dot_embargo  # noqa: E402
 from lib import dob_site_bins  # noqa: E402
 from lib import dob_alert_gate  # noqa: E402
+from lib import dob_plain_lines as _dob_plain_lines  # noqa: E402
+from lib import ecb_card  # noqa: E402
 from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
@@ -3852,6 +3854,7 @@ from lib.vision_meter import (  # noqa: E402
     VISION_PUNCH_PHOTO,
     VISION_REPORT_PHOTO,
     VISION_GROUP_PHOTO,
+    VISION_DOB_PLAIN_LINE,
 )
 from lib import plan_extract  # noqa: E402
 from lib import plan_eval  # noqa: E402
@@ -5882,6 +5885,22 @@ class DOBLogResponse(BaseModel):
     severity_kind: Optional[str] = None
     action_text: Optional[str] = None
     is_read: Optional[bool] = None
+    # Compliance card: the plain one-liner {en, es} and where it came from
+    # ("code" | "llm" | "fallback"), the full DOB text behind "Show DOB
+    # text", and the BIN a site-BIN record was filed under. Computed on read
+    # from stored fields only (lib/dob_plain_lines.card_fields): no model.
+    plain_line: Optional[dict] = None
+    plain_line_source: Optional[str] = None
+    dob_text: Optional[str] = None
+    site_bin: Optional[str] = None
+    # ECB/OATH hearing + penalty (lib/ecb_card).
+    hearing_date: Optional[str] = None
+    hearing_time: Optional[str] = None
+    hearing_status: Optional[str] = None
+    penalty_imposed: Optional[str] = None
+    balance_due: Optional[str] = None
+    ecb_hearing: Optional[dict] = None
+    ecb_penalty: Optional[dict] = None
 
 
 class DOBConfigUpdate(BaseModel):
@@ -42901,6 +42920,19 @@ def _extract_violation_fields(rec: dict) -> dict:
     # The ECB/OATH hearing day as its own field (Upcoming reads it; the
     # disposition_date fallback above stays for what already reads that).
     fields["hearing_date"] = rec.get("hearing_date") or rec.get("hearing_date_time") or None
+    # ECB/OATH (6bgk-3dad) only: what the Compliance card's hearing line,
+    # penalty and plain one-liner read (lib/ecb_card, lib/dob_plain_labels).
+    # `penalty_amount` above is that dataset's `amount_paid` -- "$0" on a
+    # summons whose $1,250 penalty is imposed and unpaid -- so the imposed
+    # penalty is its own field. `ecb_status` is always present on an ECB row:
+    # it is how the plain-line sweep knows the row has been refreshed.
+    fields["hearing_time"] = rec.get("hearing_time") or None
+    fields["hearing_status"] = rec.get("hearing_status") or None
+    fields["penalty_imposed"] = rec.get("penality_imposed") or rec.get("penalty_imposed") or None
+    fields["balance_due"] = rec.get("balance_due") or None
+    fields["ecb_status"] = rec.get("ecb_violation_status") or None
+    fields["infraction_code"] = rec.get("infraction_code1") or None
+    fields["section_law_description"] = rec.get("section_law_description1") or None
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
@@ -45366,6 +45398,8 @@ async def get_dob_logs(
     # Lazy-import the templates module so test environments that
     # don't exercise the activity feed don't pay the import cost.
     from lib.dob_signal_templates import render_signal as _render_signal
+    # DOB hearing days are New York calendar days.
+    card_today = _Date.fromisoformat(eastern_today())
     for log in logs:
         try:
             raw = log.get("raw_record") or {}
@@ -45430,6 +45464,14 @@ async def get_dob_logs(
                 )
             )
 
+            # The Compliance card's plain line, DOB text, ECB hearing and
+            # penalty: read from what the row already stores. The model is
+            # never asked here -- the plain-line sweep stored its answer in
+            # the background (_dob_plain_lines_job).
+            log.update(_dob_plain_lines.card_fields(log))
+            log["ecb_hearing"] = ecb_card.hearing(log, card_today)
+            log["ecb_penalty"] = ecb_card.penalty(log, card_today)
+
             serialized_logs.append(DOBLogResponse(**serialize_id(dict(log))))
         except Exception as e:
             logger.error(f"Failed to serialize dob_log {log.get('_id')}: {e}")
@@ -45438,10 +45480,78 @@ async def get_dob_logs(
         "project_id": project_id,
         "project_name": project.get("name"),
         "nyc_bin": project.get("nyc_bin"),
+        "tracked_bins": await _tracked_bins(project_id, project.get("nyc_bin")),
         "track_dob_status": project.get("track_dob_status", False),
         "total": total,
         "logs": serialized_logs,
     }
+
+
+async def _tracked_bins(project_id: str, own_bin: Any) -> List[str]:
+    """Every BIN this project's DOB records come from: its own BIN first, then
+    each site BIN (lib/dob_site_bins) a stored record was filed under, in
+    order. Only records synced under the project's CURRENT BIN count, so a BIN
+    the project was moved off does not linger in the header. Never raises."""
+    own = str(own_bin or "").strip()
+    bins = [own] if own and not _is_placeholder_bin(own) else []
+    if not bins:
+        return bins
+    try:
+        found = await db.dob_logs.distinct("site_bin", {
+            "project_id": project_id, "nyc_bin": own,
+            "is_deleted": {"$ne": True}, "site_bin": {"$nin": [None, "", own]},
+        })
+    except Exception:
+        found = []
+    for b in sorted({str(b).strip() for b in (found or []) if b}):
+        if not _is_placeholder_bin(b) and b not in bins:
+            bins.append(b)
+    return bins
+
+
+# ── THE COMPLIANCE CARD'S PLAIN ONE-LINER (lib/dob_plain_lines) ─────────────
+#
+# A background sweep, not a step of the DOB sync: the manual "Sync now" runs
+# the sync inside a request, and the model is never asked from a request. Every
+# 15 minutes it decides the undecided complaint / violation / SWO rows of the
+# tracked projects -- a code line or the generic line for free, the model for
+# a record with free text and no usable code -- and stores the answer on the
+# row. The Compliance screen reads what is stored. No key, no model calls:
+# those rows wait and the screen shows their deterministic line.
+
+async def _dob_plain_line_llm(prompt: str, row: dict) -> Optional[str]:
+    """One text-only call to the Qwen model the vision paths use (QWEN_*,
+    lib/vision_model): the reply text, or raises."""
+    await record_vision_call(db, endpoint=VISION_DOB_PLAIN_LINE,
+                             project_id=str(row.get("project_id") or "") or None)
+    async with ServerHttpClient(timeout=45.0) as client:
+        resp = await client.post(
+            f"{QWEN_API_BASE}/chat/completions",
+            headers={"Authorization": f"Bearer {QWEN_API_KEY}",
+                     "Content-Type": "application/json"},
+            json={"model": QWEN_MODEL, "max_tokens": 160, "temperature": 0,
+                  "messages": [{"role": "user", "content": prompt}]})
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HTTP {resp.status_code}")
+    return resp.json()["choices"][0]["message"].get("content") or ""
+
+
+async def _dob_plain_lines_tick(now: Optional[datetime] = None) -> dict:
+    projects = await db.projects.find(
+        await unattended_project_filter({"track_dob_status": True, **ACTIVE_PROJECT_FILTER}),
+        {"_id": 1}).to_list(2000)
+    report = await _dob_plain_lines.sweep(
+        db, project_ids=[str(p["_id"]) for p in projects],
+        llm=_dob_plain_line_llm if QWEN_API_KEY else None, model=QWEN_MODEL, now=now)
+    logger.info(f"[dob-plain-lines] {report}")
+    return report
+
+
+async def _dob_plain_lines_job() -> None:
+    try:
+        await _dob_plain_lines_tick()
+    except Exception as e:
+        logger.error(f"[dob-plain-lines] tick failed: {type(e).__name__}: {e}")
 
 
 # ── MR.14 commit 3 — mark-as-read endpoints ──────────────────────
@@ -82564,6 +82674,17 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
+    # Compliance cards: each DOB complaint / violation's plain one-liner,
+    # decided once and stored (lib/dob_plain_lines). Every 15 min.
+    scheduler.add_job(
+        _dob_plain_lines_job,
+        IntervalTrigger(minutes=15),
+        id='dob_plain_lines',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=6),
     )
     # One log line per group for last week: items, filter pass %, tokens, cost.
     scheduler.add_job(

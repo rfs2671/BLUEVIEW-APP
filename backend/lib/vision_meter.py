@@ -135,6 +135,13 @@ VISION_REPORT_PHOTO = "report_photo_pick"
 # and the app read the stored description, never asking again.
 VISION_GROUP_PHOTO = "group_photo_describe"
 
+# ── A DOB RECORD'S PLAIN ONE-LINER ────────────────────────────────────────
+#
+# Text only, no image: the same model and key, asked once per DOB record that
+# has free text and no usable code, by a background sweep (lib/dob_plain_lines).
+# The Compliance screen reads the stored line and never asks.
+VISION_DOB_PLAIN_LINE = "dob_plain_line"
+
 VISION_ENDPOINTS = frozenset({
     VISION_UPLOAD_OSHA,
     VISION_PARSE_CARD,
@@ -145,6 +152,7 @@ VISION_ENDPOINTS = frozenset({
     VISION_PUNCH_PHOTO,
     VISION_REPORT_PHOTO,
     VISION_GROUP_PHOTO,
+    VISION_DOB_PLAIN_LINE,
 })
 
 COLLECTION = "vision_calls"

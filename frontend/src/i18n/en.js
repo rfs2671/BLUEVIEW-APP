@@ -2168,6 +2168,25 @@ export default {
     notificationPrefsSubtitle: 'Tune which compliance signals reach you and how',
     helpCheckTracking: 'Open the project\'s Compliance page (gear icon). Confirm "Enable DOB Tracking" is on. If it\'s off, no DOB data will pull for the project.',
     helpEditBin: 'If the BIN was already auto-resolved to the wrong building, open the Compliance page (gear icon) and edit the BIN field directly.',
+    // ── The Compliance cards (dob-logs.jsx, src/utils/complianceCard.js) ──
+    // The plain one-liner itself is served by the backend in both languages
+    // (lib/dob_plain_lines); these are the strings around it.
+    showDobText: 'Show DOB text',
+    hideDobText: 'Hide DOB text',
+    plainLineAi: 'Summary written by AI from the DOB text',
+    // {date} and {time} are formatted by the caller.
+    hearingAt: 'Hearing {date} at {time}',
+    hearingOn: 'Hearing {date}',
+    penalty: 'Penalty',
+    // $0 or blank with the hearing still to come: nothing has been imposed.
+    penaltySetAtHearing: 'Penalty set at hearing',
+    balanceDue: 'Balance due {amount}',
+    // Every BIN the project's records come from: its own and its site BINs.
+    binOne: 'BIN: {bin}',
+    binMany: 'BINs: {list}',
+    // Two keys rather than one with "(s)": "1 Permit Need Renewal" shipped.
+    renewalOne: '1 Permit Needs Renewal',
+    renewalMany: '{n} Permits Need Renewal',
   },
 
   // ── app/project/[id]/dob-logs.jsx — DOT holiday construction embargo ─────
