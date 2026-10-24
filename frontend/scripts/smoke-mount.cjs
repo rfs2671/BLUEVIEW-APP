@@ -468,6 +468,42 @@ const PROJECT = { id: 'p1', _id: 'p1', name: 'Smoke Site', address: '1 Test St, 
 // p7 and p6 are also the only rows that draw a LIVE purge button, which keeps
 // "Permanently Delete" present as a positive control — without one, "Deletion
 // blocked" everywhere would be indistinguishable from a screen stuck blocked.
+// THE COMPLIANCE CARDS. /project/p1/dob-logs used to fall through to the
+// generic /api/projects match below, get an ARRAY, read `.logs` off it and
+// mount an EMPTY list -- green while rendering no card at all. These rows put
+// one of each card face on screen: an ECB summons with its hearing and a $0
+// pending penalty ("Penalty set at hearing"), a model-sourced line, a DOB
+// complaint, and a permit inside the renewal window (the banner).
+const DOB_LOGS = {
+  project_id: 'p1', project_name: 'Smoke Site', nyc_bin: '3255362',
+  tracked_bins: ['3255362', '3430621'], track_dob_status: true, total: 4,
+  logs: [
+    { id: 'd1', project_id: 'p1', record_type: 'violation', raw_dob_id: '39558662P',
+      detected_at: '2026-10-01T00:00:00Z', severity: 'Action', violation_subtype: 'ECB',
+      resolution_state: 'hearing_scheduled', violation_date: '20260902', site_bin: '3430621',
+      plain_line: { en: 'Work does not match the approved plans', es: 'El trabajo no coincide con los planos aprobados' },
+      plain_line_source: 'code', dob_text: 'OBSERVED SIDEWALK SHED INSTALLED CONTRARY TO PLANS',
+      ecb_hearing: { date: '2026-11-18', time: '09:30', pending: true }, ecb_penalty: { kind: 'set_at_hearing' } },
+    { id: 'd2', project_id: 'p1', record_type: 'violation', raw_dob_id: '39558663R',
+      detected_at: '2026-10-01T00:00:00Z', severity: 'Good', violation_subtype: 'ECB',
+      resolution_state: 'resolved', violation_date: '20260902', site_bin: '3430621',
+      plain_line: { en: 'Jersey barriers in the street without a DOT permit', es: 'Barreras Jersey en la calle sin permiso del DOT' },
+      plain_line_source: 'llm', dob_text: 'I OBSERVED JERSEY BARRIERS INSTALLED AT STREET',
+      ecb_hearing: { date: '2026-11-18', time: '10:30', pending: false },
+      ecb_penalty: { kind: 'amount', amount: '2500', balance_due: '2500' } },
+    { id: 'd3', project_id: 'p1', record_type: 'complaint', raw_dob_id: '3A41175',
+      detected_at: '2026-10-01T00:00:00Z', severity: 'Good', complaint_date: '2025-12-11',
+      complaint_source: 'DOB Complaint', risk_level: 'PENDING', closed_date: '2026-02-04',
+      plain_line: { en: 'Work without a permit', es: 'Trabajo sin permiso' }, plain_line_source: 'code',
+      dob_text: 'Category 05: Permit — None (Building/PA/Demo etc.)' },
+    { id: 'd4', project_id: 'p1', record_type: 'permit', raw_dob_id: 'permit:B00000001:GC',
+      detected_at: '2026-10-01T00:00:00Z', severity: 'Action', work_type: 'General Construction',
+      job_number: 'B00000001', permit_status: 'Issued',
+      // Ten days out from the run, so the renewal banner always mounts.
+      expiration_date: new Date(Date.now() + 10 * 864e5).toISOString().slice(0, 10) },
+  ],
+};
+
 const PENDING_DELETION = {
   count: 4,
   items: [
@@ -568,6 +604,8 @@ function apiHandler(req, res) {
   // `.items` off it, gets undefined, and renders "Nothing pending deletion".
   // That mounts green while executing none of the retention branches.
   else if (url.includes('/api/projects/pending-deletion')) body = PENDING_DELETION;
+  // BEFORE the generic /api/projects match, for the reason at DOB_LOGS.
+  else if (/\/api\/projects\/p1\/dob-logs(\?|$)/.test(url)) body = DOB_LOGS;
   else if (url.match(/\/api\/projects\/p1(\?|$)/)) body = PROJECT;
   else if (url.match(/\/api\/projects(\?|\/|$)/)) body = [PROJECT];
   else if (url.match(/\/api\/workers\/w1(\?|$)/)) body = WORKER;

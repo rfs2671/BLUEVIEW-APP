@@ -61,6 +61,8 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import { dobAPI } from '../utils/api';
 import { semantic, withAlpha } from '../styles/semanticColors';
+import { useLocale } from '../i18n';
+import { plainLineFor } from '../utils/complianceCard';
 
 // ── Severity palette helper ───────────────────────────────────────
 //
@@ -177,6 +179,11 @@ function SignalCard({ log, onMarkRead, onViewRaw, styles, colors, severityPalett
   const sev = severityPalette[log.severity_kind] || severityPalette.info;
   const SevIcon = sev.Icon;
   const isRead = !!log.is_read;
+  // A complaint / violation signal also carries the record's plain one-liner
+  // (the same stored line the Compliance card leads with; never generated
+  // here). Other signals carry none and show as before.
+  const locale = useLocale();
+  const plainLine = plainLineFor(log, locale);
 
   return (
     <GlassCard
@@ -215,6 +222,12 @@ function SignalCard({ log, onMarkRead, onViewRaw, styles, colors, severityPalett
           />
         )}
       </View>
+
+      {plainLine ? (
+        <Text style={[styles.cardPlainLine, isRead && styles.textMuted]}>
+          {plainLine}
+        </Text>
+      ) : null}
 
       {log.body ? (
         <Text
@@ -1024,6 +1037,13 @@ function buildStyles(colors, isDark) {
       height: 8,
       borderRadius: 4,
       marginTop: 6,
+    },
+    cardPlainLine: {
+      fontSize: 14,
+      fontWeight: '600',
+      color: colors.text.primary,
+      lineHeight: 20,
+      marginBottom: spacing.xs,
     },
     cardBody: {
       fontSize: 13,

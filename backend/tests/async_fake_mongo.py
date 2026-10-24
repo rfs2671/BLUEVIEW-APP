@@ -144,6 +144,17 @@ class AsyncFakeCollection:
     async def count_documents(self, flt=None, **kw):
         return sum(1 for d in self.docs if matches(d, flt))
 
+    async def distinct(self, key, flt=None, **kw):
+        out: list = []
+        for d in self.docs:
+            if not matches(d, flt):
+                continue
+            v = _get(d, key)
+            for x in (v if isinstance(v, list) else [v]):
+                if x is not _MISSING and x not in out:
+                    out.append(x)
+        return out
+
     async def insert_one(self, doc, **kw):
         doc.setdefault("_id", ObjectId())
         self.docs.append(copy.deepcopy(doc))

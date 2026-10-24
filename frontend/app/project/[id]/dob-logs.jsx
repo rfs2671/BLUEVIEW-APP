@@ -43,7 +43,10 @@ import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { semantic, chrome, border, surface, text, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
-import { useT } from '../../../src/i18n';
+import { useT, useLocale } from '../../../src/i18n';
+import {
+  plainLineFor, hearingText, penaltyTone, formatMoney, renewalTitle, binHeaderText,
+} from '../../../src/utils/complianceCard';
 import OfflineNotice from '../../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../../src/utils/offlineState';
 import InfoTooltip from '../../../src/components/InfoTooltip';
@@ -96,12 +99,18 @@ export default function DOBLogsScreen() {
   const toast = useToast();
   const tc = useT('compliance');
   const tEmbargo = useT('dotEmbargo');
+  const locale = useLocale();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [projectName, setProjectName] = useState('');
   const [nycBin, setNycBin] = useState('');
+  // Every BIN the records come from: the project's own, then each site BIN
+  // (GET /dob-logs `tracked_bins`). 588 Thomas S Boyland: 3255362, 3430621.
+  const [trackedBins, setTrackedBins] = useState([]);
+  // Which cards have "Show DOB text" open, by log id.
+  const [dobTextOpen, setDobTextOpen] = useState({});
   const [trackDobStatus, setTrackDobStatus] = useState(false);
   const [allLogs, setAllLogs] = useState([]);
   // Standing OPEN exposure from GET /projects/dob-summary (status-based, no
@@ -155,6 +164,7 @@ export default function DOBLogsScreen() {
       const data = logsRes.data || {};
       setProjectName(data.project_name || '');
       setNycBin(data.nyc_bin || '');
+      setTrackedBins(Array.isArray(data.tracked_bins) ? data.tracked_bins.filter(isValidBin) : []);
       setTrackDobStatus(data.track_dob_status || false);
       setAllLogs(data.logs || []);
     } else {
@@ -550,6 +560,70 @@ export default function DOBLogsScreen() {
     );
   };
 
+  // ── The lead of a complaint / violation card ──
+  // The plain one-liner the backend stored (lib/dob_plain_lines: code table,
+  // else a checked model line, else a neutral generic line) -- displayed, never
+  // written here. DOB's own text sits under it, collapsed behind a toggle.
+  const renderPlainLead = (log) => {
+    const line = plainLineFor(log, locale) || log.ai_summary;
+    const open = !!dobTextOpen[log.id];
+    return (
+      <View>
+        <Text style={s.plainLine}>{line}</Text>
+        {log.plain_line_source === 'llm' && (
+          <Text style={s.plainLineNote}>{tc('plainLineAi')}</Text>
+        )}
+        {!!log.dob_text && (
+          <Pressable
+            onPress={() => setDobTextOpen((prev) => ({ ...prev, [log.id]: !open }))}
+            hitSlop={8}
+            accessibilityRole="button"
+            style={s.dobTextToggle}
+          >
+            <Text style={s.dobTextToggleText}>{open ? tc('hideDobText') : tc('showDobText')}</Text>
+            {open ? <ChevronUp size={12} color={colors.text.muted} /> : <ChevronDown size={12} color={colors.text.muted} />}
+          </Pressable>
+        )}
+        {open && !!log.dob_text && <Text style={s.dobText}>{log.dob_text}</Text>}
+      </View>
+    );
+  };
+
+  // ECB hearing (date AND time) and penalty, on the card face. A $0 / blank
+  // penalty with the hearing still to come reads "Penalty set at hearing" in a
+  // neutral colour: nothing has been imposed yet, so it is not drawn as a debt.
+  const renderEcbHearing = (log) => {
+    const hearing = hearingText(log.ecb_hearing, locale, tc, formatDate);
+    const tone = penaltyTone(log.ecb_penalty);
+    if (!hearing && !tone) return null;
+    return (
+      <View style={s.ecbBlock}>
+        {!!hearing && (
+          <View style={s.ecbHearingRow}>
+            <Gavel size={16} strokeWidth={1.75} color={colors.text.primary} />
+            <Text style={s.ecbHearingText}>{hearing}</Text>
+          </View>
+        )}
+        {tone === 'amount' && (
+          <View style={[s.ecbPenaltyBox, { backgroundColor: semantic.criticalBg }]}>
+            <Text style={{ fontSize: 18, fontWeight: '700', color: '#f97316' }}>{formatMoney(log.ecb_penalty.amount)}</Text>
+            <Text style={{ fontSize: 12, color: '#f97316', opacity: 0.8 }}>{tc('penalty')}</Text>
+            {log.ecb_penalty.balance_due != null && log.ecb_penalty.balance_due !== log.ecb_penalty.amount && (
+              <Text style={{ fontSize: 12, color: colors.text.muted }}>
+                {tc('balanceDue').replace('{amount}', formatMoney(log.ecb_penalty.balance_due))}
+              </Text>
+            )}
+          </View>
+        )}
+        {tone === 'neutral' && (
+          <View style={[s.ecbPenaltyBox, { backgroundColor: semantic.neutralBg }]}>
+            <Text style={{ fontSize: 13, fontWeight: '600', color: semantic.neutralStrong }}>{tc('penaltySetAtHearing')}</Text>
+          </View>
+        )}
+      </View>
+    );
+  };
+
   const renderViolationCard = (log) => {
     const isExpanded = expandedLogId === log.id;
     const sevConfig = getSevConfig(log.severity);
@@ -573,6 +647,7 @@ export default function DOBLogsScreen() {
     const headerLabel = subtypeLabels[subtype] || 'VIOLATION';
     const headerColor = subtypeColors[subtype] || semantic.critical;
     const isSWO = subtype.startsWith('SWO') || subtype.startsWith('VACATE');
+    const isEcbRow = subtype === 'ECB' || !!(log.ecb_hearing || log.ecb_penalty || log.penalty_imposed);
     // Never fall back to detected_at (the ingest date) for a violation's shown
     // date — a missing DOB date must read "Date unknown", not today. The real
     // date now comes through from the backend (855j-jady violation_issue_date).
@@ -594,13 +669,8 @@ export default function DOBLogsScreen() {
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>
-          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2} ellipsizeMode="tail">{log.ai_summary}</Text>
-          {log.penalty_amount && subtype === 'ECB' && (
-            <View style={{ backgroundColor: semantic.criticalBg, borderRadius: 8, padding: 10, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Text style={{ fontSize: 18, fontWeight: '700', color: '#f97316' }}>${log.penalty_amount}</Text>
-              <Text style={{ fontSize: 12, color: '#f97316', opacity: 0.8 }}>Penalty Amount</Text>
-            </View>
-          )}
+          {renderPlainLead(log)}
+          {renderEcbHearing(log)}
           {isExpanded && (
             <View style={s.expandedSection}>
               <View style={s.divider} />
@@ -629,7 +699,10 @@ export default function DOBLogsScreen() {
               {log.violation_type && <DetailRow label="Type" value={log.violation_type} colors={colors} />}
               {log.violation_category && <DetailRow label="Category" value={log.violation_category} colors={colors} />}
               {log.description && <DetailRow label="Description" value={log.description} colors={colors} />}
-              {log.penalty_amount && <DetailRow label="Penalty" value={`$${log.penalty_amount}`} colors={colors} />}
+              {/* penalty_amount is 6bgk-3dad `amount_paid` on an ECB row ("$0"
+                  on an unpaid $1,250 summons); an ECB card shows the imposed
+                  penalty on its face instead (renderEcbHearing). */}
+              {log.penalty_amount && !isEcbRow && <DetailRow label="Penalty" value={`$${log.penalty_amount}`} colors={colors} />}
               {log.respondent && <DetailRow label="Respondent" value={log.respondent} colors={colors} />}
               {log.disposition_date && <DetailRow label="Disposition" value={formatDate(log.disposition_date)} colors={colors} />}
               {log.status && <DetailRow label="Status" value={log.status} colors={colors} />}
@@ -700,7 +773,7 @@ export default function DOBLogsScreen() {
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>
-          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2} ellipsizeMode="tail">{log.ai_summary}</Text>
+          {renderPlainLead(log)}
 
           {/* Disposition badges */}
           {isResolved && (
@@ -964,7 +1037,7 @@ export default function DOBLogsScreen() {
             {isValidBin(nycBin) ? (
               <View style={s.binBadge}>
                 <Building2 size={13} strokeWidth={1.5} color={semantic.neutral} />
-                <Text style={s.binText}>BIN: {nycBin}</Text>
+                <Text style={s.binText}>{binHeaderText(trackedBins.length ? trackedBins : [nycBin], tc)}</Text>
               </View>
             ) : (
               <Pressable onPress={isAdmin ? openConfigModal : undefined}>
@@ -1061,7 +1134,7 @@ export default function DOBLogsScreen() {
               <View style={s.renewalBannerHeader}>
                 <ShieldAlert size={16} strokeWidth={2} color={semantic.attention} />
                 <Text style={s.renewalBannerTitle}>
-                  {renewablePermits.length} Permit{renewablePermits.length > 1 ? 's' : ''} Need Renewal
+                  {renewalTitle(renewablePermits.length, tc)}
                 </Text>
               </View>
               <View style={s.renewalStatsRow}>
@@ -1369,6 +1442,16 @@ function buildStyles(colors, isDark) {
       flex: 1,
       flexShrink: 1,
     },
+    // The card's plain one-liner: the first thing read, so the largest text.
+    plainLine: { fontSize: 16, fontWeight: '600', color: colors.text.primary, lineHeight: 22 },
+    plainLineNote: { fontSize: 11, color: colors.text.muted, marginTop: 2 },
+    dobTextToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', marginTop: spacing.xs, paddingVertical: 2 },
+    dobTextToggleText: { fontSize: 12, fontWeight: '500', color: colors.text.muted },
+    dobText: { fontSize: 13, color: colors.text.secondary || colors.text.muted, lineHeight: 19, marginTop: spacing.xs },
+    ecbBlock: { marginTop: spacing.sm, gap: spacing.xs },
+    ecbHearingRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+    ecbHearingText: { fontSize: 15, fontWeight: '700', color: colors.text.primary },
+    ecbPenaltyBox: { borderRadius: 8, padding: 10, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
     expirationBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: borderRadius.lg },
     expiredBanner: { backgroundColor: semantic.criticalBg },
     expiringBanner: { backgroundColor: semantic.attentionBg },
