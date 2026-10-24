@@ -85,13 +85,12 @@ def _rows(track, level, placed, mech_count=None, v7=True):
                         pass_key=f"A-{level}.00|M-{level}.00|{PT}",
                         units={"tags": units, "method": "plan_tags", "zero_units": False,
                                "multi_level": {u: [] for u in units}},
-                        widest_door={"inches": 56.0},
-                        mech_count=(len(placed) if mech_count is None else mech_count) if v7 else None)
+                        widest_door={"inches": 56.0})
     for r in rows:
-        if v7:
+        r["payload"].pop("mech_count", None)
+        if v7:      # as run_pass writes them (EMIT_VERSION 7)
             r["payload"]["track"] = track
-        else:
-            r["payload"].pop("mech_count", None)
+            r["payload"]["mech_count"] = len(placed) if mech_count is None else mech_count
     return rows
 
 
@@ -103,18 +102,32 @@ FILED_101 = [("PTAC-1", "2A"), ("PTAC-2", "2B"), ("PTAC-1", None), ("PTAC-2", "2
 OWNER_101 = [("PTAC-1", "2A"), ("PTAC-2", "2B"), ("PTAC-1", "2C"), ("PTAC-2", "2D")]
 
 
+def _gc(kind, pages, count, track, **kw):
+    """A census as the server writes it: one per drawing track."""
+    c = S.glyph_census(kind, PID, pages, count, **kw)
+    if track is not None:
+        c["track"] = track
+    return c
+
+
 def _census(db_rows, track, short=0):
     """What count_documents says, per track - `short` rows the database
     holds beyond those in hand."""
     pages = sorted({r["page_id"] for r in db_rows})
-    out = []
-    c = S.glyph_census("family", PID, pages, 0, family=PT, tags=TAGS, track=track)
-    out.append(S.glyph_census("family", PID, pages, short + sum(S.glyph_in_census(r, c) for r in db_rows),
-                              family=PT, tags=TAGS, track=track))
-    c = S.glyph_census("refusals", PID, pages, 0, track=track)
-    out.append(S.glyph_census("refusals", PID, pages, sum(S.glyph_in_census(r, c) for r in db_rows),
-                              track=track))
-    return out
+    c = _gc("family", pages, 0, track, family=PT, tags=TAGS)
+    fam = _gc("family", pages, short + sum(S.glyph_in_census(r, c) for r in db_rows), track,
+              family=PT, tags=TAGS)
+    c = _gc("refusals", pages, 0, track)
+    ref = _gc("refusals", pages, sum(S.glyph_in_census(r, c) for r in db_rows), track)
+    return [fam, ref]
+
+
+def _line(render, floor):
+    """The render's one PTAC line for `floor` - asserted, so a render that
+    has none fails by assertion."""
+    got = [l for l in render.splitlines() if floor in l and l.startswith("- ")]
+    assert len(got) == 1, f"{len(got)} lines for {floor} in: {render}"
+    return got[0]
 
 
 def _numbered(rows):
@@ -262,7 +275,7 @@ class TheInvariant(unittest.TestCase):
             self.assertTrue(_ok("1B has 1 PTAC unit in the filed set.", recs))
         self.assertTrue(any("4 located on the post_co track against 5" in m
                             for m in logs.output), logs.output)
-        line = next(l for l in S.render_glyph_evidence(recs).splitlines() if "FIRST FLOOR" in l)
+        line = _line(S.render_glyph_evidence(recs), "FIRST FLOOR")
         self.assertIn("not counted", line)
         self.assertIn("4 located on the post_co track against 5", line)
 
@@ -270,6 +283,7 @@ class TheInvariant(unittest.TestCase):
         _present()
         recs = _world(owner_mech=6)
         self.assertFalse(_ok("The first floor has 5 PTAC units.", recs))
+        self.assertTrue(_ok("The second floor has 4 PTAC units.", recs))    # that floor only
 
     def test_one_track_is_checked_too(self):
         _present()
@@ -327,12 +341,13 @@ class PerApartment(unittest.TestCase):
 
     def test_the_render(self):
         _present()
-        lines = S.render_glyph_evidence(_world()).splitlines()
-        first = next(l for l in lines if "FIRST FLOOR" in l)
+        text = S.render_glyph_evidence(_world())
+        lines = text.splitlines()
+        first = _line(text, "FIRST FLOOR")
         self.assertIn("PTAC-1 1, PTAC-2 1, PTAC-3 3; 5 in all", first)    # once, not 10
         self.assertIn("the sets agree: 1B 1, 1C 1, 1D 1", first)
         self.assertIn(f"1A: 1 per the filed set, 2 per {LABEL} - THE SETS DIFFER", first)
-        second = next(l for l in lines if "SECOND FLOOR" in l)
+        second = _line(text, "SECOND FLOOR")
         self.assertIn(f"2A 1, 2B 1, 2C 1, 2D 1 per {LABEL} only", second)
         self.assertTrue(any("state such a figure only in a sentence naming the set" in l
                             for l in lines))
@@ -433,9 +448,9 @@ def _census_real(rows, track):
     pages = sorted({r["page_id"] for r in rows})
     out = []
     for kind, fam, tags in (("family", PT, TAGS), ("refusals", None, ())):
-        c = S.glyph_census(kind, PID, pages, 0, family=fam, tags=tags, track=track)
-        out.append(S.glyph_census(kind, PID, pages, sum(S.glyph_in_census(r, c) for r in rows),
-                                  family=fam, tags=tags, track=track))
+        c = _gc(kind, pages, 0, track, family=fam, tags=tags)
+        out.append(_gc(kind, pages, sum(S.glyph_in_census(r, c) for r in rows), track,
+                       family=fam, tags=tags))
     return out
 
 
