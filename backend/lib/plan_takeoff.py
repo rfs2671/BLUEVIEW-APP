@@ -142,6 +142,18 @@ def sweep(page, segs):
     return out
 
 
+def located_labels(reads, tags, corroborations=None):
+    """[(tag, x, y)]: the labels a mechanical sheet's sweep locates for one
+    closed set. run_takeoff writes ONE RECORD PER LABEL, placed or not, so
+    this is the sheet's symbol count before any architectural sheet is read
+    - what each drawing track's rows are checked against (plan_glyph_pass,
+    the two-track invariant)."""
+    corr = dict(corroborations or {})
+    kept = [r[:3] for r in reads if tag_only(r[0], tags, corr)]
+    return psym.labels_in(kept, tags, merge_pt=_pts(LABEL_MERGE_IN),
+                          corroborations=corr)
+
+
 def label_boxes(reads, lx, ly):
     """The boxes of the reads that ARE the label at (lx, ly): kept reads
     within LABEL_MERGE_IN of it - the same reads labels_in merged."""
@@ -363,10 +375,8 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
     if reads is None:
         reads = sweep(mech_page, mech["segs"])
     kept_boxed = [r for r in reads if tag_only(r[0], tags, corr)]
-    kept = [r[:3] for r in kept_boxed]
     objects = symbol_objects(mech_page)
-    labels = psym.labels_in(kept, tags, merge_pt=_pts(LABEL_MERGE_IN),
-                            corroborations=corr)
+    labels = located_labels(reads, tags, corr)
     recs = []
     for tag, lx, ly in sorted(labels, key=lambda l: (l[2], l[1])):
         # ONE CONNECTED OBJECT IN ONE DRAWING PASS, NEVER THE LABEL'S OWN

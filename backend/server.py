@@ -62628,9 +62628,86 @@ _GLYPH_PASS_RUNNING: set = set()
 _DOOR_SCHEDULE_TEXT = re.compile(r"DOOR\s+SCHEDULE", re.I)
 
 
+def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
+                       live: set) -> List[Tuple[str, List[dict]]]:
+    """[(drawing track, its current index rows)], the filed track first.
+
+    NEWEST PAGE PER TRACK; SUPERSESSION ONLY WITHIN A TRACK (ruling
+    2026-10-24). The index supersedes across every set by date, so on 588
+    Boyland the Owner's set (6/9/26, the owner's post-CO additions) hid the
+    filed AR set's A-101 to A-104 - and the pass placed floors 2 to the
+    mezzanine against the post-CO set only. Here each track's pages are
+    superseded among themselves (_supersession_winners, the index's own
+    rule), so the filed track keeps its own plans.
+
+    A mechanical sheet belongs to no track - the filed track holds it. A
+    non-filed track is its own architectural plans and the filed track's
+    mechanical plans they pair with (plan_derive.PLAN_SHEET, by number), so
+    each mechanical symbol is placed once per track that has a plan for its
+    floor, and a floor the track does not redraw is not run twice."""
+    from lib import plan_derive as _derive
+
+    track_of = {fid: (f.get("drawing_track") or "filed") for fid, f in files.items()}
+    by_track: Dict[str, List[dict]] = {}
+    for p in raw:
+        fid = str(p.get("file_id"))
+        if fid in live:
+            by_track.setdefault(track_of.get(fid, "filed"), []).append(p)
+    current: Dict[str, List[dict]] = {}
+    for t, rows in by_track.items():
+        fids = {str(r.get("file_id")) for r in rows}
+        losers = _supersession_winners(
+            rows, [dict(files[f], _id=f) for f in fids if f in files])
+        current[t] = [r for r in rows if r["_id"] not in losers]
+
+    def plan(p, letter):
+        m = _derive.PLAN_SHEET.match(str(p.get("sheet_number") or "").strip().upper())
+        return m.group(2) if m and m.group(1) == letter else None
+
+    out = [("filed", current.get("filed", []))]
+    for t in sorted(k for k in current if k != "filed"):
+        seqs = {plan(p, "A") for p in current[t]} - {None}
+        mech = [p for p in current.get("filed", []) if plan(p, "M") in seqs]
+        out.append((t, current[t] + mech))
+    return out
+
+
+async def _glyph_pages(pid: str) -> Tuple[List[Tuple[str, List[dict]]], Dict[str, dict]]:
+    """Each track's current index rows (_glyph_track_pages), and the files."""
+    live = set(await _live_plan_file_ids(pid) or [])
+    raw = await db.document_page_index.find(
+        {"project_id": pid},
+        {"file_id": 1, "file_hash": 1, "file_name": 1, "page_number": 1,
+         "sheet_number": 1, "sheet_title": 1, "discipline": 1,
+         "company_id": 1, "superseded_by": 1, "raw_text": 1,
+         "revision_date": 1, "sheet_position": 1},
+    ).to_list(5000)
+    files = {str(f["_id"]): f for f in await db.project_files.find(
+        {"project_id": pid, "is_deleted": {"$ne": True}},
+        {"r2_key": 1, "name": 1, "created_at": 1, "drawing_track": 1,
+         "drawing_track_label": 1}).to_list(2000)}
+    return _glyph_track_pages(raw, files, live), files
+
+
+async def _glyph_page_ids(pid: str) -> List[str]:
+    """The glyph census's scope: the index's current pages, and every page
+    some track's pass reads (the filed track's plans are superseded in the
+    index by the Owner's set). A blocking refusal cites a mechanical sheet,
+    which the index keeps current, so a failed track read narrows the scope
+    the fetch and the count share - it is logged, not raised."""
+    ids = set(await _current_record_page_ids(pid))
+    try:
+        tracks, _files = await _glyph_pages(pid)
+        ids |= {str(p["_id"]) for _t, ps in tracks for p in ps}
+    except Exception as e:
+        logger.warning("glyph track pages unavailable for %s: %r", pid, e)
+    return sorted(ids)
+
+
 async def _plan_glyph_pass(project_id: str) -> dict:
     """Run the equipment-placement pass over the project's current sheets
-    and write its rows (lib.plan_glyph_pass, lib.plan_emit).
+    and write its rows (lib.plan_glyph_pass, lib.plan_emit) - once per
+    drawing track (_glyph_track_pages), each mechanical sheet swept once.
 
     NOT CALLED BY THE INDEXER. It runs when an operator starts it
     (POST .../plan-glyphs/run): its rows change what the count-answer gate
@@ -62640,39 +62717,34 @@ async def _plan_glyph_pass(project_id: str) -> dict:
     from lib.plan_page import PlanPage
 
     pid = str(project_id)
-    live = set(await _live_plan_file_ids(pid) or [])
-    raw = await db.document_page_index.find(
-        {"project_id": pid},
-        {"file_id": 1, "file_hash": 1, "file_name": 1, "page_number": 1,
-         "sheet_number": 1, "sheet_title": 1, "discipline": 1,
-         "company_id": 1, "superseded_by": 1, "raw_text": 1},
-    ).to_list(5000)
-    files = {str(f["_id"]): f for f in await db.project_files.find(
-        {"project_id": pid, "is_deleted": {"$ne": True}},
-        {"r2_key": 1, "name": 1, "drawing_track": 1, "drawing_track_label": 1}).to_list(2000)}
-    pages, door_pages = [], []
-    for p in raw:
-        if p.get("file_id") not in live or p.get("superseded_by") in live:
-            continue
-        row = {"project_id": pid, "company_id": p.get("company_id"),
-               "file_id": p.get("file_id"), "file_hash": p.get("file_hash"),
-               "file_name": p.get("file_name"), "page_id": str(p["_id"]),
-               "page_number": p.get("page_number"),
-               "sheet_number": p.get("sheet_number"),
-               "sheet_title": p.get("sheet_title"),
-               "discipline": p.get("discipline")}
-        # THE FILE'S TRACK, ON EVERY PAGE (DRAWING_TRACKS): the rows placed
-        # against this page carry it, and the render names a post-CO set
-        frec = files.get(str(p.get("file_id"))) or {}
-        row["drawing_track"] = frec.get("drawing_track") or "filed"
-        row["drawing_track_label"] = frec.get("drawing_track_label")
-        pages.append(row)
-        if _DOOR_SCHEDULE_TEXT.search(p.get("raw_text") or ""):
-            door_pages.append(row)
-    current_ids = [r["page_id"] for r in pages]
+    tracks, files = await _glyph_pages(pid)
+    by_track: List[Tuple[str, List[dict]]] = []
+    door_pages, seen_doors, current_ids = [], set(), set()
+    for track, rows_ in tracks:
+        pages = []
+        for p in rows_:
+            row = {"project_id": pid, "company_id": p.get("company_id"),
+                   "file_id": p.get("file_id"), "file_hash": p.get("file_hash"),
+                   "file_name": p.get("file_name"), "page_id": str(p["_id"]),
+                   "page_number": p.get("page_number"),
+                   "sheet_number": p.get("sheet_number"),
+                   "sheet_title": p.get("sheet_title"),
+                   "discipline": p.get("discipline")}
+            # THE FILE'S TRACK, ON EVERY PAGE (DRAWING_TRACKS): the rows placed
+            # against this page carry it, and the render names a post-CO set
+            frec = files.get(str(p.get("file_id"))) or {}
+            row["drawing_track"] = frec.get("drawing_track") or "filed"
+            row["drawing_track_label"] = frec.get("drawing_track_label")
+            pages.append(row)
+            current_ids.add(row["page_id"])
+            if (_DOOR_SCHEDULE_TEXT.search(p.get("raw_text") or "")
+                    and row["page_id"] not in seen_doors):
+                seen_doors.add(row["page_id"])
+                door_pages.append(row)
+        by_track.append((track, pages))
     sched = await db[PLAN_RECORDS].find(
         {"project_id": pid, "record_type": "schedule",
-         "page_id": {"$in": current_ids}, "sheet_number": {"$regex": "^M-"}},
+         "page_id": {"$in": sorted(current_ids)}, "sheet_number": {"$regex": "^M-"}},
         {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
          "payload.rows": 1},
     ).to_list(2000)
@@ -62699,12 +62771,21 @@ async def _plan_glyph_pass(project_id: str) -> dict:
                 paths[fid] = path
             return PlanPage(paths[fid], int(page["page_number"]))
 
-        out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
-                                      door_pages)
-    written = await _write_glyph_records(pid, out["rows"])
-    out["summary"]["written"] = written
-    logger.info("plan glyph pass %s: %s", pid, out["summary"])
-    return out["summary"]
+        sweeps: Dict[Any, Any] = {}
+        rows: List[dict] = []
+        summary: Dict[str, Any] = {"tracks": {}}
+        for track, pages in by_track:
+            out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
+                                          door_pages, track=track, sweeps=sweeps)
+            rows += out["rows"]
+            summary["tracks"][track] = out["summary"]
+    # one numbering across the tracks: a row is (page_id, ordinal), and every
+    # track's rows of a mechanical sheet cite that sheet's page
+    for i, r in enumerate(rows):
+        r["ordinal"] = i
+    summary["written"] = await _write_glyph_records(pid, rows)
+    logger.info("plan glyph pass %s: %s", pid, summary)
+    return summary
 
 
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
@@ -64425,59 +64506,18 @@ def _sheet_prefix(sheet_number: str) -> str:
     return sheet_number.split("-")[0] if "-" in sheet_number else ""
 
 
-async def _supersede_plan_pages(project_id: str) -> dict:
-    """One current row per sheet, within each discipline set.
-
-    ── THE DUPLICATES ────────────────────────────────────────────────────
-    #
-    # Page rows are keyed (file_id, page_number), and every re-upload of a
-    # drawing set mints a new file id. Two ways a page is someone else's copy:
-    #   same file_hash + page_number in another file — the identical PDF again
-    #   same sheet_number in another file of the SAME discipline set — a revision
-    # The losing row gets `superseded_by` = the winning file id.
-    #
-    # ── WHICH COPY WINS: THE DRAWING'S DATE, NOT THE UPLOAD'S ──────────────
-    #
-    # This used to be "the newest upload wins", and on 588 Boyland that hid
-    # the June 2026 owners set behind the March 2025 architectural set, because
-    # the March set had been re-synced most recently. Now, in order:
-    #   1. the date in the file name ('Owners set - 6.9.26.pdf')
-    #   2. the revision date read from the title block
-    #   3. upload time
-    # See _order for why the title-block date is the tie-break and not the
-    # lead: it is the date of a revision cloud, and the sheet that supersedes
-    # another frequently carries none.
-    #
-    # ── WITHIN A SET, AND NEVER FOR COVER / ENERGY / GENERAL SHEETS ────────
-    #
-    # A file's discipline is its most common sheet prefix. Sheet numbers are
-    # matched only between files of the same discipline: the structural set's
-    # T-001.00 cover was being hidden by the architectural set's, and MH's
-    # EN-001.00 by PL's. T-, EN- and GN- sheets are never superseded across
-    # files at all.
-    #
-    # NOTHING IS DELETED. Readers exclude a row only while the file that
-    # superseded it is still live, so deleting the newer file brings the older
-    # sheet straight back. A sheet that appears twice INSIDE one file is not a
-    # duplicate and both pages stay.
-    """
+def _supersession_winners(rows: List[dict], files: List[dict],
+                          project_id: str = "") -> Dict[Any, str]:
+    """{page row _id: the file id that supersedes it}, over `rows` and
+    `files` alone - the rule _supersede_plan_pages writes (see there).
+    Pure, so the glyph pass can apply it WITHIN ONE DRAWING TRACK
+    (_glyph_track_pages): the index supersedes across tracks by date.
+    `files` are project_files rows (_id, created_at, name)."""
     from collections import Counter as _Counter
     from datetime import date as _date
 
-    files = await db.project_files.find(
-        {"project_id": project_id, "is_deleted": {"$ne": True}},
-        {"_id": 1, "created_at": 1, "name": 1},
-    ).to_list(2000)
     uploaded = {str(f["_id"]): _file_upload_order(f) for f in files}
     name_date = {str(f["_id"]): _parse_sheet_date(f.get("name")) for f in files}
-    if not uploaded:
-        return {"superseded": 0}
-    rows = await db.document_page_index.find(
-        {"project_id": project_id, "file_id": {"$in": list(uploaded)}},
-        {"_id": 1, "file_id": 1, "file_hash": 1, "page_number": 1,
-         "sheet_number": 1, "superseded_by": 1, "revision_date": 1,
-         "sheet_position": 1},
-    ).to_list(20000)
 
     def _norm(sn):
         return re.sub(r"\s+", "", str(sn or "")).upper()
@@ -64580,14 +64620,72 @@ async def _supersede_plan_pages(project_id: str) -> dict:
             best = max(by_file, key=lambda f: _order(f, by_file[f]))
             winners[k] = (best, _order(best, by_file[best]))
 
-    by_winner: Dict[str, list] = {}
-    keep_ids = []
+    out: Dict[Any, str] = {}
     for r in rows:
         loser_to, loser_order = None, None
         for k in _keys(r):
             w = winners.get(k)
             if w and w[0] != r.get("file_id") and (loser_order is None or w[1] > loser_order):
                 loser_to, loser_order = w
+        if loser_to:
+            out[r["_id"]] = loser_to
+    return out
+
+
+async def _supersede_plan_pages(project_id: str) -> dict:
+    """One current row per sheet, within each discipline set.
+
+    ── THE DUPLICATES ────────────────────────────────────────────────────
+    #
+    # Page rows are keyed (file_id, page_number), and every re-upload of a
+    # drawing set mints a new file id. Two ways a page is someone else's copy:
+    #   same file_hash + page_number in another file — the identical PDF again
+    #   same sheet_number in another file of the SAME discipline set — a revision
+    # The losing row gets `superseded_by` = the winning file id.
+    #
+    # ── WHICH COPY WINS: THE DRAWING'S DATE, NOT THE UPLOAD'S ──────────────
+    #
+    # This used to be "the newest upload wins", and on 588 Boyland that hid
+    # the June 2026 owners set behind the March 2025 architectural set, because
+    # the March set had been re-synced most recently. Now, in order:
+    #   1. the date in the file name ('Owners set - 6.9.26.pdf')
+    #   2. the revision date read from the title block
+    #   3. upload time
+    # See _order for why the title-block date is the tie-break and not the
+    # lead: it is the date of a revision cloud, and the sheet that supersedes
+    # another frequently carries none.
+    #
+    # ── WITHIN A SET, AND NEVER FOR COVER / ENERGY / GENERAL SHEETS ────────
+    #
+    # A file's discipline is its most common sheet prefix. Sheet numbers are
+    # matched only between files of the same discipline: the structural set's
+    # T-001.00 cover was being hidden by the architectural set's, and MH's
+    # EN-001.00 by PL's. T-, EN- and GN- sheets are never superseded across
+    # files at all.
+    #
+    # NOTHING IS DELETED. Readers exclude a row only while the file that
+    # superseded it is still live, so deleting the newer file brings the older
+    # sheet straight back. A sheet that appears twice INSIDE one file is not a
+    # duplicate and both pages stay.
+    """
+    files = await db.project_files.find(
+        {"project_id": project_id, "is_deleted": {"$ne": True}},
+        {"_id": 1, "created_at": 1, "name": 1},
+    ).to_list(2000)
+    if not files:
+        return {"superseded": 0}
+    rows = await db.document_page_index.find(
+        {"project_id": project_id, "file_id": {"$in": [str(f["_id"]) for f in files]}},
+        {"_id": 1, "file_id": 1, "file_hash": 1, "page_number": 1,
+         "sheet_number": 1, "superseded_by": 1, "revision_date": 1,
+         "sheet_position": 1},
+    ).to_list(20000)
+
+    losers = _supersession_winners(rows, files, project_id)
+    by_winner: Dict[str, list] = {}
+    keep_ids = []
+    for r in rows:
+        loser_to = losers.get(r["_id"])
         if loser_to:
             if r.get("superseded_by") != loser_to:
                 by_winner.setdefault(loser_to, []).append(r["_id"])
@@ -65621,7 +65719,10 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
     the same way the pass derived them (plan_glyph_pass.families)."""
     from lib.plan_glyph_pass import families as _families
     pid = str(project_id)
-    page_ids = await _current_record_page_ids(pid)
+    # THE PAGES THE PASS READ, EVERY TRACK'S (_glyph_track_pages): the filed
+    # track's plans are superseded in the index by the Owner's set, and a
+    # refusal row citing one must still be counted.
+    page_ids = await _glyph_page_ids(pid)
     if not page_ids:
         return []
     sched = await db[PLAN_RECORDS].find(
@@ -65640,10 +65741,19 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
     if not want:
         return []
     proj = {"_id": 0, "embedding": 0}
-    checks = [(plan_search.glyph_family_filter(pid, page_ids, name, tags),
-               ("family", name, tags)) for name, tags in sorted(want.items())]
-    checks.append((plan_search.glyph_refusal_filter(pid, page_ids),
-                   ("refusals", None, [])))
+    # A CENSUS PER DRAWING TRACK (ruling 2026-10-24): each track's rows are
+    # checked against the database on their own. Rows written before
+    # EMIT_VERSION 7 carry no track: one census over all of them, as before.
+    tracks = sorted({(r.get("payload") or {}).get("track") for r in
+                     await db[PLAN_RECORDS].find(
+                         {"project_id": pid, "record_type": "glyph"},
+                         {"payload.track": 1}).to_list(GLYPH_EVIDENCE_MAX)} - {None}) or [None]
+    checks = []
+    for track in tracks:
+        checks += [(plan_search.glyph_family_filter(pid, page_ids, name, tags, track=track),
+                    ("family", name, tags, track)) for name, tags in sorted(want.items())]
+        checks.append((plan_search.glyph_refusal_filter(pid, page_ids, track=track),
+                       ("refusals", None, [], track)))
     # THE SCHEDULE'S QTY, per tag, from the same best-tier reading the
     # families come from - so a building total can be checked against what
     # the schedule prints (plan_search._qty_check).
@@ -65655,13 +65765,14 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
             best[nm] = s
     rows: List[dict] = []
     census: List[dict] = []
-    for flt, (kind, name, tags) in checks:
+    for flt, (kind, name, tags, track) in checks:
         rows += await db[PLAN_RECORDS].find(flt, proj).to_list(GLYPH_EVIDENCE_MAX)
         n = await db[PLAN_RECORDS].count_documents(flt)
         qty = (plan_search.schedule_quantities((best.get(name) or {}).get("payload"), tags)
                if kind == "family" else None)
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
-                                               family=name, tags=tags, qty=qty))
+                                               family=name, tags=tags, qty=qty,
+                                               track=track))
     return rows + census
 
 

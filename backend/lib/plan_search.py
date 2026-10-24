@@ -40,6 +40,7 @@ search finds. `render_records` reads `quote`; it has never read `label`.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import (Any, Collection, Dict, Iterable, List, NamedTuple,
                     Optional, Sequence, Tuple)
@@ -1364,33 +1365,48 @@ def glyph_families_for(subject: str, families: Dict[str, Sequence[str]]
 
 
 def glyph_family_filter(project_id: str, page_ids: Sequence[str],
-                        family: str, tags: Sequence[str]) -> Dict[str, Any]:
+                        family: str, tags: Sequence[str],
+                        track: Optional[str] = None) -> Dict[str, Any]:
     """Every glyph row of one family on the project's current pages: rows
     carrying one of its tags, and rows the pass ran for it that could not
-    name themselves. `glyph_in_census` is the same predicate in Python."""
-    return {"project_id": str(project_id), "page_id": {"$in": list(page_ids)},
-            "record_type": "glyph", "tier": _GLYPH_TIER,
-            "$or": [{"label": {"$in": list(tags)}}, {"payload.family": family}]}
+    name themselves - of one drawing track, when `track` is given (rows of
+    EMIT_VERSION 7 carry one). `glyph_in_census` is the same predicate in
+    Python."""
+    flt = {"project_id": str(project_id), "page_id": {"$in": list(page_ids)},
+           "record_type": "glyph", "tier": _GLYPH_TIER,
+           "$or": [{"label": {"$in": list(tags)}}, {"payload.family": family}]}
+    if track is not None:
+        flt["payload.track"] = track
+    return flt
 
 
-def glyph_refusal_filter(project_id: str, page_ids: Sequence[str]) -> Dict[str, Any]:
+def glyph_refusal_filter(project_id: str, page_ids: Sequence[str],
+                         track: Optional[str] = None) -> Dict[str, Any]:
     """Every sheet the pass refused, on the project's current pages."""
-    return {"project_id": str(project_id), "page_id": {"$in": list(page_ids)},
-            "record_type": "glyph", "tier": _GLYPH_TIER,
-            "glyph_status": _tally.UNSUPPORTED_UNIT,
-            "unit": {"$regex": "^sheet:"}}
+    flt = {"project_id": str(project_id), "page_id": {"$in": list(page_ids)},
+           "record_type": "glyph", "tier": _GLYPH_TIER,
+           "glyph_status": _tally.UNSUPPORTED_UNIT,
+           "unit": {"$regex": "^sheet:"}}
+    if track is not None:
+        flt["payload.track"] = track
+    return flt
 
 
 def glyph_census(kind: str, project_id: str, page_ids: Sequence[str], count: int,
                  family: Optional[str] = None, tags: Sequence[str] = (),
-                 qty: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                 qty: Optional[Dict[str, str]] = None,
+                 track: Optional[str] = None) -> Dict[str, Any]:
     """What the database said, at question time, about one filter - and, for
     a family, what its schedule's QTY column prints per tag (`qty`, read by
-    schedule_quantities), so a building total can be checked against it."""
-    return {"record_type": GLYPH_CENSUS, "kind": kind,
-            "project_id": str(project_id), "page_ids": sorted(map(str, page_ids)),
-            "family": family, "tags": sorted(tags), "count": int(count),
-            "qty": dict(qty or {})}
+    schedule_quantities), so a building total can be checked against it.
+    One per drawing track when the rows carry one (`track`)."""
+    out = {"record_type": GLYPH_CENSUS, "kind": kind,
+           "project_id": str(project_id), "page_ids": sorted(map(str, page_ids)),
+           "family": family, "tags": sorted(tags), "count": int(count),
+           "qty": dict(qty or {})}
+    if track is not None:
+        out["track"] = track
+    return out
 
 
 def schedule_quantities(payload: Dict[str, Any], tags: Sequence[str]) -> Dict[str, str]:
@@ -1419,6 +1435,8 @@ def glyph_in_census(row: Dict[str, Any], census: Dict[str, Any]) -> bool:
             or str(row.get("page_id")) not in set(census.get("page_ids") or ())
             or row.get("record_type") != "glyph"
             or row.get("tier") != _GLYPH_TIER):
+        return False
+    if census.get("track") is not None and _row_track(row) != census["track"]:
         return False
     if census.get("kind") == "refusals":
         unit = row.get("unit")
@@ -1484,6 +1502,10 @@ class GlyphBook(NamedTuple):
     #: floor key -> {unit: what says it continues on another sheet}, or None
     #: when any row on the floor predates that reading (emit_version < 2).
     multi: Dict[str, Optional[Dict[str, List[str]]]] = {}
+    #: floor key -> why its figures are refused: a track's rows of a
+    #: mechanical sheet there do not number what the sheet locates
+    #: (_invariant, EMIT_VERSION 7).
+    invariant: Dict[str, str] = {}
 
 
 def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
@@ -1568,6 +1590,183 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
                      sheets, units, multi)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Two drawing tracks (ruling 2026-10-24)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# On 588 Boyland the filed AR set governs and the Owner's set (6/9/26) is the
+# owner's post-CO additions - a second track, not a revision. The pass places
+# every mechanical symbol once PER TRACK (plan_glyph_pass, EMIT_VERSION 7),
+# so the gate reads:
+#   TOTALS      a floor or the building counts each mechanical symbol ONCE,
+#               whatever the track - each sheet's rows from one track, the
+#               filed where it has them;
+#   CENSUSES    per track: each track's rows are checked against the
+#               database on their own;
+#   INVARIANT   on every floor, each track's located rows of a family on a
+#               mechanical sheet must number what that sheet's sweep locates
+#               (payload.mech_count). A floor where one does not has its
+#               totals refused - and that track's per-apartment figures
+#               there - and it is logged;
+#   APARTMENTS  per track, then: AGREE -> stated once; DIFFER -> both
+#               stated, each labelled, and a claim binds only if it NAMES its
+#               set and matches it; ONE TRACK ONLY -> that figure, labelled
+#               (ruling 2026-10-24 on the owner's set: label, don't refuse).
+
+log = logging.getLogger(__name__)
+
+_FILED = "filed"
+_FILED_LABEL = "the filed set"
+_SET_WORD = r"(?:AR\s+)?(?:set|drawings?|plans?|track)"
+#: A claim that names its set: "in the filed set", "per the owner's set",
+#: "per the owner's post-CO set, 6/9/26". The date of a label goes with it.
+_TRACK_CLAIM = {
+    _FILED: re.compile(r"(?:\b(?:per|in|on|from|according\s+to)\s+)?(?:\bthe\s+)?"
+                       r"\bfiled\s+" + _SET_WORD + r"\b"
+                       r"(?:[\s,(]+\d{1,2}/\d{1,2}/\d{2,4}\)?)?", re.I),
+    "post_co": re.compile(r"(?:\b(?:per|in|on|from|according\s+to)\s+)?(?:\bthe\s+)?"
+                          r"(?:\bowner'?s'?\s+(?:post-?CO\s+)?|\bpost-?CO\s+)" + _SET_WORD
+                          + r"\b(?:[\s,(]+\d{1,2}/\d{1,2}/\d{2,4}\)?)?", re.I),
+}
+
+
+def _row_track(r: Dict[str, Any]) -> Optional[str]:
+    payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+    return payload.get("track")
+
+
+#: How a set's name reads once its date is gone (_undated_set_names).
+_SET_NAME = {_FILED: "in the filed set", "post_co": "per the owner's set"}
+
+
+def _undated_set_names(text: str) -> str:
+    """Every set's name in `text` as one dateless phrase, BEFORE the answer
+    is split into clauses: the splitter cuts at the comma of "per the
+    owner's post-CO set, 6/9/26" and the date would be a clause of bare
+    numbers."""
+    for t, rx in _TRACK_CLAIM.items():
+        text = rx.sub(" " + _SET_NAME[t], text)
+    return text
+
+
+def _track_claim(clause: str) -> Tuple[frozenset, str]:
+    """(the drawing tracks the clause names, the clause without those names).
+    A set's name is where a figure comes from, never a figure: its date is
+    removed with it."""
+    named = set()
+    for t, rx in _TRACK_CLAIM.items():
+        if rx.search(clause):
+            named.add(t)
+            clause = rx.sub(" ", clause)
+    return frozenset(named), clause
+
+
+class GlyphBooks(NamedTuple):
+    totals: GlyphBook                       # every mechanical symbol once
+    tracks: Dict[Optional[str], GlyphBook]  # per drawing track
+    labels: Dict[Optional[str], str]        # how the render names each
+
+
+def _invariant(rows: Sequence[Dict[str, Any]]) -> Dict[Tuple[Optional[str], str], str]:
+    """{(track, floor key): why} for every floor where a track's located rows
+    of a family on a mechanical sheet do not number what that sheet's sweep
+    locates (payload.mech_count) - or where the sheet's rows disagree about
+    that number. Rows that carry no mech_count (before EMIT_VERSION 7) are
+    not checked."""
+    want: Dict[Tuple[str, Any], set] = {}
+    have: Dict[Tuple[Optional[str], str, Any], int] = {}
+    on: Dict[str, set] = {}
+    floor: Dict[Tuple[Optional[str], str], Optional[str]] = {}
+    for r in rows:
+        p = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+        page, t = str(r.get("page_id")), _row_track(r)
+        on.setdefault(page, set()).add(t)
+        floor.setdefault((t, page), _row_floor(r))
+        if "label_at" not in p:
+            continue                    # a refusal, not a located label
+        fam = p.get("family")
+        if p.get("mech_count") is not None:
+            want.setdefault((page, fam), set()).add(p["mech_count"])
+        have[(t, page, fam)] = have.get((t, page, fam), 0) + 1
+    out: Dict[Tuple[Optional[str], str], str] = {}
+    for (page, fam), ns in want.items():
+        for t in on.get(page, ()):
+            n = have.get((t, page, fam), 0)
+            if len(ns) == 1 and n == next(iter(ns)):
+                continue
+            k = floor.get((t, page)) or page
+            why = (f"{fam}: {n} located on the {t or 'single'} track against "
+                   f"{' / '.join(map(str, sorted(ns)))} on its mechanical sheet")
+            out[(t, k)] = why
+            log.warning("glyph two-track invariant: floor %s - %s", k, why)
+    return out
+
+
+def _track_label(t: Optional[str], rows: Sequence[Dict[str, Any]]) -> str:
+    if t in (None, _FILED):
+        return _FILED_LABEL
+    for r in rows:
+        a = (r.get("payload") or {}).get("arch") or {}
+        if _row_track(r) == t and a.get("drawing_track") == t and a.get("drawing_track_label"):
+            return a["drawing_track_label"]
+    return f"the {t} set"
+
+
+def glyph_books(records: Sequence[Dict[str, Any]]) -> GlyphBooks:
+    """The totals book, a book per drawing track, and their labels. Rows
+    of one track - or of none, before EMIT_VERSION 7 - give one book that is
+    all three, as before."""
+    rows = [r for r in records or [] if r.get("tier") == _GLYPH_TIER
+            and r.get("record_type") == "glyph"]
+    censuses = [r for r in records or [] if r.get("record_type") == GLYPH_CENSUS]
+    tracks = sorted({_row_track(r) for r in rows} | {c.get("track") for c in censuses},
+                    key=lambda t: (t != _FILED, str(t)))
+    inv = _invariant(rows)
+    if len(tracks) <= 1:
+        book = glyph_book(records)
+        book = book._replace(invariant={k: w for (_t, k), w in inv.items()})
+        t = tracks[0] if tracks else None
+        return GlyphBooks(book, {t: book}, {t: _track_label(t, rows)})
+    per: Dict[Optional[str], GlyphBook] = {}
+    for t in tracks:
+        b = glyph_book([r for r in rows if _row_track(r) == t]
+                       + [c for c in censuses if c.get("track") == t])
+        per[t] = b._replace(invariant={k: w for (tt, k), w in inv.items() if tt == t})
+    # EACH MECHANICAL SHEET'S ROWS FROM ONE TRACK: the filed where it has any
+    on: Dict[str, set] = {}
+    for r in rows:
+        on.setdefault(str(r.get("page_id")), set()).add(_row_track(r))
+    gov = {p: (_FILED if _FILED in ts else sorted(ts, key=str)[0]) for p, ts in on.items()}
+    chosen = [r for r in rows if _row_track(r) == gov[str(r.get("page_id"))]]
+    synth: List[Dict[str, Any]] = []
+    for c in censuses:
+        if c.get("track") != tracks[0]:
+            continue                    # one per kind and family, as counted below
+        c2 = {k: v for k, v in c.items() if k != "track"}
+        c2["count"] = sum(1 for r in chosen if glyph_in_census(r, c2))
+        synth.append(c2)
+    totals = glyph_book(chosen + synth)
+    fams = {}
+    for name, fam in totals.families.items():
+        why = fam.why
+        for t, b in per.items():
+            f = b.families.get(name)
+            why = why or (f.why if f else f"no census of the {t} track")
+        fams[name] = fam._replace(why=why)
+    totals = totals._replace(
+        families=fams,
+        refusals_complete=all(b.refusals_complete for b in per.values()),
+        invariant={k: w for (_t, k), w in inv.items()})
+    return GlyphBooks(totals, per, {t: _track_label(t, rows) for t in tracks})
+
+
+def _apartment_clause(clause: str, books: GlyphBooks) -> bool:
+    """The clause states a per-apartment figure: it names a unit some track
+    has, or a per-unit share."""
+    return bool(_PER_UNIT.search(clause)) or any(
+        _clause_units(clause, b)[0] for b in books.tracks.values())
+
+
 def _blocking(r: Dict[str, Any]) -> bool:
     """A REFUSED SHEET BLOCKS A COUNT ONLY IF IT COULD CARRY THE SYMBOLS
     (operator ruling 2026-10-07). The pass writes the role; an architectural
@@ -1579,7 +1778,8 @@ def _blocking(r: Dict[str, Any]) -> bool:
 
 
 def _refused_floors(book: GlyphBook) -> set:
-    return {k for k in (_row_floor(r) for r in book.refused if _blocking(r)) if k}
+    return ({k for k in (_row_floor(r) for r in book.refused if _blocking(r)) if k}
+            | set(book.invariant))
 
 
 def _blocking_refusals(book: GlyphBook) -> List[Dict[str, Any]]:
@@ -1587,7 +1787,8 @@ def _blocking_refusals(book: GlyphBook) -> List[Dict[str, Any]]:
 
 
 def _building_refused(book: GlyphBook) -> bool:
-    return bool(_blocking_refusals(book)) or not book.refusals_complete
+    return (bool(_blocking_refusals(book)) or not book.refusals_complete
+            or bool(book.invariant))
 
 
 def _resolved(fam: GlyphFamily, tags: Sequence[str]) -> List[Dict[str, Any]]:
@@ -1965,8 +2166,36 @@ def _clause_subjects(clause: str, book: GlyphBook
     return [(fam, list(fam.tags))]
 
 
-def glyph_values(clause: str, book: GlyphBook) -> set:
-    """The located-symbol counts this one clause may state.
+def glyph_values(clause: str, book) -> set:
+    """The located-symbol counts this one clause may state - from one book,
+    or from the two-track books (glyph_books):
+
+      a floor or building figure  from the totals: each symbol once, and a
+                                  set named alongside changes nothing;
+      a per-apartment figure      per track. Named set: that set's figure
+                                  only. Otherwise the tracks must AGREE; if
+                                  they differ nothing binds; if one track
+                                  alone has a figure, it binds (label, don't
+                                  refuse - the render names its set)."""
+    if isinstance(book, GlyphBook):
+        return _book_values(clause, book)
+    books: GlyphBooks = book
+    named, bare = _track_claim(clause)
+    if len(books.tracks) <= 1 and not (named - set(books.tracks)) or None in books.tracks:
+        return _book_values(bare, books.totals)
+    if not _apartment_clause(bare, books):
+        return _book_values(bare, books.totals)
+    if len(named) == 1:
+        (t,) = named
+        return _book_values(bare, books.tracks[t]) if t in books.tracks else set()
+    vals = [v for v in (_book_values(bare, b) for b in books.tracks.values()) if v]
+    if not vals:
+        return set()
+    return set(vals[0]) if all(v == vals[0] for v in vals) else set()
+
+
+def _book_values(clause: str, book: GlyphBook) -> set:
+    """The located-symbol counts this one clause may state, from one book.
 
     Scope, most specific first: named units; 'each/every/per' (a uniform
     per-apartment figure) on the floors named, or across the building when
@@ -2012,16 +2241,109 @@ def glyph_values(clause: str, book: GlyphBook) -> set:
     return out
 
 
+def _apartment_text(book: GlyphBook, fam: GlyphFamily, k: str,
+                    note: bool = True) -> str:
+    """The per-apartment part of floor k's line, from one book. `note` False
+    leaves out the owner's-set label (_track_note): the two-track render
+    labels figures itself."""
+    out = ""
+    counts = _unit_counts(book, fam, fam.tags, k)
+    cont = _continues(book, k)
+    per = _per_unit(book, fam, fam.tags, k)
+    if cont is None and book.units.get(k):
+        out += ("; per-apartment figures not available (these rows "
+                "predate the reading of which units continue on "
+                "another sheet)")
+    elif per is not None:
+        out += (f"; each unit ({', '.join(counts)}) has {per}" + _whole_note(book, counts)
+                + (_track_note(book, fam, k, counts) if note else ""))
+    elif cont and any(cont.values()) and not counts:
+        out += (f"; {', '.join(u for u in book.units[k] if cont.get(u))} "
+                f"continue on another sheet, so no per-apartment figure")
+    elif counts:
+        # A zero is never bound (glyph_values), so it is not printed as
+        # a figure either.
+        out += "; per unit " + ", ".join(f"{u} {n}" for u, n in counts.items() if n)
+        out += _whole_note(book, [u for u, n in counts.items() if n])
+        if note:
+            out += _track_note(book, fam, k, [u for u, n in counts.items() if n])
+        none = [u for u, n in counts.items() if not n]
+        if none:
+            out += f"; none placed in {', '.join(none)}"
+        more = [u for u in book.units[k] if (cont or {}).get(u) and u not in counts]
+        if more:
+            out += (f"; {', '.join(more)} continue on another sheet, "
+                    f"so no figure for them")
+    else:
+        out += "; per-unit split not available"
+    return out
+
+
+def _tracks_apartment_text(books: GlyphBooks, name: str, k: str) -> str:
+    """Floor k's per-apartment figures across the drawing tracks: the same
+    in every track that has the floor -> stated once, unlabelled; different
+    -> both, each with its set, and the reader told to name the set; one
+    track only -> that, with its set."""
+    have: Dict[Optional[str], Tuple[GlyphBook, GlyphFamily, Dict[str, int]]] = {}
+    for t, b in books.tracks.items():
+        f = b.families.get(name)
+        if f is not None and k in b.sheets:
+            have[t] = (b, f, _unit_counts(b, f, f.tags, k) or {})
+    if not have:
+        return "; per-unit split not available"
+    lead = next(iter(have))
+    units: List[str] = []
+    for b, _f, _c in have.values():
+        units += [u for u in b.units.get(k) or [] if u not in units]
+    if len(have) > 1 and all(c == have[lead][2] for _b, _f, c in have.values()) \
+            and all(_apartment_text(b, f, k, note=False)
+                    == _apartment_text(*have[lead][:2], k, note=False)
+                    for b, f, _c in have.values()):
+        return _apartment_text(*have[lead][:2], k, note=False)
+    fmt = lambda v: str(v) if v else "none placed"        # noqa: E731
+    agree, differ, alone = [], [], {}
+    for u in units:
+        vals = {t: c[u] for t, (_b, _f, c) in have.items() if u in c}
+        if not vals:
+            continue
+        if len(vals) == len(have) and len(set(vals.values())) == 1:
+            agree.append((u, next(iter(vals.values()))))
+        elif len(vals) == 1:
+            (t, v), = vals.items()
+            alone.setdefault(t, []).append((u, v))
+        else:
+            differ.append((u, vals))
+    out = ""
+    if agree:
+        out += ("; the sets agree: " + ", ".join(f"{u} {fmt(v)}" for u, v in agree)
+                + _whole_note(have[lead][0], [u for u, v in agree if v]))
+    for u, vals in differ:
+        out += (f"; {u}: " + ", ".join(f"{fmt(v)} per {books.labels[t]}" for t, v in vals.items())
+                + f" - THE SETS DIFFER: state {u}'s figure only with the set it is per")
+    for t, uv in alone.items():
+        out += ("; " + ", ".join(f"{u} {fmt(v)}" for u, v in uv)
+                + f" per {books.labels[t]} only" + _whole_note(have[t][0], [u for u, v in uv if v]))
+    return out or "; per-unit split not available"
+
+
 def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
     """What the agent is shown of the located symbols: per family, per floor,
     only the figures glyph_values would bind, and why the rest are not."""
-    book = glyph_book(records)
+    books = glyph_books(records)
+    book = books.totals
     if not book.families:
         return ""
+    two = len(books.tracks) > 1
     refused_k = _refused_floors(book)
     lines = ["Located symbols (each found on the mechanical plan and named by "
              "its schedule's tag). State a figure only at the scope shown, and "
              "never add two schedules together:"]
+    if two:
+        lines.append("Floor and building figures count each symbol once. "
+                     "Per-apartment figures are read against each drawing set ("
+                     + "; ".join(books.labels[t] for t in books.tracks)
+                     + "): where the sets differ, both are shown - state such a "
+                     "figure only in a sentence naming the set it is per.")
     for name in sorted(book.families):
         fam = book.families[name]
         head = f"{name} ({', '.join(fam.tags)})"
@@ -2044,8 +2366,10 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
             title = book.titles.get(k) or ""
             label = f"{title} [{where}]" if title else f"[{where}]"
             if k in refused_k:
-                why = "; ".join(sorted({str((r.get("payload") or {}).get("refusal") or "")
-                                        for r in book.refused if _row_floor(r) == k}))
+                why = "; ".join(sorted(({str((r.get("payload") or {}).get("refusal") or "")
+                                         for r in book.refused if _row_floor(r) == k}
+                                        | ({book.invariant[k]} if k in book.invariant else set()))
+                                       - {""}))
                 lines.append(f"- {label}: not counted ({why})")
                 continue
             total = _floor_count(book, fam, fam.tags, k)
@@ -2056,34 +2380,8 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
             line = f"- {label}: " + ", ".join(f"{t} {n}" for t, n in per_tag)
             if len(per_tag) > 1:
                 line += f"; {total} in all"
-            counts = _unit_counts(book, fam, fam.tags, k)
-            cont = _continues(book, k)
-            per = _per_unit(book, fam, fam.tags, k)
-            if cont is None and book.units.get(k):
-                line += ("; per-apartment figures not available (these rows "
-                         "predate the reading of which units continue on "
-                         "another sheet)")
-            elif per is not None:
-                line += (f"; each unit ({', '.join(counts)}) has {per}" + _whole_note(book, counts)
-                         + _track_note(book, fam, k, counts))
-            elif cont and any(cont.values()) and not counts:
-                line += (f"; {', '.join(u for u in book.units[k] if cont.get(u))} "
-                         f"continue on another sheet, so no per-apartment figure")
-            elif counts:
-                # A zero is never bound (glyph_values), so it is not printed as
-                # a figure either.
-                line += "; per unit " + ", ".join(f"{u} {n}" for u, n in counts.items() if n)
-                line += _whole_note(book, [u for u, n in counts.items() if n])
-                line += _track_note(book, fam, k, [u for u, n in counts.items() if n])
-                none = [u for u, n in counts.items() if not n]
-                if none:
-                    line += f"; none placed in {', '.join(none)}"
-                more = [u for u in book.units[k] if (cont or {}).get(u) and u not in counts]
-                if more:
-                    line += (f"; {', '.join(more)} continue on another sheet, "
-                             f"so no figure for them")
-            else:
-                line += "; per-unit split not available"
+            line += (_tracks_apartment_text(books, name, k) if two
+                     else _apartment_text(book, fam, k))
             lines.append(line)
         if fam.why or _building_refused(book):
             lines.append(f"- Whole building: NOT AVAILABLE - "
@@ -2144,14 +2442,19 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     # explained to somebody holding the drawing.
     """
     by_ident = _values_by_ident(records)
-    citations = _citation_texts(records)
-    book = glyph_book(records)
+    books = glyph_books(records)
+    book = books.totals
+    # A DRAWING SET'S NAME IS A CITATION: "per the owner's post-CO set,
+    # 6/9/26" says where a figure comes from - its date lends nothing.
+    citations = sorted(set(_citation_texts(records)) | {
+        l for l in books.labels.values() if len(l) >= 3}, key=len, reverse=True)
     unsupported: List[str] = []
-    for clause in _clauses(text):
+    for clause in _clauses(_undated_set_names(text)):
         # A citation in the clause is removed as text before its numbers are
         # read (_citation_texts): '[M-200.00]' and 'issued 8/18/2026' say
         # where, and lend nothing to what is counted.
-        said = _values(_strip_citations(clause, citations))
+        _named, bare = _track_claim(clause)
+        said = _values(_strip_citations(bare, citations))
         if not said:
             continue
         allowed: set = set()
@@ -2167,13 +2470,13 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
         # WH-1.", "Each unit on the second floor has 11 PTAC-3." So a printed
         # count binds only at building scope; a floor or unit figure comes
         # from the located symbols (glyph_values, added below) or not at all.
-        if not _building_scope(clause, book):
+        if not _building_scope(bare, book):
             allowed = set()
         # THE SCHEDULE'S QTY AND THE LOCATED COUNT AGREE, OR NEITHER IS SAID
         # (_qty_in_clause). Applied to the printed figures BEFORE the located
         # ones are added below, so a floor figure that happens to equal a
         # withheld QTY is still allowed at its own scope.
-        qty_add, qty_drop = _qty_in_clause(clause, book)
+        qty_add, qty_drop = _qty_in_clause(bare, book)
         allowed = (allowed - qty_drop) | qty_add
         # A LOCATED SYMBOL'S COUNT IS ITS CARDINALITY, NOT A PRINTED DIGIT.
         # A schedule cell prints `21` and the record carries it. Eight
@@ -2201,7 +2504,7 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
         # database (2026-10-06). glyph_values binds a figure only when the
         # rows in hand equal an independent census, and only at a scope -
         # unit, floor, building - nothing refused falls inside.
-        allowed |= glyph_values(clause, book)
+        allowed |= glyph_values(clause, books)
         unsupported.extend(v for v in said if v not in allowed)
     return (not unsupported), unsupported
 

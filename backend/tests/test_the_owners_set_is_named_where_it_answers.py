@@ -130,10 +130,12 @@ class ThePassCarriesItOntoEveryRow(unittest.TestCase):
             db.document_page_index.docs.append({"_id": ObjectId(), "project_id": str(PROJ),
                                                 "file_id": str(fid), "page_number": n,
                                                 "sheet_number": "A-10%d.00" % n, "superseded_by": None})
-        seen = {}
+        seen = {"pages": [], "tracks": {}}
 
-        def fake_pass(pages, open_page, schedules, door_pages):
-            seen["pages"] = pages
+        def fake_pass(pages, open_page, schedules, door_pages, track="filed", sweeps=None):
+            # one call per drawing track (two-track rows, EMIT_VERSION 7)
+            seen["pages"] += pages
+            seen["tracks"][track] = sorted(p["file_id"] for p in pages)
             return {"rows": [], "summary": {}}
 
         async def live(_pid):
@@ -147,6 +149,7 @@ class ThePassCarriesItOntoEveryRow(unittest.TestCase):
             asyncio.run(server._plan_glyph_pass(str(PROJ)))
         got = {p["file_id"]: (p["drawing_track"], p["drawing_track_label"]) for p in seen["pages"]}
         self.assertEqual(got, {str(FILE): ("post_co", LABEL), str(other): ("filed", None)})
+        self.assertEqual(seen["tracks"], {"filed": [str(other)], "post_co": [str(FILE)]})
 
     def test_the_row_carries_it(self):
         self.assertGreaterEqual(E.EMIT_VERSION, 6)
