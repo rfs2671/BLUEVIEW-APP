@@ -23,7 +23,9 @@ export function createWebViewHandle() {
   const h = {
     isWebView: true,
 
-    /** Called by the pane: `fn` posts a message into the page; null when it unmounts. */
+    /** Called by the pane: `fn` posts a message into the page; null when it unmounts. Only an
+     *  unmount detaches (callback changes must not: see SheetWebViewPane), and a page that
+     *  loads again announces `loaded` first, which clears `ready` until it says so again. */
     attach(fn) { send = fn; if (!fn) ready = false; },
     onTap(cb) { tapCb = cb; },
     onError(cb) { errorCb = cb; },
@@ -31,7 +33,9 @@ export function createWebViewHandle() {
     /** A message from the page. */
     receive(m) {
       if (!m || typeof m !== 'object') return;
-      if (m.type === 'ready') {
+      if (m.type === 'loaded') {
+        ready = false;                       // the page (re)loaded: it will say `ready` again after init
+      } else if (m.type === 'ready') {
         ready = true;
         post({ type: 'pins', pins });
         if (manifest) post({ type: 'manifest', manifest });

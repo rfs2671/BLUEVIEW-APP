@@ -232,6 +232,23 @@ function harness(over = {}) {
     ok(Math.abs(c.camera.zoom - camBefore.zoom) < 1e-9, 'the camera is not moved by a refresh');
     c.destroy();
   }
+  console.log('keepPortalFramed does not recurse');
+  {
+    const PF = load(path.join(__dirname, 'portalFrame.js'));
+    const { c } = harness();
+    c.setViewport(300, 200); await settle();
+    let frames = 0; const orig = c.frameBox.bind(c);
+    c.frameBox = (...a) => { frames += 1; if (frames > 50) throw new Error('runaway'); return orig(...a); };
+    const off = PF.keepPortalFramed(c, { page: 2, box: [0.4, 0.4, 0.7, 0.7] });
+    ok(frames === 1, 'framed once when attached');
+    c.setViewport(520, 380);
+    ok(frames === 2, `a resize frames once more, not hundreds of times (${frames})`);
+    c.setViewport(520, 380); c.panBy(5, 5);
+    ok(frames === 2, 'moving the camera does not reframe');
+    off(); c.setViewport(300, 200);
+    ok(frames === 2, 'detached: nothing more');
+    c.destroy();
+  }
   console.log('destroy');
   {
     const { c, log } = harness();

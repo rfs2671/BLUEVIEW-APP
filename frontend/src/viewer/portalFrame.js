@@ -24,7 +24,11 @@ export function keepPortalFramed(controller, portal) {
   let done = -1;
   const run = () => {
     const w = controller.viewport.width;
-    if (w > 0 && w !== done && framePortal(controller, portal)) done = w;
+    if (w <= 0 || w === done) return;
+    // Record the width BEFORE framing: framing moves the camera, which emits `change`, which
+    // calls this again. With the guard set afterwards that re-entered until the stack ran out.
+    done = w;
+    framePortal(controller, portal);
   };
   run();
   return controller.on('change', run);

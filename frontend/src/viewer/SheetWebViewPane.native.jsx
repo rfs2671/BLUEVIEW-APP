@@ -18,24 +18,29 @@ const SOURCE = { html: SHEET_WEBVIEW_HTML, baseUrl: PAGE_ORIGIN };
 export default function SheetWebViewPane({ handle, projectId, fileId, manifest, dpr = 2, portal = null, showCallouts = true, interactive = true, background = '#131E27', onFatal }) {
   const ref = useRef(null);
   const sent = useRef(false);
+  // The parent passes a fresh onFatal on every render. It lives in a ref so that a re-render never
+  // re-runs the attach effect (whose cleanup detaches the handle and would leave it never ready again).
+  const fatal = useRef(onFatal);
+  fatal.current = onFatal;
+  const fail = useCallback((why) => { if (fatal.current) fatal.current(why); }, []);
 
   useEffect(() => {
     handle.attach((m) => {
       if (ref.current) ref.current.injectJavaScript(`window.__sheetRecv(${JSON.stringify(m)});true;`);
     });
-    handle.onError((message) => { if (onFatal) onFatal(message); });
+    handle.onError(fail);
     return () => handle.attach(null);
-  }, [handle, onFatal]);
+  }, [handle, fail]);
 
   // the page asks for nothing: once it has loaded, give it everything it needs in one message
   const sendInit = useCallback(async () => {
     if (sent.current || !ref.current) return;
     sent.current = true;
     const token = await getToken();
-    if (!token) { if (onFatal) onFatal('not signed in'); return; }
+    if (!token) { fail('not signed in'); return; }
     const init = JSON.stringify({ type: 'init', apiBase: API_BASE, token, projectId, fileId, manifest, dpr, portal, showCallouts, interactive, background });
     ref.current.injectJavaScript(`window.__sheetRecv(${init});true;`);
-  }, [projectId, fileId, manifest, dpr, portal, showCallouts, interactive, background, onFatal]);
+  }, [projectId, fileId, manifest, dpr, portal, showCallouts, interactive, background, fail]);
 
   // a newer manifest (the second compile pass finished) goes to the open page
   useEffect(() => { handle.setManifest(manifest); }, [handle, manifest]);
@@ -63,10 +68,10 @@ export default function SheetWebViewPane({ handle, projectId, fileId, manifest, 
         allowsInlineMediaPlayback
         androidLayerType="hardware"
         style={{ flex: 1, backgroundColor: background }}
-        onError={() => onFatal && onFatal('webview error')}
-        onHttpError={() => onFatal && onFatal('webview http error')}
-        onRenderProcessGone={() => onFatal && onFatal('webview process gone')}
-        onContentProcessDidTerminate={() => onFatal && onFatal('webview process terminated')}
+        onError={() => fail('webview error')}
+        onHttpError={() => fail('webview http error')}
+        onRenderProcessGone={() => fail('webview process gone')}
+        onContentProcessDidTerminate={() => fail('webview process terminated')}
       />
     </View>
   );

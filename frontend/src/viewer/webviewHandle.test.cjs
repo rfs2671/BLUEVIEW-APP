@@ -42,6 +42,9 @@ console.log('handle');
   ok(taps[0].pin.id === 'a' && taps[1].page === 2 && taps[2] === null, 'taps reach the app in the shape SheetViewerPane reads');
   const errs = []; h.onError((m) => errs.push(m)); h.receive({ type: 'error', message: 'boom' }); ok(errs[0] === 'boom', 'page errors reach the app');
   h.receive(null); h.receive('x'); h.receive({ type: 'nope' }); ok(true, 'garbage from the page is ignored');
+  h.receive({ type: 'loaded' }); sent.length = 0; h.fit();
+  ok(sent.length === 0 && h.ready === false, 'a page that reloads is not ready until it says so again');
+  h.receive({ type: 'ready' }); sent.length = 0; h.fit(); ok(sent.length === 1, 'and works again once it does');
   h.attach(null); sent.length = 0; h.fit(); ok(sent.length === 0 && h.ready === false, 'after the WebView unmounts nothing is posted, and it must say ready again');
 }
 
@@ -72,6 +75,9 @@ console.log('the generated page');
   const pane = read('src/viewer/SheetWebViewPane.native.jsx');
   ok(/baseUrl: PAGE_ORIGIN/.test(pane) && /app\.levelog\.com/.test(pane), 'the page runs at an origin the API already allows (CORS)');
   ok(/getToken\(\)/.test(pane) && /type: 'init'.*token/.test(pane) && !/uri:.*token/.test(pane), 'the token is handed over in a message, never in the source uri');
+  const effect = pane.slice(pane.indexOf('handle.attach((m)'), pane.indexOf('// the page asks for nothing'));
+  ok(/\}, \[handle, fail\]\);/.test(effect) && !/onFatal\]/.test(effect), 'the attach effect does not depend on the parent callback (a re-render must not detach the page)');
+  ok(/fatal\.current = onFatal/.test(pane), 'the latest callback is kept in a ref');
   ok(/onRenderProcessGone/.test(pane) && /onContentProcessDidTerminate/.test(pane), 'a killed WebView falls back to the PDF viewer instead of showing a blank');
 }
 
