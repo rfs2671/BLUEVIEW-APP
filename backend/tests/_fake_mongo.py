@@ -278,7 +278,10 @@ class Coll:
         return _Res(0, 0)
 
     async def find_one_and_update(self, query, update, upsert=False, **k):
-        for r in self.rows:
+        candidates = [r for r in self.rows if matches(r, query)]
+        if k.get("sort") and len(candidates) > 1:           # like Mongo: the FIRST by sort order
+            candidates = _Cursor(candidates).sort(k["sort"]).rows
+        for r in candidates:
             if matches(r, query):
                 before = copy.deepcopy(r)
                 self._apply(r, update)

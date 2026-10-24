@@ -27,7 +27,7 @@ export class TileFetchError extends Error {
 
 export function createTileCache({
   fetchTile, decode, dispose = () => {}, disk = null, onUpdate = () => {},
-  maxBytes = 128 * 1024 * 1024, concurrency = 6, now = () => Date.now(),
+  maxBytes = 128 * 1024 * 1024, concurrency = 12, now = () => Date.now(),
   setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (h) => clearTimeout(h),
 }) {
   const ready = new Map();            // key -> {image, bytes, desc}   (insertion order = recency)
