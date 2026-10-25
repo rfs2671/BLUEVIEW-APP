@@ -27,7 +27,7 @@ import numpy as np
 from scipy import ndimage
 
 from lib import plan_cells as pc
-from lib.plan_sheet import (CELL_IN, PT_PER_INCH, fill, net_by_tag,
+from lib.plan_sheet import (CELL_IN, PT_PER_INCH, edge_regions, fill, net_by_tag,
                             plan_unit_tags, rasterise, room_names,
                             thickest_legend_wall_in)
 
@@ -579,11 +579,13 @@ def build(page, sheet: dict, unit_tags: Sequence[str]) -> dict:
                                  segs)
     closed = grid | rasterise(closures, lo, hi, cell_pt)
     lab, _n = ndimage.label(~closed)
-    tags = plan_unit_tags(corners, words, unit_tags)
 
     def _lab(x, y):
         r, c = to_cell(x, y)
         return lab[r, c] if 0 <= r < lab.shape[0] and 0 <= c < lab.shape[1] else 0
+    _edge = edge_regions(lab)
+    tags = plan_unit_tags(corners, words, unit_tags,
+                          inside=lambda x, y: _lab(x, y) != 0 and _lab(x, y) not in _edge)
     tag_lab = {_lab(x, y): t for t, (x, y) in tags.items()}
     nb: Dict[int, set] = {}
     for i in range(0, len(closures), 2):

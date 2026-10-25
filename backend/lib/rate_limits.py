@@ -107,6 +107,15 @@ logger = logging.getLogger(__name__)
 # so the matcher stops at the right rule. We rely on first-match
 # semantics — see _match_rule.
 RATE_LIMITS: List[Tuple[str, str, str, str]] = [
+    # ── Sheet tile viewer (a deep zoom fetches dozens of tiles per gesture;
+    #    the 100/min default would stall it). Tiles are immutable and cached
+    #    by the client, so a sustained rate this high is a scraper, not a pinch.
+    ("GET", "/api/projects/{id}/files/{fid}/sheets/{page}/tiles/{z}/{x}/{y}", "4000/1 minute", "user"),
+    ("GET", "/api/projects/{id}/files/{fid}/sheets/{page}/preview", "600/1 minute", "user"),
+    ("GET", "/api/projects/{id}/files/{fid}/sheets/{page}/index", "300/1 minute", "user"),
+    ("GET", "/api/projects/{id}/files/{fid}/sheets", "120/1 minute", "user"),
+    ("POST", "/api/projects/{id}/files/{fid}/sheets/compile", "10/5 minutes", "user"),
+
     # ── Auth (highest abuse risk; brute-force + signup spam) ──────
     ("POST", "/api/auth/login", "5/5 minutes", "ip"),
     ("POST", "/api/auth/register", "3/1 hour", "ip"),
