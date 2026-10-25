@@ -13,18 +13,21 @@ import { ActivityIndicator, PanResponder, Pressable, StyleSheet, Text, View } fr
 import { createSheetController } from './sheetController';
 import { resolveManifest } from './useSheetSession';
 import { manifestUsable } from './sheetApi';
-import { getSheetPane } from './loadSheetPane';
+import { getSheetPane, getSheetWebViewPane } from './loadSheetPane';
+import { createWebViewHandle } from './webviewHandle';
+import { keepPortalFramed } from './portalFrame';
 
 const SIZES = { small: { w: 300, h: 220 }, large: { w: 520, h: 380 } };
 const PORTAL_CACHE_BYTES = 48 * 1024 * 1024;
-export const CROP_MARGIN = 0.4;                          // framing margin around the estimated crop
 
 export default function CalloutPortal({
-  portal, projectId, currentFileId, currentManifest, api, platform, bounds, onClose, onOpenSheet,
+  portal, projectId, currentFileId, currentManifest, api, platform, bounds, onClose, onOpenSheet, webview = false,
 }) {
   const [size, setSize] = useState('small');
   const [pos, setPos] = useState(null);                       // {x, y} of the top-left, once dragged
   const [state, setState] = useState({ status: 'loading', controller: null });
+  // in a WebView-hosted viewer the portal is a second page of the same kind, framed by the page itself
+  const handle = useMemo(() => (webview ? createWebViewHandle() : null), [webview]);
   const posRef = useRef(null);
 
   const sameFile = !portal.file_id || String(portal.file_id) === String(currentFileId);
@@ -43,6 +46,10 @@ export default function CalloutPortal({
         setState({ status: 'unavailable', controller: null });
         return;
       }
+      if (webview) {
+        setState({ status: 'ready', controller: null, manifest });
+        return;
+      }
       controller = createSheetController({
         api, projectId, fileId: targetFileId, manifest, decode: platform.decode, dispose: platform.dispose,
         disk: platform.disk, dpr: platform.dpr(), maxBytes: PORTAL_CACHE_BYTES,
@@ -50,28 +57,19 @@ export default function CalloutPortal({
       setState({ status: 'ready', controller });
     })();
     return () => { cancelled = true; if (controller) controller.destroy(); };
-  }, [portal.file_id, portal.page, sameFile, targetFileId, projectId, api, platform, currentManifest]);
+  }, [portal.file_id, portal.page, sameFile, targetFileId, projectId, api, platform, currentManifest, webview]);
 
-  // THE WHOLE TARGET SHEET IS LOADED; THE CROP ONLY FRAMES THE FIRST VIEW. The crop is an
-  // estimate (`crop_exact: false`), so clipping to it would cut off whatever the estimate
-  // missed. The camera starts on the crop with a 40% margin around it and the reader can
-  // pan and zoom across the entire sheet from there. The camera is confined to the target
-  // PAGE (not to the crop, and not into the other pages of the file).
+  // Frame the detail once the pane has measured itself (and again if the panel is resized). The
+  // whole target sheet stays reachable: see portalFrame.js.
   useEffect(() => {
     const c = state.controller;
-    if (!c) return undefined;
-    const frame = () => {
-      if (c.viewport.width <= 0) return;
-      c.setBounds(portal.page, [0, 0, 1, 1], 0);
-      if (portal.box) c.frameBox(portal.page, portal.box, CROP_MARGIN);
-      else c.frameBox(portal.page, [0, 0, 1, 1], 0.02);
-    };
-    frame();
-    return c.on('change', (() => { let done = -1; return () => { if (done !== c.viewport.width && c.viewport.width > 0) { done = c.viewport.width; frame(); } }; })());
+    if (!c) return undefined;                 // a WebView page frames itself
+    return keepPortalFramed(c, portal);
   }, [state.controller, portal.box, portal.page, size]);
 
   const dims = SIZES[size];
-  const SheetPane = state.status === 'ready' ? getSheetPane() : null;
+  const SheetPane = state.status === 'ready' && !webview ? getSheetPane() : null;
+  const WebPane = state.status === 'ready' && webview ? getSheetWebViewPane() : null;
   const pan = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onPanResponderGrant: () => { posRef.current = pos || (bounds ? { x: Math.max(8, bounds.width - dims.w - 12), y: 70 } : { x: 12, y: 70 }); },
@@ -104,7 +102,13 @@ export default function CalloutPortal({
         </Pressable>
       </View>
       <View style={styles.body}>
-        {state.status === 'ready' && state.controller ? (
+        {state.status === 'ready' && webview && WebPane ? (
+          <WebPane
+            handle={handle} projectId={projectId} fileId={targetFileId} manifest={state.manifest}
+            portal={{ page: portal.page, box: portal.box || null }} showCallouts={false} background="#0d151c"
+            onFatal={() => setState({ status: 'unavailable', controller: null })}
+          />
+        ) : state.status === 'ready' && state.controller ? (
           <SheetPane controller={state.controller} interactive showCallouts={false} background="#0d151c" />
         ) : state.status === 'loading' ? (
           <View style={styles.center}><ActivityIndicator color="#E3C27A" /></View>

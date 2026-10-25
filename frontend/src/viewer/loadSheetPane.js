@@ -14,3 +14,13 @@ export function getSheetPane() {
   }
   return pane;
 }
+
+let webviewPane = null;
+/** The WebView-hosted viewer (native only; on web this resolves to an empty component). */
+export function getSheetWebViewPane() {
+  if (!webviewPane) {
+    // eslint-disable-next-line global-require
+    webviewPane = require('./SheetWebViewPane').default;
+  }
+  return webviewPane;
+}

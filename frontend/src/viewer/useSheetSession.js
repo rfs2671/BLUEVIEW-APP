@@ -84,14 +84,17 @@ export function useSheetSession({ enabled, projectId, fileId, cacheVersion, plat
         setSession({ state: 'legacy', controller: null, offline: false, reason: manifest ? manifest.status : 'unavailable', error });
         return;
       }
-      const controller = createSheetController({
+      // 'webview': the viewer lives in a WebView page and owns its own controller, so there is
+      // nothing to create here; the manifest is what the page is given.
+      const inPage = typeof platform.mode === 'function' && platform.mode() === 'webview';
+      const controller = inPage ? null : createSheetController({
         api, projectId, fileId, manifest, decode: platform.decode, dispose: platform.dispose,
         disk: platform.disk, dpr: platform.dpr(), maxBytes: platform.maxBytes,
       });
       ctlRef.current = controller;
       // keep the offline store inside its quota; never blocks opening the drawing
       if (platform.disk && platform.disk.sweep) Promise.resolve(platform.disk.sweep({ activeFileId: fileId })).catch(() => {});
-      setSession({ state: 'tiled', controller, offline, manifest });
+      setSession({ state: 'tiled', controller, offline, manifest, mode: inPage ? 'webview' : 'native' });
       // Opened on the first pass ("ready"): keep asking until the deep levels are done, so
       // zoom past level 2 works in this same session without reopening the drawing.
       if (manifest.status === 'ready' && !offline) {
@@ -103,7 +106,8 @@ export function useSheetSession({ enabled, projectId, fileId, cacheVersion, plat
             const m = await api.manifest(projectId, fileId);
             if (cancelled) return;
             if (m && m.build === manifest.build && manifestUsable(m)) {
-              controller.refreshManifest(m);
+              if (controller) controller.refreshManifest(m);
+              else setSession((prev) => (prev.state === 'tiled' ? { ...prev, manifest: m } : prev));
               if (m.status === 'complete') return;
             } else if (m && m.status === 'failed') return;
           } catch (_e) { /* try again next time */ }

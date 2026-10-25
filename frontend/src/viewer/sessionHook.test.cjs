@@ -81,6 +81,19 @@ const mf = (status, maxZ) => ({ status, build: 'B1', tile: 512, pages: [{ page: 
   ok(timers.length === 0, 'and it stops asking');
   m.unmount();
 
+  console.log('webview mode');
+  {
+    calls = 0; manifests.length = 0; manifests.push(mf('ready', 2), mf('ready', 2), mf('complete', 4));
+    const wvPlatform = { ...platform, mode: () => 'webview', decode: null };
+    const m3 = mount(() => S.useSheetSession({ enabled: true, projectId: 'p', fileId: 'f', cacheVersion: 1, platform: wvPlatform, api }));
+    m3.render(); m3.render(); await settle(); let w = m3.render();
+    ok(w.state === 'tiled' && w.mode === 'webview' && w.controller === null, 'the page owns the viewer: no controller is built in the app');
+    ok(w.manifest.pages[0].levels.length === 3, 'the page is given the first-pass manifest');
+    await fire(); await fire(); w = m3.render();
+    ok(w.manifest.status === 'complete' && w.manifest.pages[0].levels.length === 5, 'the finished manifest reaches the app so it can pass it to the page');
+    m3.unmount();
+  }
+
   console.log('cleanup');
   calls = 0; manifests.length = 0; manifests.push(mf('ready', 2));
   const m2 = mount(() => S.useSheetSession({ enabled: true, projectId: 'p', fileId: 'f', cacheVersion: 1, platform, api }));

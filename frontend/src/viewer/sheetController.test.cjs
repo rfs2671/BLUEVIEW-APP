@@ -66,9 +66,12 @@ function harness(over = {}) {
     ok(log.previews.length >= 1 && log.previews.includes(1), 'the page preview is fetched');
     ok(log.indexes.includes(1), 'the visible page index is fetched in the background');
     const f = c.frame();
-    ok(f.previews.length >= 1 && f.tiles.length === log.tiles.length, 'frame has the preview and every level 0 tile');
+    ok(f.tiles.length === log.tiles.length && f.complete === true && f.previews.length === 0, 'with every level 0 tile in, the frame is complete and the preview underneath is not painted');
     ok(changes > 0, 'listeners hear about arrivals');
     ok(!c.loading, 'nothing left loading');
+    c.zoomAt(8, 500, 350);
+    const g = c.frame();
+    ok(g.complete === false && g.previews.length >= 1, 'while deeper tiles are still on their way the preview stays underneath');
     c.destroy();
   }
   console.log('zoom, fallbacks');
@@ -228,6 +231,48 @@ function harness(over = {}) {
     ok(c.refreshManifest({ ...manifest, build: 'OTHER' }) === false, 'a manifest of another build is ignored');
     ok(Math.abs(c.camera.zoom - camBefore.zoom) < 1e-9, 'the camera is not moved by a refresh');
     c.destroy();
+  }
+  console.log('keepPortalFramed does not recurse');
+  {
+    const PF = load(path.join(__dirname, 'portalFrame.js'));
+    const { c } = harness();
+    c.setViewport(300, 200); await settle();
+    let frames = 0; const orig = c.frameBox.bind(c);
+    c.frameBox = (...a) => { frames += 1; if (frames > 50) throw new Error('runaway'); return orig(...a); };
+    const off = PF.keepPortalFramed(c, { page: 2, box: [0.4, 0.4, 0.7, 0.7] });
+    ok(frames === 1, 'framed once when attached');
+    c.setViewport(520, 380);
+    ok(frames === 2, `a resize frames once more, not hundreds of times (${frames})`);
+    c.setViewport(520, 380); c.panBy(5, 5);
+    ok(frames === 2, 'moving the camera does not reframe');
+    off(); c.setViewport(300, 200);
+    ok(frames === 2, 'detached: nothing more');
+    c.destroy();
+  }
+  console.log('coarse first');
+  {
+    const { c, log } = harness();
+    c.setViewport(1000, 700); await settle();
+    log.tiles.length = 0;
+    c.zoomAt(8, 500, 350);
+    await settle();
+    const zs = log.tiles.map((k) => Number(k.split('/')[1]));
+    const firstExact = zs.findIndex((z) => z >= 3);
+    ok(zs.length > 0 && firstExact > 0, 'the coarser tiles that cover the screen are asked for before the sharp ones');
+    ok(zs.slice(0, firstExact).every((z, i, a) => i === 0 || z >= a[i - 1]), 'and coarsest first');
+    ok(new Set(log.tiles).size === log.tiles.length, 'no tile is requested twice');
+    const f = c.frame();
+    ok(f.tiles.some((t) => t.z >= 3) && c.stats().ready > 0, 'the sharp tiles still arrive');
+    c.destroy();
+    const h2 = harness({ api: { tile: async (p, f2, b, d, signal) => { await new Promise((r) => setTimeout(r, d.z >= 3 ? 40 : 1)); return new Uint8Array([d.z]); } } });
+    h2.c.setViewport(1000, 700); await settle();
+    h2.c.zoomAt(8, 500, 350);
+    await new Promise((r) => setTimeout(r, 15));
+    const early = h2.c.frame();
+    ok(early.tiles.length > 0 && early.tiles.every((t) => t.z < 3), 'while the sharp tiles are in flight the screen already shows the coarser ones, not an empty page');
+    await new Promise((r) => setTimeout(r, 400));
+    ok(h2.c.frame().tiles.some((t) => t.z >= 3), 'then refines');
+    h2.c.destroy();
   }
   console.log('destroy');
   {
