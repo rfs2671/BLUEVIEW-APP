@@ -654,6 +654,21 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                 // (some Android builds re-mount the native view otherwise).
                 androidLayerType: 'hardware',
                 onError: () => setError(true),
+                // ── A WEBVIEW THAT RUNS OUT OF MEMORY MUST NOT TAKE THE APP WITH IT ──────
+                //
+                // A dense CAD sheet in pdf.js can exhaust the WebView's renderer. On Android,
+                // when that process dies and nothing handles `onRenderProcessGone`, react-native-webview
+                // lets the crash through and the whole app closes the moment the document opens.
+                // Handling it turns that into this viewer's own error state (with Try Again). iOS has
+                // the same event under another name: its web content process is terminated.
+                onRenderProcessGone: () => {
+                  setErrorHint('This drawing is too large to display here. Try the tile viewer, or open it on a computer.');
+                  setError(true);
+                },
+                onContentProcessDidTerminate: () => {
+                  setErrorHint('This drawing is too large to display here. Try the tile viewer, or open it on a computer.');
+                  setError(true);
+                },
                 // The staged viewer reports its own failures (blocked XHR, a
                 // corrupt file) — surface them instead of leaving a dark page.
                 onMessage: (e) => {
