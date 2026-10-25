@@ -46,6 +46,9 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 BACKEND = os.path.dirname(HERE)
 sys.path.insert(0, BACKEND)
+sys.path.insert(0, HERE)
+
+from probe_helpers import counted, require_fields  # noqa: E402  (no app imports)
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -82,6 +85,7 @@ def lock_writes() -> int:
     def refuse(name):
         def _r(self, *a, **k):
             raise ReadOnlyViolation(f"read-only report: {name} on {self.full_name} refused")
+        _r.__readonly_refuser__ = True
         return _r
     n = 0
     for w in _WRITES:
@@ -116,12 +120,15 @@ def main(out_dir: str) -> int:
                  "DOB_REPORT_DB. Nothing was read.")
     n = lock_writes()
     from pymongo import MongoClient
-    db = MongoClient(url, serverSelectionTimeoutMS=15000, tz_aware=True)[name]
-    try:
-        db["dob_wrong_facts_guard_check"].insert_one({"_id": "x"})
-        sys.exit("GUARD FAILED: a write was not refused. Nothing was read.")
-    except ReadOnlyViolation as e:
-        print(f"read-only guard: {n} write methods refused (checked: {e})")
+    from pymongo.collection import Collection
+    # Checked BEFORE anything is read: every write method IS the refuser (the
+    # guard test makes the real write calls; this script makes none).
+    unlocked = [w for w in _WRITES if hasattr(Collection, w)
+                and not getattr(getattr(Collection, w), "__readonly_refuser__", False)]
+    if unlocked:
+        sys.exit(f"GUARD FAILED: {unlocked} not refused. Nothing was read.")
+    print(f"read-only guard: {n} write methods refused")
+    db = MongoClient(url, serverSelectionTimeoutMS=15000, tz_aware=True).get_database(name)
     print(f"database: {name} on {urllib.parse.urlparse(url).hostname}  (credentials not printed)")
 
     from dob_complaint_codes import get_category_label
@@ -135,10 +142,13 @@ def main(out_dir: str) -> int:
             {"sent_at": 1, "recipient": 1, "status": 1, "trigger_type": 1}))
         wa = list(db.whatsapp_notification_ledger.find(
             {"_id": {"$regex": f"^gc:{pid}:[^:]+:{raw}"}}, {"status": 1, "created_at": 1, "kind": 1}))
+        if emails:
+            require_fields(emails, "status", "recipient")       # probe_helpers: no confident zero
+        sent = [e for e in emails if e.get("status") == "sent"]
         return {
             "emails": "; ".join(f"{(e.get('sent_at') or '')!s:.10} {e.get('status')}" for e in emails),
-            "email_count": sum(1 for e in emails if e.get("status") == "sent"),
-            "email_recipients": len({e.get("recipient") for e in emails if e.get("status") == "sent"}),
+            "email_count": counted(emails, "status", lambda v: v == "sent") if emails else 0,
+            "email_recipients": len({e.get("recipient") for e in sent}),
             "feed": (f"live since {str(row.get('detected_at') or '')[:10]}"
                      if not row.get("is_deleted") else "deleted"),
             "whatsapp": ("; ".join(f"{w.get('kind')} {w.get('status')} {str(w.get('created_at') or '')[:10]}"
@@ -208,8 +218,8 @@ def main(out_dir: str) -> int:
             ("WRONG ECB PENALTIES", penalty_rows,
              ("company", "project", "record", "shown_penalty", "dob_penalty_imposed", "hearing_status",
               "email_count", "emails", "feed", "whatsapp", "briefs_sent_to_company"))):
-        print(f"\n=== {title}: {len(rows)} record(s) "
-              f"({sum(1 for r in rows if r['test_company'])} in test companies) ===")
+        tests = counted(rows, "test_company", bool) if rows else 0
+        print(f"\n=== {title}: {len(rows)} record(s) ({tests} in test companies) ===")
         for r in sorted(rows, key=lambda x: (x["test_company"], str(x["company"]), str(x["project"]))):
             print("  " + " | ".join(f"{c}={r.get(c)}" for c in cols))
     print(f"\nread at {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC; wrote {os.path.abspath(out_dir)}")
