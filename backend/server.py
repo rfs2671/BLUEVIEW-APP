@@ -73,6 +73,7 @@ from lib.report import view as report_view
 # WhatsApp tenant boundary + webhook authentication. The rules are in the
 # module; server.py only supplies the database reads they need.
 from lib import wa_security  # noqa: E402
+from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
@@ -29120,6 +29121,11 @@ async def upload_project_file(project_id: str, request: Request, file: UploadFil
         except Exception as q_err:
             # The upload has succeeded; a queue write must not fail it.
             logger.error(f"plan index enqueue failed for {filename}: {q_err!r}")
+    if filename.lower().endswith(".pdf"):
+        try:
+            await _enqueue_sheet_tiles(project_id, company_id, file_record, source="upload")
+        except Exception as q_err:
+            logger.error(f"sheet tiles enqueue failed for {filename}: {q_err!r}")
 
     proxy_url = f"/api/projects/{project_id}/files/{file_record['_id']}/content"
     await _log_upload_attempt({
@@ -29889,6 +29895,60 @@ async def download_signed_file(file_id: str, request: Request,
                              media_type=content_type, headers=headers)
 
 
+#: Which architectural TRACK a drawing set belongs to (operator ruling
+#: 2026-10-24). On 588 Boyland the filed AR set governs; the Owner's set
+#: (6/9/26) is a separate track - the owner's post-CO additions, off the DOB
+#: record - not a revision of it, though the index treats it as one and reads
+#: floors 2 to the mezzanine from it. The glyph pass copies the track onto
+#: every row it places against the file, and the render names it: "per the
+#: owner's post-CO set". A file with no track set is the filed track.
+DRAWING_TRACKS = ("filed", "post_co")
+
+
+class DrawingTrackUpdate(BaseModel):
+    track: str
+    label: Optional[str] = None     # how an answer names it; a default is made
+
+
+@api_router.put("/projects/{project_id}/files/{file_id}/drawing-track",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def set_file_drawing_track(project_id: str, file_id: str, body: DrawingTrackUpdate,
+                                 admin=Depends(get_admin_user)):
+    """Set the drawing track of one project file (company admin), audited.
+
+    THE TRACK IS A FACT ABOUT THE SET, NOT ABOUT A PAGE, and only a person
+    who knows the job can state it: nothing printed on the Owner's set says
+    "post-CO". So it is set here, once per file, by an admin of the file's
+    company, and every change writes an audit row with the old and new value.
+    It takes effect on the next glyph pass (rebuild)."""
+    track = str(body.track or "").strip().lower()
+    if track not in DRAWING_TRACKS:
+        raise HTTPException(status_code=422,
+                            detail=f"track must be one of {list(DRAWING_TRACKS)}")
+    label = re.sub(r"\s+", " ", str(body.label or "")).strip()[:120] or None
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one({"_id": rec_oid, "project_id": project_id,
+                                           "is_deleted": {"$ne": True}})
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    _same_company_or_403(rec, admin)
+    if track == "post_co" and not label:
+        label = f"the owner's post-CO set ({rec.get('name') or 'unnamed file'})"
+    before = {"track": rec.get("drawing_track") or "filed",
+              "label": rec.get("drawing_track_label")}
+    await db.project_files.update_one(
+        {"_id": rec_oid},
+        {"$set": {"drawing_track": track, "drawing_track_label": label,
+                  "drawing_track_set_at": datetime.now(timezone.utc)}})
+    await audit_log("project_file_drawing_track", actor_id(admin), "project_file", file_id,
+                    {"project_id": project_id, "file_name": rec.get("name"),
+                     "from": before, "to": {"track": track, "label": label}})
+    return {"file_id": file_id, "track": track, "label": label, "previous": before}
+
+
 @api_router.delete("/projects/{project_id}/files/{file_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def delete_project_file(project_id: str, file_id: str, current_user = Depends(get_current_user)):
     """Hard-delete a project file: removes from R2 and Mongo. Admin/owner only.
@@ -30009,6 +30069,13 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
     pages_deleted += await _r2_delete_prefix(
         _r2_client, R2_BUCKET_NAME, f"plans/{project_id}/{file_id}/",
     )
+
+    try:
+        _SHEET_DECISIONS.forget_file(str(file_id))
+        pages_deleted += await sheet_pipeline.purge(db, _sheet_delete_keys, str(file_id))
+        await db[sheet_pipeline.JOBS].delete_one({"_id": str(file_id)})
+    except Exception as e:
+        logger.error(f"[file-delete] sheet tiles of file_id={file_id} not fully removed: {e!r}")
 
     delete_result = await db.project_files.delete_one({"_id": rec_oid})
 
@@ -62658,9 +62725,86 @@ _GLYPH_PASS_RUNNING: set = set()
 _DOOR_SCHEDULE_TEXT = re.compile(r"DOOR\s+SCHEDULE", re.I)
 
 
+def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
+                       live: set) -> List[Tuple[str, List[dict]]]:
+    """[(drawing track, its current index rows)], the filed track first.
+
+    NEWEST PAGE PER TRACK; SUPERSESSION ONLY WITHIN A TRACK (ruling
+    2026-10-24). The index supersedes across every set by date, so on 588
+    Boyland the Owner's set (6/9/26, the owner's post-CO additions) hid the
+    filed AR set's A-101 to A-104 - and the pass placed floors 2 to the
+    mezzanine against the post-CO set only. Here each track's pages are
+    superseded among themselves (_supersession_winners, the index's own
+    rule), so the filed track keeps its own plans.
+
+    A mechanical sheet belongs to no track - the filed track holds it. A
+    non-filed track is its own architectural plans and the filed track's
+    mechanical plans they pair with (plan_derive.PLAN_SHEET, by number), so
+    each mechanical symbol is placed once per track that has a plan for its
+    floor, and a floor the track does not redraw is not run twice."""
+    from lib import plan_derive as _derive
+
+    track_of = {fid: (f.get("drawing_track") or "filed") for fid, f in files.items()}
+    by_track: Dict[str, List[dict]] = {}
+    for p in raw:
+        fid = str(p.get("file_id"))
+        if fid in live:
+            by_track.setdefault(track_of.get(fid, "filed"), []).append(p)
+    current: Dict[str, List[dict]] = {}
+    for t, rows in by_track.items():
+        fids = {str(r.get("file_id")) for r in rows}
+        losers = _supersession_winners(
+            rows, [dict(files[f], _id=f) for f in fids if f in files])
+        current[t] = [r for r in rows if r["_id"] not in losers]
+
+    def plan(p, letter):
+        m = _derive.PLAN_SHEET.match(str(p.get("sheet_number") or "").strip().upper())
+        return m.group(2) if m and m.group(1) == letter else None
+
+    out = [("filed", current.get("filed", []))]
+    for t in sorted(k for k in current if k != "filed"):
+        seqs = {plan(p, "A") for p in current[t]} - {None}
+        mech = [p for p in current.get("filed", []) if plan(p, "M") in seqs]
+        out.append((t, current[t] + mech))
+    return out
+
+
+async def _glyph_pages(pid: str) -> Tuple[List[Tuple[str, List[dict]]], Dict[str, dict]]:
+    """Each track's current index rows (_glyph_track_pages), and the files."""
+    live = set(await _live_plan_file_ids(pid) or [])
+    raw = await db.document_page_index.find(
+        {"project_id": pid},
+        {"file_id": 1, "file_hash": 1, "file_name": 1, "page_number": 1,
+         "sheet_number": 1, "sheet_title": 1, "discipline": 1,
+         "company_id": 1, "superseded_by": 1, "raw_text": 1,
+         "revision_date": 1, "sheet_position": 1},
+    ).to_list(5000)
+    files = {str(f["_id"]): f for f in await db.project_files.find(
+        {"project_id": pid, "is_deleted": {"$ne": True}},
+        {"r2_key": 1, "name": 1, "created_at": 1, "drawing_track": 1,
+         "drawing_track_label": 1}).to_list(2000)}
+    return _glyph_track_pages(raw, files, live), files
+
+
+async def _glyph_page_ids(pid: str) -> List[str]:
+    """The glyph census's scope: the index's current pages, and every page
+    some track's pass reads (the filed track's plans are superseded in the
+    index by the Owner's set). A blocking refusal cites a mechanical sheet,
+    which the index keeps current, so a failed track read narrows the scope
+    the fetch and the count share - it is logged, not raised."""
+    ids = set(await _current_record_page_ids(pid))
+    try:
+        tracks, _files = await _glyph_pages(pid)
+        ids |= {str(p["_id"]) for _t, ps in tracks for p in ps}
+    except Exception as e:
+        logger.warning("glyph track pages unavailable for %s: %r", pid, e)
+    return sorted(ids)
+
+
 async def _plan_glyph_pass(project_id: str) -> dict:
     """Run the equipment-placement pass over the project's current sheets
-    and write its rows (lib.plan_glyph_pass, lib.plan_emit).
+    and write its rows (lib.plan_glyph_pass, lib.plan_emit) - once per
+    drawing track (_glyph_track_pages), each mechanical sheet swept once.
 
     NOT CALLED BY THE INDEXER. It runs when an operator starts it
     (POST .../plan-glyphs/run): its rows change what the count-answer gate
@@ -62670,31 +62814,34 @@ async def _plan_glyph_pass(project_id: str) -> dict:
     from lib.plan_page import PlanPage
 
     pid = str(project_id)
-    live = set(await _live_plan_file_ids(pid) or [])
-    raw = await db.document_page_index.find(
-        {"project_id": pid},
-        {"file_id": 1, "file_hash": 1, "file_name": 1, "page_number": 1,
-         "sheet_number": 1, "sheet_title": 1, "discipline": 1,
-         "company_id": 1, "superseded_by": 1, "raw_text": 1},
-    ).to_list(5000)
-    pages, door_pages = [], []
-    for p in raw:
-        if p.get("file_id") not in live or p.get("superseded_by") in live:
-            continue
-        row = {"project_id": pid, "company_id": p.get("company_id"),
-               "file_id": p.get("file_id"), "file_hash": p.get("file_hash"),
-               "file_name": p.get("file_name"), "page_id": str(p["_id"]),
-               "page_number": p.get("page_number"),
-               "sheet_number": p.get("sheet_number"),
-               "sheet_title": p.get("sheet_title"),
-               "discipline": p.get("discipline")}
-        pages.append(row)
-        if _DOOR_SCHEDULE_TEXT.search(p.get("raw_text") or ""):
-            door_pages.append(row)
-    current_ids = [r["page_id"] for r in pages]
+    tracks, files = await _glyph_pages(pid)
+    by_track: List[Tuple[str, List[dict]]] = []
+    door_pages, seen_doors, current_ids = [], set(), set()
+    for track, rows_ in tracks:
+        pages = []
+        for p in rows_:
+            row = {"project_id": pid, "company_id": p.get("company_id"),
+                   "file_id": p.get("file_id"), "file_hash": p.get("file_hash"),
+                   "file_name": p.get("file_name"), "page_id": str(p["_id"]),
+                   "page_number": p.get("page_number"),
+                   "sheet_number": p.get("sheet_number"),
+                   "sheet_title": p.get("sheet_title"),
+                   "discipline": p.get("discipline")}
+            # THE FILE'S TRACK, ON EVERY PAGE (DRAWING_TRACKS): the rows placed
+            # against this page carry it, and the render names a post-CO set
+            frec = files.get(str(p.get("file_id"))) or {}
+            row["drawing_track"] = frec.get("drawing_track") or "filed"
+            row["drawing_track_label"] = frec.get("drawing_track_label")
+            pages.append(row)
+            current_ids.add(row["page_id"])
+            if (_DOOR_SCHEDULE_TEXT.search(p.get("raw_text") or "")
+                    and row["page_id"] not in seen_doors):
+                seen_doors.add(row["page_id"])
+                door_pages.append(row)
+        by_track.append((track, pages))
     sched = await db[PLAN_RECORDS].find(
         {"project_id": pid, "record_type": "schedule",
-         "page_id": {"$in": current_ids}, "sheet_number": {"$regex": "^M-"}},
+         "page_id": {"$in": sorted(current_ids)}, "sheet_number": {"$regex": "^M-"}},
         {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
          "payload.rows": 1},
     ).to_list(2000)
@@ -62704,9 +62851,6 @@ async def _plan_glyph_pass(project_id: str) -> dict:
                   "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
                  for s in sched]
 
-    files = {str(f["_id"]): f for f in await db.project_files.find(
-        {"project_id": pid, "is_deleted": {"$ne": True}},
-        {"r2_key": 1, "name": 1}).to_list(2000)}
     import tempfile as _tf
     with _tf.TemporaryDirectory(prefix="glyphpass-") as tmp:
         paths: Dict[str, str] = {}
@@ -62724,12 +62868,21 @@ async def _plan_glyph_pass(project_id: str) -> dict:
                 paths[fid] = path
             return PlanPage(paths[fid], int(page["page_number"]))
 
-        out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
-                                      door_pages)
-    written = await _write_glyph_records(pid, out["rows"])
-    out["summary"]["written"] = written
-    logger.info("plan glyph pass %s: %s", pid, out["summary"])
-    return out["summary"]
+        sweeps: Dict[Any, Any] = {}
+        rows: List[dict] = []
+        summary: Dict[str, Any] = {"tracks": {}}
+        for track, pages in by_track:
+            out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
+                                          door_pages, track=track, sweeps=sweeps)
+            rows += out["rows"]
+            summary["tracks"][track] = out["summary"]
+    # one numbering across the tracks: a row is (page_id, ordinal), and every
+    # track's rows of a mechanical sheet cite that sheet's page
+    for i, r in enumerate(rows):
+        r["ordinal"] = i
+    summary["written"] = await _write_glyph_records(pid, rows)
+    logger.info("plan glyph pass %s: %s", pid, summary)
+    return summary
 
 
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
@@ -64158,6 +64311,238 @@ async def _plan_index_worker() -> None:
             await asyncio.sleep(PLAN_INDEX_IDLE_SECONDS)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# SHEET TILES: the deep-zoom viewer's backend (lib/sheet_pipeline.py)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# A PDF is compiled once into a WebP tile pyramid and a per-page word/callout
+# index; the viewer then draws tiles and never parses a PDF. Nothing here touches
+# the plan-index pipeline: it has its own queue (`sheet_tile_jobs`) and worker.
+#
+# AUTH IS THE HEADER AND ONLY THE HEADER. These routes are for the viewer's
+# assets, which it fetches with `Authorization: Bearer`; a JWT in a URL ends up
+# in logs, history and referers. `get_current_user_header_only` refuses a
+# request that carries only `?token=`.
+
+SHEET_TILES_OFF = os.environ.get("SHEET_TILES_OFF", "").strip().lower() in ("1", "true", "yes")
+SHEET_TILE_IDLE_SECONDS = 5
+_SHEET_TILE_WORKER_TASK = None
+
+
+async def get_current_user_header_only(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    response: Response = None,
+):
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return await get_current_user(request, credentials, None, response)
+
+
+async def _sheet_put_object(key: str, data: bytes, content_type: str, content_encoding: Optional[str]) -> None:
+    if not _r2_client or not R2_BUCKET_NAME:
+        raise RuntimeError("R2 is not configured")
+    kwargs = {"Bucket": R2_BUCKET_NAME, "Key": key, "Body": data, "ContentType": content_type}
+    if content_encoding:
+        kwargs["ContentEncoding"] = content_encoding
+    await asyncio.to_thread(_r2_client.put_object, **kwargs)
+
+
+async def _sheet_fetch_pdf(file_rec: dict, dest: str) -> None:
+    """Download the source PDF to `dest` on disk (never held whole in memory)."""
+    if not _r2_client or not R2_BUCKET_NAME:
+        raise RuntimeError("R2 is not configured")
+    await asyncio.to_thread(_r2_client.download_file, R2_BUCKET_NAME, file_rec["r2_key"], dest)
+
+
+async def _sheet_fetch_object(key: str) -> Optional[bytes]:
+    data, _why = await asyncio.to_thread(_r2_fetch, key)
+    return data
+
+
+async def _sheet_delete_keys(keys: list) -> int:
+    return await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, keys)
+
+
+def _sheet_ctx() -> "sheet_pipeline.Ctx":
+    return sheet_pipeline.Ctx(db=db, put_object=_sheet_put_object, fetch_pdf=_sheet_fetch_pdf,
+                              delete_keys=_sheet_delete_keys, logger=logger)
+
+
+async def _enqueue_sheet_tiles(project_id: str, company_id: str, file_record: dict, *,
+                               source: str, force: bool = False) -> str:
+    if SHEET_TILES_OFF or not _r2_client:
+        return "off"
+    return await sheet_pipeline.enqueue(db, project_id, company_id, file_record, source=source,
+                                        to_query_id=to_query_id, skip=is_generated_report, force=force)
+
+
+async def _sheet_tile_worker() -> None:
+    import socket as _socket
+    import uuid as _uuid
+    worker = f"{_socket.gethostname()}:{os.getpid()}:{_uuid.uuid4().hex[:6]}"
+    logger.warning(f"Sheet tile worker started ({worker})")
+    while True:
+        try:
+            if SHEET_TILES_OFF or not _r2_client:
+                await asyncio.sleep(60)
+                continue
+            job = await sheet_pipeline.claim(db, worker)
+            if not job:
+                await asyncio.sleep(SHEET_TILE_IDLE_SECONDS)
+                continue
+            logger.info(f"Sheet tiles: claimed {job.get('file_name')} (attempt {job.get('attempts')})")
+            status = await sheet_pipeline.run_job(_sheet_ctx(), job, worker, to_query_id)
+            logger.info(f"Sheet tiles: {job.get('file_name')} -> {status}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Sheet tile worker error: {e!r}")
+            await asyncio.sleep(SHEET_TILE_IDLE_SECONDS)
+
+
+async def _sheet_tiles_sweep_job() -> None:
+    """Queue PDFs that have no tiles (uploaded before this existed, or whose
+    enqueue was lost). A few per run, so a backlog drains instead of flooding."""
+    if SHEET_TILES_OFF or not _r2_client:
+        return
+    try:
+        rows = await sheet_pipeline.files_needing_tiles(db, limit=40, skip=is_generated_report, to_query_id=to_query_id)
+        for r in rows:
+            await _enqueue_sheet_tiles(str(r["project_id"]), str(r.get("company_id") or ""), r, source="sweep")
+    except Exception as e:
+        logger.error(f"[sheet-tiles] sweep failed: {type(e).__name__}: {e}")
+
+
+_SHEET_DECISIONS = sheet_serve.DecisionCache()
+_SHEET_BYTES = sheet_serve.ByteLru()
+
+
+async def _sheet_file_or_403(project_id: str, file_id: str, current_user: dict, *, remember: bool = False) -> dict:
+    """The same gate as `stream_project_file`, with the header-only user.
+
+    `remember=True` (tile and preview reads only) reuses a passing decision for a few
+    seconds per (user, project, file): a deep zoom is dozens of requests and each would
+    otherwise cost three database reads. Nothing that writes, and not the manifest or
+    the index, ever uses it."""
+    key = (str(current_user.get("id") or current_user.get("_id") or ""), project_id, file_id)
+    if remember and key[0]:
+        hit = _SHEET_DECISIONS.get(key)
+        if hit is not None:
+            return hit
+    rec = await _sheet_file_checked(project_id, file_id, current_user)
+    if remember and key[0]:
+        _SHEET_DECISIONS.put(key, rec)
+    return rec
+
+
+async def _sheet_file_checked(project_id: str, file_id: str, current_user: dict) -> dict:
+    await _assert_project_access(project_id, current_user)
+    try:
+        rec = await db.project_files.find_one({"_id": ObjectId(file_id), "project_id": project_id})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    if not rec or rec.get("is_deleted"):
+        raise HTTPException(status_code=404, detail="File not found")
+    _same_company_or_403(rec, current_user)
+    if _is_site_device(current_user):
+        _project = await db.projects.find_one({"_id": to_query_id(project_id)})
+        if not _site_device_may_retrieve(_project or {}, current_user, rec.get("dropbox_path") or ""):
+            raise HTTPException(status_code=403, detail="Access denied to this file")
+    return rec
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets")
+async def get_sheet_manifest(project_id: str, file_id: str, current_user=Depends(get_current_user_header_only)):
+    """The viewer's manifest. A PDF with no tiles yet is queued here (so opening
+    a drawing starts its compile) and answers status "queued"; the client keeps
+    the PDF viewer until the status is "ready"."""
+    rec = await _sheet_file_or_403(project_id, file_id, current_user)
+    if SHEET_TILES_OFF:
+        return {"status": "off", "pages": []}
+    if (rec.get("tiles") or {}).get("status") in (None, "failed") or \
+            (rec.get("tiles") or {}).get("build") != sheet_pipeline.build_id(rec):
+        outcome = await _enqueue_sheet_tiles(project_id, str(rec.get("company_id") or ""), rec, source="open")
+        if outcome in ("queued", "already"):
+            rec = await db.project_files.find_one({"_id": rec["_id"]}) or rec
+        elif outcome == "skipped":
+            return {"status": "skipped", "pages": [], "build": None}
+    return await sheet_pipeline.manifest_for(db, project_id, rec)
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets/{page}/index")
+async def get_sheet_index(project_id: str, file_id: str, page: int, b: str,
+                          current_user=Depends(get_current_user_header_only)):
+    rec = await _sheet_file_or_403(project_id, file_id, current_user)
+    if (rec.get("tiles") or {}).get("build") != b:
+        raise HTTPException(status_code=404, detail="Stale build")
+    index = await sheet_pipeline.index_for(db, _sheet_fetch_object, project_id, rec, page)
+    if index is None:
+        raise HTTPException(status_code=404, detail="No index for this page")
+    return JSONResponse(index, headers={"Cache-Control": "private, max-age=300"})
+
+
+async def _sheet_image(request: Request, project_id: str, file_id: str, page: int, b: str, key_fn, etag_parts,
+                       current_user) -> Response:
+    """Serve one immutable tile or preview.
+
+    NOT A PROXY ON EVERY REQUEST. The object is named by its build, so it never
+    changes: the client keeps it for a year (immutable) and revalidates with
+    If-None-Match, which is answered 304 here, after the access check and before R2 is
+    touched. A miss is served from a byte-bounded in-process LRU before R2 is asked.
+    (A redirect to a presigned R2 URL was considered and not used: it needs R2 CORS for
+    the web viewer and sends the app off our auth for the one request that matters.)"""
+    rec = await _sheet_file_or_403(project_id, file_id, current_user, remember=True)
+    tiles = rec.get("tiles") or {}
+    if tiles.get("build") != b or tiles.get("status") not in ("ready", "complete"):
+        raise HTTPException(status_code=404, detail="Stale build")
+    headers = {"Cache-Control": sheet_serve.IMMUTABLE}
+    etag = sheet_serve.etag_for(b, file_id, *etag_parts)
+    headers["ETag"] = etag
+    if sheet_serve.matches_etag(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    key = key_fn(project_id, file_id, b)
+    data = _SHEET_BYTES.get(key)
+    if data is None:
+        data = await _sheet_fetch_object(key)
+        if not data:
+            raise HTTPException(status_code=404, detail="No such tile")
+        _SHEET_BYTES.put(key, data)
+    return Response(content=data, media_type="image/webp", headers=headers)
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets/{page}/tiles/{z}/{x}/{y}")
+async def get_sheet_tile(request: Request, project_id: str, file_id: str, page: int, z: int, x: int, y: int, b: str,
+                         current_user=Depends(get_current_user_header_only)):
+    if not (0 <= z <= sheet_tiles.MAX_Z and x >= 0 and y >= 0 and page >= 1):
+        raise HTTPException(status_code=404, detail="No such tile")
+    return await _sheet_image(request, project_id, file_id, page, b,
+                              lambda p, f, bb: sheet_pipeline.tile_key(p, f, bb, page, z, x, y),
+                              (page, z, x, y), current_user)
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets/{page}/preview")
+async def get_sheet_preview(request: Request, project_id: str, file_id: str, page: int, b: str,
+                            current_user=Depends(get_current_user_header_only)):
+    if page < 1:
+        raise HTTPException(status_code=404, detail="No such page")
+    return await _sheet_image(request, project_id, file_id, page, b,
+                              lambda p, f, bb: sheet_pipeline.preview_key(p, f, bb, page),
+                              (page, "preview"), current_user)
+
+
+@api_router.post("/projects/{project_id}/files/{file_id}/sheets/compile")
+async def compile_sheet_tiles(project_id: str, file_id: str, force: bool = False,
+                              current_user=Depends(get_current_user_header_only)):
+    """Queue (or, with force, rebuild) a file's tiles. Owners and admins."""
+    if current_user.get("role") not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only company owners or admins can rebuild tiles")
+    await _assert_project_access(project_id, current_user)
+    rec = await _sheet_file_or_403(project_id, file_id, current_user)
+    outcome = await _enqueue_sheet_tiles(project_id, str(rec.get("company_id") or ""), rec, source="manual", force=force)
+    return {"outcome": outcome}
+
+
 async def _index_pdf_file(project_id: str, company_id: str, file_record: dict,
                           job: Optional[dict] = None) -> dict:
     """Download a PDF from R2 and index each page into document_page_index.
@@ -64450,59 +64835,18 @@ def _sheet_prefix(sheet_number: str) -> str:
     return sheet_number.split("-")[0] if "-" in sheet_number else ""
 
 
-async def _supersede_plan_pages(project_id: str) -> dict:
-    """One current row per sheet, within each discipline set.
-
-    ── THE DUPLICATES ────────────────────────────────────────────────────
-    #
-    # Page rows are keyed (file_id, page_number), and every re-upload of a
-    # drawing set mints a new file id. Two ways a page is someone else's copy:
-    #   same file_hash + page_number in another file — the identical PDF again
-    #   same sheet_number in another file of the SAME discipline set — a revision
-    # The losing row gets `superseded_by` = the winning file id.
-    #
-    # ── WHICH COPY WINS: THE DRAWING'S DATE, NOT THE UPLOAD'S ──────────────
-    #
-    # This used to be "the newest upload wins", and on 588 Boyland that hid
-    # the June 2026 owners set behind the March 2025 architectural set, because
-    # the March set had been re-synced most recently. Now, in order:
-    #   1. the date in the file name ('Owners set - 6.9.26.pdf')
-    #   2. the revision date read from the title block
-    #   3. upload time
-    # See _order for why the title-block date is the tie-break and not the
-    # lead: it is the date of a revision cloud, and the sheet that supersedes
-    # another frequently carries none.
-    #
-    # ── WITHIN A SET, AND NEVER FOR COVER / ENERGY / GENERAL SHEETS ────────
-    #
-    # A file's discipline is its most common sheet prefix. Sheet numbers are
-    # matched only between files of the same discipline: the structural set's
-    # T-001.00 cover was being hidden by the architectural set's, and MH's
-    # EN-001.00 by PL's. T-, EN- and GN- sheets are never superseded across
-    # files at all.
-    #
-    # NOTHING IS DELETED. Readers exclude a row only while the file that
-    # superseded it is still live, so deleting the newer file brings the older
-    # sheet straight back. A sheet that appears twice INSIDE one file is not a
-    # duplicate and both pages stay.
-    """
+def _supersession_winners(rows: List[dict], files: List[dict],
+                          project_id: str = "") -> Dict[Any, str]:
+    """{page row _id: the file id that supersedes it}, over `rows` and
+    `files` alone - the rule _supersede_plan_pages writes (see there).
+    Pure, so the glyph pass can apply it WITHIN ONE DRAWING TRACK
+    (_glyph_track_pages): the index supersedes across tracks by date.
+    `files` are project_files rows (_id, created_at, name)."""
     from collections import Counter as _Counter
     from datetime import date as _date
 
-    files = await db.project_files.find(
-        {"project_id": project_id, "is_deleted": {"$ne": True}},
-        {"_id": 1, "created_at": 1, "name": 1},
-    ).to_list(2000)
     uploaded = {str(f["_id"]): _file_upload_order(f) for f in files}
     name_date = {str(f["_id"]): _parse_sheet_date(f.get("name")) for f in files}
-    if not uploaded:
-        return {"superseded": 0}
-    rows = await db.document_page_index.find(
-        {"project_id": project_id, "file_id": {"$in": list(uploaded)}},
-        {"_id": 1, "file_id": 1, "file_hash": 1, "page_number": 1,
-         "sheet_number": 1, "superseded_by": 1, "revision_date": 1,
-         "sheet_position": 1},
-    ).to_list(20000)
 
     def _norm(sn):
         return re.sub(r"\s+", "", str(sn or "")).upper()
@@ -64605,14 +64949,72 @@ async def _supersede_plan_pages(project_id: str) -> dict:
             best = max(by_file, key=lambda f: _order(f, by_file[f]))
             winners[k] = (best, _order(best, by_file[best]))
 
-    by_winner: Dict[str, list] = {}
-    keep_ids = []
+    out: Dict[Any, str] = {}
     for r in rows:
         loser_to, loser_order = None, None
         for k in _keys(r):
             w = winners.get(k)
             if w and w[0] != r.get("file_id") and (loser_order is None or w[1] > loser_order):
                 loser_to, loser_order = w
+        if loser_to:
+            out[r["_id"]] = loser_to
+    return out
+
+
+async def _supersede_plan_pages(project_id: str) -> dict:
+    """One current row per sheet, within each discipline set.
+
+    ── THE DUPLICATES ────────────────────────────────────────────────────
+    #
+    # Page rows are keyed (file_id, page_number), and every re-upload of a
+    # drawing set mints a new file id. Two ways a page is someone else's copy:
+    #   same file_hash + page_number in another file — the identical PDF again
+    #   same sheet_number in another file of the SAME discipline set — a revision
+    # The losing row gets `superseded_by` = the winning file id.
+    #
+    # ── WHICH COPY WINS: THE DRAWING'S DATE, NOT THE UPLOAD'S ──────────────
+    #
+    # This used to be "the newest upload wins", and on 588 Boyland that hid
+    # the June 2026 owners set behind the March 2025 architectural set, because
+    # the March set had been re-synced most recently. Now, in order:
+    #   1. the date in the file name ('Owners set - 6.9.26.pdf')
+    #   2. the revision date read from the title block
+    #   3. upload time
+    # See _order for why the title-block date is the tie-break and not the
+    # lead: it is the date of a revision cloud, and the sheet that supersedes
+    # another frequently carries none.
+    #
+    # ── WITHIN A SET, AND NEVER FOR COVER / ENERGY / GENERAL SHEETS ────────
+    #
+    # A file's discipline is its most common sheet prefix. Sheet numbers are
+    # matched only between files of the same discipline: the structural set's
+    # T-001.00 cover was being hidden by the architectural set's, and MH's
+    # EN-001.00 by PL's. T-, EN- and GN- sheets are never superseded across
+    # files at all.
+    #
+    # NOTHING IS DELETED. Readers exclude a row only while the file that
+    # superseded it is still live, so deleting the newer file brings the older
+    # sheet straight back. A sheet that appears twice INSIDE one file is not a
+    # duplicate and both pages stay.
+    """
+    files = await db.project_files.find(
+        {"project_id": project_id, "is_deleted": {"$ne": True}},
+        {"_id": 1, "created_at": 1, "name": 1},
+    ).to_list(2000)
+    if not files:
+        return {"superseded": 0}
+    rows = await db.document_page_index.find(
+        {"project_id": project_id, "file_id": {"$in": [str(f["_id"]) for f in files]}},
+        {"_id": 1, "file_id": 1, "file_hash": 1, "page_number": 1,
+         "sheet_number": 1, "superseded_by": 1, "revision_date": 1,
+         "sheet_position": 1},
+    ).to_list(20000)
+
+    losers = _supersession_winners(rows, files, project_id)
+    by_winner: Dict[str, list] = {}
+    keep_ids = []
+    for r in rows:
+        loser_to = losers.get(r["_id"])
         if loser_to:
             if r.get("superseded_by") != loser_to:
                 by_winner.setdefault(loser_to, []).append(r["_id"])
@@ -65646,7 +66048,10 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
     the same way the pass derived them (plan_glyph_pass.families)."""
     from lib.plan_glyph_pass import families as _families
     pid = str(project_id)
-    page_ids = await _current_record_page_ids(pid)
+    # THE PAGES THE PASS READ, EVERY TRACK'S (_glyph_track_pages): the filed
+    # track's plans are superseded in the index by the Owner's set, and a
+    # refusal row citing one must still be counted.
+    page_ids = await _glyph_page_ids(pid)
     if not page_ids:
         return []
     sched = await db[PLAN_RECORDS].find(
@@ -65665,10 +66070,19 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
     if not want:
         return []
     proj = {"_id": 0, "embedding": 0}
-    checks = [(plan_search.glyph_family_filter(pid, page_ids, name, tags),
-               ("family", name, tags)) for name, tags in sorted(want.items())]
-    checks.append((plan_search.glyph_refusal_filter(pid, page_ids),
-                   ("refusals", None, [])))
+    # A CENSUS PER DRAWING TRACK (ruling 2026-10-24): each track's rows are
+    # checked against the database on their own. Rows written before
+    # EMIT_VERSION 7 carry no track: one census over all of them, as before.
+    tracks = sorted({(r.get("payload") or {}).get("track") for r in
+                     await db[PLAN_RECORDS].find(
+                         {"project_id": pid, "record_type": "glyph"},
+                         {"payload.track": 1}).to_list(GLYPH_EVIDENCE_MAX)} - {None}) or [None]
+    checks = []
+    for track in tracks:
+        checks += [(plan_search.glyph_family_filter(pid, page_ids, name, tags, track=track),
+                    ("family", name, tags, track)) for name, tags in sorted(want.items())]
+        checks.append((plan_search.glyph_refusal_filter(pid, page_ids, track=track),
+                       ("refusals", None, [], track)))
     # THE SCHEDULE'S QTY, per tag, from the same best-tier reading the
     # families come from - so a building total can be checked against what
     # the schedule prints (plan_search._qty_check).
@@ -65680,13 +66094,14 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
             best[nm] = s
     rows: List[dict] = []
     census: List[dict] = []
-    for flt, (kind, name, tags) in checks:
+    for flt, (kind, name, tags, track) in checks:
         rows += await db[PLAN_RECORDS].find(flt, proj).to_list(GLYPH_EVIDENCE_MAX)
         n = await db[PLAN_RECORDS].count_documents(flt)
         qty = (plan_search.schedule_quantities((best.get(name) or {}).get("payload"), tags)
                if kind == "family" else None)
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
-                                               family=name, tags=tags, qty=qty))
+                                               family=name, tags=tags, qty=qty,
+                                               track=track))
     return rows + census
 
 
@@ -80789,6 +81204,9 @@ async def startup_event():
     global _PLAN_INDEX_WORKER_TASK
     _PLAN_INDEX_WORKER_TASK = asyncio.create_task(_plan_index_worker())
 
+    global _SHEET_TILE_WORKER_TASK
+    _SHEET_TILE_WORKER_TASK = asyncio.create_task(_sheet_tile_worker())
+
     # ── EVERY UNIQUE BUILD GOES THROUGH THE RESILIENT HELPER ───────────────
     #
     # These five were BARE AWAITS in an @app.on_event("startup") handler. A
@@ -82648,6 +83066,17 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
+    # Queue drawings that have no tiles yet (40 per run). Queued at the lowest priority: a drawing someone
+    # opens, or a fresh upload, is compiled first.
+    scheduler.add_job(
+        _sheet_tiles_sweep_job,
+        IntervalTrigger(minutes=10),
+        id='sheet_tiles_sweep',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=6),
     )
     # One log line per group for last week: items, filter pass %, tokens, cost.
     scheduler.add_job(
