@@ -4,54 +4,60 @@
  * legacy viewer once a drawing's tiles are ready; their own top bar, note sheets
  * and thread views are unchanged.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { ChevronDown, ChevronUp, Maximize2, Minus, Plus, X } from 'lucide-react-native';
-import { getSheetPane } from './loadSheetPane';
+import { getSheetPane, getSheetWebViewPane } from './loadSheetPane';
+import { createWebViewHandle } from './webviewHandle';
 import CalloutPortal from './CalloutPortal';
 import { matchLabel, portalBox } from './sheetIndex';
 
 const SEARCH_DELAY_MS = 120;
 
 export default function SheetViewerPane({
-  controller, manifest, projectId, fileId, api, platform,
+  controller, webview = false, manifest, projectId, fileId, api, platform,
   annotations = [], markerColor, selectedId = null, pinModeActive = false,
-  onPlacePin, onSelectAnnotation, searchOpen = false, onCloseSearch, onOpenFile,
+  onPlacePin, onSelectAnnotation, searchOpen = false, onCloseSearch, onOpenFile, onFail,
 }) {
+  // `webview`: the viewer lives in a WebView page; `handle` is the app's side of it. Otherwise the
+  // controller is the viewer. Both answer the same calls (setPins, search, stepMatch, fit, ...).
+  const handle = useMemo(() => (webview ? createWebViewHandle() : null), [webview]);
+  const view = webview ? handle : controller;
   const [box, setBox] = useState(null);
   const [portal, setPortal] = useState(null);
   const [q, setQ] = useState('');
   const [, force] = useState(0);
   const timer = useRef(null);
 
-  // pins ride the controller's transform; legacy notes (no page) are page 1
+  // pins ride the view's transform; legacy notes (no page) are page 1
   const colorRef = useRef(markerColor);
   colorRef.current = markerColor;
   useEffect(() => {
-    if (!controller) return;
+    if (!view) return;
     const markerColor = colorRef.current;
-    controller.setPins((annotations || []).map((a) => {
+    view.setPins((annotations || []).map((a) => {
       const pos = a.position || {};
       const id = a._id || a.id;
       return { id, page: a.page_number || 1, x: Math.max(0, Math.min(1, pos.x || 0)), y: Math.max(0, Math.min(1, pos.y || 0)),
         color: markerColor ? markerColor(a) : undefined, selected: id === selectedId };
     }));
-  }, [controller, annotations, selectedId]);
+  }, [view, annotations, selectedId]);
 
   // The pane only needs to re-render for the search status label and the zoom buttons, not for every
   // frame of a pan or pinch (the canvas repaints itself): at most a few times a second.
   useEffect(() => {
-    if (!controller) return undefined;
+    if (!view) return undefined;
     let timer = null;
-    const off = controller.on('change', () => {
+    const off = view.on('change', () => {
       if (timer) return;
       timer = setTimeout(() => { timer = null; force((n) => (n + 1) % 1e6); }, 250);
     });
     return () => { off(); if (timer) clearTimeout(timer); };
-  }, [controller]);
+  }, [view]);
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
-  useEffect(() => { if (!searchOpen && controller) { controller.clearSearch(); setQ(''); } }, [searchOpen, controller]);
+  useEffect(() => { if (!searchOpen && view) { view.clearSearch(); setQ(''); } }, [searchOpen, view]);
 
+  const onTapRef = useRef(() => {});
   const onTap = useCallback((hit) => {
     if (!hit) return;
     if (hit.type === 'pin') {
@@ -65,43 +71,52 @@ export default function SheetViewerPane({
     }
   }, [annotations, pinModeActive, onPlacePin, onSelectAnnotation]);
 
+  onTapRef.current = onTap;
+  useEffect(() => { if (handle) handle.onTap((hit) => onTapRef.current(hit)); }, [handle]);
+
   const onChangeQuery = (text) => {
     setQ(text);
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => { controller.search(text); }, SEARCH_DELAY_MS);
+    timer.current = setTimeout(() => { view.search(text); }, SEARCH_DELAY_MS);
   };
 
   const openSheet = useCallback((p) => {
     setPortal(null);
-    if (!p.file_id || String(p.file_id) === String(fileId)) controller.goToPage(p.page);
+    if (!p.file_id || String(p.file_id) === String(fileId)) view.goToPage(p.page);
     else if (onOpenFile) onOpenFile(p.file_id, p.page);
-  }, [controller, fileId, onOpenFile]);
+  }, [view, fileId, onOpenFile]);
 
-  if (!controller) return null;
-  const SheetPane = getSheetPane();
-  const st = controller.searchState;
-  const prog = controller.indexProgress;
+  if (!view) return null;
+  const SheetPane = webview ? null : getSheetPane();
+  const WebPane = webview ? getSheetWebViewPane() : null;
+  const st = view.searchState;
+  const total = st.total != null ? st.total : st.matches.length;
+  const prog = view.indexProgress;
   const status = searchOpen && q.trim()
-    ? (prog.loaded + prog.failed < prog.total && !st.matches.length ? 'Searching…' : matchLabel(st.matches.length, st.current, q))
+    ? (prog.loaded + prog.failed < prog.total && !total ? 'Searching…' : matchLabel(total, st.current, q))
     : '';
 
   return (
     <View style={styles.fill} onLayout={(e) => setBox(e.nativeEvent.layout)}>
-      <SheetPane controller={controller} onTap={onTap} testID="sheet-pane" />
+      {webview ? (
+        <WebPane handle={handle} projectId={projectId} fileId={fileId} manifest={manifest} onFatal={onFail} />
+      ) : (
+        <SheetPane controller={controller} onTap={onTap} testID="sheet-pane" />
+      )}
 
       {searchOpen ? (
         <View style={styles.searchBar}>
           <TextInput
-            value={q} onChangeText={onChangeQuery} onSubmitEditing={() => controller.stepMatch(1)}
+            value={q} onChangeText={onChangeQuery} onSubmitEditing={() => view.stepMatch(1)}
             placeholder="Search this drawing" placeholderTextColor="#64748b" autoFocus autoCapitalize="none" autoCorrect={false}
             returnKeyType="search" blurOnSubmit={false} accessibilityLabel="Search this drawing" style={styles.searchInput}
           />
           <Text style={styles.count} numberOfLines={1}>{status}</Text>
-          <Pressable onPress={() => controller.stepMatch(-1)} disabled={!st.matches.length} hitSlop={6} accessibilityRole="button" accessibilityLabel="Previous match" style={styles.sBtn}>
-            <ChevronUp size={20} strokeWidth={1.5} color={st.matches.length ? '#fff' : '#475569'} />
+          <Pressable onPress={() => view.stepMatch(-1)} disabled={!total} hitSlop={6} accessibilityRole="button" accessibilityLabel="Previous match" style={styles.sBtn}>
+            <ChevronUp size={20} strokeWidth={1.5} color={total ? '#fff' : '#475569'} />
           </Pressable>
-          <Pressable onPress={() => controller.stepMatch(1)} disabled={!st.matches.length} hitSlop={6} accessibilityRole="button" accessibilityLabel="Next match" style={styles.sBtn}>
-            <ChevronDown size={20} strokeWidth={1.5} color={st.matches.length ? '#fff' : '#475569'} />
+          <Pressable onPress={() => view.stepMatch(1)} disabled={!total} hitSlop={6} accessibilityRole="button" accessibilityLabel="Next match" style={styles.sBtn}>
+            <ChevronDown size={20} strokeWidth={1.5} color={total ? '#fff' : '#475569'} />
           </Pressable>
           <Pressable onPress={onCloseSearch} hitSlop={6} accessibilityRole="button" accessibilityLabel="Close search" style={styles.sBtn}>
             <X size={18} strokeWidth={1.5} color="#fff" />
@@ -114,14 +129,14 @@ export default function SheetViewerPane({
       ) : null}
 
       <View style={styles.zoom}>
-        <Pressable onPress={() => controller.flyTo({ ...controller.camera, zoom: controller.camera.zoom * 2 }, 200)} accessibilityRole="button" accessibilityLabel="Zoom in" style={styles.zBtn}><Plus size={18} color="#fff" /></Pressable>
-        <Pressable onPress={() => controller.flyTo({ ...controller.camera, zoom: controller.camera.zoom / 2 }, 200)} accessibilityRole="button" accessibilityLabel="Zoom out" style={styles.zBtn}><Minus size={18} color="#fff" /></Pressable>
-        <Pressable onPress={() => controller.fit()} accessibilityRole="button" accessibilityLabel="Fit to screen" style={styles.zBtn}><Maximize2 size={16} color="#fff" /></Pressable>
+        <Pressable onPress={() => view.zoomBy(2)} accessibilityRole="button" accessibilityLabel="Zoom in" style={styles.zBtn}><Plus size={18} color="#fff" /></Pressable>
+        <Pressable onPress={() => view.zoomBy(0.5)} accessibilityRole="button" accessibilityLabel="Zoom out" style={styles.zBtn}><Minus size={18} color="#fff" /></Pressable>
+        <Pressable onPress={() => view.fit()} accessibilityRole="button" accessibilityLabel="Fit to screen" style={styles.zBtn}><Maximize2 size={16} color="#fff" /></Pressable>
       </View>
 
       {portal ? (
         <CalloutPortal
-          portal={portal} projectId={projectId} currentFileId={fileId} currentManifest={manifest} api={api} platform={platform}
+          webview={webview} portal={portal} projectId={projectId} currentFileId={fileId} currentManifest={manifest} api={api} platform={platform}
           bounds={box} onClose={() => setPortal(null)} onOpenSheet={openSheet}
         />
       ) : null}

@@ -21,9 +21,38 @@ function getSkia() {
   return skia;
 }
 
+let webview;                            // undefined = not tried, true/false after
+function hasWebView() {
+  if (webview !== undefined) return webview;
+  try {
+    // eslint-disable-next-line global-require
+    webview = Boolean(require('react-native-webview').WebView);
+  } catch (_e) {
+    webview = false;
+  }
+  return webview;
+}
+
 export const platform = {
   name: 'native',
-  available() { return getSkia() !== null; },
+  /**
+   * How tiles are drawn here: 'webview' (the same engine as the web app, hosted in the app's
+   * react-native-webview) or 'skia' (the native GPU renderer, which exists only in builds that
+   * include Skia). null when neither works, and the PDF viewer is kept.
+   *
+   * WEBVIEW IS THE DEFAULT, AND SKIA IS OPT-IN. The WebView viewer has been exercised in a real
+   * browser engine and ships over the air; the Skia renderer has never run on a device. Merely
+   * probing Skia (requiring its JS) runs native-module setup code, so it is not touched at all
+   * unless a build asks for it: EXPO_PUBLIC_SHEET_TILES_RENDERER=skia.
+   */
+  mode() {
+    if (process.env.EXPO_PUBLIC_SHEET_TILES_RENDERER === 'skia') {
+      if (getSkia() !== null) return 'skia';
+      return hasWebView() ? 'webview' : null;
+    }
+    return hasWebView() ? 'webview' : null;
+  },
+  available() { return platform.mode() !== null; },
   async decode(bytes) {
     const sk = getSkia();
     if (!sk) throw new Error('Skia is not available');

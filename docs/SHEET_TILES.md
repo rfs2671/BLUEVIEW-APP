@@ -39,6 +39,22 @@ Same tenancy checks as `/content`.
 - **Skia 2.2.12** is the version Expo SDK 54 vets; it ships old-architecture sources and its peer
   ranges accept RN 0.81.5 and Reanimated 3.19.5 (`src/viewer/skiaCompat.test.cjs`).
 
+## Phones: Skia or a WebView page
+
+`sheetPlatform.native.js` picks how tiles are drawn: `skia` (native GPU renderer; needs a build that
+includes Skia) or `webview` (the same engine and canvas viewer as the web app, hosted in the app's
+existing `react-native-webview`, so an OTA update can deliver it to builds without Skia). A phone
+without Skia uses the WebView automatically; `EXPO_PUBLIC_SHEET_TILES_RENDERER=webview` forces it.
+
+- The page is generated: `node scripts/build-sheet-webview.cjs` bundles `src/viewer/webview/main.js`
+  into `webview/sheetWebViewHtml.js` (a test fails if it is out of date).
+- Pan, pinch, inertia, search and painting happen in the page. Pins and highlights are drawn on the
+  same canvas as the tiles. Only taps and a throttled status message cross to the app. The token is
+  passed in a message, never in a URL. The page runs at `https://app.levelog.com` so the API's CORS
+  allows it. A killed WebView falls back to the PDF viewer.
+- Limits: the offline tile cache (Cache Storage) is not used in the page, so tiles are re-fetched
+  after the app restarts (the API's immutable headers still apply inside a session).
+
 ## Rollout
 
 1. Deploy the backend. Nothing changes for users: tiles compile in the background

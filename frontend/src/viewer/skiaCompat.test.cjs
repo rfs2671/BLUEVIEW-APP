@@ -62,6 +62,39 @@ ok(shared.join(',') === 'cx=500,cy=0,zoom=1,vpW=0,vpH=0,lim={ min: 0.1, max: 20 
 ok(!/\.value\s*=\s*[^;]*(image|frame|scene|tiles)\b/.test(pane), 'no image / frame / scene is ever assigned to a shared value');
 ok(!/runOnJS\([^)]*\)\([^)]*(image|frame|scene)/.test(pane), 'no image crosses runOnJS');
 
+console.log('which renderer a phone uses');
+{
+  const loadPlat = (modules, env) => {
+    const PLAT = path.join(__dirname, 'sheetPlatform.native.js');
+    const mod = { exports: {} };
+    const sh = (n) => {
+      if (n === 'react-native') return { PixelRatio: { get: () => 2 } };
+      if (n === '../utils/sheetTileStore') return { sheetTileStore: {} };
+      if (n in modules) { if (modules[n] instanceof Error) throw modules[n]; modules.__touched.push(n); return modules[n]; }
+      throw new Error(`unstubbed ${n}`);
+    };
+    const src = babel.transformSync(fs.readFileSync(PLAT, 'utf8'), { filename: PLAT, plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')], configFile: false, babelrc: false }).code;
+    const prev = process.env.EXPO_PUBLIC_SHEET_TILES_RENDERER; if (env === undefined) delete process.env.EXPO_PUBLIC_SHEET_TILES_RENDERER; else process.env.EXPO_PUBLIC_SHEET_TILES_RENDERER = env;
+    new Function('exports', 'module', 'require', src)(mod.exports, mod, sh);
+    const out = { mode: mod.exports.platform.mode(), available: mod.exports.platform.available() };
+    if (prev === undefined) delete process.env.EXPO_PUBLIC_SHEET_TILES_RENDERER; else process.env.EXPO_PUBLIC_SHEET_TILES_RENDERER = prev;
+    return out;
+  };
+  const skia = { Skia: { Data: {}, Image: { MakeImageFromEncoded() {} } } };
+  const mk = (extra) => ({ __touched: [], ...extra });
+  let m = mk({ '@shopify/react-native-skia': skia, 'react-native-webview': { WebView() {} } });
+  let r = loadPlat(m);
+  ok(r.mode === 'webview' && r.available, 'by default a phone uses the WebView viewer, even when Skia is in the build');
+  ok(!m.__touched.includes('@shopify/react-native-skia'), 'and never even loads Skia (nothing native is probed)');
+  m = mk({ '@shopify/react-native-skia': skia, 'react-native-webview': { WebView() {} } });
+  ok(loadPlat(m, 'skia').mode === 'skia', 'Skia only when a build opts in');
+  m = mk({ '@shopify/react-native-skia': new Error('Native RNSkia Module cannot be found!'), 'react-native-webview': { WebView() {} } });
+  ok(loadPlat(m, 'skia').mode === 'webview', 'opted in but Skia is missing from the binary: the WebView, not a crash');
+  m = mk({ '@shopify/react-native-skia': skia, 'react-native-webview': new Error('no webview') });
+  r = loadPlat(m);
+  ok(r.mode === null && r.available === false, 'no WebView: the PDF viewer is kept');
+}
+
 console.log('tile images are freed late, not mid-frame');
 const PLAT = path.join(__dirname, 'sheetPlatform.native.js');
 const code = babel.transformSync(fs.readFileSync(PLAT, 'utf8'), { filename: PLAT, plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')], configFile: false, babelrc: false }).code;
