@@ -126,5 +126,70 @@ class TheNextSyncCorrectsStoredRows(unittest.TestCase):
         self.assertNotIn("status_changed_at", update)
 
 
+# ── "(hearing pending)" wherever a penalty is shown or sent (ruling 2026-10-25) ──
+
+from datetime import date  # noqa: E402
+
+from lib import dob_penalty, dob_signal_templates, wa_alerts, wa_brief, wa_gc  # noqa: E402
+
+TODAY = date(2026, 10, 25)
+#: 39558662P as the sync STORES it: its extracted fields.
+ROW = {**server._extract_violation_fields(ECB_39558662P), "record_type": "violation",
+       "raw_dob_id": "39558662P", "nyc_bin": "3430621", "violation_subtype": "ECB"}
+DECIDED = {**ROW, "disposition_comments": "IN VIOLATION", "hearing_date": "20261001"}
+
+
+class TheHearingPendingRule(unittest.TestCase):
+
+    def test_the_real_summons_is_pending(self):
+        self.assertEqual((ROW["hearing_date"], ROW["disposition_comments"]), ("20261118", "PENDING"))
+        self.assertTrue(dob_penalty.hearing_pending(ROW, TODAY))
+
+    def test_an_outcome_or_a_past_hearing_is_not_pending(self):
+        self.assertFalse(dob_penalty.hearing_pending(DECIDED, TODAY))
+        self.assertFalse(dob_penalty.hearing_pending(
+            {"hearing_date": "20261001", "disposition_comments": ""}, TODAY))
+        self.assertFalse(dob_penalty.hearing_pending({}, TODAY))
+        self.assertTrue(dob_penalty.hearing_pending({"hearing_date": "2026-10-25"}, TODAY))  # today
+
+    def test_the_note_in_english_and_spanish(self):
+        self.assertEqual(dob_penalty.with_note("$1,250", ROW, TODAY), "$1,250 (hearing pending)")
+        self.assertEqual(dob_penalty.with_note("$1,250", ROW, TODAY, "es"), "$1,250 (audiencia pendiente)")
+        self.assertEqual(dob_penalty.with_note("$1,250", DECIDED, TODAY), "$1,250")
+
+
+class EverySurfaceSaysSo(unittest.TestCase):
+
+    def test_the_alert_and_feed_template(self):
+        body = dob_signal_templates._render_violation_ecb(ROW)["body"]
+        self.assertIn("Penalty: $1250 (hearing pending).", body)
+        self.assertIn("Penalty: $1250.", dob_signal_templates._render_violation_ecb(DECIDED)["body"])
+
+    def test_the_whatsapp_brief(self):
+        line = " ".join(wa_brief.open_items([{**ROW, "_id": "r1", "project_id": "p1"}], [], TODAY))
+        self.assertIn("penalty $1,250 (hearing pending)", line, line)
+
+    def test_the_whatsapp_alert_line_cannot_state_a_pending_penalty(self):
+        # Left out of the AI's facts, the checker refuses any amount.
+        self.assertNotIn("penalty_amount", wa_alerts.facts(ROW))
+        self.assertFalse(wa_gc.check_summary("A $1,250 penalty was issued.", wa_alerts.facts(ROW)))
+        self.assertEqual(wa_alerts.facts(DECIDED)["penalty_amount"], "1250")
+
+    def test_the_dm_assistants_facts_carry_the_note(self):
+        self.assertEqual(wa_gc.violation_facts(ROW)["penalty_amount"], "1250 (hearing pending)")
+        self.assertEqual(wa_gc.violation_facts(DECIDED)["penalty_amount"], "1250")
+
+    def test_the_compliance_screen(self):
+        self.assertIn("penalty_hearing_pending", server.DOBLogResponse.model_fields)
+        src = (Path(__file__).resolve().parents[2] / "frontend" / "app" / "project" / "[id]"
+               / "dob-logs.jsx").read_text(encoding="utf-8")
+        self.assertEqual(src.count("log.penalty_hearing_pending"), 2)      # the amount and the row
+        self.assertEqual(src.count("tc('penaltyHearingPending')"), 2)
+        for f, text in (("en.js", "penaltyHearingPending: '(hearing pending)'"),
+                        ("es.js", "penaltyHearingPending: '(audiencia pendiente)'")):
+            i18n = (Path(__file__).resolve().parents[2] / "frontend" / "src" / "i18n" / f).read_text(encoding="utf-8")
+            self.assertIn(text, i18n)
+
+
 if __name__ == "__main__":
     unittest.main()

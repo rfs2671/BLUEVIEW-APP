@@ -75,6 +75,7 @@ from lib.report import view as report_view
 from lib import wa_security  # noqa: E402
 from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
+from lib import dob_penalty  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
 from lib import datefmt  # noqa: E402
@@ -5833,6 +5834,9 @@ class DOBLogResponse(BaseModel):
     violation_category: Optional[str] = None
     violation_date: Optional[str] = None
     penalty_amount: Optional[str] = None
+    # The hearing has not happened: the screen shows "(hearing pending)" after
+    # the penalty (lib/dob_penalty; set by get_dob_logs).
+    penalty_hearing_pending: Optional[bool] = None
     respondent: Optional[str] = None
     disposition_date: Optional[str] = None
     disposition_comments: Optional[str] = None
@@ -45467,6 +45471,8 @@ async def get_dob_logs(
             log["body"] = rendered.get("body") or ""
             log["severity_kind"] = rendered.get("severity") or "info"
             log["action_text"] = rendered.get("action_text") or log.get("next_action") or ""
+            log["penalty_hearing_pending"] = (
+                dob_penalty.hearing_pending(log) if log.get("penalty_amount") else None)
 
             # Apply post-render filters before serializing.
             if severity_kind and log["severity_kind"] != severity_kind:
