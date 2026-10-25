@@ -336,7 +336,12 @@ class NoDoublePermissiveLineSurvives(unittest.TestCase):
         user moved to another company after a link was minted is refused by
         this same comparison.
 
-        THE NINTH SETS A DRAWING SET'S TRACK. PUT /projects/{id}/files/
+        THE NINTH IS THE SHEET-TILE VIEWER. `_sheet_file_or_403` gates the
+        manifest, index, tile and preview routes with the same comparison (and
+        the same device allow-list) as /content, because a tile is a rendering
+        of the drawing and must be no easier to reach than the file.
+
+        THE TENTH SETS A DRAWING SET'S TRACK. PUT /projects/{id}/files/
         {file_id}/drawing-track marks a file filed or post-CO, which the glyph
         pass copies onto every row and the render then names in answers. It
         holds the file to the admin's company with this same comparison, so
@@ -348,7 +353,7 @@ class NoDoublePermissiveLineSurvives(unittest.TestCase):
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
             and n.func.id == "_same_company_or_403")
         self.assertGreaterEqual(calls, 3)
-        self.assertEqual(calls, 9)
+        self.assertEqual(calls, 10)
 
     def test_the_helper_treats_empty_string_as_absent(self):
         """The mechanism, not just the outcome: both sides are coerced and
