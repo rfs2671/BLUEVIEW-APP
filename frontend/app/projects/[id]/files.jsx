@@ -75,14 +75,23 @@ import {
   warmDocCache,
 } from '../../../src/utils/docCache';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
-import { semantic, withAlpha } from '../../../src/styles/semanticColors';
+import { semantic, chrome, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 
 import PDFViewer from '../../../src/components/PDFViewer';
+import { useT } from '../../../src/i18n';
+import {
+  openSignedDownload, startNativeDownload, shareDownloadedFile,
+} from '../../../src/utils/fileDownload';
+import {
+  downloadSource, downloadFraction, signedUrlErrorKey,
+} from '../../../src/utils/fileDownloadPlan';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import ConfirmDialog from '../../../src/components/ConfirmDialog';
 
 const DROPBOX_BLUE = '#0061FF';
+// The same brand blue, lifted just enough to clear the 3:1 icon floor on the dark theme's navy surfaces (#0061FF is 2.4:1 there).
+const DROPBOX_BLUE_ON_DARK = '#4D8DFF';
 
 const extOf = (filename) => String(filename || '').split('.').pop()?.toLowerCase() || '';
 // PDFs are the only type with an offline story — everything else is handed to
@@ -170,14 +179,14 @@ const getFileTypeInfo = (filename) => {
   
   const typeMap = {
     pdf: { icon: FileText, color: semantic.neutral, label: 'PDF' },
-    doc: { icon: FileText, color: '#3b82f6', label: 'DOC' },
-    docx: { icon: FileText, color: '#3b82f6', label: 'DOCX' },
+    doc: { icon: FileText, color: chrome.brand, label: 'DOC' },
+    docx: { icon: FileText, color: chrome.brand, label: 'DOCX' },
     xls: { icon: FileText, color: semantic.neutral, label: 'XLS' },
     xlsx: { icon: FileText, color: semantic.neutral, label: 'XLSX' },
-    png: { icon: ImageIcon, color: '#8b5cf6', label: 'PNG' },
-    jpg: { icon: ImageIcon, color: '#8b5cf6', label: 'JPG' },
-    jpeg: { icon: ImageIcon, color: '#8b5cf6', label: 'JPEG' },
-    gif: { icon: ImageIcon, color: '#8b5cf6', label: 'GIF' },
+    png: { icon: ImageIcon, color: chrome.brand, label: 'PNG' },
+    jpg: { icon: ImageIcon, color: chrome.brand, label: 'JPG' },
+    jpeg: { icon: ImageIcon, color: chrome.brand, label: 'JPEG' },
+    gif: { icon: ImageIcon, color: chrome.brand, label: 'GIF' },
     dwg: { icon: File, color: semantic.neutral, label: 'DWG' },
     dxf: { icon: File, color: semantic.neutral, label: 'DXF' },
   };
@@ -226,6 +235,9 @@ export default function ProjectFilesScreen() {
   const [uploading, setUploading] = useState(false);
   const [fileToDelete, setFileToDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  // The one native download in flight: { name, written, expected, cancel }.
+  const [download, setDownload] = useState(null);
+  const tDl = useT('fileDownload');
   // 'ok' | 'offline' | 'error'. This screen used to swallow the failure with
   // `.catch(() => [])`, which rendered a silent blank plan list.
   const [fetchState, setFetchState] = useState('ok');
@@ -808,39 +820,78 @@ export default function ProjectFilesScreen() {
     }
   };
 
+  // ── DOWNLOAD NEVER PUTS A TOKEN IN A URL ───────────────────────────────
+  //
+  // This used to build `/content?token=` from window.localStorage. A phone
+  // has no window.localStorage, so the token was empty and the browser opened
+  // on {"detail":"Not authenticated"}; on the web it worked by putting the
+  // 30-day session token in the address bar. See fileDownloadPlan.js.
   const handleDownloadFile = async (file) => {
-    // Downloading hands a REMOTE url to the OS — there is nothing to hand it
-    // offline, cached bytes or not. Don't dead-end the tap.
-    if (offline) {
-      toast.info('Not available offline', 'Downloads need a connection. Reconnect and try again.');
+    if (Platform.OS === 'web') {
+      if (offline) {
+        toast.info(tDl('offlineTitle'), tDl('offlineBody'));
+        return;
+      }
+      try {
+        const source = downloadSource(file);
+        if (source === 'stored') {
+          // A 15-minute link signed for this account, opened in a new tab.
+          await openSignedDownload(file.id || file._id, { attachment: true });
+        } else if (source === 'dropbox') {
+          // Dropbox's own short-lived link; it never carried our token.
+          const res = await dropboxAPI.getFileUrl(projectId, file.path);
+          if (!res?.url) throw Object.assign(new Error('notStored'), { code: 'notStored' });
+          await Linking.openURL(res.url);
+        } else {
+          toast.error(tDl('failTitle'), tDl('notStored'));
+        }
+      } catch (error) {
+        toast.error(tDl('failTitle'), tDl(error?.code || signedUrlErrorKey(error)));
+      }
       return;
     }
+
+    // NATIVE: bytes to the device with the token in a HEADER, then the share
+    // sheet. A plan already saved for offline is shared from disk, so this is
+    // not refused offline up front.
+    if (download) return;
+    const job = startNativeDownload({
+      file,
+      projectId,
+      onProgress: (written, expected) =>
+        setDownload((d) => (d ? { ...d, written, expected } : d)),
+    });
+    setDownload({
+      name: file.name, written: 0, expected: Number(file?.size) || null, cancel: job.cancel,
+    });
     try {
-      // Direct-upload files carry their download URL on the record itself;
-      // only fall back to the Dropbox temp-link endpoint for synced files.
-      let url = file.directUrl || file.r2_url || null;
-      if (url && url.startsWith('/')) {
-        const tok = (typeof window !== 'undefined' && window.localStorage)
-          ? window.localStorage.getItem('blueview_token')
-          : null;
-        const base = process.env.EXPO_PUBLIC_API_URL || 'https://api.levelog.com';
-        url = base + url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok || '');
-      }
-      if (!url && file.path) {
-        const res = await dropboxAPI.getFileUrl(projectId, file.path);
-        url = res?.url;
-      }
-      if (url) {
-        await Linking.openURL(url);
-        toast.success('Download', 'File download started');
-      } else {
-        toast.error('Error', 'No download URL available for this file');
+      const { uri } = await job.promise;
+      setDownload(null);
+      if (!(await shareDownloadedFile(uri, file))) {
+        toast.info(tDl('failTitle'), tDl('shareUnavailable'));
       }
     } catch (error) {
-      console.error('Failed to download:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not download file');
+      setDownload(null);
+      const code = error?.code || 'failBody';
+      if (code === 'cancelled') toast.info(tDl('downloading'), tDl('cancelled'));
+      else if (code === 'network' && offline) toast.info(tDl('offlineTitle'), tDl('offlineBody'));
+      else toast.error(tDl('failTitle'), tDl(code));
     }
   };
+
+  const downloadMeta = () => {
+    if (!download) return '';
+    const frac = downloadFraction(download.written, download.expected);
+    if (frac === null) {
+      return tDl('progressUnknown').replace('{done}', String(megabytes(download.written)));
+    }
+    return tDl('progress')
+      .replace('{pct}', String(Math.round(frac * 100)))
+      .replace('{total}', String(megabytes(download.expected)));
+  };
+  const downloadPct = download
+    ? downloadFraction(download.written, download.expected)
+    : null;
 
   // Opens the themed confirmation modal. Actual delete happens in confirmDeleteFile().
   const handleDeleteFile = (file) => {
@@ -952,14 +1003,14 @@ export default function ProjectFilesScreen() {
                     disabled={uploading}
                     style={({ pressed }) => [
                       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                        paddingVertical: 14, borderRadius: 12, backgroundColor: 'rgba(59,130,246,0.15)',
-                        borderWidth: 1, borderColor: 'rgba(59,130,246,0.3)' },
+                        paddingVertical: 14, borderRadius: 12, backgroundColor: withAlpha(colors.primary, 0.15),
+                        borderWidth: 1, borderColor: withAlpha(colors.primary, 0.3) },
                       pressed && { opacity: 0.7 },
                       uploading && { opacity: 0.5 },
                     ]}
                   >
-                    <Upload size={18} strokeWidth={1.5} color="#3b82f6" />
-                    <Text style={{ color: '#3b82f6', fontSize: 14, fontWeight: '600' }}>
+                    <Upload size={18} strokeWidth={1.5} color={colors.primary} />
+                    <Text style={{ color: colors.primary, fontSize: 14, fontWeight: '600' }}>
                       {uploading ? 'Uploading...' : 'Upload PDF'}
                     </Text>
                   </Pressable>
@@ -1013,7 +1064,7 @@ export default function ProjectFilesScreen() {
                         s.linkedRow, pressed && isAdmin && { opacity: 0.7 },
                       ]}
                     >
-                      <FolderOpen size={20} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                      <FolderOpen size={20} strokeWidth={1.5} color={isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE} />
                       <Text style={s.linkedPath} numberOfLines={2}>{linkedFolder}</Text>
                       {isAdmin && (
                         <ChevronRight size={18} strokeWidth={1.5} color={colors.text.muted} />
@@ -1234,7 +1285,7 @@ export default function ProjectFilesScreen() {
                   fileGroups.map(([folderPath, groupFiles]) => (
                   <View key={folderPath} style={s.folderGroup}>
                     <View style={s.folderGroupHeader}>
-                      <Folder size={14} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                      <Folder size={14} strokeWidth={1.5} color={isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE} />
                       <Text style={s.folderGroupName} numberOfLines={1}>
                         {folderLabel(folderPath)}
                       </Text>
@@ -1405,6 +1456,37 @@ export default function ProjectFilesScreen() {
           onClose={() => { setPdfViewerVisible(false); setSelectedPdfFile(null); }}
         />
 
+        {/* NATIVE DOWNLOAD — progress and a way out. The backdrop does not
+            dismiss it: closing the sheet must not leave a transfer running
+            that nobody can see. Cancel (or the back button) stops it. */}
+        <Modal
+          visible={!!download}
+          transparent
+          animationType="fade"
+          onRequestClose={() => download?.cancel?.()}
+        >
+          <View style={s.modalOverlay}>
+            <View style={s.modalBackdrop} />
+            <GlassCard style={s.pickerCard}>
+              <Text style={s.pickerTitle}>{tDl('downloading')}</Text>
+              <Text style={s.dlName} numberOfLines={1}>{download?.name || ''}</Text>
+              <View style={s.dlTrack}>
+                {downloadPct === null ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <View style={[s.dlFill, { width: `${Math.round(downloadPct * 100)}%` }]} />
+                )}
+              </View>
+              <Text style={s.dlMeta}>{downloadMeta()}</Text>
+              <GlassButton
+                title={tDl('cancel')}
+                onPress={() => download?.cancel?.()}
+                accessibilityLabel={tDl('cancel')}
+              />
+            </GlassCard>
+          </View>
+        </Modal>
+
         {/* ── FOLDER PICKER ─────────────────────────────────────────────
             PICKER ONLY, NO TYPED PATH. Nobody types a Dropbox path, and the
             one who tries types it wrong -- the old free-text field on
@@ -1483,7 +1565,7 @@ export default function ProjectFilesScreen() {
                       onPress={() => fetchFolders(folder.path)}
                       style={({ pressed }) => [s.folderItem, pressed && { opacity: 0.7 }]}
                     >
-                      <Folder size={18} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                      <Folder size={18} strokeWidth={1.5} color={isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE} />
                       <Text style={s.folderName} numberOfLines={1}>{folder.name}</Text>
                       <ChevronRight size={16} strokeWidth={1.5} color={colors.text.subtle} />
                     </Pressable>
@@ -1653,6 +1735,29 @@ function buildStyles(colors, isDark) {
     padding: spacing.lg,
     maxHeight: '80%',
   },
+  dlName: {
+    fontSize: 14,
+    color: colors.text.secondary,
+    marginTop: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  dlTrack: {
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    backgroundColor: withAlpha(colors.text.primary, 0.12),
+  },
+  dlFill: {
+    height: 8,
+    backgroundColor: colors.primary,
+  },
+  dlMeta: {
+    fontSize: 13,
+    color: colors.text.muted,
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
+  },
   pickerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1764,8 +1869,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.sm,
   },
   titleText: {
-    fontSize: 36,
-    fontWeight: '200',
+    fontSize: 30,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     letterSpacing: -0.5,
   },
@@ -1894,10 +1999,10 @@ function buildStyles(colors, isDark) {
   saveAllBtn: {
     minHeight: 44, justifyContent: 'center',
     paddingHorizontal: spacing.md, borderRadius: 999,
-    borderWidth: 1, borderColor: 'rgba(59,130,246,0.3)',
-    backgroundColor: 'rgba(59,130,246,0.15)',
+    borderWidth: 1, borderColor: withAlpha(colors.primary, 0.3),
+    backgroundColor: withAlpha(colors.primary, 0.15),
   },
-  saveAllText: { fontSize: 13, fontWeight: '700', color: '#3b82f6' },
+  saveAllText: { fontSize: 13, fontWeight: '700', color: colors.primary },
   readyUnsavable: {
     fontSize: 12, color: colors.text.muted, lineHeight: 17,
     marginBottom: spacing.sm,
@@ -1907,6 +2012,7 @@ function buildStyles(colors, isDark) {
   },
   fileItem: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: spacing.md,
     backgroundColor: colors.glass.background,
@@ -1950,6 +2056,8 @@ function buildStyles(colors, isDark) {
   },
   fileInfo: {
     flex: 1,
+    // On a narrow phone the three action buttons would leave the name a few pixels; below this width they wrap under it.
+    minWidth: 110,
   },
   fileName: {
     fontSize: 15,

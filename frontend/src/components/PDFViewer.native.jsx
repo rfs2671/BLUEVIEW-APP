@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, Modal, Pressable, ActivityIndicator, Linking, TextInput, ScrollView, Dimensions, Platform, Share } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { X, Download, FileText, ExternalLink, MapPin, Send, Trash2, CheckCircle, Users } from 'lucide-react-native';
+import { X, Download, FileText, ExternalLink, MapPin, Send, Trash2, CheckCircle, Users, Search, ChevronUp, ChevronDown } from 'lucide-react-native';
 import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
 
 // Build a stable document identifier for an annotation. Direct-upload files
@@ -18,25 +17,28 @@ import { useAuth, isCompanyAdmin } from '../context/AuthContext';
 import { useFeatureFlag } from '../hooks/useFeatureFlag';
 import { spacing } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
-import { ensurePdfJsViewer, localViewerHostUrl, pdfJsViewerDir } from '../utils/pdfjsViewer';
+import { ensurePdfJsViewer, localViewerHostUrl, pdfJsReadAccessDir } from '../utils/pdfjsViewer';
+import { searchStatusLabel, searchQueryNorm } from '../utils/pdfSearchScript';
 import { ensureCachedDocFile } from '../utils/docCache';
+import { useSheetSession, viewerMode } from '../viewer/useSheetSession';
+import sheetPlatform from '../viewer/sheetPlatform';
+import sheetApi from '../viewer/sheetClient';
+import SheetViewerPane from '../viewer/SheetViewerPane';
+import SheetBoundary from '../viewer/SheetBoundary';
 import {
-  isLocalFileUri, authorizedPdfUrl, pdfSourcePlan, pdfCacheKey,
+  isLocalFileUri, pdfSourcePlan, pdfCacheKey,
   PDF_SOURCE_NONE, PDF_SOURCE_LOCAL, PDF_SOURCE_DOWNLOAD,
 } from '../utils/pdfSrc';
-
-const API_BASE = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://api.levelog.com';
 
 /**
  * Turn whatever url the backend handed us into something THIS platform can
  * render, without ever letting the JWT off our own origin.
  *
  *   local `file://`  — already final. Never decorated with a token.
- *   iOS + remote     — WKWebView/PDFKit renders the PDF itself. It cannot set
- *                      an Authorization header, so our own proxy url carries
- *                      `?token=`; a foreign url is left bare. The request goes
- *                      to api.levelog.com and nowhere else.
- *   Android + remote — Android's WebView has NO PDF renderer, which is why a
+ *   remote (both)    — iOS used to hand the url to WKWebView/PDFKit; PDFKit
+ *                      cannot be searched from the app, so iOS now does what
+ *                      Android always had to. Android's WebView has NO PDF
+ *                      renderer, which is why a
  *                      viewer was ever wrapped around it. The bytes are pulled
  *                      to disk with the token in the Authorization HEADER
  *                      (docCache), and the pdf.js copy staged on this device
@@ -58,32 +60,19 @@ async function nativePdfUri(rawUrl, file) {
       remoteUrl: rawUrl,
     });
   }
-  let token = null;
-  try { token = await AsyncStorage.getItem('blueview_token'); } catch {}
-  return authorizedPdfUrl(rawUrl, { apiBase: API_BASE, token });
+  return null;
 }
 
 /**
- * Two cases now, because Android's remote case no longer exists:
- *   iOS (any url)           — hand it straight to WKWebView/PDFKit. A local
- *                             `file://` already works there, which is why iOS
- *                             never needed a bundled viewer.
- *   Android (always local)  — the pdf.js copy staged on disk by pdfjsViewer.js.
- *                             `nativePdfUri` guarantees the url is a `file://`
- *                             by the time it gets here; anything else returns
- *                             null and the caller keeps the error state rather
- *                             than reaching for a viewer we do not host.
+ * One case, on both platforms: the pdf.js copy staged on disk by
+ * pdfjsViewer.js, drawing a local `file://`. iOS used to hand the PDF to
+ * WKWebView/PDFKit — smooth, and impossible to search from the app — so it
+ * now draws through the same page as Android, which is where search lives.
+ * `nativePdfUri` guarantees the url is a `file://` by the time it gets here;
+ * anything else returns null and the caller keeps the error state rather than
+ * reaching for a viewer we do not host.
  */
 function webViewSourceForPdf(pdfUrl, localViewerUri, probeOn) {
-  if (Platform.OS === 'ios') {
-    // PDFKit via WKWebView: smooth native zoom/scroll. THE PROBE DOES NOT
-    // APPLY HERE and cannot: there is no pdf.js on iOS, no canvas we size, and
-    // no JS context of ours in the page. Everything the probe measures is a
-    // property of the Android viewer, and so is everything below — iOS never
-    // loads the staged viewer at all, so none of the parse cost this indirection
-    // exists to remove is paid there.
-    return { uri: pdfUrl };
-  }
   // No staged viewer yet -> caller keeps showing the loader / error.
   if (!isLocalFileUri(pdfUrl) || !localViewerUri) return null;
   // ── THE DOCUMENT IS NOT IN THIS URL, AND THAT IS THE FIX ────────────────
@@ -113,9 +102,8 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   const [url, setUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  // `file://` uri of the locally staged pdf.js viewer.html — Android only, and
-  // now on EVERY Android open rather than only the offline ones. Null on iOS,
-  // which renders PDFs through PDFKit and needs no viewer of ours.
+  // `file://` uri of the locally staged pdf.js viewer.html — on every open, on
+  // both platforms (iOS since search; it used to render through PDFKit).
   const [localViewerUri, setLocalViewerUri] = useState(null);
   const [errorHint, setErrorHint] = useState('');
 
@@ -143,6 +131,27 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   // mid-session would remount the WebView.
   const probeOn = useFeatureFlag('pdf_viewer_probe');
   const probeLines = useRef([]);
+
+  // ── THE TILE VIEWER, WHEN THIS DRAWING HAS TILES ────────────────────────
+  //
+  // Behind `sheet_tiles_viewer`. A drawing whose tiles are ready opens in the
+  // GPU tile viewer (viewer/): no PDF is downloaded or parsed. Anything else —
+  // flag off, tiles still compiling, a failed compile, an old backend, a runtime
+  // without Skia, a render error — keeps the pdf.js path below exactly as it was.
+  // The decision is made once per open (useSheetSession), so a reader's viewer
+  // never swaps renderers underneath them.
+  const tilesFlag = useFeatureFlag('sheet_tiles_viewer');
+  const tileFileId = file?.id || file?._id || null;
+  const tilesEnabled = Boolean(visible && tilesFlag && tileFileId && /\.pdf$/i.test(file?.name || ''));
+  const session = useSheetSession({
+    enabled: tilesEnabled,
+    projectId, fileId: tileFileId, cacheVersion: file?.cache_version, platform: sheetPlatform, api: sheetApi,
+  });
+  const [tilesFailed, setTilesFailed] = useState(false);
+  useEffect(() => { setTilesFailed(false); }, [visible, tileFileId]);
+  const mode = viewerMode({ enabled: tilesEnabled, state: session.state, failed: tilesFailed });
+  const tiled = mode === 'tiled';
+  const awaitingTiles = mode === 'pending';
 
   // Memoize the WebView source so unrelated state updates (note sheet, reply
   // input, annotation taps) don't create a new object reference and force a
@@ -190,7 +199,6 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   }, [visible]);
 
   useEffect(() => {
-    if (Platform.OS !== 'android') return;
     if (!viewerBooted || !url || !isLocalFileUri(url)) return;
     if (sentUrlRef.current === url) return;
     sentUrlRef.current = url;
@@ -204,12 +212,63 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   }, [viewerBooted, url]);
 
   const isLocalPdf = isLocalFileUri(url);
-  const needsLocalViewer = isLocalPdf && Platform.OS === 'android';
+  const needsLocalViewer = isLocalPdf;
 
-  // Stage the pdf.js viewer on disk the first time an Android device opens a
-  // PDF. Cheap and memoised after that — it only copies two assets and writes
-  // one HTML file. `url` is always a `file://` on Android by this point, so
-  // this runs online as well as off.
+  // ── SEARCH IN THE DOCUMENT ───────────────────────────────────────────────
+  //
+  // The page does the reading and the finding (pdfjsViewer.js, `search` /
+  // `search-step` / `search-clear` in, `pdf-search` out); this is the bar.
+  // Typing searches after a pause; Enter on the same words goes to the next
+  // match. A reply for words that are no longer in the box is dropped.
+  const [docReady, setDocReady] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQ, setSearchQ] = useState('');
+  const [searchRes, setSearchRes] = useState(null);
+  const sentQueryRef = useRef('');
+  const searchTimer = useRef(null);
+  const toViewer = useCallback((obj) => {
+    try { webViewRef.current?.postMessage(JSON.stringify(obj)); } catch (_e) {}
+  }, []);
+  const runSearch = useCallback((text) => {
+    if (searchTimer.current) { clearTimeout(searchTimer.current); searchTimer.current = null; }
+    const q = searchQueryNorm(text);
+    sentQueryRef.current = q;
+    if (!q) { setSearchRes(null); toViewer({ type: 'search-clear' }); return; }
+    setSearchRes({ total: 0, done: false });
+    toViewer({ type: 'search', query: q });
+  }, [toViewer]);
+  const onSearchChange = useCallback((text) => {
+    setSearchQ(text);
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => runSearch(text), 350);
+  }, [runSearch]);
+  const searchStep = useCallback((dir) => toViewer({ type: 'search-step', dir }), [toViewer]);
+  const onSearchSubmit = useCallback(() => {
+    if (searchQueryNorm(searchQ) === sentQueryRef.current && searchRes && searchRes.total) searchStep(1);
+    else runSearch(searchQ);
+  }, [searchQ, searchRes, searchStep, runSearch]);
+  const closeSearch = useCallback(() => {
+    if (searchTimer.current) { clearTimeout(searchTimer.current); searchTimer.current = null; }
+    setSearchOpen(false);
+    setSearchQ('');
+    setSearchRes(null);
+    sentQueryRef.current = '';
+    toViewer({ type: 'search-clear' });
+  }, [toViewer]);
+  // A new document (or a closed viewer) starts with no search.
+  useEffect(() => {
+    if (searchTimer.current) { clearTimeout(searchTimer.current); searchTimer.current = null; }
+    setDocReady(false);
+    setSearchOpen(false);
+    setSearchQ('');
+    setSearchRes(null);
+    sentQueryRef.current = '';
+  }, [visible, url]);
+
+  // Stage the pdf.js viewer on disk the first time a device opens a PDF
+  // (iOS too, since search). Cheap and memoised after that — it only copies
+  // two assets and writes one HTML file. `url` is always a `file://` by this
+  // point, so this runs online as well as off.
   useEffect(() => {
     if (!visible || !needsLocalViewer) { setLocalViewerUri(null); return; }
     let mounted = true;
@@ -288,8 +347,9 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   }, [projectId, file]);
 
   useEffect(() => {
-    if (visible) loadPdf();
-  }, [visible, loadPdf]);
+    // while the tile viewer is deciding (or is showing) nothing is downloaded
+    if (visible && !tiled && !awaitingTiles) loadPdf();
+  }, [visible, loadPdf, tiled, awaitingTiles]);
 
   // Load annotations — direct-upload files use `file:{id}` as the key.
   const docKey = documentKeyFor(file);
@@ -339,13 +399,21 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
     setNewComment('');
   }, [pinModeActive, containerLayout]);
 
+  // The tile viewer reports the page and the spot on it (fractions of that page).
+  const handlePlacePin = useCallback(({ x, y, page }) => {
+    setPendingPosition({ x, y, page });
+    setPinModeActive(false);
+    setShowNoteSheet(true);
+    setNewComment('');
+  }, []);
+
   const handleCreateNote = useCallback(async () => {
     if (!pendingPosition) return;
     try {
       const payload = {
         project_id:  projectId,
-        page_number: 1,
-        position:    pendingPosition,
+        page_number: pendingPosition.page || 1,
+        position:    { x: pendingPosition.x, y: pendingPosition.y },
         comment:     newComment || '',
         recipients:  selectedRecipientIds.length ? selectedRecipientIds : 'all',
       };
@@ -404,7 +472,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
     if (annotation.status === 'resolved') return semantic.verified;
     const creatorId = annotation.created_by?._id || annotation.created_by?.id || annotation.created_by;
     const currentUserId = user?._id || user?.id;
-    if (creatorId === currentUserId) return '#1565C0';
+    if (creatorId === currentUserId) return '#243746';
     return semantic.neutral;
   };
 
@@ -418,7 +486,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
-      <View style={[styles.container, { backgroundColor: '#050a12' }]}>
+      <View style={[styles.container, { backgroundColor: '#131E27' }]}>
         {/* Top Bar */}
         <View style={styles.topBar}>
           <Pressable onPress={onClose} style={styles.iconBtn}>
@@ -426,11 +494,21 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
           </Pressable>
           <Text numberOfLines={1} style={styles.fileName}>{file?.name || 'Document'}</Text>
           <View style={{ flex: 1 }} />
+          {(docReady || tiled) && (
+            <Pressable
+              onPress={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
+              accessibilityRole="button"
+              accessibilityLabel="Search this document"
+              style={[styles.iconBtn, searchOpen && { backgroundColor: '#E3C27A' }]}
+            >
+              <Search size={20} strokeWidth={1.5} color={searchOpen ? '#141A1F' : '#fff'} />
+            </Pressable>
+          )}
           <Pressable
             onPress={() => { setPinModeActive(!pinModeActive); setSelectedAnnotation(null); setShowNoteSheet(false); }}
-            style={[styles.iconBtn, pinModeActive && { backgroundColor: '#3b82f6' }]}
+            style={[styles.iconBtn, pinModeActive && { backgroundColor: '#E3C27A' }]}
           >
-            <MapPin size={20} strokeWidth={1.5} color="#fff" />
+            <MapPin size={20} strokeWidth={1.5} color={pinModeActive ? '#141A1F' : '#fff'} />
           </Pressable>
           {/* A cached `file://` can't be handed to another app (Android throws
               FileUriExposedException), and there's nothing to open externally
@@ -460,14 +538,46 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
           )}
         </View>
 
-        {loading && (
+        {searchOpen && docReady && !tiled && (
+          <View style={styles.searchBar}>
+            <TextInput
+              value={searchQ}
+              onChangeText={onSearchChange}
+              onSubmitEditing={onSearchSubmit}
+              placeholder="Search this document"
+              placeholderTextColor="#64748b"
+              autoFocus
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+              blurOnSubmit={false}
+              accessibilityLabel="Search this document"
+              style={styles.searchInput}
+            />
+            <Text style={styles.searchCount} numberOfLines={1}>{searchStatusLabel(searchRes, searchQ)}</Text>
+            <Pressable onPress={() => searchStep(-1)} disabled={!(searchRes && searchRes.total)}
+              accessibilityRole="button" accessibilityLabel="Previous match" hitSlop={6} style={styles.searchBtn}>
+              <ChevronUp size={20} strokeWidth={1.5} color={searchRes && searchRes.total ? '#fff' : '#475569'} />
+            </Pressable>
+            <Pressable onPress={() => searchStep(1)} disabled={!(searchRes && searchRes.total)}
+              accessibilityRole="button" accessibilityLabel="Next match" hitSlop={6} style={styles.searchBtn}>
+              <ChevronDown size={20} strokeWidth={1.5} color={searchRes && searchRes.total ? '#fff' : '#475569'} />
+            </Pressable>
+            <Pressable onPress={closeSearch} accessibilityRole="button" accessibilityLabel="Close search"
+              hitSlop={6} style={styles.searchBtn}>
+              <X size={18} strokeWidth={1.5} color="#fff" />
+            </Pressable>
+          </View>
+        )}
+
+        {loading && !tiled && (
           <View style={styles.center}>
-            <ActivityIndicator size="large" color="#3b82f6" />
+            <ActivityIndicator size="large" color={'#E3C27A'} />
             <Text style={styles.loadingText}>Loading document...</Text>
           </View>
         )}
 
-        {error && (
+        {error && !tiled && (
           <View style={styles.center}>
             <FileText size={48} strokeWidth={1} color="#64748b" />
             <Text style={styles.errorTitle}>Could not load document</Text>
@@ -492,21 +602,20 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
 
         {/* `webViewSource` is null while the offline viewer is still staging —
             gate on it so the WebView is never mounted with a null source. */}
-        {!loading && !error && url && webViewSource && (
+        {!loading && !error && !tiled && url && webViewSource && (
           <View
             style={{ flex: 1 }}
             onLayout={(e) => setContainerLayout(e.nativeEvent.layout)}
           >
-            {/* WebView for PDF — iOS uses PDFKit natively (smooth pinch-zoom);
-                Android draws the on-device copy with the pdf.js staged by
-                pdfjsViewer.js, since its WebView can't render PDFs on its
-                own. */}
+            {/* WebView for PDF — both platforms draw the on-device copy with
+                the pdf.js staged by pdfjsViewer.js (Android's WebView can't
+                render PDFs at all; iOS's PDFKit can't be searched). */}
             {React.createElement(
               require('react-native-webview').default,
               {
                 ref: webViewRef,
                 source: webViewSource,
-                style: { flex: 1, backgroundColor: '#050a12' },
+                style: { flex: 1, backgroundColor: '#131E27' },
                 originWhitelist: ['*', 'file://'],
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
@@ -526,25 +635,40 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                 allowFileAccess: isLocalPdf,
                 allowFileAccessFromFileURLs: isLocalPdf,
                 allowUniversalAccessFromFileURLs: isLocalPdf,
-                // iOS-only prop, and deliberately left unset on iOS: iOS loads
-                // the PDF itself (PDFKit), where the default single-file read
-                // access is correct — pointing it at the viewer directory would
-                // instead REVOKE access to the PDF. It is set only for the
-                // staged-viewer case, which needs directory-wide access so
-                // viewer.html can load its sibling pdf.min.js.
-                allowingReadAccessToURL: needsLocalViewer ? pdfJsViewerDir() : undefined,
+                // iOS-only prop. The staged viewer needs read access to its own
+                // directory (viewer.html loads its sibling pdf.min.js) AND to
+                // the downloaded document, which docCache keeps in a sibling
+                // `documents/` — so it is the documents directory that holds
+                // both. The viewer directory alone would load the page and
+                // then fail to read the PDF.
+                allowingReadAccessToURL: needsLocalViewer ? pdfJsReadAccessDir() : undefined,
                 // Keep in-memory page cache across zoom/pan so the viewer
                 // doesn't re-fetch when the user pinches.
                 cacheEnabled: true,
                 // Let the platform handle pinch-zoom + scrolling natively.
                 scalesPageToFit: true,
                 allowsBackForwardNavigationGestures: false,
-                // iOS PDFKit needs this to let the user pinch-zoom freely.
+                // Let the reader pinch-zoom and pan freely.
                 scrollEnabled: true,
                 // Prevent the WebView from reloading on orientation/size change
                 // (some Android builds re-mount the native view otherwise).
                 androidLayerType: 'hardware',
                 onError: () => setError(true),
+                // ── A WEBVIEW THAT RUNS OUT OF MEMORY MUST NOT TAKE THE APP WITH IT ──────
+                //
+                // A dense CAD sheet in pdf.js can exhaust the WebView's renderer. On Android,
+                // when that process dies and nothing handles `onRenderProcessGone`, react-native-webview
+                // lets the crash through and the whole app closes the moment the document opens.
+                // Handling it turns that into this viewer's own error state (with Try Again). iOS has
+                // the same event under another name: its web content process is terminated.
+                onRenderProcessGone: () => {
+                  setErrorHint('This drawing is too large to display here. Try the tile viewer, or open it on a computer.');
+                  setError(true);
+                },
+                onContentProcessDidTerminate: () => {
+                  setErrorHint('This drawing is too large to display here. Try the tile viewer, or open it on a computer.');
+                  setError(true);
+                },
                 // The staged viewer reports its own failures (blocked XHR, a
                 // corrupt file) — surface them instead of leaving a dark page.
                 onMessage: (e) => {
@@ -598,6 +722,17 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                     setViewerBooted(true);
                     return;
                   }
+                  // The document is open: search can start.
+                  if (msg?.type === 'pdf-ready') {
+                    setDocReady(true);
+                    return;
+                  }
+                  // What the search found so far. Only for the words in the
+                  // box now — a reply to earlier words is dropped.
+                  if (msg?.type === 'pdf-search') {
+                    if (msg.query === sentQueryRef.current) setSearchRes(msg);
+                    return;
+                  }
                   if (msg?.type === 'pdf-error') {
                     console.warn('Offline PDF viewer error:', msg.code, msg.detail);
                     setErrorHint(
@@ -611,7 +746,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                 startInLoadingState: true,
                 renderLoading: () => (
                   <View style={[styles.center, { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }]}>
-                    <ActivityIndicator size="large" color="#3b82f6" />
+                    <ActivityIndicator size="large" color={'#E3C27A'} />
                   </View>
                 ),
               }
@@ -654,6 +789,22 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
           </View>
         )}
 
+        {tiled && (
+          <View style={{ flex: 1 }}>
+            <SheetBoundary onFail={() => setTilesFailed(true)}>
+              <SheetViewerPane
+                controller={session.controller} webview={session.mode === 'webview'} onFail={() => setTilesFailed(true)}
+                manifest={session.manifest} projectId={projectId} fileId={tileFileId}
+                api={sheetApi} platform={sheetPlatform} annotations={annotations} markerColor={getMarkerColor}
+                selectedId={selectedAnnotation ? (selectedAnnotation._id || selectedAnnotation.id) : null}
+                pinModeActive={pinModeActive} onPlacePin={handlePlacePin}
+                onSelectAnnotation={(ann) => { setSelectedAnnotation(ann); setShowNoteSheet(false); setReplyText(''); }}
+                searchOpen={searchOpen} onCloseSearch={closeSearch}
+              />
+            </SheetBoundary>
+          </View>
+        )}
+
         {/* Bottom sheet: Note creation */}
         {showNoteSheet && (
           <View style={styles.bottomSheet}>
@@ -682,7 +833,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                   borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12,
                 }}
               >
-                <Users size={16} strokeWidth={1.5} color="#93c5fd" />
+                <Users size={16} strokeWidth={1.5} color={'#E3C27A'} />
                 <Text style={{ color: '#e2e8f0', fontSize: 14, marginLeft: 8, flex: 1 }}>
                   {selectedRecipientIds.length === 0
                     ? 'Everyone on the project'
@@ -698,7 +849,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                   style={{
                     marginTop: 6, maxHeight: 180,
                     borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
-                    borderRadius: 8, backgroundColor: '#0b1220',
+                    borderRadius: 8, backgroundColor: '#0E161D',
                   }}
                 >
                   <ScrollView style={{ maxHeight: 180 }}>
@@ -712,8 +863,8 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                     >
                       <View style={{
                         width: 18, height: 18, borderRadius: 4,
-                        borderWidth: 1, borderColor: '#3b82f6',
-                        backgroundColor: selectedRecipientIds.length === 0 ? '#3b82f6' : 'transparent',
+                        borderWidth: 1, borderColor: '#E3C27A',
+                        backgroundColor: selectedRecipientIds.length === 0 ? '#E3C27A' : 'transparent',
                         marginRight: 10,
                       }} />
                       <Text style={{ color: '#e2e8f0', fontSize: 14 }}>Everyone</Text>
@@ -732,8 +883,8 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                         >
                           <View style={{
                             width: 18, height: 18, borderRadius: 4,
-                            borderWidth: 1, borderColor: '#3b82f6',
-                            backgroundColor: checked ? '#3b82f6' : 'transparent',
+                            borderWidth: 1, borderColor: '#E3C27A',
+                            backgroundColor: checked ? '#E3C27A' : 'transparent',
                             marginRight: 10,
                           }} />
                           <View style={{ flex: 1 }}>
@@ -849,17 +1000,21 @@ const styles = StyleSheet.create({
   topBar: { flexDirection: 'row', alignItems: 'center', paddingTop: 50, paddingBottom: 12, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.1), gap: 12 },
   iconBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: withAlpha('#ffffff', 0.1), alignItems: 'center', justifyContent: 'center' },
   fileName: { color: '#e2e8f0', fontSize: 15, fontWeight: '600', maxWidth: 250 },
+  searchBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.1) },
+  searchInput: { flex: 1, color: '#e2e8f0', fontSize: 15, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: withAlpha('#ffffff', 0.08) },
+  searchCount: { color: '#94a3b8', fontSize: 13, maxWidth: 140 },
+  searchBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
   loadingText: { color: '#94a3b8', marginTop: 12, fontSize: 14 },
   errorTitle: { color: '#e2e8f0', fontSize: 18, fontWeight: '600', marginTop: 16 },
   errorSub: { color: '#64748b', fontSize: 14, marginTop: 8, textAlign: 'center' },
-  actionBtn: { marginTop: 16, paddingHorizontal: 24, paddingVertical: 10, backgroundColor: '#3b82f6', borderRadius: 8 },
-  actionText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  actionBtn: { marginTop: 16, paddingHorizontal: 24, paddingVertical: 10, backgroundColor: '#E3C27A', borderRadius: 8 },
+  actionText: { color: '#141A1F', fontSize: 14, fontWeight: '600' },
 
   // Pin mode overlay
   pinOverlay: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(59, 130, 246, 0.08)',
+    backgroundColor: 'rgba(227, 194, 122, 0.08)',
     justifyContent: 'flex-end', alignItems: 'center',
     paddingBottom: 32,
     zIndex: 10,
@@ -895,20 +1050,20 @@ const styles = StyleSheet.create({
   sheetSubtitle: { color: '#94a3b8', fontSize: 13, marginBottom: 12 },
   sheetInput: { backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 12, color: '#e2e8f0', fontSize: 14, minHeight: 70, textAlignVertical: 'top' },
   sheetActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
-  sheetSendBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#3b82f6', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
-  sheetSendText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  sheetSendBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#E3C27A', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
+  sheetSendText: { color: '#141A1F', fontSize: 14, fontWeight: '600' },
   sheetCancelBtn: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: withAlpha('#ffffff', 0.08) },
   sheetCancelText: { color: '#94a3b8', fontSize: 14, fontWeight: '600' },
 
   // Thread
   threadScroll: { maxHeight: 180, marginVertical: 8 },
   threadEntry: { marginBottom: 12, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.06) },
-  threadAuthor: { color: '#93c5fd', fontSize: 13, fontWeight: '600', marginBottom: 3 },
+  threadAuthor: { color: '#E3C27A', fontSize: 13, fontWeight: '600', marginBottom: 3 },
   threadMessage: { color: '#e2e8f0', fontSize: 14, lineHeight: 20 },
   threadTime: { color: '#475569', fontSize: 11, marginTop: 3 },
   replyRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
   replyInput: { flex: 1, backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 10, color: '#e2e8f0', fontSize: 14 },
-  replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#3b82f6', alignItems: 'center', justifyContent: 'center' },
+  replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#E3C27A', alignItems: 'center', justifyContent: 'center' },
   threadActions: { flexDirection: 'row', gap: 12, marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08) },
   resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.verifiedBg },
   resolveBtnText: { color: semantic.verified, fontSize: 13, fontWeight: '600' },

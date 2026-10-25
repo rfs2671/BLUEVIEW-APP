@@ -1,4 +1,4 @@
-"""Tenant isolation for the two daily-log WRITE endpoints.
+"""Tenant isolation for the daily-log endpoints keyed by log id (and POST).
 
 Neither route has {project_id} in its path, so neither can declare
 `Depends(require_project_access)` and neither is reachable by the decorator
@@ -274,6 +274,51 @@ class UpdateDailyLogAccessTest(unittest.TestCase):
         db = _mk_db(existing_log=None)
         resp = _call(db, "put", "/api/daily-logs/dl1", {"notes": "x"})
         self.assertEqual(resp.status_code, 404, resp.text)
+
+
+def _get(db, url, **kw):
+    client, cleanup = _client(**kw)
+    # The two reads also sit behind require_approved; approval is not what
+    # these tests are about.
+    server.app.dependency_overrides[server.require_approved] = lambda: None
+    try:
+        with patch.object(server, "db", db):
+            return client.get(url)
+    finally:
+        cleanup()
+
+
+class ReadDailyLogAccessTest(unittest.TestCase):
+    """GET /daily-logs/{log_id} and /pdf — the same gate as PUT. Before it, any
+    approved account in any company could read a log, or its PDF, by id."""
+
+    def test_cross_company_caller_cannot_read_the_log(self):
+        resp = _get(_mk_db(), "/api/daily-logs/dl1", company_id="co_b")
+        self.assertEqual(resp.status_code, 403, resp.text)
+
+    def test_cross_company_caller_cannot_read_the_pdf(self):
+        resp = _get(_mk_db(), "/api/daily-logs/dl1/pdf", company_id="co_b")
+        self.assertEqual(resp.status_code, 403, resp.text)
+
+    def test_own_company_admin_reads_the_log(self):
+        resp = _get(_mk_db(), "/api/daily-logs/dl1")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["notes"], "original")
+
+    def test_assigned_cross_company_user_reads_the_log(self):
+        resp = _get(_mk_db(), "/api/daily-logs/dl1",
+                    role="cp", company_id="co_b", assigned_projects=["proj1"])
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+    def test_site_device_on_another_project_cannot_read(self):
+        resp = _get(_mk_db(), "/api/daily-logs/dl1",
+                    site_mode=True, device_project_id="other", company_id="co_a")
+        self.assertEqual(resp.status_code, 403, resp.text)
+
+    def test_missing_log_is_404_on_both(self):
+        db = _mk_db(existing_log=None)
+        self.assertEqual(_get(db, "/api/daily-logs/dl1").status_code, 404)
+        self.assertEqual(_get(db, "/api/daily-logs/dl1/pdf").status_code, 404)
 
 
 class GuardWiringTest(unittest.TestCase):

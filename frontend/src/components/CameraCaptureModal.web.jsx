@@ -94,7 +94,7 @@ export default function CameraCaptureModal({ visible, shots, onClose, onCapture 
               pressed && styles.pressed,
             ]}
           >
-            <Text style={[styles.primaryBtnText, { color: colors.white }]}>
+            <Text style={[styles.primaryBtnText, { color: colors.onPrimary }]}>
               Continue without a photo
             </Text>
           </Pressable>

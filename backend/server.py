@@ -1,3 +1,4 @@
+# Redeploy marker 2026-10-22: Railway builds of #826 to #843 failed on a Railway platform outage (infrastructure error).
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, Request, BackgroundTasks
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -29,6 +30,8 @@ import bcrypt
 from bson import ObjectId
 import httpx
 import asyncio
+import contextvars
+import difflib
 from concurrent.futures import ThreadPoolExecutor
 import io
 import sys
@@ -70,7 +73,9 @@ from lib.report import view as report_view
 # WhatsApp tenant boundary + webhook authentication. The rules are in the
 # module; server.py only supplies the database reads they need.
 from lib import wa_security  # noqa: E402
+from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
+from lib import dob_penalty  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
 from lib import datefmt  # noqa: E402
@@ -78,8 +83,10 @@ from lib import multilang  # noqa: E402
 from lib import punch  # noqa: E402
 from lib import punch_link  # noqa: E402
 from lib import punch_brain  # noqa: E402
+from lib import punch_batch  # noqa: E402
 from lib import dm_actions  # noqa: E402
 from lib import trades as lib_trades  # noqa: E402
+from lib import dm_brain  # noqa: E402
 from lib import wa_voice  # noqa: E402
 from lib import wa_mention  # noqa: E402
 from lib import wa_gc  # noqa: E402
@@ -90,13 +97,30 @@ from lib import wa_chase  # noqa: E402
 from lib import project_memory  # noqa: E402
 from lib import wa_retention  # noqa: E402
 from lib import wa_headcount  # noqa: E402
+from lib import wa_style  # noqa: E402
 from lib import wa_brief  # noqa: E402
+from lib import wa_facts  # noqa: E402
+from lib import attendance  # noqa: E402
+from lib import project_report  # noqa: E402
+from lib import progress_report  # noqa: E402
+from lib import report_image  # noqa: E402
+from lib import progress_report_render  # noqa: E402
+from lib import report_regulatory  # noqa: E402
+from lib import schedule_import  # noqa: E402
+from lib import schedule_plan  # noqa: E402
+from lib import wa_photos  # noqa: E402
+from lib import send_retry  # noqa: E402
 from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
+from lib import status_history as status_hist  # noqa: E402
 from lib import dot_sync  # noqa: E402
+from lib import dot_embargo  # noqa: E402
+from lib import dob_site_bins  # noqa: E402
+from lib import dob_alert_gate  # noqa: E402
 from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
+from lib import wa_welcome  # noqa: E402
 from lib import wa_assistant  # noqa: E402
 from lib import wa_subs  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
@@ -124,6 +148,7 @@ from lib.logbook.signature_provenance import (  # noqa: E402
 )
 import re
 import hashlib
+import hmac
 from urllib.parse import quote_plus
 import json
 from dob_complaint_codes import classify_complaint, get_disposition_label, get_category_label, violation_type_display
@@ -1938,6 +1963,13 @@ class RateLimiter:
             return False
         self._hits[key].append(now)
         return True
+
+    def recent(self, key: str) -> int:
+        """Hits for `key` inside the window, WITHOUT recording one. For a
+        limiter that counts only failures and must be read on every attempt."""
+        now = _time.time()
+        self._hits[key] = [t for t in self._hits[key] if now - t < self.window]
+        return len(self._hits[key])
 
     def reset(self) -> None:
         """Clear all state. Used by tests; should not be called in
@@ -3819,6 +3851,9 @@ from lib.vision_meter import (  # noqa: E402
     VISION_PLAN_INDEX_OCR,
     VISION_WHATSAPP_VQA,
     VISION_REFUSAL_CHECK,
+    VISION_PUNCH_PHOTO,
+    VISION_REPORT_PHOTO,
+    VISION_GROUP_PHOTO,
 )
 from lib import plan_extract  # noqa: E402
 from lib import plan_eval  # noqa: E402
@@ -3827,6 +3862,7 @@ from lib import plan_text  # noqa: E402
 from lib import plan_ocr  # noqa: E402
 from lib import plan_records  # noqa: E402
 from lib import plan_search  # noqa: E402
+from lib import plan_crop  # noqa: E402
 
 
 
@@ -5798,6 +5834,9 @@ class DOBLogResponse(BaseModel):
     violation_category: Optional[str] = None
     violation_date: Optional[str] = None
     penalty_amount: Optional[str] = None
+    # The hearing has not happened: the screen shows "(hearing pending)" after
+    # the penalty (lib/dob_penalty; set by get_dob_logs).
+    penalty_hearing_pending: Optional[bool] = None
     respondent: Optional[str] = None
     disposition_date: Optional[str] = None
     disposition_comments: Optional[str] = None
@@ -7487,7 +7526,19 @@ async def get_current_user(
     elif token:
         raw_token = token
 
+    # A JWT IN THE QUERY STRING IS STILL ACCEPTED, AND EVERY USE IS COUNTED.
+    # Downloads moved to /files/{id}/signed-url; the ?token= path stays until
+    # the OTA carrying that is adopted, and these lines are how "adopted" gets
+    # measured. Only a request that actually leaned on it -- no header, and
+    # `token` present in its own query string -- is logged. Never the value.
+    # getattr: the direct callers (and their tests) pass a request stand-in
+    # that has headers and a url but no query string to read.
+    via_query = (not credentials
+                 and "token" in (getattr(request, "query_params", None) or {}))
+
     if not raw_token:
+        if via_query:
+            _log_query_token_use(request, None, "empty")
         logger.error("❌ AUTH FAIL: No token provided")
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -7495,6 +7546,9 @@ async def get_current_user(
         payload = jwt.decode(raw_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("sub")
         site_mode = payload.get("site_mode", False)
+
+        if via_query:
+            _log_query_token_use(request, user_id, "ok")
 
         if not user_id:
             logger.error("❌ AUTH FAIL: No user_id in token")
@@ -7597,12 +7651,30 @@ async def get_current_user(
         return user_data
 
     except jwt.ExpiredSignatureError:
+        if via_query:
+            _log_query_token_use(request, None, "expired")
         logger.error("❌ AUTH FAIL: Token expired")
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError as e:
+        if via_query:
+            _log_query_token_use(request, None, "invalid")
         logger.error(f"❌ AUTH FAIL: Invalid token - {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid token")
-		
+
+
+def _log_query_token_use(request, user_id, outcome: str) -> None:
+    """One `[query-token]` line per request that authenticated (or tried to)
+    with ?token=. Path without its query string, the subject when the token
+    verified, and the client build, so adoption of the OTA that stops sending
+    it can be read straight off the logs. A logging failure changes nothing."""
+    try:
+        client = (request.headers.get("x-client-version") or "-").strip()[:32]
+        logger.info("[query-token] path=%s user=%s outcome=%s client=%s",
+                    request.url.path, user_id or "-", outcome, client or "-")
+    except Exception:
+        pass
+
+
 async def get_admin_user(current_user = Depends(get_current_user)):
     """THE COMPANY-WIDE ADMIN GATE. admin and owner, and nobody else.
 
@@ -7802,7 +7874,7 @@ DEFAULT_COMPLETION_SOURCE = "admin_attested"
 # The ONE definition of the filed daily record. Imported here so the report
 # preview panel and the compliance detectors read the same document (#291).
 from lib.logbook.daily_jobsite_source import (  # noqa: E402
-    daily_jobsite_filter, as_daily_log_row,
+    daily_jobsite_filter, as_daily_log_row, submitted_logs as _submitted_daily_logs,
 )
 # The agreement to sign electronically, and the wording of every version of it.
 from lib.logbook.cs_attribution import (  # noqa: E402
@@ -9308,7 +9380,9 @@ def project_access_ok(project: dict, project_id: str, current_user: dict) -> boo
 
     There is no platform-operator branch, and this does not add one: the
     operator appears in user administration, project deletion and
-    assignable-project validation, and in no logbook flow.
+    assignable-project validation, and in no logbook flow. His admin actions
+    on a project go through require_project_admin_access, carried only by
+    the routes in OPERATOR_PROJECT_ADMIN_ROUTES and audited on every use.
     """
     if current_user.get("site_mode") or current_user.get("role") == "site_device":
         return str(current_user.get("project_id") or "") == str(project_id)
@@ -9411,6 +9485,88 @@ async def require_project_access(
     current_user = Depends(get_current_user),
 ) -> dict:
     return await _assert_project_access(project_id, current_user)
+
+
+#: The routes that admit the platform operator on a project's admin actions
+#: (operator ruling 2026-10-23, option 2). ONLY routes whose bodies take no
+#: company from the person acting: an operator has no company, so a route
+#: that stamps `get_user_company_id(actor)` on what it writes would write a
+#: record belonging to no tenant. Those eleven (NFC tags, site devices, CS
+#: registrations, checklist assignment, Dropbox scope, DOB config, re-index)
+#: follow in a separate change that takes the company from the project.
+#: tests/test_operator_project_admin_access.py holds this list against the
+#: app's own route table, in both directions.
+OPERATOR_PROJECT_ADMIN_ROUTES = (
+    ("PUT", "/api/projects/{project_id}"),
+    ("DELETE", "/api/projects/{project_id}/nfc-tags/{tag_id}"),
+    ("GET", "/api/projects/{project_id}/site-devices"),
+    ("POST", "/api/projects/{project_id}/safety-staff"),
+    ("GET", "/api/projects/{project_id}/whatsapp/people"),
+    ("PUT", "/api/projects/{project_id}/whatsapp/people/{key}"),
+    ("PUT", "/api/projects/{project_id}/whatsapp/people/{key}/language"),
+    ("DELETE", "/api/projects/{project_id}/whatsapp/people/{key}"),
+    ("POST", "/api/projects/{project_id}/plan-glyphs/run"),
+    ("POST", "/api/projects/{project_id}/plan-index/{file_id}/retry"),
+)
+
+
+async def require_project_admin_access(
+    project_id: str,
+    request: Request,
+    current_user = Depends(get_current_user),
+) -> dict:
+    """THE PROJECT GATE FOR ADMIN ACTIONS: the ordinary three-branch rule
+    (project_access_ok), OR the platform operator - and every operator use
+    is audited.
+
+    ── WHY THIS IS NOT A BRANCH IN project_access_ok ──────────────────────
+
+    project_access_ok decides ~117 routes and cannot tell an admin action
+    from a read of a filed logbook (measured 2026-10-23: 117 routes, 60 of
+    them GETs). An operator branch there would open all of them. This gate
+    is carried only by the admin routes in OPERATOR_PROJECT_ADMIN_ROUTES,
+    each of which also carries its rank gate (get_admin_user /
+    get_project_admin_user), which the operator already passes.
+
+    ── EVERY OPERATOR USE IS AUDITED, OR REFUSED ──────────────────────────
+
+    audit_log swallows a failed write, which is right for an audit of an
+    act that happened anyway. Here the act has not happened yet: an
+    operator reaching a tenant's project with no record of it is the thing
+    this gate exists to prevent, so a failed audit write refuses the
+    request (503) instead. The row says who, which project and company,
+    and the method and path.
+
+    THE OPERATOR IS AUDITED EVEN WHERE THE ORDINARY RULE WOULD ADMIT HIM.
+    The operator account carries no company, so in practice that never
+    happens; if it ever did, "every operator use" would still mean every.
+    """
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id), **ACTIVE_PROJECT_FILTER,
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if is_platform_operator(current_user):
+        row = {
+            "action": "operator_project_admin_access",
+            "user_id": actor_id(current_user) or UNATTRIBUTED_ACTOR,
+            "resource_type": "project",
+            "resource_id": str(project_id),
+            "details": {"company_id": project.get("company_id"),
+                        "method": request.method if request else None,
+                        "path": request.url.path if request else None},
+            "timestamp": datetime.now(timezone.utc),
+        }
+        try:
+            await db.audit_logs.insert_one(row)
+        except Exception as e:
+            logger.error("operator project access NOT recorded, refused: %r", e)
+            raise HTTPException(status_code=503,
+                                detail="Operator access could not be recorded")
+        return project
+    if not project_access_ok(project, project_id, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this project")
+    return project
 
 
 # --- Per-worker tenant isolation ---------------------------------------------
@@ -16423,8 +16579,10 @@ async def get_projects_dob_summary(
                 }},
                 # open = resolution_state NOT in the closed set. null /
                 # absent counts as open (conservative for compliance).
+                # The same rule as wa_alerts.open_dob_violations (the
+                # morning brief, the DM assistant's facts).
                 {"$match": {"resolution_state": {
-                    "$nin": ["certified", "dismissed", "paid", "resolved"]}}},
+                    "$nin": list(wa_alerts.RESOLVED_STATES)}}},
                 {"$group": {"_id": "$project_id", "n": {"$sum": 1}}},
             ],
             "open_complaints": [
@@ -16915,7 +17073,7 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
 
     return ProjectResponse(**serialize_id(project))
 
-@api_router.put("/projects/{project_id}", response_model=ProjectResponse, dependencies=[Depends(require_approved), Depends(require_project_access)])
+@api_router.put("/projects/{project_id}", response_model=ProjectResponse, dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def update_project(project_id: str, project_data: ProjectUpdate,
                          admin = Depends(get_project_admin_user)):
     update_data = {k: v for k, v in project_data.model_dump().items() if v is not None}
@@ -18184,6 +18342,17 @@ async def hard_delete_project(
         _r2_client, R2_BUCKET_NAME, f"wa-audio/{project_id}/",
     )
 
+    # ── R2: the photos posted in the job's groups, BY KEY from their rows.
+    try:
+        _photo_rows = await db.whatsapp_messages.find(
+            {"project_id": {"$in": [project_id, str(project_id)]},
+             "photo.key": {"$exists": True, "$ne": None}},
+            {"photo": 1}).to_list(None)
+        r2_deleted += await _r2_delete_keys(
+            _r2_client, R2_BUCKET_NAME, [k for r in _photo_rows for k in wa_photos.owned_keys(r)])
+    except Exception as e:
+        logger.warning(f"[hard_delete] group photo delete skipped: {e!r}")
+
     # ── R2: prefix sweeps for artefacts NO DB ROW NAMES. A supplement, not the
     # mechanism — every one of these returns 0 here regardless of what is in
     # the bucket, because the endpoint carries the bucket name and a listing
@@ -18257,6 +18426,9 @@ async def hard_delete_project(
         cfg_res = await db.system_config.delete_many({"$or": [
             {"key": f"dob_sync_last:{project_id}"},
             {"key": {"$regex": f"^initial_scan_done:.*:{pid_re}$"}},
+            # The per-BIN first-scan keys (lib/dob_alert_gate.scan_key) end
+            # with the BIN, not the project, so the pattern above misses them.
+            {"key": {"$regex": f"^initial_scan_done:dob:{pid_re}:"}},
             {"key": {"$regex": f"^dob_alert_sent:{pid_re}:"}},
             {"key": {"$regex": f"^daily_report:{pid_re}:"}},
         ]})
@@ -18501,7 +18673,7 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
         "tag_id": tag_data.tag_id,
     }
 
-@api_router.delete("/projects/{project_id}/nfc-tags/{tag_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
+@api_router.delete("/projects/{project_id}/nfc-tags/{tag_id}", dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def remove_nfc_tag_from_project(project_id: str, tag_id: str, admin = Depends(get_admin_user)):
     now = datetime.now(timezone.utc)
     
@@ -24202,6 +24374,9 @@ async def get_daily_log(log_id: str, current_user = Depends(get_current_user), _
     log = await db.daily_logs.find_one({"_id": to_query_id(log_id), "is_deleted": {"$ne": True}})
     if not log:
         raise HTTPException(status_code=404, detail="Daily log not found")
+    # The same gate as PUT, against the STORED project id. This read had none:
+    # any approved account in any company could fetch a log by its id.
+    await _assert_project_access(str(log.get("project_id") or ""), current_user)
     return DailyLogResponse(**serialize_id(log))
 
 @api_router.get("/daily-logs/project/{project_id}")
@@ -24431,7 +24606,7 @@ async def delete_site_device(device_id: str, admin = Depends(get_admin_user)):
     return {"message": "Site device deleted successfully"}
 
 @api_router.get("/projects/{project_id}/site-devices")
-async def get_project_site_devices(project_id: str, admin = Depends(get_project_admin_user), _proj = Depends(require_project_access)):
+async def get_project_site_devices(project_id: str, admin = Depends(get_project_admin_user), _proj = Depends(require_project_admin_access)):
     """Get all site devices for a specific project"""
     devices = await db.site_devices.find(
         {"project_id": project_id, "is_deleted": {"$ne": True}},
@@ -27989,6 +28164,9 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
                 "modified": rec.get("modified", ""),
                 "r2_url": proxy_url or stored_url,
                 "cache_version": rec.get("cache_version", 0),
+                # Dropbox's hash of the bytes; the phone keys its download
+                # cache on it. "" for a direct upload, which has none.
+                "content_hash": rec.get("dropbox_content_hash") or "",
                 "source": rec.get("source", "dropbox_sync"),
                 # "Combined set — skipped" in Plans & Files, with its reason.
                 "index_status": _public_index_status(rec.get("index_status")),
@@ -28965,6 +29143,11 @@ async def upload_project_file(project_id: str, request: Request, file: UploadFil
         except Exception as q_err:
             # The upload has succeeded; a queue write must not fail it.
             logger.error(f"plan index enqueue failed for {filename}: {q_err!r}")
+    if filename.lower().endswith(".pdf"):
+        try:
+            await _enqueue_sheet_tiles(project_id, company_id, file_record, source="upload")
+        except Exception as q_err:
+            logger.error(f"sheet tiles enqueue failed for {filename}: {q_err!r}")
 
     proxy_url = f"/api/projects/{project_id}/files/{file_record['_id']}/content"
     await _log_upload_attempt({
@@ -29408,6 +29591,386 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
     return StreamingResponse(_iter(), media_type=content_type, headers=headers)
 
 
+# ── A DOWNLOAD LINK WORTH FIFTEEN MINUTES, NOT THIRTY DAYS ─────────────────
+#
+# WHAT WAS WRONG. The Download button built `/content?token=<JWT>` from
+# window.localStorage. A phone has no window.localStorage, so the token was
+# empty and the browser opened on {"detail":"Not authenticated"} -- the four
+# non-webhook `token=` lines in the retained Railway logs (2026-10-15..21) are
+# exactly those 401s. On the web it "worked" by putting the 30-day session
+# token in a URL: history, the address bar, anything it was pasted into.
+#
+# WHAT REPLACES IT. The app calls GET /files/{id}/signed-url with its bearer
+# header and gets back a link to /api/files/{id}/download whose HMAC names the
+# file, the principal and an expiry 15 minutes out. NOT SINGLE-USE, ON
+# PURPOSE: a PDF viewer comes back for byte ranges of the same document, and a
+# link that died on its first use would break the second range.
+#
+# THE SIGNATURE IS NOT THE PERMISSION. It proves this server issued the link
+# to this principal for this file. The download re-loads the principal (a
+# deleted user, a pending account, a removed device all refuse) and re-runs the
+# project, company and device allow-list checks the /content route runs, so
+# access revoked inside the fifteen minutes is revoked.
+#
+# THE KEY IS DERIVED FROM JWT_SECRET UNDER ITS OWN LABEL, so a MAC from here
+# can never be presented as anything else signed with that secret.
+FILE_DOWNLOAD_LINK_TTL_SECONDS = 900
+_FILE_DOWNLOAD_KEY_LABEL = b"levelog/file-download-link/v1"
+_FILE_DOWNLOAD_FILE_ID = re.compile(r"^[0-9a-f]{24}$")
+_FILE_DOWNLOAD_SUBJECT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_FILE_DOWNLOAD_EXP = re.compile(r"^\d{1,12}$")
+_FILE_DOWNLOAD_SIG = re.compile(r"^[0-9a-f]{64}$")
+# One range, the only shape R2 answers with a single 206. A multi-range ask
+# is served whole (200), which every client must accept.
+_SINGLE_BYTE_RANGE = re.compile(r"^bytes=(\d+-\d*|-\d+)$")
+
+# FORGED SIGNATURES ARE COUNTED PER ADDRESS, AND NOTHING ELSE IS. The MAC is
+# checked first; only a link whose signature does not verify is counted, and
+# after this many in a minute that address's further forgeries get a 429. An
+# expired link this server did sign is a 401 and never counted; a valid,
+# unexpired link is never refused here, so a PDF viewer's byte ranges -- or an
+# office behind one NAT where another tab sent junk -- always get through. A
+# forged MAC is not reachable by guessing at any rate: this bounds the noise,
+# not the odds. The per-address cap on ALL requests to the route is the
+# middleware's (lib/rate_limits.py).
+SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE = 20
+signed_download_refusal_limiter = RateLimiter(
+    max_requests=SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE, window_seconds=60)
+
+
+def _file_download_signature(file_id: str, kind: str, subject: str, exp: int) -> str:
+    key = hmac.new(JWT_SECRET.encode(), _FILE_DOWNLOAD_KEY_LABEL,
+                   hashlib.sha256).digest()
+    msg = f"{file_id}|{kind}|{subject}|{int(exp)}".encode()
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+def _file_download_principal(current_user: dict) -> tuple:
+    """("d", device id) for a site device, ("u", user id) for a person. The
+    kind is signed too: an id names a row in ONE collection, and a link issued
+    to a device must not be redeemable as a user of the same id."""
+    kind = "d" if _is_site_device(current_user) else "u"
+    return kind, str(current_user.get("id") or current_user.get("_id") or "")
+
+
+def _sign_file_download_path(file_id: str, current_user: dict,
+                             now: Optional[float] = None) -> tuple:
+    """(path, exp). The path is relative so the client joins it to whatever
+    API base it already talks to."""
+    kind, subject = _file_download_principal(current_user)
+    exp = int(_time.time() if now is None else now) + FILE_DOWNLOAD_LINK_TTL_SECONDS
+    sig = _file_download_signature(file_id, kind, subject, exp)
+    return (f"/api/files/{file_id}/download?k={kind}&u={subject}&e={exp}&s={sig}",
+            exp)
+
+
+def _check_file_download_signature(file_id: str, kind: str, subject: str,
+                                   exp: str, sig: str,
+                                   now: Optional[float] = None) -> Optional[str]:
+    """None for a good link, else "invalid" or "expired".
+
+    Shape first, so a malformed field never reaches the message; the MAC before
+    the clock, so a forged link learns nothing about expiry."""
+    if (kind not in ("u", "d")
+            or not _FILE_DOWNLOAD_FILE_ID.match(file_id or "")
+            or not _FILE_DOWNLOAD_SUBJECT.match(subject or "")
+            or not _FILE_DOWNLOAD_EXP.match(exp or "")
+            or not _FILE_DOWNLOAD_SIG.match(sig or "")):
+        return "invalid"
+    expected = _file_download_signature(file_id, kind, subject, int(exp))
+    if not hmac.compare_digest(expected, sig):
+        return "invalid"
+    if int(exp) < int(_time.time() if now is None else now):
+        return "expired"
+    return None
+
+
+def _site_device_is_live(device: dict) -> bool:
+    """A removed or switched-off tablet gets no download link. get_current_user
+    does not ask this of a device JWT; this path does, because a link is the
+    one thing here that outlives the request that minted it."""
+    return not device.get("is_deleted") and device.get("is_active", True) is not False
+
+
+async def _file_download_principal_row(kind: str, subject: str,
+                                       request: Request) -> Optional[dict]:
+    """The principal a link was signed for, re-read NOW, shaped the way
+    get_current_user shapes it so the access helpers read it the same way.
+    None when it no longer exists. A pending/demo user raises the same
+    HTTPException get_current_user would."""
+    if kind == "d":
+        device = await db.site_devices.find_one({"_id": to_query_id(subject)})
+        if not device or not _site_device_is_live(device):
+            return None
+        data = serialize_id(device)
+        data["site_mode"] = True
+        data["role"] = "site_device"
+        if device.get("project_id"):
+            project = await db.projects.find_one(
+                {"_id": to_query_id(device["project_id"])})
+            if project:
+                data["company_id"] = project.get("company_id")
+        return data
+    user = await db.users.find_one(
+        {"_id": to_query_id(subject), "is_deleted": {"$ne": True}})
+    if not user:
+        return None
+    data = serialize_id(user)
+    data["site_mode"] = False
+    _refuse_unapproved_principal(data, request)
+    return data
+
+
+async def _project_file_for(file_id: str, current_user: dict) -> dict:
+    """The project_files row, or the HTTPException the /content route raises:
+    project access, then same company, then the device allow-list. The
+    project comes from the ROW here, not the caller, so there is no
+    caller-supplied id to agree with."""
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one({"_id": rec_oid})
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    project = await _assert_project_access(str(rec.get("project_id") or ""),
+                                           current_user)
+    _same_company_or_403(rec, current_user)
+    if _is_site_device(current_user):
+        device = await db.site_devices.find_one(
+            {"_id": to_query_id(current_user.get("id") or "")})
+        if not device or not _site_device_is_live(device):
+            raise HTTPException(status_code=403, detail="Access denied to this file")
+    if not _site_device_may_retrieve(project, current_user,
+                                     rec.get("dropbox_path") or ""):
+        raise HTTPException(status_code=403, detail="Access denied to this file")
+    return rec
+
+
+@api_router.get("/files/{file_id}/signed-url")
+async def get_file_signed_url(file_id: str, current_user = Depends(get_current_user)):
+    """A 15-minute link to one stored file, for the caller only. See the
+    note above FILE_DOWNLOAD_LINK_TTL_SECONDS."""
+    rec = await _project_file_for(file_id, current_user)
+    if not rec.get("r2_key"):
+        raise HTTPException(status_code=404, detail="File not stored in R2")
+    path, exp = _sign_file_download_path(str(rec["_id"]), current_user)
+    return {
+        "path": path,
+        "url": f"{PUBLIC_API_BASE_URL}{path}",
+        "expires_in": FILE_DOWNLOAD_LINK_TTL_SECONDS,
+        "expires_at": datetime.fromtimestamp(exp, timezone.utc).isoformat(),
+        "filename": rec.get("name") or "file",
+    }
+
+
+# Shown in a browser tab, where the app's locale is not known, so both
+# languages are on the page. (status, EN title, EN hint, ES title, ES hint)
+_DOWNLOAD_REFUSAL_COPY = {
+    # 401, not 403: the link was genuine and has lapsed -- ask again.
+    "expired": (401,
+                "This download link has expired.",
+                "Go back to Levelog and tap Download again.",
+                "Este enlace de descarga ha caducado.",
+                "Vuelva a Levelog y toque Descargar otra vez."),
+    "invalid": (403,
+                "This download link is not valid.",
+                "Go back to Levelog and tap Download again.",
+                "Este enlace de descarga no es válido.",
+                "Vuelva a Levelog y toque Descargar otra vez."),
+    "denied": (403,
+               "You do not have access to this file.",
+               "If you think this is wrong, ask your admin.",
+               "No tiene acceso a este archivo.",
+               "Si cree que es un error, consulte a su administrador."),
+    "missing": (404,
+                "This file is not available for download.",
+                "It may have been removed or may still be syncing. Try again from Levelog.",
+                "Este archivo no está disponible para descargar.",
+                "Puede que se haya eliminado o que aún se esté sincronizando. Inténtelo de nuevo desde Levelog."),
+    "storage": (502,
+                "The file could not be fetched right now.",
+                "Try again in a minute.",
+                "No se pudo obtener el archivo en este momento.",
+                "Inténtelo de nuevo en un minuto."),
+    "throttled": (429,
+                  "Too many download attempts from this connection.",
+                  "Wait a minute, then go back to Levelog and tap Download again.",
+                  "Demasiados intentos de descarga desde esta conexión.",
+                  "Espere un minuto, vuelva a Levelog y toque Descargar otra vez."),
+}
+
+
+def _download_refusal_page(reason: str):
+    from fastapi.responses import HTMLResponse
+    status_code, en_t, en_h, es_t, es_h = _DOWNLOAD_REFUSAL_COPY.get(
+        reason, _DOWNLOAD_REFUSAL_COPY["invalid"])
+    html = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Levelog</title>"
+        "<style>body{font-family:system-ui,sans-serif;max-width:32rem;"
+        "margin:3rem auto;padding:0 1rem;color:#1f2937;background:#fff}"
+        "h1{font-size:1.15rem;margin:0 0 .4rem}p{margin:0 0 1.6rem;color:#4b5563}"
+        "@media(prefers-color-scheme:dark){body{background:#111827;color:#f3f4f6}"
+        "p{color:#9ca3af}}</style></head><body>"
+        f"<h1>{en_t}</h1><p>{en_h}</p>"
+        f"<h1 lang='es'>{es_t}</h1><p lang='es'>{es_h}</p>"
+        "</body></html>")
+    return HTMLResponse(content=html, status_code=status_code,
+                        headers={"Cache-Control": "private, no-store"})
+
+
+@app.get("/api/files/{file_id}/download")
+async def download_signed_file(file_id: str, request: Request,
+                               k: str = "", u: str = "", e: str = "",
+                               s: str = "", dl: str = ""):
+    """Serve one stored file to the holder of a link from /signed-url.
+
+    ON `app`, NOT `api_router`, because the request carries no bearer header:
+    the link IS the credential, and it is checked here before anything else.
+    Honours a single `Range`, so a PDF viewer can fetch the pages it needs.
+    `dl=1` asks for an attachment instead of inline display."""
+    # THE SIGNATURE FIRST, THEN THE LIMITER, AND ONLY FOR A FORGERY. An HMAC
+    # is cheap; refusing a real link is not. An expired link this server
+    # signed is a person who was slow (401, never counted), and a valid,
+    # unexpired one is served whatever its address has been doing -- an
+    # office behind one NAT must not lose its download to somebody else's
+    # junk requests.
+    reason = _check_file_download_signature(file_id, k, u, e, s)
+    if reason == "invalid":
+        from lib.rate_limits import _client_ip
+        client_ip = _client_ip(request)
+        if signed_download_refusal_limiter.recent(client_ip) >= SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE:
+            logger.warning("[signed-download] throttled ip=%s", client_ip)
+            page = _download_refusal_page("throttled")
+            page.headers["Retry-After"] = "60"
+            return page
+        signed_download_refusal_limiter.is_allowed(client_ip)  # records the forgery
+    if reason:
+        logger.info("[signed-download] refused file=%s reason=%s", file_id[:24], reason)
+        return _download_refusal_page(reason)
+    try:
+        principal = await _file_download_principal_row(k, u, request)
+        if principal is None:
+            raise HTTPException(status_code=403, detail="principal gone")
+        rec = await _project_file_for(file_id, principal)
+    except HTTPException as exc:
+        reason = "missing" if exc.status_code == 404 else "denied"
+        logger.info("[signed-download] refused file=%s kind=%s user=%s reason=%s",
+                    file_id, k, u, reason)
+        return _download_refusal_page(reason)
+
+    r2_key = rec.get("r2_key") or ""
+    if not r2_key or not _r2_client or not R2_BUCKET_NAME:
+        return _download_refusal_page("missing")
+
+    get_kwargs = {"Bucket": R2_BUCKET_NAME, "Key": r2_key}
+    asked_range = (request.headers.get("range") or "").strip()
+    if _SINGLE_BYTE_RANGE.match(asked_range):
+        get_kwargs["Range"] = asked_range
+    try:
+        obj = await asyncio.to_thread(_r2_client.get_object, **get_kwargs)
+    except Exception as exc:
+        code = ((getattr(exc, "response", None) or {}).get("Error") or {}).get("Code")
+        if code == "InvalidRange":
+            return Response(status_code=416, headers={
+                "Content-Range": f"bytes */{rec.get('size') or '*'}"})
+        logger.error(f"signed download R2 get failed key={r2_key}: {exc!r}")
+        return _download_refusal_page("storage")
+
+    body = obj["Body"]
+
+    def _iter():
+        try:
+            for chunk in iter(lambda: body.read(65536), b""):
+                yield chunk
+        finally:
+            try:
+                body.close()
+            except Exception:
+                pass
+
+    from urllib.parse import quote as _quote
+    name = str(rec.get("name") or "file")
+    ascii_name = (name.encode("ascii", "ignore").decode() or "file").replace('"', "")
+    disposition = "attachment" if dl == "1" else "inline"
+    headers = {
+        "Content-Disposition": (f'{disposition}; filename="{ascii_name}"; '
+                                f"filename*=UTF-8''{_quote(name)}"),
+        "Accept-Ranges": "bytes",
+        # The bytes are a private project document; nothing shared may keep them.
+        "Cache-Control": "private, no-store",
+    }
+    status_code = 200
+    if obj.get("ContentRange"):
+        headers["Content-Range"] = obj["ContentRange"]
+        status_code = 206
+    if obj.get("ContentLength") is not None:
+        headers["Content-Length"] = str(obj["ContentLength"])
+    content_type = (obj.get("ContentType")
+                    or mimetypes.guess_type(name)[0]
+                    or "application/octet-stream")
+    logger.info("[signed-download] file=%s kind=%s user=%s status=%s",
+                file_id, k, u, status_code)
+    return StreamingResponse(_iter(), status_code=status_code,
+                             media_type=content_type, headers=headers)
+
+
+#: Which architectural TRACK a drawing set belongs to (operator ruling
+#: 2026-10-24). On 588 Boyland the filed AR set governs; the Owner's set
+#: (6/9/26) is a separate track - the owner's post-CO additions, off the DOB
+#: record - not a revision of it, though the index treats it as one and reads
+#: floors 2 to the mezzanine from it. The glyph pass copies the track onto
+#: every row it places against the file, and the render names it: "per the
+#: owner's post-CO set". A file with no track set is the filed track.
+DRAWING_TRACKS = ("filed", "post_co")
+
+
+class DrawingTrackUpdate(BaseModel):
+    track: str
+    label: Optional[str] = None     # how an answer names it; a default is made
+
+
+@api_router.put("/projects/{project_id}/files/{file_id}/drawing-track",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def set_file_drawing_track(project_id: str, file_id: str, body: DrawingTrackUpdate,
+                                 admin=Depends(get_admin_user)):
+    """Set the drawing track of one project file (company admin), audited.
+
+    THE TRACK IS A FACT ABOUT THE SET, NOT ABOUT A PAGE, and only a person
+    who knows the job can state it: nothing printed on the Owner's set says
+    "post-CO". So it is set here, once per file, by an admin of the file's
+    company, and every change writes an audit row with the old and new value.
+    It takes effect on the next glyph pass (rebuild)."""
+    track = str(body.track or "").strip().lower()
+    if track not in DRAWING_TRACKS:
+        raise HTTPException(status_code=422,
+                            detail=f"track must be one of {list(DRAWING_TRACKS)}")
+    label = re.sub(r"\s+", " ", str(body.label or "")).strip()[:120] or None
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one({"_id": rec_oid, "project_id": project_id,
+                                           "is_deleted": {"$ne": True}})
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    _same_company_or_403(rec, admin)
+    if track == "post_co" and not label:
+        label = f"the owner's post-CO set ({rec.get('name') or 'unnamed file'})"
+    before = {"track": rec.get("drawing_track") or "filed",
+              "label": rec.get("drawing_track_label")}
+    await db.project_files.update_one(
+        {"_id": rec_oid},
+        {"$set": {"drawing_track": track, "drawing_track_label": label,
+                  "drawing_track_set_at": datetime.now(timezone.utc)}})
+    await audit_log("project_file_drawing_track", actor_id(admin), "project_file", file_id,
+                    {"project_id": project_id, "file_name": rec.get("name"),
+                     "from": before, "to": {"track": track, "label": label}})
+    return {"file_id": file_id, "track": track, "label": label, "previous": before}
+
+
 @api_router.delete("/projects/{project_id}/files/{file_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def delete_project_file(project_id: str, file_id: str, current_user = Depends(get_current_user)):
     """Hard-delete a project file: removes from R2 and Mongo. Admin/owner only.
@@ -29528,6 +30091,13 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
     pages_deleted += await _r2_delete_prefix(
         _r2_client, R2_BUCKET_NAME, f"plans/{project_id}/{file_id}/",
     )
+
+    try:
+        _SHEET_DECISIONS.forget_file(str(file_id))
+        pages_deleted += await sheet_pipeline.purge(db, _sheet_delete_keys, str(file_id))
+        await db[sheet_pipeline.JOBS].delete_one({"_id": str(file_id)})
+    except Exception as e:
+        logger.error(f"[file-delete] sheet tiles of file_id={file_id} not fully removed: {e!r}")
 
     delete_result = await db.project_files.delete_one({"_id": rec_oid})
 
@@ -29676,11 +30246,10 @@ async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user
     log = await db.daily_logs.find_one({"_id": to_query_id(log_id), "is_deleted": {"$ne": True}})
     if not log:
         raise HTTPException(status_code=404, detail="Daily log not found")
-    
-    # Get project info
-    project = None
-    if log.get("project_id"):
-        project = await db.projects.find_one({"_id": to_query_id(log["project_id"])})
+
+    # Authorized against the STORED project id, like GET and PUT on the same
+    # log. The project it returns is the one the PDF is headed with.
+    project = await _assert_project_access(str(log.get("project_id") or ""), current_user)
     
     project_name = project.get("name", "Unknown") if project else "Unknown"
     project_address = project.get("address") or project.get("location") or project.get("name", "") if project else ""
@@ -33758,6 +34327,7 @@ async def get_activity_chips(
     than let the CP assume the app knows.
     """
     from app.scheduling.sequence_ranking import rank_activities
+    from app.scheduling.trade_taxonomy_v1 import trades_for_roster
 
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
@@ -33790,7 +34360,45 @@ async def get_activity_chips(
         remembered_other_labels=project.get(PROJECT_OTHER_ACTIVITIES_FIELD) or [],
         trade=trade,
     )
+    # THE CREW'S OWN HISTORY, ITS TRADE'S SEQUENCE AND THE CONFIRMED SCHEDULE
+    # (app/scheduling/crew_history.py, trade_sequence.py, schedule_hints.py).
+    # The ranking above keys off the project's single latest day and a fixed rule
+    # table. A crew that was away a week is ranked from where IT left off: after
+    # under-slab MEP, MEP rough-in; after framing, its next stage. A confirmed
+    # schedule's activities planned for the date lift too, in the file's own words.
+    # Only with a `trade` and only with history or a schedule hit; it reorders and
+    # labels, never selects, removes or blocks (Other last); and a read that fails
+    # leaves the ranking exactly as it was.
+    personalized, history_days = False, 0
+    if trade and trades_for_roster(trade):
+        try:
+            from app.scheduling.crew_history import crew_days, personalize
+            from app.scheduling.schedule_hints import hints_for
+            from app.scheduling.sequence_rules_v1 import build_sequence_rules_v1, successors_by_id
+            from app.scheduling.trade_sequence import stages_for
+            from app.scheduling.trade_taxonomy_v1 import NEW_NODES
+            resolved = trades_for_roster(trade)
+            wanted = set(resolved)
+            recent_logs = await db.logbooks.find(prior_query).sort([("date", -1)]).limit(60).to_list(60)
+            days = crew_days(recent_logs, lambda r: bool(wanted & set(trades_for_roster(r.get("trade")))), day)
+            history_days = len(days)
+            hints: dict = {}
+            sched = await db[PROJECT_SCHEDULES].find_one(
+                {"company_id": _company_id_filter(project.get("company_id")), "project_id": str(project_id),
+                 "status": "confirmed"})
+            if sched:
+                hints = hints_for((sched.get("doc") or {}).get("activities") or [], day, ranking.chips)
+            if days or hints:
+                _graph = build_sequence_rules_v1()
+                ranking = personalize(ranking, days, successors_by_id(_graph),
+                                      {n.id: getattr(n, "scope", n.id) for n in list(_graph.nodes) + list(NEW_NODES)},
+                                      stages=stages_for(resolved), scheduled=hints)
+                personalized = True
+        except Exception as e:  # pragma: no cover - a ranking must never fail a day's log
+            logger.warning(f"[activity_chips] crew history skipped: {type(e).__name__}")
     out = ranking.model_dump()
+    out["personalized"] = personalized
+    out["history_days"] = history_days
     # Which day the suggestions were derived from, so the UI can be honest about
     # a stale or absent prior instead of implying the ranking is about today.
     out["prior_date"] = (prior or {}).get("date")
@@ -34631,7 +35239,7 @@ async def get_project_safety_staff(project_id: str, current_user = Depends(get_c
     }).to_list(20)
     return serialize_list(staff)
 
-@api_router.post("/projects/{project_id}/safety-staff", dependencies=[Depends(require_approved), Depends(require_project_access)])
+@api_router.post("/projects/{project_id}/safety-staff", dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def create_safety_staff(project_id: str, data: SafetyStaffCreate, admin = Depends(get_admin_user)):
     """Register a Site Safety Coordinator (SSC) or Site Safety Manager (SSM) for a project."""
     project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
@@ -40504,6 +41112,65 @@ def _cofo_borough_label(nyc_bin: str, project_address: str = "") -> Optional[str
     return None
 
 
+# DEFECT MEASURED (2026 audit): several endpoints in _query_dob_apis asked for
+# `$limit 50` with NO `$order` (DOB NOW Safety 855j-jady, BIS 3h2n-5cm9, job
+# filings, ...), so on a busy building Socrata returned an ARBITRARY 50 rows and
+# the NEWEST records could be silently absent from the project. RULE: every
+# endpoint is ordered newest-first on its issue/filing date, and an ordered
+# endpoint whose first page comes back FULL is read one more page ($offset),
+# capped at DOB_MAX_PAGES pages so a pathological building cannot turn one sync
+# into dozens of requests. The common case (fewer rows than the limit) is still
+# exactly one request per endpoint. WHY paging needs the order: an $offset over
+# an unordered result is not a stable window.
+DOB_MAX_PAGES = 2
+
+
+async def _dob_get_records(http_client, ep: Dict[str, Any]):
+    """GET one endpoint -> (status_code, records_or_None, complete).
+
+    `complete` is False when a needed extra page failed (the caller must not
+    count the source as fully answered - lib/source_sync).
+
+    An `$order` column we guessed wrong makes Socrata answer HTTP 400 for the
+    WHOLE request (the pkdm-hqz6 incident: zero CofO records for months). So a
+    400 on an ordered request is retried ONCE without `$order` - the previous
+    (unordered) behaviour - and logged, rather than losing the source."""
+    params = dict(ep["params"])
+    resp = await http_client.get(ep["url"], params=params)
+    if resp.status_code == 400 and "$order" in params:
+        logger.warning(
+            f"DOB API {ep['url']} rejected $order={params['$order']!r} (400); "
+            f"retrying unordered")
+        params.pop("$order", None)
+        resp = await http_client.get(ep["url"], params=params)
+    if resp.status_code != 200:
+        return resp.status_code, None, False
+    records = resp.json()
+    if not isinstance(records, list):
+        return 200, records, True
+    try:
+        limit = int(params.get("$limit") or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    pages, page = 1, records
+    while ("$order" in params and limit and len(page) >= limit
+           and pages < DOB_MAX_PAGES):
+        more = await http_client.get(
+            ep["url"], params={**params, "$offset": str(limit * pages)})
+        if more.status_code != 200:
+            return 200, records, False
+        page = more.json()
+        if not isinstance(page, list):
+            return 200, records, False
+        records = records + page
+        pages += 1
+    if limit and len(page) >= limit:
+        logger.warning(
+            f"DOB API {ep['url']} still full after {pages} page(s) "
+            f"(limit {limit}); older records not fetched")
+    return 200, records, True
+
+
 async def _query_dob_apis(nyc_bin: str, project_address: str = "",
                           answered: Optional[Dict[str, bool]] = None) -> list:
     """Query NYC Open Data Socrata endpoints by BIN and/or address.
@@ -40530,14 +41197,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/w9ak-ipjd.json",
-            "params": {"bin": nyc_bin, "$limit": "50"},
+            "params": {"bin": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
             "record_type": "job_status",
             "id_field": "job_filing_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/w9ak-ipjd.json",
-            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "50"},
+            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "100", "$order": "filing_date DESC"},
             "record_type": "job_status",
             "id_field": "job_filing_number",
         })
@@ -40546,14 +41213,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/855j-jady.json",
-            "params": {"bin": nyc_bin, "$limit": "50"},
+            "params": {"bin": nyc_bin, "$limit": "250", "$order": "violation_issue_date DESC"},
             "record_type": "violation",
             "id_field": "violation_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/855j-jady.json",
-            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "50"},
+            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "250", "$order": "violation_issue_date DESC"},
             "record_type": "violation",
             "id_field": "violation_number",
         })
@@ -40562,14 +41229,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
-            "params": {"bin": nyc_bin, "$limit": "50"},
+            "params": {"bin": nyc_bin, "$limit": "250", "$order": "issue_date DESC"},
             "record_type": "violation",
             "id_field": "isn_dob_bis_viol",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
-            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "50"},
+            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "250", "$order": "issue_date DESC"},
             "record_type": "violation",
             "id_field": "isn_dob_bis_viol",
         })
@@ -40578,7 +41245,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/6bgk-3dad.json",
-            "params": {"bin": nyc_bin, "$limit": "100", "$order": "issue_date DESC"},
+            "params": {"bin": nyc_bin, "$limit": "250", "$order": "issue_date DESC"},
             "record_type": "violation",
             "id_field": "ecb_violation_number",
         })
@@ -40661,14 +41328,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/eabe-havv.json",
-            "params": {"bin": nyc_bin, "$limit": "50", "$order": "date_entered DESC"},
+            "params": {"bin": nyc_bin, "$limit": "250", "$order": "date_entered DESC"},
             "record_type": "complaint",
             "id_field": "complaint_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/eabe-havv.json",
-            "params": {"house_number": house_num, "$where": f"upper(house_street) like '%{street_name}%'", "$limit": "50", "$order": "date_entered DESC"},
+            "params": {"house_number": house_num, "$where": f"upper(house_street) like '%{street_name}%'", "$limit": "250", "$order": "date_entered DESC"},
             "record_type": "complaint",
             "id_field": "complaint_number",
         })
@@ -40689,7 +41356,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/3usq-5cid.json",
-            "params": {"bin": nyc_bin, "$limit": "50", "$order": "issue_date DESC"},
+            "params": {"bin": nyc_bin, "$limit": "100", "$order": "issue_date DESC"},
             "record_type": "swo",
             "id_field": "stop_work_order_number",
         })
@@ -40699,7 +41366,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
             "params": {
                 "house_number": house_num,
                 "$where": f"upper(street_name) like '%{street_name}%'",
-                "$limit": "50",
+                "$limit": "100",
                 "$order": "issue_date DESC",
             },
             "record_type": "swo",
@@ -40794,7 +41461,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/xubg-57si.json",
-            "params": {"bin": nyc_bin, "$limit": "50", "$order": "filing_date DESC"},
+            "params": {"bin": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
             "record_type": "facade_fisp",
             "id_field": "filing_number",
         })
@@ -40804,7 +41471,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
             "params": {
                 "house_number": house_num,
                 "$where": f"upper(street_name) like '%{street_name}%'",
-                "$limit": "50",
+                "$limit": "100",
                 "$order": "filing_date DESC",
             },
             "record_type": "facade_fisp",
@@ -40816,7 +41483,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/52dp-yji6.json",
-            "params": {"bin_number": nyc_bin, "$limit": "50", "$order": "report_filing_date DESC"},
+            "params": {"bin_number": nyc_bin, "$limit": "100", "$order": "report_filing_date DESC"},
             "record_type": "boiler",
             "id_field": "tracking_number",
         })
@@ -40847,10 +41514,10 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
             kept_after_dedup = 0
             ok = False
             try:
-                resp = await http_client.get(ep["url"], params=ep["params"])
-                if resp.status_code == 200:
-                    records = resp.json()
-                    ok = isinstance(records, list)
+                status_code, records, complete = await _dob_get_records(
+                    http_client, ep)
+                if status_code == 200:
+                    ok = isinstance(records, list) and complete
                     if not isinstance(records, list):
                         records = []
                     raw_returned = len(records)
@@ -40934,7 +41601,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
                                 rec["_record_type"] = "swo"
                         all_records.append(rec)
                 else:
-                    logger.warning(f"DOB API {ep['url']} returned {resp.status_code}")
+                    logger.warning(f"DOB API {ep['url']} returned {status_code}")
             except Exception as e:
                 ok = False
                 logger.error(f"DOB API error {ep['url']}: {e}")
@@ -41045,8 +41712,13 @@ async def _critical_dob_alert_recipients(project: dict) -> List[str]:
     return out
 
 
-async def _send_critical_dob_alert(project: dict, dob_log: dict):
+async def _send_critical_dob_alert(project: dict, dob_log: dict, *, event: str):
     """Send a notification email about a DOB record that needs attention.
+
+    `event` is required, one of lib/dob_alert_gate.EVENTS: "new" for a first
+    sighting that passed new_alert_refusal (not closed, received by DOB within
+    2 days, its BIN past its first pass); "swo" / "vacate" for an update that
+    issued that order. No other update emails (operator ruling 2026-10-22).
 
     Deliberately plain and conversational. All-caps subjects, red
     banners, bracketed "[CRITICAL]" tags, and heavy emoji push spam
@@ -41077,11 +41749,21 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     else:
         detected_str = str(detected_at)
 
+    # Which event, and the record's own facts -- its number, the date DOB
+    # received it and its status -- so a reader can see at a glance how old it
+    # is and whether it is still open (lib/dob_alert_gate.COPY: EN and ES).
+    head_en = dob_alert_gate.headline(event, rt, project_name, "en")
+    head_es = dob_alert_gate.headline(event, rt, project_name, "es")
+    subject, intro, intro_es = head_en["subject"], head_en["intro"], head_es["intro"]
+    line_en = dob_alert_gate.record_line(dob_log, rt, "en")
+    line_es = dob_alert_gate.record_line(dob_log, rt, "es")
+
     # Plaintext alternative: present-tense, human, no urgency language.
     link_line = f"\n\nDetails: {dob_link}" if dob_link else ""
     text_body = (
         f"Hi,\n\n"
-        f"Levelog picked up a new {rt} on {project_name}.\n\n"
+        f"{intro}\n{intro_es}\n\n"
+        f"{line_en}\n{line_es}\n\n"
         f"Summary: {summary}\n\n"
         f"Recommended next step: {next_action}\n\n"
         f"Detected {detected_str}."
@@ -41108,12 +41790,13 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     <tr><td style="padding:24px 28px;">
       <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
       <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">
-        New {rt} on {project_name}
+        {subject}
       </h1>
       <p style="margin:0 0 14px;font-size:15px;">Hi,</p>
-      <p style="margin:0 0 14px;font-size:15px;">
-        Levelog picked up a new {rt} on <strong>{project_name}</strong>. Here are the details:
-      </p>
+      <p style="margin:0 0 4px;font-size:15px;">{intro}</p>
+      <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">{intro_es}</p>
+      <p style="margin:0 0 4px;font-size:15px;"><strong>{line_en}</strong></p>
+      <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">{line_es}</p>
       <p style="margin:0 0 14px;font-size:15px;"><strong>Summary:</strong> {summary}</p>
       <p style="margin:0 0 14px;font-size:15px;"><strong>Recommended next step:</strong> {next_action}</p>
       <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">Detected {detected_str}.</p>
@@ -41128,8 +41811,6 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
   </table>
 </body>
 </html>"""
-
-    subject = f"New {rt} on {project_name}"
 
     # MR.14 fix — route through lib/notifications.send_notification.
     # That helper provides:
@@ -41146,7 +41827,12 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     # idempotency check guarantees one alert per record per recipient
     # per 23 hours, regardless of how many polls fire in between.
     raw_dob_id = dob_log.get("raw_dob_id") or ""
-    entity_id = f"dob_log:{raw_dob_id}" if raw_dob_id else f"project:{project.get('_id')}"
+    # Per record AND event: send_notification's 23h idempotency keys on this
+    # id, so with the bare record id a lift three hours after the issue email
+    # would be swallowed. "new" keeps the historical id, so idempotency for
+    # emails already sent carries across the deploy.
+    entity_id = (f"dob_log:{raw_dob_id}" + ("" if event == "new" else f":{event}")
+                 if raw_dob_id else f"project:{project.get('_id')}")
     from lib.notifications import send_notification
     for recipient in recipients:
         try:
@@ -41164,6 +41850,8 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
                     "record_type": rt_raw,
                     "raw_dob_id": raw_dob_id,
                     "severity": dob_log.get("severity"),
+                    "event": event,
+                    "received_by_dob": str(dob_alert_gate.received_date(dob_log) or ""),
                 },
             )
         except Exception as e:
@@ -41214,6 +41902,63 @@ async def _initial_scan_done(project_id: str, source: str) -> bool:
         return True
 
 
+async def _bin_scan_done(project_id: str, bin_: str, own_bin: str) -> bool:
+    """Has the DOB sync finished a full pass of `bin_` for this project?
+    Keyed per project AND per BIN (lib/dob_alert_gate.scan_key), so a BIN added
+    to a project later has a silent first pass of its own. The legacy
+    per-project key still answers for the project's OWN BIN: those records have
+    been scanned all along, and requiring a new key for them would mute one
+    sync of genuine alerts on every project at deploy."""
+    if not project_id:
+        return False
+    keys = [dob_alert_gate.scan_key(project_id, bin_)] if bin_ else []
+    if not bin_ or bin_ == own_bin:
+        keys.append(f"initial_scan_done:dob:{project_id}")
+    try:
+        return bool(await db.system_config.find_one({"key": {"$in": keys}}))
+    except Exception as e:
+        logger.warning(f"bin scan state read failed: {type(e).__name__}")
+        # As _initial_scan_done: err toward "done" -- the age and closed
+        # rules (lib/dob_alert_gate) still stop a backfilled record.
+        return True
+
+
+async def _stamp_order_issued(row_id, order: str, now: datetime) -> None:
+    """Mark the row an UPDATE put under a Stop Work Order / vacate order, so
+    the GC group alerts can post it once (lib/dob_alert_gate.gc_order_items)."""
+    try:
+        await db.dob_logs.update_one(
+            {"_id": row_id}, {"$set": {"order_issued": {"kind": order, "at": now}}})
+    except Exception as e:
+        logger.warning(f"order stamp failed: {type(e).__name__}")
+
+
+async def _stamp_order_lifted(row_id, which: str, now: datetime) -> None:
+    """Mark the row an UPDATE lifted a SWO / vacate order on in full, so the GC
+    group alerts post it once, in green (lib/dob_alert_gate.gc_order_lifted_items)."""
+    try:
+        await db.dob_logs.update_one(
+            {"_id": row_id}, {"$set": {"order_lifted": {"kind": which, "at": now}}})
+    except Exception as e:
+        logger.warning(f"order-lifted stamp failed: {type(e).__name__}")
+
+
+async def _mark_bins_scanned(project_id: str, bins) -> None:
+    """Record a finished DOB pass for each real BIN in `bins`."""
+    now = datetime.now(timezone.utc)
+    for b in sorted({str(b) for b in (bins or []) if b and not _is_placeholder_bin(str(b))}):
+        key = dob_alert_gate.scan_key(project_id, b)
+        try:
+            await db.system_config.update_one(
+                {"key": key},
+                {"$set": {"key": key, "source": "dob", "project_id": project_id,
+                          "bin": b, "updated_at": now},
+                 "$setOnInsert": {"completed_at": now}},
+                upsert=True)
+        except Exception as e:
+            logger.warning(f"bin scan state write failed: {type(e).__name__}")
+
+
 async def _mark_initial_scan_done(project_id: str, source: str) -> None:
     if not project_id or not source:
         return
@@ -41232,15 +41977,25 @@ async def _mark_initial_scan_done(project_id: str, source: str) -> None:
         logger.warning(f"initial_scan mark failed: {e}")
 
 
+def _dob_alert_key(project_id: str, raw_dob_id: str, event: Optional[str] = None) -> str:
+    """system_config key of the 24h throttle: per project, record AND event
+    (operator ruling 2026-10-22). A Stop Work Order issued and then lifted
+    three hours later is two events, and both email; the same event twice in
+    a day is one."""
+    base = f"dob_alert_sent:{project_id}:{raw_dob_id}"
+    return f"{base}:{event}" if event else base
+
+
 async def _dob_alert_recently_sent(project_id: str, raw_dob_id: str,
-                                     window_hours: int = _DOB_ALERT_THROTTLE_HOURS) -> bool:
-    """Returns True if we've already emailed this (project, record) combo
-    inside the window. Keyed on `dob_alert_sent:{project}:{raw_dob_id}`."""
+                                     window_hours: int = _DOB_ALERT_THROTTLE_HOURS,
+                                     event: Optional[str] = None) -> bool:
+    """Returns True if we've already emailed this (project, record, event)
+    inside the window. Keyed by _dob_alert_key."""
     if not project_id or not raw_dob_id:
         return False
     try:
         doc = await db.system_config.find_one(
-            {"key": f"dob_alert_sent:{project_id}:{raw_dob_id}"}
+            {"key": _dob_alert_key(project_id, raw_dob_id, event)}
         )
         if not doc:
             return False
@@ -41256,14 +42011,16 @@ async def _dob_alert_recently_sent(project_id: str, raw_dob_id: str,
         return False  # on error, err toward sending rather than silent-drop
 
 
-async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str) -> None:
+async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str,
+                               event: Optional[str] = None) -> None:
     if not project_id or not raw_dob_id:
         return
+    key = _dob_alert_key(project_id, raw_dob_id, event)
     try:
         await db.system_config.update_one(
-            {"key": f"dob_alert_sent:{project_id}:{raw_dob_id}"},
+            {"key": key},
             {"$set": {
-                "key":           f"dob_alert_sent:{project_id}:{raw_dob_id}",
+                "key":           key,
                 "last_alert_at": datetime.now(timezone.utc),
             }},
             upsert=True,
@@ -41273,7 +42030,7 @@ async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str) -> None:
 
 
 async def _send_critical_dob_alert_throttled(
-    project: dict, dob_log: dict, source: str = "dob",
+    project: dict, dob_log: dict, source: str = "dob", *, event: str,
 ) -> bool:
     """Wrapper that enforces:
 
@@ -41298,16 +42055,17 @@ async def _send_critical_dob_alert_throttled(
         )
         return False
 
-    # Gate 2 — 24h per-record throttle
-    if await _dob_alert_recently_sent(project_id, raw_dob_id):
+    # Gate 2 — 24h throttle, per record AND event (issue, lift, rescind each
+    # separate: ruling 2026-10-22).
+    if await _dob_alert_recently_sent(project_id, raw_dob_id, event=event):
         logger.info(
             f"DOB alert throttled (within 24h) source={source} "
             f"project={project.get('name')} raw_dob_id={raw_dob_id}"
         )
         return False
 
-    await _send_critical_dob_alert(project, dob_log)
-    await _mark_dob_alert_sent(project_id, raw_dob_id)
+    await _send_critical_dob_alert(project, dob_log, event=event)
+    await _mark_dob_alert_sent(project_id, raw_dob_id, event=event)
     return True
 
 
@@ -41528,8 +42286,14 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
         # existing row entirely (no update-in-place); now status
         # transitions (Open → In Progress → Closed) become activity-feed
         # events without losing the prior history.
+        #
+        # DEFECT MEASURED (2026 audit): this lookup was
+        # `{"raw_dob_id": raw_dob_id}` with no project scope. Two projects on
+        # one BBL/address share 311 unique_keys, so the second project found the
+        # first project's row, saw "status unchanged" and silently got no row of
+        # its own. RULE: the lookup is scoped by project_id (as the DOB sync's).
         existing = await db.dob_logs.find_one(
-            {"raw_dob_id": raw_dob_id},
+            {"project_id": project_id, "raw_dob_id": raw_dob_id},
             sort=[("detected_at", -1)],
         )
 
@@ -41560,6 +42324,14 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
             existing.get("current_status") if existing else None
         )
         doc["status_changed_at"] = now
+        # status_history: same contract as the DOB path (lib/status_history).
+        # 311 keeps its new-row-per-change timeline; each new row carries the
+        # prior row's history plus this change so one reader works for all.
+        doc["status_history"] = (
+            status_hist.refreshed_history(
+                existing, current_status, now, changed=True, in_place=False)[0]
+            if existing else status_hist.new_row_history(current_status, now)
+        )
 
         # MR.14 commit 4a — stamp is_seed_transition on every 311
         # dob_log write. Same discriminator + reasoning as DOB-side
@@ -41580,8 +42352,24 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
                 # Fire critical alert through the throttled wrapper.
                 # Initial-scan suppression here means the very first 311
                 # poll for a project quietly backfills the historical
-                # complaints without spamming the owner.
-                await _send_critical_dob_alert_throttled(project, doc, source="311")
+                # complaints without spamming the owner. The same rules as
+                # the DOB sync (lib/dob_alert_gate): a first sighting emails
+                # only if open and received within 2 days; a transition only
+                # if it issued a Stop Work Order or a vacate order.
+                if existing is None:
+                    why = dob_alert_gate.new_alert_refusal(
+                        doc, _Date.fromisoformat(eastern_today()))
+                    if why:
+                        logger.info(f"[dob-alert] 311 not sent as new: reason={why} "
+                                    f"project={project_id} raw_dob_id={doc.get('raw_dob_id')}")
+                    else:
+                        await _send_critical_dob_alert_throttled(
+                            project, doc, source="311", event="new")
+                else:
+                    order = dob_alert_gate.update_issues_order(existing, doc)
+                    if order:
+                        await _send_critical_dob_alert_throttled(
+                            project, doc, source="311", event=order)
 
             # V2.3 Commit 6 — predictive inspection surfacing.
             # Spawn a fire-and-forget similar-case correlation
@@ -41908,6 +42696,27 @@ def _normalize_dob_date_to_iso(raw):
     return None
 
 
+_CLOSED_RESOLUTION_STATES = wa_alerts.RESOLVED_STATES
+
+
+def _swo_resolution_state(rec: dict) -> str:
+    """resolution_state of a 3usq-5cid Stop Work Order record.
+
+    DEFECT MEASURED (2026 audit): this dataset's extractor stored NO
+    resolution_state, and _determine_severity read `current_status` /
+    `violation_category` (fields this dataset does not have; its state is
+    `status`), so a rescinded SWO was 'Action' and 'open' forever. RULE: the
+    status text names a closed outcome (RESCINDED / LIFTED / CLOSED / RESOLVED /
+    DISMISSED ...; whole words, negation-aware - wa_alerts.status_is_closed, the
+    same vocabulary the alerts use) -> 'resolved', the closed class the dashboard
+    counts and the signal classifier already understand; otherwise the generic
+    violation classifier decides (hearing dates etc.), 'open' by default."""
+    status = rec.get("status") or rec.get("current_status") or ""
+    if wa_alerts.status_is_closed(status):
+        return "resolved"
+    return _classify_resolution_state({**rec, "current_status": status})
+
+
 def _extract_swo_fields(rec: dict) -> dict:
     """MR.14 (commit 2b) — extract from the 3usq-5cid Stop Work
     Orders dataset. Status field on this dataset is the SWO's
@@ -41922,6 +42731,7 @@ def _extract_swo_fields(rec: dict) -> dict:
             if "PARTIAL" in str(rec.get("description") or "").upper()
             else "SWO_FULL"
         ),
+        "resolution_state": _swo_resolution_state(rec),
     }
 
 
@@ -42113,6 +42923,11 @@ def _classify_resolution_state(rec: dict) -> str:
     # neither current_status nor violation_category exposes, so a won dispute
     # ("Disputed Successfully") read as OPEN until this was added.
     vstatus = str(rec.get("violation_status") or "").upper()
+    # ECB/OATH (6bgk-3dad) carries its state in `ecb_violation_status`
+    # ("ACTIVE" / "RESOLVE" -- no trailing D), which none of the fields above
+    # expose: a resolved ECB violation read as OPEN and severity 'Action', and
+    # 39558663R would have been emailed as new (2026-10-22).
+    ecb = str(rec.get("ecb_violation_status") or "").upper()
     hearing = rec.get("hearing_date_time") or rec.get("hearing_date") or ""
     disp_date = rec.get("disposition_date") or ""
 
@@ -42125,7 +42940,7 @@ def _classify_resolution_state(rec: dict) -> str:
     # `category`, using substrings that DOB itself uses.
     if any(w in cert_status for w in ["CERTIFIED", "CERTIFICATE", "RESOLVE"]):
         return "certified"
-    if "DISMISS" in current_status or "DISMISS" in category:
+    if "DISMISS" in current_status or "DISMISS" in category or "DISMISS" in ecb:
         return "dismissed"
     # A successful dispute (DOB NOW) resolves the violation in the owner's
     # favor. Match the FULL phrase — "Disputed Unsuccessfully" stays open.
@@ -42135,7 +42950,8 @@ def _classify_resolution_state(rec: dict) -> str:
         return "paid"
     if (any(w in current_status for w in ["RESOLVE", "CLOSED", "RESCIND"])
             or any(w in category for w in ["RESOLVE", "CLOSED", "RESCIND"])
-            or any(w in vstatus for w in ["RESOLVE", "CLOSED", "CURED", "COMPLIED"])):
+            or any(w in vstatus for w in ["RESOLVE", "CLOSED", "CURED", "COMPLIED"])
+            or any(w in ecb for w in ["RESOLVE", "CLOSED"])):
         return "resolved"
     if "CURE" in cert_status or "CURE" in current_status:
         return "cure_pending"
@@ -42246,7 +43062,12 @@ def _extract_violation_fields(rec: dict) -> dict:
         or " — ".join(p for p in (rec.get("device_type"), rec.get("violation_remarks")) if p)
         or None
     )
-    fields["penalty_amount"] = rec.get("penalty_applied") or rec.get("penalty_balance_due") or rec.get("amount_paid") or None
+    # The penalty IMPOSED, never what was paid: the ECB dataset (6bgk-3dad)
+    # spells it `penality_imposed`; reading `amount_paid` stored "0" for an
+    # open $1,250 summons (39558662P). The refresh rewrites stored rows.
+    fields["penalty_amount"] = next(
+        (rec.get(k) for k in ("penality_imposed", "penalty_imposed", "penalty_applied",
+                              "penalty_balance_due") if rec.get(k) not in (None, "")), None)
     fields["respondent"] = rec.get("respondent_name") or rec.get("respondent") or None
     fields["disposition_date"] = rec.get("disposition_date") or rec.get("hearing_date_time") or None
     fields["disposition_comments"] = rec.get("disposition_comments") or rec.get("hearing_status") or None
@@ -42425,6 +43246,20 @@ def _determine_severity(rec: dict, record_type: str) -> str:
             return "Good"
         if any(word in status for word in ["RESOLVED", "DISMISSED", "CLOSED", "CERTIFIED"]):
             return "Good"
+        # DEFECT MEASURED (2026 audit): the two checks above never saw the
+        # fields where these records actually carry their outcome - 855j-jady's
+        # `violation_status` ("Resolved" / "Cured" / "Disputed Successfully")
+        # and the 3usq-5cid SWO's `status` ("rescinded") - so a rescinded SWO
+        # or a resolved DOB NOW violation stayed 'Action' (and was alerted as
+        # critical). RULE: severity agrees with resolution_state, computed by
+        # the same classifiers the extractors store, so the two cannot
+        # diverge: a closed-class state is 'Good'.
+        if record_type == "swo" and rec.get("stop_work_order_number"):
+            state = _swo_resolution_state(rec)
+        else:
+            state = _classify_resolution_state(rec)
+        if state in _CLOSED_RESOLUTION_STATES:
+            return "Good"
         return "Action"
 
     if record_type == "inspection":
@@ -42508,28 +43343,13 @@ def _generate_summary(rec: dict, record_type: str) -> str:
     if record_type == "complaint":
         comp_num = rec.get("complaint_number") or ""
         result = classify_complaint(rec)
-        CATEGORY_DESCRIPTIONS = {
-            "01": "illegal work or work without a permit",
-            "03": "failure to maintain building facade",
-            "05": "work contrary to approved plans",
-            "06": "unsafe construction condition",
-            "09": "illegal conversion or occupancy",
-            "12": "failure to maintain elevator",
-            "14": "demolition without permit",
-            "23": "working without a safety net",
-            "28": "illegal curb cut or sidewalk damage",
-            "30": "debris falling from building",
-            "45": "unsafe scaffolding or sidewalk shed",
-            "49": "construction noise outside allowed hours",
-            "59": "work without required DOB inspection",
-            "63": "illegal fence or retaining wall",
-            "71": "crane or derrick safety violation",
-            "83": "failure to safeguard persons or property",
-            "91": "building under construction in unsafe condition",
-        }
-        cat_code = rec.get("complaint_category", "")
-        desc = CATEGORY_DESCRIPTIONS.get(cat_code, result['category_label'])
-        summary = f"Complaint about {desc.lower()}. {result['disposition_label']}."
+        # DOB's own category label (classify_complaint's sourced table). A
+        # hand-written CATEGORY_DESCRIPTIONS dict used to override it here and
+        # was wrong for all 17 codes it listed -- 05 "Permit - None" read "work
+        # contrary to approved plans" -- and the alert emails and activity
+        # feed quote this summary. The in-place refresh rewrites it on the
+        # next sync (ai_summary is not in _IN_PLACE_KEEP).
+        summary = f"Complaint: {result['category_label']}. {result['disposition_label']}."
         if comp_num:
             summary = f"#{comp_num}: {summary}"
         return summary
@@ -42785,6 +43605,89 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
     return _bis_bin_overview_url(bin_val)
 
 
+# Keys of a freshly built dob_log that an in-place refresh must NOT overwrite:
+# identity, ownership, creation facts and the state the refresh itself stamps.
+_IN_PLACE_KEEP = frozenset({
+    "project_id", "company_id", "nyc_bin", "record_type", "raw_dob_id",
+    "detected_at", "created_at", "updated_at", "is_deleted", "read_by_user",
+    "previous_status", "status_changed_at", "is_seed_transition",
+    "status_history",
+})
+
+
+def _plan_in_place_refresh(existing: dict, dob_log: dict, now: datetime):
+    """What to write when a NON-PERMIT record that already has a row is seen
+    again: (update_fields, changed, legacy). Pure - no database.
+
+    `dob_log` is the document the insert path just built from the API record,
+    so every status-bearing field (resolution_state, status, closed_date,
+    disposition_*, hearing_date, penalty_amount, compliance_deadline,
+    severity, signal_kind, ...) comes from the SAME extractors and classifiers
+    the insert uses and cannot diverge from them.
+
+      changed  the normalised status differs from the stored current_status
+               (the comparator the permit/311 paths already use).
+      legacy   the row has no status_history (pre-dates the field).
+
+    On a change: previous_status / status_changed_at / current_status are set
+    and ONE status_history entry is appended ('sync', or 'legacy_first_refresh'
+    for a legacy row, whose history is first synthesised as
+    [first_seen: stored status @ detected_at]). A legacy change also stamps
+    is_seed_transition=True (see the alert-safety note at the call site); a
+    genuine change stamps False, so a row once seeded surfaces in the activity
+    feed again when something real happens to it. Only fields that differ are
+    written; an empty dict means nothing to do."""
+    current_status = dob_log.get("current_status")
+    changed = existing.get("current_status") != current_status
+    history, legacy = status_hist.refreshed_history(
+        existing, current_status, now, changed=changed, in_place=True)
+    update = {k: v for k, v in dob_log.items()
+              if k not in _IN_PLACE_KEEP and existing.get(k) != v}
+    if changed:
+        update["previous_status"] = existing.get("current_status")
+        update["status_changed_at"] = now
+        update["is_seed_transition"] = legacy
+    if changed or legacy:
+        update["status_history"] = history
+    if update:
+        update["updated_at"] = now
+    return update, changed, legacy
+
+
+async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
+                          answered: Optional[Dict[str, bool]] = None,
+                          fetched_bins: Optional[list] = None) -> list:
+    """`records` plus everything filed under the job site's OTHER building BINs
+    (lib/dob_site_bins). A BIN counts only when one of its jobs is also a job
+    under the project's BIN; a neighbour's BIN is never fetched. Never raises: a
+    failure leaves the sync exactly as it was.
+
+    Each record added here is tagged `_site_bin` and each BIN fetched is
+    appended to `fetched_bins`, so the first pass of a newly added BIN is
+    silent (lib/dob_alert_gate.scan_key) like any other backfill."""
+    try:
+        if not nyc_bin or _is_placeholder_bin(nyc_bin):
+            return records
+        added: list = []
+        for cand in dob_site_bins.candidate_bins(records, nyc_bin):
+            found = await _query_dob_apis(cand, "", answered)
+            if dob_site_bins.shares_job(records, nyc_bin, found, cand):
+                for r in found:
+                    if isinstance(r, dict):
+                        r["_site_bin"] = cand
+                added += dob_site_bins.new_records(list(records) + added, found)
+                if fetched_bins is not None:
+                    fetched_bins.append(cand)
+                logger.info(f"[dob-sync] project {project_id}: BIN {cand} is part of the site "
+                            f"(shares a job with BIN {nyc_bin}); {len(found)} records")
+            else:
+                logger.info(f"[dob-sync] project {project_id}: BIN {cand} shares no job with BIN {nyc_bin}; not fetched")
+        return list(records) + added
+    except Exception as e:
+        logger.warning(f"[dob-sync] site BINs skipped for project {project_id}: {type(e).__name__}")
+        return records
+
+
 async def run_dob_sync_for_project(project: dict) -> list:
     """Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual.
 
@@ -42852,6 +43755,8 @@ async def run_dob_sync_for_project(project: dict) -> list:
             & set(source_sync.DOB_SOURCES))
 
     raw_records = await _query_dob_apis(nyc_bin, project_address, answered)
+    site_bins: list = []
+    raw_records = await _with_site_bins(project_id, nyc_bin, raw_records, answered, site_bins)
 
     # --- BIN auto-heal ---
     # Scan returned records for a real BIN. DOB's datasets expose the
@@ -43000,21 +43905,31 @@ async def run_dob_sync_for_project(project: dict) -> list:
             else:
                 work_suffix = rec.get("work_type") or rec.get("permit_type") or rec.get("permit_sequence__") or ""
                 raw_id = f"{raw_id}:{work_suffix}" if work_suffix else raw_id
-        # NOTE: we don't skip on existing_ids for permits here — the
-        # update path below refreshes status/expiration from the newest
-        # filing. Only skip for non-permit types where the record is
-        # immutable.
-        if rec.get("_record_type") != "permit" and raw_id in existing_ids:
-            continue
+        # DEFECT MEASURED (2026 audit): this used to read
+        #     if rec.get("_record_type") != "permit" and raw_id in existing_ids:
+        #         continue
+        # i.e. every non-permit record (violation, DOB complaint, SWO,
+        # job_status, cofo, boiler, elevator, facade) was INSERT-ONCE and its
+        # status a first-sight snapshot: a rescinded Stop Work Order stayed
+        # 'open', a dismissed violation 'active', hearing outcomes never
+        # refreshed. RULE: an already-known non-permit record now goes through
+        # the loop below and is refreshed IN PLACE (one row per record, so every
+        # existing consumer stays correct) with its status_history extended -
+        # see _plan_in_place_refresh. Permits and 311 keep their
+        # new-row-per-change timeline.
         new_records.append((raw_id, rec))
  
     if not new_records:
         logger.info(f"DOB sync for project {project_id}: no new records")
         await _mark_synced()
+        await _mark_bins_scanned(project_id, [nyc_bin] + site_bins)
         return []
  
     inserted_logs = []
     now = datetime.now(timezone.utc)
+    # DOB dates are New York calendar dates.
+    alert_today = _Date.fromisoformat(eastern_today())
+    bin_scanned: Dict[str, bool] = {}
  
     for raw_id, rec in new_records:
         try:
@@ -43105,11 +44020,64 @@ async def run_dob_sync_for_project(project: dict) -> list:
             #   • Status unchanged → update mutable fields on the
             #     existing row (severity / summary / next_action may
             #     have shifted even when status didn't).
-            existing = await db.dob_logs.find_one(
-                {"raw_dob_id": raw_id},
-                sort=[("detected_at", -1)],
-            )
-            if existing and existing.get("current_status") == current_status:
+            #
+            # DEFECT MEASURED (2026 audit): this lookup was
+            # `{"raw_dob_id": raw_id}` - NOT scoped by project. Two projects on
+            # the same BIN/address share raw ids, so the second project found the
+            # FIRST project's row, took the "unchanged" branch, and silently got
+            # no row of its own. RULE: look up inside THIS project (the same
+            # scope as existing_ids above). A non-permit id absent from
+            # existing_ids cannot exist, so it skips the query (no extra round
+            # trip over the old insert-once cost for new records).
+            existing = None
+            if record_type == "permit" or raw_id in existing_ids:
+                existing = await db.dob_logs.find_one(
+                    {"project_id": project_id, "raw_dob_id": raw_id},
+                    sort=[("detected_at", -1)],
+                )
+            if existing and record_type != "permit":
+                # ── NON-PERMIT, ALREADY KNOWN: refresh in place ──
+                if existing.get("is_deleted") is True:
+                    continue   # a deleted row stays deleted (old insert-once rule)
+                update, changed, legacy = _plan_in_place_refresh(
+                    existing, dob_log, now)
+                if update:
+                    await db.dob_logs.update_one(
+                        {"_id": existing["_id"]}, {"$set": update})
+                # ALERT SAFETY. Only a GENUINE change alerts: the row already
+                # had status_history, so its stored status was the product of
+                # this system's own earlier observation and the difference is
+                # new. A LEGACY row's first refresh (`legacy`) is stamped
+                # is_seed_transition and is SILENT: it was a never-refreshed
+                # first-sight snapshot, the change may be months old, and
+                # alerting on the whole backlog at deploy is the ~80-duplicate
+                # incident (2026-05-03) again. A status that did not change
+                # never alerts here (field refreshes are silent). Closed
+                # outcomes (rescinded / resolved / dismissed) are severity
+                # 'Good' and never email as critical. The throttled wrapper
+                # still applies initial-scan suppression and the 24h per-record
+                # dedupe.
+                # An UPDATE never emails (operator ruling 2026-10-22) -- unless
+                # it issued a Stop Work Order or a vacate order. Checked on
+                # every non-legacy refresh, not only a status change: DOB
+                # serves an A3 "Full Stop Work Order" as a new DISPOSITION on a
+                # complaint whose status stays ACTIVE. The 24h throttle and the
+                # before/after comparison keep it to one email.
+                if not legacy:
+                    after = {**existing, **dob_log, **(update or {}),
+                             "id": str(existing["_id"])}
+                    order = dob_alert_gate.update_issues_order(existing, after)
+                    if order:
+                        await _stamp_order_issued(existing["_id"], order, now)
+                        await _send_critical_dob_alert_throttled(
+                            project, after, source="dob", event=order)
+                    # ...or lifted one in full: the second update exception.
+                    lifted = dob_alert_gate.update_lifts_order(existing, after)
+                    if lifted:
+                        await _stamp_order_lifted(existing["_id"], lifted, now)
+                        await _send_critical_dob_alert_throttled(
+                            project, after, source="dob", event=f"{lifted}_lifted")
+            elif existing and existing.get("current_status") == current_status:
                 # No status change — refresh mutable fields. Don't
                 # insert a duplicate.
                 update_fields = {
@@ -43120,6 +44088,13 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     "updated_at": now,
                     **extra_fields,
                 }
+                if not isinstance(existing.get("status_history"), list) \
+                        or not existing.get("status_history"):
+                    # A legacy permit row gains its history on this write (no
+                    # change, so just the synthesised first_seen entry).
+                    update_fields["status_history"] = status_hist.refreshed_history(
+                        existing, current_status, now,
+                        changed=False, in_place=False)[0]
                 await db.dob_logs.update_one(
                     {"_id": existing["_id"]},
                     {"$set": update_fields},
@@ -43128,9 +44103,18 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # Only alert if severity escalated to Action — and
                 # route through the throttled wrapper so initial-scan
                 # suppression + 24h dedupe apply.
-                old_severity = existing.get("severity", "")
-                if severity == "Action" and old_severity != "Action":
-                    await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
+                # A field refresh is an update: it emails only when it issued
+                # a Stop Work Order or a vacate order (ruling 2026-10-22).
+                order = dob_alert_gate.update_issues_order(existing, dob_log)
+                if order:
+                    await _stamp_order_issued(existing["_id"], order, now)
+                    await _send_critical_dob_alert_throttled(
+                        project, dob_log, source="dob", event=order)
+                lifted = dob_alert_gate.update_lifts_order(existing, dob_log)
+                if lifted:
+                    await _stamp_order_lifted(existing["_id"], lifted, now)
+                    await _send_critical_dob_alert_throttled(
+                        project, dob_log, source="dob", event=f"{lifted}_lifted")
             else:
                 # Either first time OR status changed. Stamp
                 # transition markers and insert a new row. The
@@ -43140,6 +44124,21 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     existing.get("current_status") if existing else None
                 )
                 dob_log["status_changed_at"] = now
+                # status_history: a brand-new record starts with one
+                # first_seen entry; a permit diff row carries the prior row's
+                # history (synthesised if that row is legacy) plus this change,
+                # so the LATEST row alone answers "status as of" (lib/
+                # status_history). A permit's stored status was refreshed on
+                # every sync, so its change is a real event ('sync'), never a
+                # legacy_first_refresh seed - the is_seed_transition rule below
+                # is unchanged.
+                dob_log["status_history"] = (
+                    status_hist.refreshed_history(
+                        existing, current_status, now,
+                        changed=True, in_place=False)[0]
+                    if existing else
+                    status_hist.new_row_history(current_status, now)
+                )
                 # MR.14 commit 4a — stamp is_seed_transition on the
                 # doc itself. Replaces the time-window-env-var
                 # heuristic from commit 2b/3 with a durable, stored
@@ -43153,11 +44152,52 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     and "current_status" not in existing
                 )
                 dob_log["is_seed_transition"] = is_seed_transition
+                site_bin = str(rec.get("_site_bin") or nyc_bin or "")
+                order = lifted = None
+                if existing is None:
+                    # Which BIN it came from, and whether that BIN's first pass
+                    # is under way: the GC group alerts read both from the row
+                    # (silent first pass, one summary per newly added BIN).
+                    if site_bin not in bin_scanned:
+                        bin_scanned[site_bin] = await _bin_scan_done(
+                            project_id, site_bin, nyc_bin)
+                    if rec.get("_site_bin"):
+                        dob_log["site_bin"] = str(rec["_site_bin"])
+                    dob_log["bin_first_pass"] = not bin_scanned[site_bin]
+                elif not is_seed_transition:
+                    # A change row (permit diff / transition): an update.
+                    order = dob_alert_gate.update_issues_order(existing, dob_log)
+                    if order:
+                        dob_log["order_issued"] = {"kind": order, "at": now}
+                    lifted = dob_alert_gate.update_lifts_order(existing, dob_log)
+                    if lifted:
+                        dob_log["order_lifted"] = {"kind": lifted, "at": now}
                 result = await db.dob_logs.insert_one(dob_log)
                 dob_log["id"] = str(result.inserted_id)
                 inserted_logs.append(dob_log)
-                if severity == "Action" and not is_seed_transition:
-                    await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
+                if existing is not None and not is_seed_transition:
+                    if order:
+                        await _send_critical_dob_alert_throttled(
+                            project, dob_log, source="dob", event=order)
+                    if dob_log.get("order_lifted"):
+                        await _send_critical_dob_alert_throttled(
+                            project, dob_log, source="dob",
+                            event=f"{dob_log['order_lifted']['kind']}_lifted")
+                elif severity == "Action" and not is_seed_transition:
+                    if existing is None:
+                        # A FIRST SIGHTING. Announced as new only if the BIN it
+                        # came from has had its first pass, it is not closed,
+                        # and DOB received it within the last 2 days
+                        # (lib/dob_alert_gate). Otherwise stored, not sent.
+                        why = dob_alert_gate.new_alert_refusal(
+                            dob_log, alert_today, bin_scanned=bin_scanned[site_bin])
+                        if why:
+                            logger.info(
+                                f"[dob-alert] not sent as new: reason={why} "
+                                f"project={project_id} bin={site_bin} raw_dob_id={raw_id}")
+                        else:
+                            await _send_critical_dob_alert_throttled(
+                                project, dob_log, source="dob", event="new")
         except Exception as e:
             failed_types.add(rec.get("_record_type"))
             logger.error(f"Failed to process dob_log for raw_id={raw_id} type={rec.get('_record_type')}: {e}", exc_info=True)
@@ -43250,6 +44290,9 @@ async def run_dob_sync_for_project(project: dict) -> list:
     # can send email alerts. The first scan of a newly-tracked project
     # pulls in the entire historical backlog — silent during that run.
     await _mark_initial_scan_done(project_id, "dob")
+    # ...and per BIN: a site BIN fetched for the first time this run is
+    # backfill too, and its first pass ends here.
+    await _mark_bins_scanned(project_id, [nyc_bin] + site_bins)
 
     # Rolling per-project sync freshness. Distinct from first_poll_completed_at,
     # which is written ONCE (guarded above) and therefore answers "has this
@@ -44530,6 +45573,8 @@ async def get_dob_logs(
             log["body"] = rendered.get("body") or ""
             log["severity_kind"] = rendered.get("severity") or "info"
             log["action_text"] = rendered.get("action_text") or log.get("next_action") or ""
+            log["penalty_hearing_pending"] = (
+                dob_penalty.hearing_pending(log) if log.get("penalty_amount") else None)
 
             # Apply post-render filters before serializing.
             if severity_kind and log["severity_kind"] != severity_kind:
@@ -44837,33 +45882,120 @@ async def reset_and_resync_dob_logs(project_id: str, current_user=Depends(get_ad
 # See docs/audits/permit-expiry-claim-2026-08-27.md.
 
 
-async def check_and_send_reports():
-    """Called every minute. Sends report emails for projects whose send time matches now."""
-    if not RESEND_API_KEY:
-        return
-    now = datetime.now(timezone.utc)
+async def _daily_report_whatsapp(project: dict, people: List[dict], today: str,
+                                 pdf_bytes: Optional[bytes], logbook_count: int, checkin_count: int,
+                                 now: datetime) -> dict:
+    """The daily report by WhatsApp (Project → Reports, Daily): the short
+    message and the PDF to each person chosen -- once (the ledger), held
+    over Shabbos / Yom Tov, retried when WhatsApp fails."""
+    doc = await _daily_report_doc(project, today, pdf_bytes, logbook_count, checkin_count, now)
+    pid, cid = str(project["_id"]), str(project.get("company_id") or "")
+    day = _Date.fromisoformat(today)
+    report = {"sent": 0, "queued": 0, "retrying": 0, "skipped": 0}
+    await _report_whatsapp(doc, people, cid, pid, day, day, now, report, window=doc["key"],
+                           message=_report_message(doc))
+    return report
+
+
+async def _daily_report_doc(project: dict, today: str, pdf_bytes: Optional[bytes],
+                            logbook_count: int, checkin_count: int, now: datetime) -> dict:
+    """The day's daily report kept with the job's reports (Project →
+    Reports), whichever way it is sent -- once a day (its key)."""
+    pid, cid = str(project["_id"]), str(project.get("company_id") or "")
+    key = f"daily:{pid}:{today}"
+    day = _Date.fromisoformat(today)
+    doc = await db[PROJECT_REPORTS].find_one({"key": key})
+    if not doc:
+        job = progress_report.job_title(wa_assistant.street_label(project))
+        rid = str(uuid.uuid4())
+        r2_key = f"reports/{cid}/{rid}.pdf"
+        stored = False
+        if pdf_bytes:
+            try:
+                stored = bool(await asyncio.to_thread(_upload_to_r2, pdf_bytes, r2_key, "application/pdf"))
+            except Exception as e:
+                logger.warning(f"[report] daily PDF upload failed: {type(e).__name__}")
+        token = await _mint_temp_media_token(r2_key, "application/pdf",
+                                             ttl_seconds=project_report.LINK_DAYS * 86400) if stored else None
+        title = f"Daily report — {job} — {_fmt_date(day)}"
+        lines = [f"{job} · Daily report · {datefmt.strftime(day, '%a %b %-d')}",
+                 f"- {logbook_count} daily log{'s' if logbook_count != 1 else ''} filed · "
+                 f"{checkin_count} worker check-in{'s' if checkin_count != 1 else ''}"]
+        doc = {"_id": rid, "company_id": cid, "project_ids": [pid], "start": today, "end": today,
+               "title": title, "summary": lines, "r2_key": r2_key if stored else None,
+               "link": _public_temp_media_url(token) if token else None,
+               "link_expires": now + timedelta(days=project_report.LINK_DAYS), "created_at": now,
+               "created_by": "", "source": "schedule", "key": key, "kind": "daily",
+               "filename": re.sub(r"[^A-Za-z0-9 ._-]+", "", title).strip()[:80] + ".pdf"}
+        await db[PROJECT_REPORTS].insert_one(doc)
+    return doc
+
+
+def _fmt_date(d: _Date) -> str:
+    return datefmt.strftime(d, "%b %-d, %Y")
+
+
+async def _daily_report_settings() -> Dict[str, dict]:
+    """Project -> its report settings, for the jobs whose Reports schedule
+    includes the daily report (Project → Reports)."""
+    try:
+        rows = await db[PROJECT_REPORT_SETTINGS].find({"schedules": "daily"}).to_list(5000)
+    except Exception:
+        return {}
+    return {str(r["_id"]): project_report.settings_from(r) for r in rows}
+
+
+async def check_and_send_reports(now: Optional[datetime] = None):
+    """Called every minute. Sends report emails for projects whose send time
+    matches now -- to the report email list, and, for a job whose Reports
+    schedule includes the daily report, to the people chosen there by email
+    and / or WhatsApp (the PDF with a short message)."""
+    email_ok = bool(RESEND_API_KEY)
+    now = now or datetime.now(timezone.utc)
     from zoneinfo import ZoneInfo
     eastern = ZoneInfo("America/New_York")
     est_now = now.astimezone(eastern)
     current_time = est_now.strftime("%H:%M")
     today = est_now.strftime("%Y-%m-%d")
 
+    daily = await _daily_report_settings()
+    # Email needs Resend; the daily report by WhatsApp does not.
+    daily_ids = [pid for pid, st in daily.items()
+                 if st["delivery"].get("whatsapp") or (email_ok and st["delivery"].get("email"))]
+    who: List[dict] = []
+    if email_ok:
+        who.append({"report_email_list": {"$exists": True, "$ne": []}})
+    if daily_ids:
+        who.append({"_id": {"$in": [to_query_id(p) for p in daily_ids] + daily_ids}})
+    if not who:
+        return
     projects_due = await db.projects.find(
         await unattended_project_filter({
             "report_send_time": current_time,
-            "report_email_list": {"$exists": True, "$ne": []},
+            "$or": who,
             **ACTIVE_PROJECT_FILTER,
         })).to_list(100)
 
     if not projects_due:
         return
 
-    resend.api_key = RESEND_API_KEY
+    if email_ok:
+        resend.api_key = RESEND_API_KEY
     for project in projects_due:
         project_id = str(project["_id"])
         project_name = project.get("name", "Project")
-        email_list = project.get("report_email_list", [])
-        if not email_list:
+        email_list = list(project.get("report_email_list", []) or []) if email_ok else []
+        st = daily.get(project_id)
+        people: List[dict] = []
+        if st:
+            people = await _report_recipients(str(project.get("company_id") or ""), project_id, st)
+            if email_ok and st["delivery"].get("email"):
+                for u in people:
+                    e = str(u.get("email") or "").strip().lower()
+                    if e and "@" in e and e not in email_list:
+                        email_list.append(e)
+        by_whatsapp = bool(st and st["delivery"].get("whatsapp") and people)
+        if not email_list and not by_whatsapp:
             continue
         already_sent = await db.report_emails.find_one({"project_id": project_id, "date": today})
         if already_sent:
@@ -44960,10 +46092,25 @@ async def check_and_send_reports():
                     )
             except Exception as e:
                 # Never let a render failure cost the notification itself.
+                pdf_bytes = None
                 logger.warning(
                     f"Daily report PDF render failed for {project_name} {today} "
                     f"({e!r}) — sending link only"
                 )
+            if st:
+                # Project → Reports, Daily: kept in the job's reports list
+                # however it is sent (Codex on #805) -- and by WhatsApp too,
+                # the PDF with a short message, once per person (the ledger).
+                try:
+                    if by_whatsapp:
+                        await _daily_report_whatsapp(project, people, today, pdf_bytes, logbook_count,
+                                                     checkin_count, now)
+                    else:
+                        await _daily_report_doc(project, today, pdf_bytes, logbook_count,
+                                                checkin_count, now)
+                except Exception as e:
+                    logger.warning(f"[report] daily report keep/WhatsApp failed for {project_name}: "
+                                   f"{type(e).__name__}")
 
             # No permit-expiry key in this context. The renderer no
             # longer reads one, so a stale caller passing it cannot
@@ -45974,6 +47121,10 @@ async def _active_optin_for_phone(phone: str) -> Optional[dict]:
         return None
 
 
+#: A ledger row still "sending" after this is a send that died midway.
+DM_STALE_SENDING = timedelta(minutes=15)
+
+
 async def _dm_send_verdict(chat_id: str, message: str,
                            dm_meta: Optional[dict]) -> dict:
     """May this direct message go out? {allowed, reason, ledger_id?}.
@@ -46015,7 +47166,23 @@ async def _dm_send_verdict(chat_id: str, message: str,
             "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS),
         })
     except DuplicateKeyError:
-        return {"allowed": False, "reason": "duplicate"}
+        # A claim whose send FAILED (or died mid-send: "sending" past
+        # DM_STALE_SENDING) never blocks a later try -- Wed Oct 14, a failed
+        # 8:05 brief blocked every retry that day. Taken over atomically, so
+        # two retries never both send; a sent / queued / skipped row stays.
+        try:
+            res = await db[WA_LEDGER].update_one(
+                {"_id": key, "$or": [{"status": "failed"},
+                                     {"status": "sending",
+                                      "created_at": {"$lt": now - DM_STALE_SENDING}}]},
+                {"$set": {"status": "sending", "created_at": now, "retried_at": now},
+                 "$inc": {"tries": 1}, "$unset": {"error": "", "finished_at": ""}})
+        except Exception as e:
+            logger.warning(f"ledger retake failed: {type(e).__name__}")
+            return {"allowed": False, "reason": "ledger_unavailable"}
+        if not getattr(res, "modified_count", 0):
+            return {"allowed": False, "reason": "duplicate"}
+        return {"allowed": True, "reason": "optin_retry", "ledger_id": key}
     except Exception as e:
         logger.warning(f"ledger claim failed: {type(e).__name__}")
         return {"allowed": False, "reason": "ledger_unavailable"}
@@ -46028,7 +47195,7 @@ async def _ledger_finish(ledger_id: str, ok: bool, err: Optional[str]) -> None:
             {"_id": ledger_id},
             {"$set": {"status": "sent" if ok else "failed",
                       "finished_at": datetime.now(timezone.utc),
-                      "error": None if ok else (err or "unknown")[:200]}},
+                      "error": None if ok else (err or "unknown")[:300]}},
         )
     except Exception:
         pass
@@ -46042,7 +47209,9 @@ async def _waapi_post_raw(url: str, payload: dict, headers: dict):
         try:
             body = resp.json() if resp.content else {}
         except Exception:
-            body = {}
+            # Not JSON (a 500's HTML or text): kept, so a failure says
+            # what WaAPI answered (lib/send_retry.waapi_error).
+            body = {"_text": (resp.text or "")[:500]} if resp.content else {}
         return resp.status_code, body, None
     except Exception as e:
         return None, None, e
@@ -46053,7 +47222,7 @@ async def _waapi_post_once(url: str, payload: dict, headers: dict):
     code, body, exc = await _waapi_post_raw(url, payload, headers)
     if exc is None and code is not None and code < 400:
         return True, body, None
-    return False, None, (type(exc).__name__ if exc else f"http {code}")
+    return False, None, send_retry.waapi_error(url.rsplit("/", 1)[-1], code, body, exc)
 
 
 _DM_SEND_LOCK = asyncio.Lock()
@@ -46081,7 +47250,8 @@ async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict,
                 code, body, exc = await _waapi_post_raw(url, payload, headers)
                 if exc is None and code is not None and code < 400:
                     return True, body, None
-                err = type(exc).__name__ if exc else f"http {code}"
+                # Which call, its status and what WaAPI said (no numbers).
+                err = send_retry.waapi_error(url.rsplit("/", 1)[-1], code, body, exc)
                 if (not wa_dm.is_transient(code, exc)
                         or attempt == tries - 1):
                     break
@@ -46349,18 +47519,92 @@ async def _quiet_deliver(spec: dict):
         return await _group_post(spec["group_id"], spec["message"], spec.get("targets") or [])
     if via == "photo":
         return await _punch_send_photo(spec["chat_id"], spec["key"], spec.get("caption") or "")
+    if via == "report_dm":
+        return await _report_deliver(spec)
     raise ValueError(f"unknown via {via!r}")
 
 
+#: How long a scheduled message that failed to send keeps being tried
+#: (lib/send_retry: after 5, 15, then every 30 minutes) when its sender
+#: names no window of its own.
+SEND_RETRY_WINDOW = timedelta(hours=2)
+
+
+async def _retry_later(spec: dict, *, company_id: Any, project_id: Any, kind: str,
+                       error: Optional[str] = None, deadline: Optional[datetime] = None,
+                       now: Optional[datetime] = None) -> str:
+    """A scheduled message whose send just failed: queued to be tried again
+    (the same queue as Shabbos, _quiet_queue_tick) after RETRY_MINUTES,
+    until `deadline`; the last failure alerts an operator. Never sent twice:
+    the queue row is claimed before each try, and a DM's ledger claim is
+    taken over only from "failed"."""
+    now = now or datetime.now(timezone.utc)
+    if deadline and send_retry.next_try(1, now) >= deadline:
+        # No try fits before its window closes (11:57 PM for tonight's
+        # day-before DM): this failure is the last.
+        await _send_failed_alert(kind, f"{kind}:{now.isoformat()}", company_id=company_id,
+                                 user_id=spec.get("user_id"), error=error or "not accepted",
+                                 first_at=now, attempts=1, now=now)
+        if spec.get("gc_ledger_id"):
+            await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                           {"$set": {"status": "failed"}})
+        return "failed"
+    qid = await _quiet_enqueue(spec, company_id=company_id, project_id=project_id, kind=kind,
+                               until=send_retry.next_try(1, now), now=now)
+    await db[WA_QUIET_QUEUE].update_one({"_id": qid}, {"$set": {
+        "retry": True, "attempts": 1, "first_failed_at": now,
+        "deadline": deadline or now + SEND_RETRY_WINDOW,
+        "last_error": send_retry.scrub(error, 300) if error else None}})
+    logger.warning(f"[send-retry] {kind} failed; trying again at "
+                   f"{send_retry.next_try(1, now).isoformat()}" + (f": {error}" if error else ""))
+    return qid
+
+
+def _ny_day_end(now: datetime) -> datetime:
+    """Midnight New York after `now`, in UTC: a day-scoped message's window."""
+    local = wa_brief.local_now(now)
+    return (local.replace(hour=0, minute=0, second=0, microsecond=0)
+            + timedelta(days=1)).astimezone(timezone.utc)
+
+
+async def _dm_retry_if_failed(user_id: Any, message: str, *, kind: str, window: str,
+                              company_id: Any, project_id: Any = None,
+                              deadline: Optional[datetime] = None,
+                              now: Optional[datetime] = None) -> bool:
+    """After send_whatsapp_dm returned None: when WaAPI failed it (the
+    ledger claim says "failed"), queue it to be tried again; a refusal (no
+    opt-in, prefs off) is not retried. True when queued."""
+    key = wa_dm.ledger_key(str(user_id), project_id, kind, window)
+    try:
+        row = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1, "error": 1})
+    except Exception:
+        row = None
+    if (row or {}).get("status") != "failed":
+        return False
+    await _retry_later({"via": "dm", "user_id": str(user_id), "message": message, "kind": kind,
+                        "window": window, "project_id": project_id},
+                       company_id=company_id, project_id=project_id, kind=kind,
+                       error=row.get("error"), deadline=deadline, now=now)
+    return True
+
+
 async def _quiet_or_send(spec: dict, *, company_id: Any, project_id: Any = None, kind: str,
-                         now: Optional[datetime] = None):
-    """Send now, or -- over Shabbos / Yom Tov -- queue it: "queued"."""
+                         now: Optional[datetime] = None, deadline: Optional[datetime] = None):
+    """THE way a scheduled message goes out. Over Shabbos / Yom Tov it is
+    queued for after ("queued"); otherwise sent now, and when that send fails
+    it is queued to be tried again ("retrying", _retry_later) -- Wed Oct 14:
+    one WaAPI 500 and a scheduled message was simply gone."""
     until = await _shabbos_quiet(company_id, project_id, now)
     if until:
         await _quiet_enqueue(spec, company_id=company_id, project_id=project_id, kind=kind,
                              until=until, now=now)
         return "queued"
-    return await _quiet_deliver(spec)
+    sent = await _quiet_deliver(spec)
+    if sent in (None, False) and spec.get("via") != "dm":
+        out = await _retry_later(spec, company_id=company_id, project_id=project_id, kind=kind,
+                                 deadline=deadline, now=now)
+        return None if out == "failed" else "retrying"
+    return sent
 
 
 async def _ledger_hold(key: str, status: str, *, user_id: Any, company_id: Any, kind: str,
@@ -46389,7 +47633,23 @@ async def _quiet_dm(user_id: Any, message: str, *, company_id: Any, kind: str, w
 
 
 QUIET_MAX_ATTEMPTS = 5
-QUIET_RETRY = timedelta(minutes=10)
+
+
+async def _retry_expired(r: dict, spec: dict, now: datetime, attempts: Optional[int] = None,
+                         err: Optional[str] = None) -> None:
+    """A retry row whose window closed: failed for good, never sent late."""
+    attempts = attempts if attempts is not None else int(r.get("attempts") or 1)
+    if spec.get("gc_ledger_id"):
+        await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                       {"$set": {"status": "failed"}})
+    await _quiet_undelivered(spec)
+    await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+        "status": "failed", "delivered_at": now, "attempts": attempts}})
+    await _send_failed_alert(
+        str(r.get("kind") or "scheduled"), str(r["_id"]), company_id=r.get("company_id"),
+        user_id=spec.get("user_id"), error=err or r.get("last_error") or "not accepted",
+        first_at=_utc(r.get("first_failed_at")) or _utc(r.get("deliver_after")),
+        attempts=attempts, now=now)
 QUIET_LEASE = timedelta(minutes=15)
 
 
@@ -46439,8 +47699,9 @@ async def _quiet_queue_tick(now: Optional[datetime] = None) -> dict:
         # A group re-linked meanwhile (another job, another company): what
         # was written for the old job never goes to it.
         group = _quiet_group_of(spec)
-        if group and r.get("project_id") and not await _gc_group_bound_to(
-                group, r.get("company_id"), r.get("project_id")):
+        bound = (await _gc_group_bound_to(group, r.get("company_id"), r.get("project_id"))
+                 if group and r.get("project_id") else True)
+        if not bound:
             await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
                 "status": "dropped_unbound", "delivered_at": now}})
             if spec.get("gc_ledger_id"):
@@ -46448,14 +47709,45 @@ async def _quiet_queue_tick(now: Optional[datetime] = None) -> dict:
                                                {"$set": {"status": "dropped_unbound"}})
             report["unbound"] += 1
             continue
+        if spec.get("gc_ledger_id") and isinstance(bound, dict) and not _effective_bot_config(
+                (bound.get("group") or {}).get("bot_config"))["bot_enabled"]:
+            # The group's bot was switched off meanwhile: an alert found
+            # while off never posts later (as in _gc_alerts_tick).
+            await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+                "status": "dropped_bot_off", "delivered_at": now}})
+            await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                           {"$set": {"status": "seen_while_off"}})
+            report["bot_off"] = report.get("bot_off", 0) + 1
+            continue
+        dl = _utc(r.get("deadline"))
+        if r.get("retry") and dl and now >= dl:
+            # Its window closed before the try (a late worker): never sent
+            # late -- a day-before DM after midnight is wrong, not late.
+            await _retry_expired(r, spec, now)
+            report["failed"] += 1
+            continue
+        if r.get("retry"):
+            # A retry that comes due over Shabbos / Yom Tov waits for after
+            # it, and keeps its window from there.
+            until = await _shabbos_quiet(r.get("company_id"), r.get("project_id"), now)
+            if until:
+                dl = _utc(r.get("deadline")) or now
+                await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+                    "status": "queued", "deliver_after": until,
+                    "deadline": until + max(dl - now, SEND_RETRY_WINDOW)}})
+                continue
         sent = None
+        err = None
         try:
             if spec.get("ledger_id"):      # the hold, so the DM's own claim can be taken
                 await db[WA_LEDGER].delete_one({"_id": spec["ledger_id"], "status": "queued_shabbos"})
             sent = await _quiet_deliver(spec)
         except Exception as e:
+            err = f"{type(e).__name__}: {e}"
             logger.warning(f"[shabbos-queue] send failed: {type(e).__name__}")
         ok = sent not in (None, False)
+        # Tries so far, this one included (a retry row starts at 1: the
+        # failed send it was made from).
         attempts = int(r.get("attempts") or 0) + 1
         if ok:
             if spec.get("gc_ledger_id"):
@@ -46464,17 +47756,29 @@ async def _quiet_queue_tick(now: Optional[datetime] = None) -> dict:
             await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
                 "status": "sent", "delivered_at": now, "attempts": attempts}})
             report["sent"] += 1
-        elif attempts < QUIET_MAX_ATTEMPTS:
+        elif attempts < QUIET_MAX_ATTEMPTS and not send_retry.is_final(
+                attempts, now, _utc(r.get("deadline"))):
+            # After 5, 15, then 30 minutes (lib/send_retry), as every
+            # scheduled send.
             await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
                 "status": "queued", "attempts": attempts,
-                "deliver_after": now + QUIET_RETRY * attempts}})
+                "deliver_after": send_retry.next_try(attempts, now)}})
             report["retry"] += 1
         else:
-            if spec.get("gc_ledger_id"):   # the next alerts run tries it again
-                await db[WA_LEDGER].delete_one({"_id": spec["gc_ledger_id"]})
+            if spec.get("gc_ledger_id"):
+                if r.get("retry"):         # failed for good: the operator is told, not re-posted daily
+                    await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                                   {"$set": {"status": "failed"}})
+                else:                      # the next alerts run tries it again
+                    await db[WA_LEDGER].delete_one({"_id": spec["gc_ledger_id"]})
             await _quiet_undelivered(spec)
             await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
                 "status": "failed", "delivered_at": now, "attempts": attempts}})
+            await _send_failed_alert(
+                str(r.get("kind") or "scheduled"), str(r["_id"]), company_id=r.get("company_id"),
+                user_id=spec.get("user_id"), error=err or r.get("last_error") or "not accepted",
+                first_at=_utc(r.get("first_failed_at")) or _utc(r.get("deliver_after")),
+                attempts=attempts, now=now)
             report["failed"] += 1
     if report["due"]:
         logger.info(f"[shabbos-queue] {report}")
@@ -46511,7 +47815,6 @@ async def _quiet_queue_job() -> None:
 
 GC_PROPOSAL_TTL_HOURS = 72
 GC_MAX_POSTS_PER_PROJECT_RUN = 5
-_GC_CLOSED_STATES = ("certified", "dismissed", "paid", "resolved")
 
 
 async def _company_main_admin(company_id: Any) -> Optional[dict]:
@@ -46786,6 +48089,15 @@ async def _gc_ai_line(kind: str, facts: Dict[str, str]) -> Optional[str]:
 
 async def _gc_alert_text(item: dict, address: str, today) -> str:
     kind, rec = item["kind"], item["rec"]
+    if kind == dob_alert_gate.ORDER_LIFTED_KIND:
+        return "\n".join(
+            [f"{wa_alerts.GREEN} {address}"]
+            + dob_alert_gate.lifted_post_lines(item.get("lifted") or "swo", address)
+            + [wa_alerts.record_line(kind, rec), wa_alerts.source_line(kind, rec)])
+    if kind == dob_alert_gate.BIN_ADDED_KIND:
+        return dob_alert_gate.bin_summary_message(
+            address, item.get("bin") or rec.get("site_bin") or "", item.get("open") or [],
+            icon=wa_alerts.ICON.get(kind, wa_alerts.ORANGE))
     ai = await _gc_ai_line(kind, wa_alerts.facts(rec)) if kind in wa_alerts.AI_KINDS else None
     what = wa_alerts.what_line(kind, rec, ai, today=today, exp=item.get("exp"),
                                prev=item.get("prev") or "")
@@ -46909,6 +48221,14 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             logger.warning(f"[wa-gc] record read failed: {type(e).__name__}")
             continue
         items = wa_alerts.collect(dob_rows, dot_rows, today)
+        # The email's rules, for the group too (lib/dob_alert_gate, ruling
+        # 2026-10-22): an update that issued a SWO / vacate order, and ONE
+        # summary per newly added BIN. Everything a rule refuses is claimed
+        # silently below, so it can never post later as a backlog.
+        latest_dob = _gc_latest_per_record(dob_rows)
+        items += dob_alert_gate.gc_order_items(latest_dob, today)
+        items += dob_alert_gate.gc_order_lifted_items(latest_dob, today)
+        items += dob_alert_gate.gc_bin_summary_items(latest_dob)
         report["permits_no_expiry"] += sum(
             1 for r in _gc_latest_per_record(dob_rows)
             if r.get("record_type") == "permit"
@@ -47002,6 +48322,14 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
 
         todo = []
         for it in items:
+            why = dob_alert_gate.gc_refusal(it, today)
+            if why:
+                if await _gc_ledger_claim(
+                        wa_gc.ledger_id(project_id, it["kind"], it["item"]),
+                        kind=f"gc_{it['kind']}", project_id=project_id,
+                        company_id=company_id, status=f"not_posted_{why}"):
+                    report["not_posted"] = report.get("not_posted", 0) + 1
+                continue
             if not wa_alerts.postable(it["kind"], it["rec"]):
                 report["no_number"] += 1
                 continue
@@ -47058,13 +48386,25 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             # group, and its bot still switched on.
             sent = None
             again = await _gc_group_bound_to(group_id, company_id, project_id)
-            if again and _effective_bot_config(
-                    (again.get("group") or {}).get("bot_config"))["bot_enabled"]:
+            live = bool(again) and _effective_bot_config(
+                (again.get("group") or {}).get("bot_config"))["bot_enabled"]
+            if live:
                 sent = await send_whatsapp_message(group_id, text)
             posts += 1
             if sent is None:
                 report["failed"] += 1
-                try:  # not posted: release the claim so the next run retries
+                if live:
+                    # Not posted: tried again on the shared schedule (lib/
+                    # send_retry) for up to a day, then an operator is told.
+                    # The claim stays, so the alerts run never posts it too.
+                    await db[WA_LEDGER].update_one({"_id": lid, "status": "sending"},
+                                                   {"$set": {"status": "retrying"}})
+                    await _retry_later({"via": "chat", "chat_id": group_id, "message": text,
+                                        "gc_ledger_id": lid},
+                                       company_id=company_id, project_id=project_id,
+                                       kind=f"gc_{kind}", deadline=now + timedelta(days=1), now=now)
+                    continue
+                try:  # unbound or switched off: release the claim for the next run
                     await db[WA_LEDGER].delete_one({"_id": lid, "status": "sending"})
                 except Exception:
                     pass
@@ -47146,7 +48486,17 @@ async def _dot_fetch(dataset: str, params: dict) -> Optional[list]:
 
 async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
                      now: datetime) -> str:
-    """'new' | 'changed' | 'same'."""
+    """'new' | 'changed' | 'same'.
+
+    status_history (lib/status_history): DEFECT MEASURED (2026 audit) - a
+    dot_logs row kept only its latest status plus previous_status, overwritten
+    on every 2h sync, so what a summons/permit said on an earlier date was
+    unrecoverable. A new row starts with one first_seen entry; a changed status
+    appends one ('sync'); a LEGACY row (no history) first gets
+    [first_seen: stored status @ detected_at] and, if it changed,
+    'legacy_first_refresh'. No alert path reads a DOT status change (the GC
+    alerts post once per record and permit threshold, from the latest row), so
+    no seed flag is needed: nothing here can alert."""
     existing = await db.dot_logs.find_one(
         {"project_id": project_id, "raw_id": log["raw_id"]})
     if not existing:
@@ -47154,10 +48504,25 @@ async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
             **log, "raw_id": log["raw_id"],
             "project_id": project_id, "company_id": company_id,
             "matched_by": how, "previous_status": None,
+            "status_history": status_hist.new_row_history(log.get("status"), now),
             "detected_at": now, "created_at": now, "updated_at": now})
         return "new"
     fields = {**log, "matched_by": how, "updated_at": now}
-    if (log.get("status") or None) != (existing.get("status") or None):
+    changed = (log.get("status") or None) != (existing.get("status") or None)
+    had_history = isinstance(existing.get("status_history"), list) \
+        and bool(existing.get("status_history"))
+    history, legacy = status_hist.refreshed_history(
+        existing, log.get("status"), now, changed=changed, in_place=True)
+    if changed:
+        # A case-only difference is a change to the old comparator but not to
+        # the normalised status: keep the timeline free of look-alike entries.
+        if (status_hist.norm_status(log.get("status"))
+                == status_hist.norm_status(existing.get("status"))
+                and history and history[-1].get("source") != status_hist.FIRST_SEEN):
+            history.pop()
+    if changed or not had_history:
+        fields["status_history"] = history
+    if changed:
         fields["previous_status"] = existing.get("status")
         fields["status_changed_at"] = now
         await db.dot_logs.update_one({"_id": existing["_id"]}, {"$set": fields})
@@ -47173,7 +48538,7 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
     now = now or datetime.now(timezone.utc)
     fetch = fetch or _dot_fetch
     report = {"projects": 0, "requests": 0, "failed": 0, "records": 0,
-              "matched": 0, "new": 0, "changed": 0}
+              "matched": 0, "new": 0, "changed": 0, "stipulations_read": 0}
     named = set()
     try:
         # Fixture (is_test) companies are left out, as in every unattended
@@ -47181,7 +48546,7 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
         only = {"_id": {"$in": [to_query_id(i) for i in project_ids]}} if project_ids else {}
         projects = await db.projects.find(
             await unattended_project_filter({**ACTIVE_PROJECT_FILTER, **only}),
-            {"address": 1, "nyc_bin": 1, "bbl": 1, "nyc_bbl": 1,
+            {"address": 1, "nyc_bin": 1, "bbl": 1, "nyc_bbl": 1, "street_aliases": 1,
              "company_id": 1}).to_list(5000)
         projects = [p for p in projects if str(p.get("company_id") or "").strip()]
     except Exception as e:
@@ -47247,6 +48612,12 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
                     continue
                 if res in ("new", "changed"):
                     report[res] += 1
+                    if q["kind"] == "dot_permit":
+                        # A new or changed permit has its stipulations read at
+                        # once (one request), so the holiday-embargo waiver is
+                        # known before the next 07:00 alert run.
+                        report["stipulations_read"] += await _dot_stipulations_for_new(
+                            project_id, log["raw_id"], fetch, now)
         await _mark_sources_synced(
             project_id, company_id,
             source_sync.answered_sources(answered, failed_types))
@@ -47259,6 +48630,320 @@ async def _dot_sync_job() -> None:
         await _dot_sync_tick()
     except Exception as e:
         logger.error(f"[dot-sync] tick failed: {type(e).__name__}: {e}")
+
+
+# ── DOT HOLIDAY EMBARGO (lib/dot_embargo.py is the rule) ───────────────────
+#
+# NYC DOT stops street work Nov 15 - Jan 2 every year unless the permit
+# carries stipulation 410, the waiver. Three pieces live here:
+#   * _dot_stipulations_tick (daily 05:30 New York, and per new/changed permit
+#     inside _dot_sync_tick): reads gsgx-6efw for every matched permit that is
+#     active or starts within 30 days, and stores `stipulations`,
+#     `holiday_waiver`, `stipulations_fetched_at` on its dot_logs row. A FAILED
+#     read writes nothing, so a known waiver is never erased and an unread
+#     permit is never "no waiver".
+#   * _dot_embargo_alert_tick (daily 07:00 New York): emails the DOB-alert
+#     recipients on Nov 1 and Nov 12, and on first sight, about each exposed
+#     permit known to lack the waiver. Once per (project, permit, season,
+#     send date): the dot_alert_ledger row is inserted FIRST and an existing
+#     row means no send. Nothing sends before the project's first DOT permit
+#     pass (source_sync first_synced_at). The GC group post is the
+#     "dot_embargo" kind in lib/wa_alerts.py, posted by _gc_alerts_tick on the
+#     same due dates under the "dot_permit_alerts" switch.
+#   * GET /projects/{project_id}/dot/embargo: the Compliance screen's banner.
+# Fixture (is_test) companies are left out of both sweeps.
+
+
+async def _dot_read_stipulations(row: dict, fetch, now: datetime,
+                                 cache: Optional[dict] = None) -> str:
+    """'read' | 'unknown' | 'failed'. 'failed' writes nothing."""
+    permit = str(row.get("number") or "").strip()
+    if not permit:
+        return "failed"
+    if cache is not None and permit in cache:
+        recs = cache[permit]
+    else:
+        recs = await fetch(dot_embargo.STIPULATION_DATASET,
+                           dot_embargo.stipulation_params(permit))
+        if cache is not None:
+            cache[permit] = recs
+    if recs is None:
+        return "failed"
+    fields = dot_embargo.stipulation_fields(permit, recs)
+    await db.dot_logs.update_one(
+        {"_id": row["_id"]},
+        {"$set": {**fields, "stipulations_fetched_at": now}})
+    return "read" if fields["holiday_waiver"] is not None else "unknown"
+
+
+async def _dot_stipulations_for_new(project_id: str, raw_id: str, fetch,
+                                    now: datetime) -> int:
+    """1 when the just-stored permit's stipulations were read, else 0."""
+    try:
+        row = await db.dot_logs.find_one({"project_id": project_id, "raw_id": raw_id})
+        if not row or not dot_embargo.stipulations_wanted(row, dot_embargo.ny_date(now)):
+            return 0
+        return 1 if await _dot_read_stipulations(row, fetch, now) != "failed" else 0
+    except Exception as e:
+        logger.warning(f"[dot-stipulations] new permit read failed: {type(e).__name__}")
+        return 0
+
+
+async def _dot_live_projects() -> Dict[str, dict]:
+    """{project_id: project} for live projects of real (non-test) companies."""
+    projects = await db.projects.find(
+        await unattended_project_filter(dict(ACTIVE_PROJECT_FILTER))).to_list(5000)
+    test_ids = await test_company_ids()
+    return {str(p.get("_id")): p for p in projects
+            if str(p.get("company_id") or "").strip()
+            and str(p.get("company_id")) not in test_ids}
+
+
+async def _dot_stipulations_tick(now: Optional[datetime] = None, fetch=None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    fetch = fetch or _dot_fetch
+    today = dot_embargo.ny_date(now)
+    report = {"permits": 0, "read": 0, "unknown": 0, "failed": 0}
+    try:
+        live = await _dot_live_projects()
+        # By project only: dot_logs has no is_deleted, and lib/dot_embargo
+        # checks record_type itself (stipulations_wanted / exposed).
+        rows = await db.dot_logs.find(
+            {"project_id": {"$in": sorted(live)}}).to_list(10000)
+    except Exception as e:
+        logger.warning(f"[dot-stipulations] read failed: {type(e).__name__}")
+        return report
+    cache: dict = {}
+    for row in rows:
+        if str(row.get("project_id") or "") not in live:
+            continue
+        if not dot_embargo.stipulations_wanted(row, today):
+            continue
+        report["permits"] += 1
+        try:
+            res = await _dot_read_stipulations(row, fetch, now, cache)
+        except Exception as e:
+            logger.warning(f"[dot-stipulations] store failed: {type(e).__name__}")
+            res = "failed"
+        report[res] += 1
+    logger.info(f"[dot-stipulations] {report}")
+    return report
+
+
+async def _dot_stipulations_job() -> None:
+    try:
+        await _dot_stipulations_tick()
+    except Exception as e:
+        logger.error(f"[dot-stipulations] tick failed: {type(e).__name__}: {e}")
+
+
+_ES_MONTHS = ("ene", "feb", "mar", "abr", "may", "jun",
+              "jul", "ago", "sep", "oct", "nov", "dic")
+
+
+def _dot_day_en(d) -> str:
+    return f"{d:%b} {d.day}, {d.year}" if d else "not stated"
+
+
+def _dot_day_es(d) -> str:
+    return f"{d.day} {_ES_MONTHS[d.month - 1]} {d.year}" if d else "no indicada"
+
+
+def _dot_embargo_email(project: dict, row: dict, season) -> tuple:
+    """(subject, text, html) -- English, then Spanish. Plain and
+    transactional, like _send_critical_dob_alert: no caps, no banners."""
+    import html as _html
+    permit = str(row.get("number") or "")
+    project_name = project.get("name") or "your project"
+    kind = row.get("description") or "DOT street permit"
+    start, end = dot_embargo.work_dates(row)
+    link = row.get("link") or ""
+    subject = (f"Holiday embargo: permit {permit} has no waiver / "
+               f"Embargo navideño: el permiso {permit} no tiene exención")
+    en = [
+        "Hi,",
+        f"DOT permit {permit} on {project_name} is active during NYC DOT's holiday "
+        f"construction embargo, and it has no embargo waiver (stipulation 410). "
+        f"{dot_embargo.ACTION_EN}",
+        f"Permit: {permit}",
+        f"Type: {kind}",
+        f"Work dates: {_dot_day_en(start)} - {_dot_day_en(end)}",
+        f"Embargo: {_dot_day_en(season.start)} - {_dot_day_en(season.end)}",
+        "What to do: apply to DOT (OCMC) for a holiday embargo waiver, or stop work "
+        "on this permit from Nov 15 through Jan 2.",
+        # Coverage limit until DOT Phase 1 B (segment permits): removed with it.
+        dot_embargo.COVERAGE_NOTE_EN,
+    ]
+    es = [
+        "Hola,",
+        f"El permiso del DOT {permit} de {project_name} está activo durante el embargo "
+        f"navideño de construcción del DOT de NYC, y no tiene exención del embargo "
+        f"(estipulación 410). {dot_embargo.ACTION_ES}",
+        f"Permiso: {permit}",
+        f"Tipo: {kind}",
+        f"Fechas de trabajo: {_dot_day_es(start)} - {_dot_day_es(end)}",
+        f"Embargo: {_dot_day_es(season.start)} - {_dot_day_es(season.end)}",
+        "Qué hacer: solicite al DOT (OCMC) una exención del embargo navideño, o detenga "
+        "el trabajo de este permiso del 15 de noviembre al 2 de enero.",
+        dot_embargo.COVERAGE_NOTE_ES,
+    ]
+    footer_en = ("You're receiving this because you're an admin of this company or the "
+                 "assigned project manager on this Levelog project.")
+    footer_es = ("Recibe este correo porque es administrador de esta empresa o el "
+                 "gerente de proyecto asignado a este proyecto en Levelog.")
+    source = f"Source: NYC DOT permit records (NYC Open Data). {link}".strip()
+    text = ("\n\n".join([en[0], en[1], "\n".join(en[2:6]), en[6], en[7]])
+            + "\n\n" + "-" * 8 + "\n\n"
+            + "\n\n".join([es[0], es[1], "\n".join(es[2:6]), es[6], es[7]])
+            + f"\n\n{source}\n\n{footer_en}\n{footer_es}\n\n- Levelog")
+
+    def _p(t, extra=""):
+        return f'<p style="margin:0 0 12px;font-size:15px;{extra}">{_html.escape(t)}</p>'
+
+    def _block(lines):
+        return ('<p style="margin:0 0 12px;font-size:15px;">'
+                + "<br>".join(_html.escape(t) for t in lines) + "</p>")
+
+    link_html = (f'<p style="margin:0 0 12px;font-size:13px;"><a href="{_html.escape(link)}" '
+                 f'style="color:#1d4ed8;text-decoration:none;">View the permit on NYC Open Data</a></p>'
+                 if link else "")
+    html_body = f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2937;line-height:1.55;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" width="560" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
+    <tr><td style="padding:24px 28px;">
+      <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
+      <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">{_html.escape(f"Holiday embargo: permit {permit} has no waiver")}</h1>
+      {_p(en[0])}{_p(en[1])}{_block(en[2:6])}{_p(en[6])}{_p(en[7], "color:#6b7280;font-size:13px;")}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;">
+      <h2 style="margin:0 0 14px;font-size:16px;font-weight:600;color:#111827;">{_html.escape(f"Embargo navideño: el permiso {permit} no tiene exención")}</h2>
+      {_p(es[0])}{_p(es[1])}{_block(es[2:6])}{_p(es[6])}{_p(es[7], "color:#6b7280;font-size:13px;")}
+      {link_html}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
+      <p style="margin:0;font-size:12px;color:#6b7280;">{_html.escape(footer_en)}<br>{_html.escape(footer_es)}</p>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    return subject, text, html_body
+
+
+async def _dot_embargo_alert_tick(now: Optional[datetime] = None) -> dict:
+    """The 07:00 run: the emails due today (lib/dot_embargo.due_sends)."""
+    from lib.notifications import is_email_kill_switch_on, send_notification
+    from pymongo.errors import DuplicateKeyError
+    now = now or datetime.now(timezone.utc)
+    today = dot_embargo.ny_date(now)
+    report = {"date": today.isoformat(), "projects": 0, "due": 0, "sent": 0,
+              "already": 0, "no_recipients": 0, "ledger_failed": 0,
+              "waiting_sync": 0}
+    if not dot_embargo.in_alert_window(today):
+        return report
+    # Checked BEFORE any ledger row is written, so a halted day does not burn
+    # the once-only row (send_notification checks both again at send time).
+    if not RESEND_API_KEY or is_email_kill_switch_on():
+        report["skipped"] = "no_resend_key" if not RESEND_API_KEY else "kill_switch"
+        logger.info(f"[dot-embargo] {report}")
+        return report
+    try:
+        live = await _dot_live_projects()
+    except Exception as e:
+        logger.warning(f"[dot-embargo] project read failed: {type(e).__name__}")
+        return report
+    for project_id, project in live.items():
+        # Nothing sends before the project's first full DOT permit pass
+        # (lib/source_sync.py): until then its permits are not all known, and
+        # the GC group alerts wait for the same moment.
+        try:
+            synced = await _project_first_synced(project_id)
+        except Exception as e:
+            logger.warning(f"[dot-embargo] sync state read failed: {type(e).__name__}")
+            continue
+        if source_sync.DOT_PERMITS not in synced:
+            report["waiting_sync"] += 1
+            continue
+        rows = await db.dot_logs.find({"project_id": project_id}).to_list(2000)
+        due = dot_embargo.due_sends(rows, today)
+        if not due:
+            continue
+        report["projects"] += 1
+        report["due"] += len(due)
+        recipients = await _critical_dob_alert_recipients(project)
+        if not recipients:
+            report["no_recipients"] += len(due)
+            continue
+        for d in due:
+            season = d["season"]
+            lid = dot_embargo.ledger_id(project_id, d["permit"], season.year, d["send_date"])
+            try:
+                await db[dot_embargo.LEDGER].insert_one({
+                    "_id": lid, "project_id": project_id,
+                    "company_id": str(project.get("company_id") or ""),
+                    "permit": d["permit"], "season_year": season.year,
+                    "send_date": d["send_date"].isoformat(), "kind": d["kind"],
+                    "trigger_type": dot_embargo.TRIGGER_TYPE,
+                    "recipients": len(recipients), "created_at": now})
+            except DuplicateKeyError:
+                report["already"] += 1
+                continue
+            except Exception as e:
+                # No ledger row, no send: once-only cannot be promised.
+                logger.warning(f"[dot-embargo] ledger write failed: {type(e).__name__}")
+                report["ledger_failed"] += 1
+                continue
+            subject, text, html_body = _dot_embargo_email(project, d["row"], season)
+            sent = 0
+            for recipient in recipients:
+                try:
+                    await send_notification(
+                        db,
+                        permit_renewal_id=lid,
+                        trigger_type=dot_embargo.TRIGGER_TYPE,
+                        recipient=recipient,
+                        subject=subject,
+                        html=html_body,
+                        text=text,
+                        metadata={
+                            "project_id": project_id,
+                            "project_name": project.get("name"),
+                            "permit": d["permit"],
+                            "season_year": season.year,
+                            "kind": d["kind"],
+                        },
+                    )
+                    sent += 1
+                except Exception as e:
+                    logger.error(f"[dot-embargo] send failed: {type(e).__name__}")
+            report["sent"] += 1 if sent else 0
+            try:
+                await db[dot_embargo.LEDGER].update_one(
+                    {"_id": lid}, {"$set": {"sent_to": sent, "sent_at": datetime.now(timezone.utc)}})
+            except Exception:
+                pass
+    logger.info(f"[dot-embargo] {report}")
+    return report
+
+
+async def _dot_embargo_alert_job() -> None:
+    try:
+        await _dot_embargo_alert_tick()
+    except Exception as e:
+        logger.error(f"[dot-embargo] tick failed: {type(e).__name__}: {e}")
+
+
+@api_router.get("/projects/{project_id}/dot/embargo")
+async def get_dot_embargo(
+    project_id: str,
+    current_user=Depends(get_current_user),
+    project=Depends(require_project_access),
+):
+    """The holiday-embargo banner for one project: inside Nov 1 - Jan 2, the
+    exposed DOT permits known to lack the waiver (stipulation 410). Permits
+    whose stipulations could not be read are listed apart as `unknown` and
+    never counted as missing a waiver."""
+    rows = await db.dot_logs.find(
+        {"project_id": str(project.get("_id") or project_id)}).to_list(2000)
+    return dot_embargo.banner(rows, dot_embargo.ny_date(datetime.now(timezone.utc)))
 
 
 async def _whatsapp_gc_tick() -> None:
@@ -49016,6 +50701,20 @@ async def _mention_test_people(g: dict) -> List[dict]:
     return out
 
 
+@api_router.get("/owner/whatsapp/send-failures", tags=["Owner"],
+                dependencies=[Depends(require_operator_404)])
+async def owner_whatsapp_send_failures(days: int = 7):
+    """Scheduled WhatsApp sends that failed for good (every retry spent),
+    newest first: what, when, how many tries, the last error (no phone
+    numbers)."""
+    since = datetime.now(timezone.utc) - timedelta(days=max(1, min(int(days or 7), 60)))
+    rows = await db[SEND_FAILURES].find({"final_at": {"$gte": since}}).to_list(500)
+    rows.sort(key=lambda r: _utc(r.get("final_at")) or since, reverse=True)
+    return {"failures": [{k: r.get(k) for k in ("kind", "company_id", "user_id", "error",
+                                                 "attempts", "first_failed_at", "final_at")}
+                         for r in rows]}
+
+
 @api_router.get("/owner/whatsapp/mention-test", tags=["Owner"],
                 dependencies=[Depends(require_operator_404)])
 async def owner_mention_test_groups(operator=Depends(require_operator_404)):
@@ -49686,14 +51385,16 @@ async def _retention_tick(now: Optional[datetime] = None,
                 if not await _retention_still_expired(b, today):
                     c["stopped"] = c.get("stopped", 0) + 1
                     break
-                rows = await db[coll].find(b["query"], {"_id": 1, "voice.audio_key": 1}).limit(
+                rows = await db[coll].find(b["query"], {"_id": 1, "voice.audio_key": 1,
+                                                        "photo": 1}).limit(
                     min(wa_retention.BATCH, budget)).to_list(None)
                 ids = [r["_id"] for r in rows]
                 if not ids:
                     break
-                # A voice note's audio goes with its message (R2, by key).
+                # A voice note's audio and a group photo go with their
+                # message (R2, by key).
                 audio = [(r.get("voice") or {}).get("audio_key") for r in rows]
-                audio = [k for k in audio if k]
+                audio = [k for k in audio if k] + [k for r in rows for k in wa_photos.owned_keys(r)]
                 if audio and _r2_client is not None:
                     try:
                         await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, audio)
@@ -49778,6 +51479,46 @@ async def _waapi_contact_phone(jid: str) -> str:
         if 10 <= len(num) <= 15 and num != wa_dm.phone_digits(jid):
             return num
     return ""
+
+
+async def _dm_start_hint_due(chat: str, raw: Any = None) -> bool:
+    """A DM from someone not using the assistant: True only when the number
+    is ONE eligible Admin / PM's own profile phone (a shared number is
+    refused by START too), the number never opted in or out (STOP stays
+    silent), and today's hint is claimed here -- an insert keyed by number
+    and day, so a redelivered webhook can't send it twice. Everyone else is
+    not answered at all (no "for admins only" line telling a stranger this
+    is a bot). Codex on #838."""
+    phone = await _resolve_dm_phone(chat, raw)
+    if not phone:
+        return False
+    users = await _find_users_by_phone(phone)
+    if len(users) != 1 or not wa_dm.is_dm_eligible(users[0]):
+        return False
+    digits = wa_dm.phone_digits(chat)
+    # The same keys STOP writes: the chat, the phone, and the person.
+    keys = [{"phone": phone}, {"user_id": str(users[0].get("_id") or "")}]
+    if digits:
+        keys += [{"phone": digits}, {"chat_digits": digits}]
+    keys = [k for k in keys if all(k.values())]
+    try:
+        if await db[WA_OPTINS].find_one({"$or": keys}, {"_id": 1}):
+            return False                     # opted out (or in another way): no hint
+    except Exception:
+        return False
+    now = datetime.now(timezone.utc)
+    day = wa_brief.local_now(now).date().isoformat()
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await db[_DM_STATE].insert_one({
+            "_id": f"start_hint|{digits}|{day}", "kind": "start_hint", "group_id": digits,
+            "sender": "", "created_at": now, "expires_at": now + timedelta(days=1)})
+    except DuplicateKeyError:
+        return False
+    except Exception as e:
+        logger.warning(f"[wa-dm] start hint claim failed: {type(e).__name__}")
+        return False
+    return True
 
 
 async def _resolve_dm_phone(chat_id: str, raw: Any = None) -> str:
@@ -49944,7 +51685,7 @@ async def _send_contact_card(chat: str) -> Optional[str]:
     if ok and wa_contact.waapi_succeeded(body):
         logger.info("[wa-contact] sent as vcard")
         return "vcard"
-    if err == "http 429":
+    if str(err or "").startswith("http 429"):
         logger.warning("[wa-contact] send-vcard rate-limited by WaAPI (429); nothing more sent")
         return "waapi_429"
     logger.warning(f"[wa-contact] send-vcard not sent ({wa_contact.waapi_failure(body, err)}); "
@@ -50090,7 +51831,90 @@ async def _record_optin(u: dict, phone: str, chat: str, chat_digits: str, *,
         return
     _security_event("whatsapp_optin", user_id=uid, company_id=cid,
                     jid_kind=wa_dm.jid_kind(chat), source=source)
+    # Their first START ever: the welcome (and the card) instead of the
+    # intro. Every START after that: the intro, as before.
+    if await _dm_welcome(u, chat, "start_welcomed"):
+        return
     await _reply_dm(chat, wa_dm.INTRO_TEXT, "start_opted_in")
+
+
+# ── THE WELCOME: ONCE PER PERSON (lib/wa_welcome.py) ────────────────────
+#
+# The first time Levelog Assistant talks to someone, it says hello by name,
+# says what they can ask, and sends its contact card.
+#
+#   whatsapp_dm_welcomes   one row per USER, _id = user id:
+#                          {_id, company_id, welcomed_at, card}. The insert
+#                          is the claim, so two STARTs racing welcome once.
+#
+# WHY ITS OWN COLLECTION. whatsapp_optins is keyed by phone (a new number,
+# or a STOP and START, is a new row, not a new person), and ledger rows
+# expire after WA_LEDGER_RETENTION_DAYS. This row has no TTL: once welcomed,
+# never again. Written and read only here.
+WA_DM_WELCOMES = "whatsapp_dm_welcomes"
+
+
+async def _dm_welcome_claim(u: dict) -> Optional[datetime]:
+    """Claim this person's welcome, atomically: the claim time when it is
+    ours, None when they were welcomed already (or the write failed -- the
+    plain intro is the safe answer then)."""
+    uid = str(u.get("_id") or "")
+    if not uid:
+        return None
+    now = datetime.now(timezone.utc)
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await db[WA_DM_WELCOMES].insert_one({
+            "_id": uid, "company_id": str(u.get("company_id") or ""),
+            "welcomed_at": now, "card": None})
+    except DuplicateKeyError:
+        return None
+    except Exception as e:
+        logger.warning(f"[wa-welcome] claim failed: {type(e).__name__}")
+        return None
+    return now
+
+
+async def _dm_welcome(u: dict, chat: str, outcome: str) -> bool:
+    """Welcome this person in this chat if they never were: the welcome,
+    then the contact card. True when the welcome went (the caller then
+    sends no intro of its own).
+
+    The welcome text is what counts: a card that fails is logged and the
+    person stays welcomed ("contact" gets the card any time). A welcome
+    text that fails gives the claim back, so a later START welcomes them."""
+    claimed_at = await _dm_welcome_claim(u)
+    if claimed_at is None:
+        return False
+    uid = str(u.get("_id") or "")
+    chat = wa_dm.dm_chat_id(chat)
+    with_card = bool(_wa_bot_digits() and WAAPI_INSTANCE_ID and WAAPI_TOKEN)
+    logger.info(f"[wa-dm] {outcome} kind={wa_dm.jid_kind(chat) or 'unknown'} "
+                f"chat=...{wa_dm.phone_digits(chat)[-4:]}")
+    sent = await send_whatsapp_message(
+        chat, wa_welcome.welcome_text(u.get("name"), with_card=with_card))
+    inner = sent.get("data") if isinstance(sent, dict) else None
+    if sent is None or (isinstance(inner, dict) and inner.get("status") == "error"):
+        # WaAPI's 200 with data.status "error" is not a delivery either.
+        logger.warning(f"[wa-welcome] welcome NOT delivered after {outcome}; claim released")
+        try:
+            await db[WA_DM_WELCOMES].delete_one({"_id": uid, "welcomed_at": claimed_at})
+        except Exception as e:
+            logger.warning(f"[wa-welcome] claim release failed: {type(e).__name__}")
+        return False
+    card = await _send_contact_card(chat) if with_card else None
+    if not with_card:
+        logger.warning("[wa-welcome] contact card not sent: WhatsApp number or "
+                       "WaAPI not configured")
+    elif card not in ("vcard", "document"):
+        logger.warning(f"[wa-welcome] contact card not sent ({card or 'failed'}); "
+                       f"the welcome still counts")
+    try:
+        await db[WA_DM_WELCOMES].update_one(
+            {"_id": uid}, {"$set": {"card": card or "not_sent"}})
+    except Exception as e:
+        logger.warning(f"[wa-welcome] card result not saved: {type(e).__name__}")
+    return True
 
 
 async def _handle_dm_stop(chat_id: str, raw: Any = None) -> None:
@@ -50317,9 +52141,10 @@ async def _dm_assistant_projects(user: dict, company_id: str, role: str) -> list
 
 # ── MORNING BRIEF (DM, opted-in Admins and PMs) ────────────────────────────
 #
-# One DM a day per person, at the time they picked in the app (Off / 7 / 8 /
-# 9 AM New York, Mon–Fri, Saturday if they turned it on): what needs action
-# today on their jobs, then who is on site so far. Content: lib/wa_brief.py —
+# Once a day per person, at the time they picked in the app (Off / 7 / 8 /
+# 9 AM New York, Mon–Fri, Saturday if they turned it on), one DM per job:
+# what needs action today, then who is on site so far; then one short DM
+# for their reminders and quiet jobs. Content: lib/wa_brief.py —
 # deterministic, from stored records only.
 #
 # WHO. Every ACTIVE opt-in whose user is live, DM-eligible (company admin or
@@ -50327,9 +52152,11 @@ async def _dm_assistant_projects(user: dict, company_id: str, role: str) -> list
 # every live company job, a PM's assigned jobs, each re-proven to be the
 # company's. STOP makes the opt-in inactive, and then nothing is read or sent.
 #
-# ONCE A DAY. The ledger key (user, -, morning_brief, YYYY-MM-DD) is claimed
-# by send_whatsapp_dm before WaAPI is called; a second run, a second
-# container or a restart finds it taken.
+# ONCE A DAY. Each message's ledger key (user, -, morning_brief,
+# YYYY-MM-DD:<job id or "rest">) is claimed by send_whatsapp_dm before WaAPI
+# is called; a second run, a second container or a restart finds it taken,
+# and a retry sends only the messages that did not go out. When all are
+# out, the whole brief's row (user, -, morning_brief, YYYY-MM-DD) says sent.
 
 MORNING_BRIEF_KIND = "morning_brief"
 _BRIEF_MAX_LOOKBACK = timedelta(days=4)
@@ -50349,14 +52176,25 @@ async def _brief_settings(user_id: str) -> dict:
     return out
 
 
-async def _brief_since(user_id: str, now: datetime) -> datetime:
+async def _brief_since(user_id: str, now: datetime,
+                       before_day: Optional[str] = None) -> datetime:
     """When this person's last brief went out; else a day ago. Never more
-    than a few days back (a long weekend, not a backlog)."""
+    than a few days back (a long weekend, not a backlog). `before_day`:
+    that day's own brief is not counted ("brief all" sends the rest of
+    today's brief as the morning computed it, since the brief before).
+
+    The whole brief's row (window: the day), never one message's ("day:part",
+    _brief_part_window): a brief whose second message is retried at 8:35 is
+    still "since yesterday's", not since its own first message at 8:05."""
     floor = now - _BRIEF_MAX_LOOKBACK
+    window: Dict[str, Any] = {"$regex": "^[^:]*$"}
+    if before_day:
+        window["$ne"] = before_day
     try:
         row = await db[WA_LEDGER].find_one(
             {"user_id": str(user_id), "kind": MORNING_BRIEF_KIND,
-             "status": "sent"}, sort=[("created_at", -1)])
+             "status": "sent", "window": window},
+            sort=[("created_at", -1)])
     except Exception:
         row = None
     last = (row or {}).get("created_at")
@@ -50370,7 +52208,8 @@ async def _brief_since(user_id: str, now: datetime) -> datetime:
 async def _brief_follow_ups(pid: str, company_id: str, now: datetime,
                             me: Optional[dict]) -> dict:
     """The job's You / Waiting on others / Check lines: items due today,
-    late or ASAP that `me` owns or asked for, and its punch. A read that
+    late or ASAP that `me` owns or asked for, and its punch (`me`'s own
+    under You, everyone else's under Waiting on others). A read that
     fails leaves its lines out."""
     today = wa_brief.local_now(now).date()
     you, tasks, by_person, check = [], [], {}, []
@@ -50384,10 +52223,14 @@ async def _brief_follow_ups(pid: str, company_id: str, now: datetime,
         except Exception as e:
             logger.warning(f"[wa-brief] due items failed: {type(e).__name__}")
     try:
+        # Only walks sent live: a shadow walk's items (send_mode "shadow",
+        # stored on each row when the walk is sent) never reached anyone.
         rows = await db[punch.COLLECTION].find({
             "project_id": pid, "company_id": _company_id_filter(company_id),
-            "status": {"$in": ["open", "ready_to_check"]}}).to_list(2000)
-        by_person, check = wa_brief.punch_sections(rows, today)
+            "status": {"$in": ["open", "ready_to_check"]}, "send_mode": "live"}).to_list(2000)
+        by_person, check = wa_brief.punch_sections(rows, today, me)
+        if me:
+            you = you + wa_brief.own_punch_lines(rows, today, me)
     except Exception as e:
         logger.warning(f"[wa-brief] punch read failed: {type(e).__name__}")
     return {"you": you, "waiting": wa_brief.waiting_lines(tasks, by_person, today),
@@ -50432,8 +52275,15 @@ async def _brief_job(project: dict, company_id: str, since: datetime,
         "project_id": pid,
         "company_id": _company_id_filter(company_id),
     }).to_list(2000)
-    return {"label": wa_assistant.street_label(project),
-            "items": wa_brief.job_items(rows, since, now, dot_rows, synced),
+    items = wa_brief.job_items(rows, since, now, dot_rows, synced)
+    # Mondays: the job's open violations too, once a week; a record already
+    # a 🔴 New line today is not listed twice.
+    open_lines = (wa_brief.open_items(rows, dot_rows, wa_gc.today_et(now),
+                                      skip={i["record"] for i in items if i.get("record")},
+                                      synced=synced)
+                  if wa_brief.is_review_day(now) else [])
+    return {"id": pid, "label": wa_assistant.street_label(project),
+            "items": items, "open": open_lines,
             **await _brief_follow_ups(pid, company_id, now, me),
             "headcount": wa_brief.headcount_line(checkins),
             "uses_checkins": bool(checkins) or await _brief_uses_checkins(
@@ -50466,16 +52316,22 @@ def wa_brief_day_range(now: datetime):
     return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
 
 
-async def _brief_for_user(user: dict, now: datetime) -> Optional[str]:
-    """The brief text for one person, or None when they have no jobs."""
+async def _brief_for_user(user: dict, now: datetime,
+                          every_job: bool = False) -> List[Tuple[str, str]]:
+    """The brief for one person: [(part, text)], one message per job with
+    something to say (the 6 most severe; every_job: all of them, as of the
+    brief before today's), then their reminders and quiet jobs
+    (wa_brief.compose_messages); [] when they have no jobs."""
     company_id = str(user.get("company_id") or "").strip()
     if not company_id:
-        return None
+        return []
     role = wa_dm.norm_role(user.get("role"))
     projects = await _dm_assistant_projects(user, company_id, role)
     if not projects:
-        return None
-    since = await _brief_since(str(user.get("_id")), now)
+        return []
+    today = wa_brief.local_now(now).date().isoformat()
+    since = await _brief_since(str(user.get("_id")), now,
+                               before_day=today if every_job else None)
     me = await _brief_me(user)
     jobs = [await _brief_job(p, company_id, since, now, me) for p in projects]
     # Upcoming events: today's under each job's Today, the rest of the week
@@ -50489,61 +52345,470 @@ async def _brief_for_user(user: dict, now: datetime) -> Optional[str]:
     for p, job in zip(projects, jobs):
         job["today"], job["later"] = by_job.get(str(p.get("_id")), ([], []))
     own_today, own_later = by_job.get(None, ([], []))
-    return wa_brief.compose(now, jobs, {"today": own_today, "later": own_later})
+    return wa_brief.compose_messages(
+        now, jobs, {"today": own_today, "later": own_later},
+        max_jobs=None if every_job else wa_brief.MAX_JOB_MESSAGES,
+        already=None if every_job else await _brief_sent_parts(str(user.get("_id")), today))
+
+
+#: Wed Oct 14: WaAPI's send-message answered HTTP 500 at 8:05, the ledger
+#: row became "failed", every later tick read that as "already sent", and
+#: nothing went out all day. Now a failed brief is tried again after 5, 15,
+#: then every 30 minutes (lib/send_retry.RETRY_MINUTES) until its catch-up
+#: window closes; the last failure is final and an operator is told.
+#: Scheduled sends that failed for good, for the owner portal.
+SEND_FAILURES = "outbound_failures"
+
+
+def _utc(at: Any) -> Optional[datetime]:
+    if not isinstance(at, datetime):
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+def _brief_deadline(now: datetime, brief_time: str) -> datetime:
+    """When today's catch-up window for this brief time closes (UTC)."""
+    local = wa_brief.local_now(now)
+    start = local.replace(hour=int(str(brief_time)[:2]), minute=0, second=0, microsecond=0)
+    return (start + timedelta(hours=wa_brief.CATCHUP_HOURS)).astimezone(timezone.utc)
+
+
+async def _brief_log(uid: str, company_id: Any, day: str, status: str, *,
+                     reason: Optional[str] = None, error: Optional[str] = None,
+                     attempt: bool = False, now: Optional[datetime] = None,
+                     extra: Optional[Dict[str, Any]] = None) -> None:
+    """One row per user per day in brief_log: what happened to the brief --
+    sent / resent (sent_at), skipped / refused (reason), failed (reason,
+    error, next_try_at, final). brief_status reads it; nothing else is the
+    truth about a brief."""
+    now = now or datetime.now(timezone.utc)
+    st: Dict[str, Any] = {"user_id": uid, "company_id": str(company_id or ""), "day": day,
+                          "status": status, "reason": reason, "error": (error or None) and str(error)[:300],
+                          "at": now, "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS),
+                          "next_try_at": None, "final": False}
+    if status in ("sent", "resent"):
+        st["sent_at"] = now
+    st.update(extra or {})
+    upd: Dict[str, Any] = {"$set": st, "$push": {"history": {"$each": [
+        {"status": status, "reason": reason, "error": st["error"], "at": now}], "$slice": -20}}}
+    if attempt:
+        upd["$inc"] = {"attempts": 1}
+    try:
+        await db[wa_facts.BRIEF_LOG].update_one({"_id": f"{uid}:{day}"}, upd, upsert=True)
+    except Exception as e:
+        logger.warning(f"[wa-brief] log write failed: {type(e).__name__}")
+
+
+async def _send_failed_alert(kind: str, key: str, *, company_id: Any, user_id: Any = None,
+                             error: Optional[str], first_at: Optional[datetime],
+                             attempts: int, now: Optional[datetime] = None,
+                             what: str = "A scheduled WhatsApp message failed to send and will not be retried."
+                             ) -> None:
+    """A scheduled send that failed for good: an ERROR line ("[send-failed]",
+    for a log alert), a row the owner portal lists, and one email to the
+    platform operators (once per send: the notification id dedupes)."""
+    now = now or datetime.now(timezone.utc)
+    err = send_retry.scrub(error, 300)
+    logger.error(f"[send-failed] {kind} {key[-24:]} failed for good after {attempts} "
+                 f"tries (first {first_at.isoformat() if first_at else '?'}): {err}")
+    try:
+        await db[SEND_FAILURES].update_one({"_id": f"{kind}:{key}"}, {"$set": {
+            "kind": kind, "key": key, "company_id": str(company_id or ""),
+            "user_id": str(user_id or "") or None, "error": err, "attempts": attempts,
+            "first_failed_at": first_at or now, "final_at": now,
+            "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS)}}, upsert=True)
+    except Exception as e:
+        logger.warning(f"[send-failed] row not saved: {type(e).__name__}")
+    from lib.notifications import send_notification
+    when = _fmt_ny(first_at or now)
+    text = (f"{what}\n\n"
+            f"What: {kind}\nFirst failure: {when}\nTries: {attempts}\nLast error: {err}\n\n"
+            f"Run scripts/diag_morning_brief.py for a brief, or check the WaAPI instance.")
+    for recipient in await _waapi_monitor_recipients():
+        try:
+            await send_notification(
+                db, permit_renewal_id=f"send_failed:{kind}:{key}",
+                trigger_type="scheduled_send_failed", recipient=recipient,
+                subject=("WhatsApp " if what.startswith("A scheduled WhatsApp") else "")
+                + f"{kind.replace('_', ' ')} failed to send",
+                html="<p>" + text.replace("\n\n", "</p><p>").replace("\n", "<br>") + "</p>",
+                text=text, metadata={"kind": kind, "attempts": attempts})
+        except Exception as e:
+            logger.warning(f"[send-failed] email failed: {type(e).__name__}")
+
+
+def _fmt_ny(at: datetime) -> str:
+    from lib.datefmt import strftime as _f
+    return _f(_utc(at).astimezone(wa_facts.NY), "%a %b %-d, %-I:%M %p ET")
+
+
+async def _brief_failed(uid: str, company_id: Any, day: str, now: datetime, settings: dict, *,
+                        reason: str, error: Optional[str]) -> bool:
+    """Log a failed try and when the next one is; True when it was the last
+    (the window closes first), and then an operator is told."""
+    log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{day}"},
+                                               {"attempts": 1, "first_failed_at": 1})
+    attempts = int((log or {}).get("attempts") or 0) + 1
+    first = _utc((log or {}).get("first_failed_at")) or now
+    final = send_retry.is_final(attempts, now, _brief_deadline(now, settings["brief_time"]))
+    await _brief_log(uid, company_id, day, "failed", reason=reason, error=error, attempt=True,
+                     now=now, extra={"first_failed_at": first, "final": final,
+                                     "next_try_at": None if final else send_retry.next_try(attempts, now)})
+    if final:
+        await _send_failed_alert(MORNING_BRIEF_KIND, f"{uid}:{day}", company_id=company_id,
+                                 user_id=uid, error=error, first_at=first, attempts=attempts, now=now)
+    return final
+
+
+async def _dm_refusal_reason(uid: str, kind: str) -> Optional[str]:
+    """Why send_whatsapp_dm would refuse this person (its own checks, in its
+    order), as a brief_log reason; None when it would not."""
+    try:
+        user = await db.users.find_one({"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
+    except Exception:
+        user = None
+    if not wa_dm.is_dm_eligible(user):
+        return "not_eligible"
+    try:
+        optin = await db[WA_OPTINS].find_one({"user_id": uid, "status": "active"})
+    except Exception:
+        optin = None
+    if not optin:
+        return "no_optin"
+    if optin.get("phone") not in [wa_dm.phone_digits(v) for v in
+                                  _contact_phone_variants(user.get("phone") or "")]:
+        return "phone_changed"
+    prefs = await get_whatsapp_prefs(uid, None)
+    if not prefs.get("enabled"):
+        return "prefs_off"
+    pref_key = _WA_KIND_PREF.get(kind)
+    if pref_key and pref_key != "summary_frequency" and not prefs.get(pref_key):
+        return "prefs_off"
+    return None
+
+
+async def _brief_claimed(uid: str, key: str, day: str, now: datetime) -> bool:
+    """Is today's brief done, or waiting for its next try? Sent, queued,
+    skipped or in flight: done. A failed one waits for brief_log's
+    next_try_at; a final failure is done (say "send me my brief"). The
+    ledger's "failed" row never blocks the retry: the next send takes it
+    over (_dm_send_verdict)."""
+    row = await db[WA_LEDGER].find_one({"_id": key})
+    if row:
+        status = row.get("status")
+        stale = (status == "sending" and (_utc(row.get("created_at")) or now)
+                 < now - DM_STALE_SENDING)
+        if status != "failed" and not stale:
+            return True
+    log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{day}"},
+                                               {"final": 1, "next_try_at": 1, "status": 1})
+    if not log or log.get("status") != "failed":
+        return False
+    if log.get("final"):
+        return True
+    nxt = _utc(log.get("next_try_at"))
+    return bool(nxt and nxt > now)
+
+
+def _brief_part_window(day: str, part: str) -> str:
+    """One message of the brief (a job's id, or wa_brief.REST): its own
+    ledger key, so a retry sends only the messages that did not go out."""
+    return f"{day}:{part}"
+
+
+#: Seconds between two messages of one person's brief (WhatsApp flags a
+#: burst). Only that person waits: the tick runs people side by side
+#: (_morning_brief_tick). Tests set it to 0 (tests/conftest.py).
+BRIEF_SEND_GAP_SECONDS = 3
+#: How many people's briefs are sent at once.
+BRIEF_CONCURRENCY = 8
+#: Per person (user id): when their last brief message was sent (the clock
+#: below), and one lock, so the gap holds ACROSS calls too -- the morning
+#: tick, a retry, "send me my brief", "brief all" right after "+N more".
+_BRIEF_LAST_SEND: Dict[str, float] = {}
+_BRIEF_SEND_LOCKS: Dict[str, asyncio.Lock] = {}
+_brief_clock = _time.monotonic
+
+
+def _brief_send_lock(uid: str) -> asyncio.Lock:
+    return _BRIEF_SEND_LOCKS.setdefault(uid, asyncio.Lock())
+
+
+async def _brief_pace(uid: str) -> None:
+    """Wait until BRIEF_SEND_GAP_SECONDS after this person's last brief
+    message, then stamp now. Call it holding _brief_send_lock(uid)."""
+    last = _BRIEF_LAST_SEND.get(uid)
+    if last is not None and BRIEF_SEND_GAP_SECONDS > 0:
+        wait = last + BRIEF_SEND_GAP_SECONDS - _brief_clock()
+        if wait > 0:
+            await asyncio.sleep(wait)
+    _BRIEF_LAST_SEND[uid] = _brief_clock()
+
+
+async def _brief_send_parts(uid: str, day: str, messages: List[Tuple[str, str]]) -> dict:
+    """Send each message of today's brief not already out, at least
+    BRIEF_SEND_GAP_SECONDS after the person's previous one (_brief_pace).
+    {sent, already, failed (the last WaAPI error, or None), busy (another
+    run is sending one), refused (refused before WaAPI; the rest are not
+    tried)}."""
+    async with _brief_send_lock(uid):
+        return await _brief_send_parts_locked(uid, day, messages)
+
+
+async def _brief_send_parts_locked(uid: str, day: str,
+                                   messages: List[Tuple[str, str]]) -> dict:
+    out: Dict[str, Any] = {"sent": 0, "already": 0, "failed": None, "busy": False,
+                           "refused": False}
+    for part, text in messages:
+        window = _brief_part_window(day, part)
+        key = wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, window)
+        row = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1})
+        if (row or {}).get("status") == "sent":
+            out["already"] += 1
+            continue
+        await _brief_pace(uid)
+        if await send_whatsapp_dm(uid, text, kind=MORNING_BRIEF_KIND, window=window):
+            out["sent"] += 1
+            continue
+        row = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1, "error": 1})
+        status = (row or {}).get("status")
+        if status == "failed":
+            out["failed"] = row.get("error") or "unknown"
+        elif status in ("sending", "sent"):
+            out["busy"] = True
+        else:
+            out["refused"] = True
+            break
+    return out
+
+
+async def _brief_part_sent(uid: str, company_id: Any, day: str, part: str,
+                           now: datetime) -> None:
+    """One message of today's brief went out another way (a resend): its
+    canonical ledger row (_brief_part_window), unless one is already sent."""
+    window = _brief_part_window(day, part)
+    key = wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, window)
+    try:
+        row = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1})
+        if (row or {}).get("status") == "sent":
+            return
+        await db[WA_LEDGER].replace_one({"_id": key}, {
+            "_id": key, "user_id": uid, "company_id": str(company_id or ""),
+            "project_id": None, "kind": MORNING_BRIEF_KIND, "window": window,
+            "status": "sent", "created_at": now, "finished_at": now,
+            "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS)}, upsert=True)
+    except Exception as e:
+        logger.warning(f"[wa-brief] part ledger write failed: {type(e).__name__}")
+
+
+async def _brief_sent_parts(uid: str, day: str) -> set:
+    """The parts of `day`'s brief already sent to this person."""
+    try:
+        rows = await db[WA_LEDGER].find(
+            {"user_id": uid, "kind": MORNING_BRIEF_KIND, "status": "sent",
+             "window": {"$regex": f"^{re.escape(day)}:"}}, {"window": 1}).to_list(500)
+    except Exception:
+        return set()
+    return {str(r.get("window") or "")[len(day) + 1:] for r in rows}
+
+
+async def _brief_mark_sent(uid: str, company_id: Any, day: str, now: datetime,
+                           at: Optional[datetime] = None) -> None:
+    """Today's brief is out: the whole brief's ledger row (window: the day),
+    which _brief_claimed, _brief_since and brief_status read. Stamped with
+    its first message's time (`at`, else that message's ledger row)."""
+    if at is None:
+        try:
+            first = await db[WA_LEDGER].find_one(
+                {"user_id": uid, "kind": MORNING_BRIEF_KIND, "status": "sent",
+                 "window": {"$regex": f"^{day}:"}}, sort=[("created_at", 1)])
+        except Exception:
+            first = None
+        at = _utc((first or {}).get("created_at")) or now
+    try:
+        key = wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, day)
+        await db[WA_LEDGER].replace_one({"_id": key}, {
+            "_id": key, "user_id": uid, "company_id": str(company_id or ""),
+            "project_id": None, "kind": MORNING_BRIEF_KIND, "window": day, "status": "sent",
+            "created_at": at, "finished_at": now,
+            "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS)}, upsert=True)
+    except Exception as e:
+        logger.warning(f"[wa-brief] ledger write failed: {type(e).__name__}")
 
 
 async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
     report = {"optins": 0, "due": 0, "sent": 0, "refused": 0, "skipped": 0,
-              "already": 0, "shabbos_skipped": 0}
+              "already": 0, "shabbos_skipped": 0, "failed": 0, "retried": 0}
     today = wa_brief.local_now(now).date().isoformat()
     try:
         optins = await db[WA_OPTINS].find({"status": "active"}).to_list(5000)
     except Exception as e:
-        logger.warning(f"[wa-brief] opt-in read failed: {type(e).__name__}")
+        logger.warning(f"[wa-brief] opt-in read failed: {type(e).__name__}: {e}")
         return report
-    for optin in optins:
-        report["optins"] += 1
-        uid = str(optin.get("user_id") or "")
-        if not uid:
-            continue
-        try:
-            user = await db.users.find_one(
-                {"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
-            if not wa_dm.is_dm_eligible(user) or not wa_security.same_company(
-                    optin.get("company_id") or user.get("company_id"),
-                    user.get("company_id")):
-                report["skipped"] += 1
-                continue
-            settings = await _brief_settings(uid)
-            if not wa_brief.is_due(now, settings["brief_time"],
-                                   settings["brief_weekend"]):
-                continue
-            report["due"] += 1
-            if await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(
-                    uid, None, MORNING_BRIEF_KIND, today)}, {"_id": 1}):
-                report["already"] += 1
-                continue
-            if await _shabbos_quiet(user.get("company_id"), None, now):
-                # Shabbos / Yom Tov: today's brief is skipped, not queued.
-                await _ledger_hold(wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, today),
-                                   "skipped_shabbos", user_id=uid,
-                                   company_id=user.get("company_id"),
-                                   kind=MORNING_BRIEF_KIND, window=today)
-                report["shabbos_skipped"] += 1
-                continue
-            text = await _brief_for_user(user, now)
-            if not text:
-                report["skipped"] += 1
-                continue
-            sent = await send_whatsapp_dm(uid, text, kind=MORNING_BRIEF_KIND,
-                                          window=today)
-            report["sent" if sent else "refused"] += 1
-        except Exception as e:
-            logger.warning(f"[wa-brief] user failed: {type(e).__name__}")
+    gate = asyncio.Semaphore(BRIEF_CONCURRENCY)
+
+    async def _one(optin: dict) -> None:
+        async with gate:
+            await _morning_brief_one(optin, now, today, report)
+
+    # People side by side: one person's paced messages never hold up another's.
+    await asyncio.gather(*(_one(o) for o in optins))
     logger.info(f"[wa-brief] {report}")
     await _dm_answers_daily(now)
     return report
+
+
+async def _morning_brief_one(optin: dict, now: datetime, today: str, report: dict) -> None:
+    """One person's brief in the morning tick (counted in `report`)."""
+    report["optins"] += 1
+    uid = str(optin.get("user_id") or "")
+    if not uid:
+        return
+    company_id = optin.get("company_id")
+    try:
+        user = await db.users.find_one(
+            {"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
+        company_id = (user or {}).get("company_id") or company_id
+        settings = await _brief_settings(uid)
+        due = wa_brief.is_due(now, settings["brief_time"], settings["brief_weekend"])
+        if not wa_dm.is_dm_eligible(user) or not wa_security.same_company(
+                optin.get("company_id") or user.get("company_id"),
+                user.get("company_id")):
+            report["skipped"] += 1
+            if due:
+                await _brief_log(uid, company_id, today, "skipped", reason="not_eligible", now=now)
+            return
+        if not due:
+            return
+        report["due"] += 1
+        key = wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, today)
+        had = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1})
+        log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{today}"}, {"status": 1})
+        if await _brief_claimed(uid, key, today, now):
+            report["already"] += 1
+            return
+        if had or (log or {}).get("status") == "failed":
+            report["retried"] += 1
+        if await _shabbos_quiet(user.get("company_id"), None, now):
+            # Shabbos / Yom Tov: today's brief is skipped, not queued.
+            await _ledger_hold(key, "skipped_shabbos", user_id=uid,
+                               company_id=user.get("company_id"),
+                               kind=MORNING_BRIEF_KIND, window=today)
+            await _brief_log(uid, company_id, today, "skipped", reason="shabbos", now=now)
+            report["shabbos_skipped"] += 1
+            return
+        messages = await _brief_for_user(user, now)
+        if not messages:
+            report["skipped"] += 1
+            await _brief_log(uid, company_id, today, "skipped", reason="no_jobs", now=now)
+            return
+        out = await _brief_send_parts(uid, today, messages)
+        if out["refused"]:
+            # Refused before WaAPI: the person's own gates (the same for
+            # every message of the brief).
+            reason = await _dm_refusal_reason(uid, MORNING_BRIEF_KIND)
+            report["refused"] += 1
+            await _brief_log(uid, company_id, today, "refused",
+                             reason=reason or "send_failed", now=now)
+            logger.warning(f"[wa-brief] refused for user {uid[-6:]}: {reason or 'unknown'}")
+        elif out["failed"] is not None:
+            # WaAPI said no to a message; those that went out stay out
+            # (their ledger rows), the next try sends only the rest.
+            report["failed"] += 1
+            final = await _brief_failed(uid, company_id, today, now, settings,
+                                        reason="send_failed", error=out["failed"])
+            logger.warning(f"[wa-brief] send failed for user {uid[-6:]} "
+                           f"({out['sent'] + out['already']}/{len(messages)} out)"
+                           f"{' (final)' if final else ', will retry'}: {out['failed']}")
+        elif out["busy"]:
+            report["already"] += 1      # another run has it in hand
+        else:
+            report["sent"] += 1
+            await _brief_mark_sent(uid, company_id, today, now)
+            await _brief_log(uid, company_id, today, "sent", attempt=True, now=now)
+    except Exception as e:
+        # The whole error, once per user: "user failed: KeyError" told
+        # nobody anything.
+        report["failed"] += 1
+        logger.exception(f"[wa-brief] user {uid[-6:]} failed: {type(e).__name__}: {e}")
+        try:
+            await _brief_failed(uid, company_id, today, now, await _brief_settings(uid),
+                                reason="error", error=f"{type(e).__name__}: {e}")
+        except Exception as e2:
+            logger.warning(f"[wa-brief] failure not logged: {type(e2).__name__}")
+
+
+async def _brief_resend(user: dict, dm_chat: str, now: datetime,
+                        every_job: bool = False) -> str:
+    """"send me my brief": today's brief, now, as replies to their message
+    (their message opened the window). Recorded as resent in brief_log and
+    in the ledger, so the morning tick does not send it a second time.
+
+    The window allows wa_dm.REPLY_WINDOW_MAX_SENDS sends; the messages past
+    its first ones (one is left for whatever else this turn says) go out
+    through their opt-in, each its own ledger row for this resend.
+
+    every_job ("brief all"): the job messages this morning's brief left out
+    (more than wa_brief.MAX_JOB_MESSAGES jobs), under the morning's own
+    ledger keys (_brief_send_parts): a job already sent today is not sent
+    again. "nothing" when every job is already out."""
+    uid = str(user.get("_id"))
+    today = wa_brief.local_now(now).date().isoformat()
+    try:
+        messages = await _brief_for_user(user, now, every_job=every_job)
+    except Exception as e:
+        logger.exception(f"[wa-brief] resend for {uid[-6:]} failed: {type(e).__name__}: {e}")
+        await _brief_log(uid, user.get("company_id"), today, "failed", reason="error",
+                         error=f"{type(e).__name__}: {e}", now=now)
+        return "error"
+    if not messages:
+        await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
+        return "no_jobs"
+    if every_job:
+        jobs = [(part, text) for part, text in messages
+                if part not in (wa_brief.REST, wa_brief.MORE)]
+        out = await _brief_send_parts(uid, today, jobs)
+        if out["refused"] or out["failed"] is not None:
+            return "failed"
+        if not out["sent"] and not out["busy"]:
+            await send_whatsapp_message(dm_chat, wa_brief.BRIEF_ALL_NOTHING)
+            return "nothing"
+        return "sent"
+    sent, run = 0, uuid.uuid4().hex[:8]     # each resend: its own ledger rows
+    async with _brief_send_lock(uid):
+        for i, (part, text) in enumerate(messages):
+            meta = None
+            if i >= wa_dm.REPLY_WINDOW_MAX_SENDS - 1:
+                meta = {"user_id": uid, "company_id": str(user.get("company_id") or ""),
+                        "kind": MORNING_BRIEF_KIND, "window": f"{today}:resend-{run}:{part}"}
+            await _brief_pace(uid)
+            if await send_whatsapp_message(dm_chat, text, dm_meta=meta):
+                sent += 1
+                # Also under the part's own key ({day}:{part}), as the morning
+                # sends it: "brief all" and the tick then never send it again.
+                await _brief_part_sent(uid, user.get("company_id"), today, part, now)
+    if sent < len(messages):
+        await _brief_log(uid, user.get("company_id"), today, "failed", reason="send_failed",
+                         now=now)
+        return "failed"
+    await _brief_log(uid, user.get("company_id"), today, "resent", now=now)
+    await _brief_mark_sent(uid, user.get("company_id"), today, now, at=now)
+    return "sent"
+
+
+async def _brief_status_for(uid: str, day: Optional[str], now: datetime) -> str:
+    """brief_status: from brief_log (and the ledger), never a guess."""
+    try:
+        d = _Date.fromisoformat(day) if day else wa_brief.local_now(now).date()
+    except ValueError:
+        d = wa_brief.local_now(now).date()
+    iso = d.isoformat()
+    log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{iso}"})
+    ledger = await db[WA_LEDGER].find_one(
+        {"_id": wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, iso)})
+    settings = await _brief_settings(uid)
+    return wa_facts.brief_status_text(log, ledger, settings, now, d)
 
 
 async def _dm_answers_daily(now: datetime) -> Optional[dict]:
@@ -50572,6 +52837,1398 @@ async def _whatsapp_brief_job() -> None:
         await _morning_brief_tick()
     except Exception as e:
         logger.error(f"[wa-brief] tick failed: {type(e).__name__}: {e}")
+
+
+# ── PROJECT REPORTS (lib/project_report.py) ─────────────────────────────────
+#
+# A period's report for a job (or all of a person's jobs): a PDF stored in
+# R2, the short WhatsApp message it goes with, and a no-login link that works
+# for 30 days (the temp-media token: opaque, single object, expires). On
+# request in the DM ("send me a report for 588 for the last 2 weeks",
+# "monthly report 588", "report all jobs September"), from the app (Project →
+# Reports), and on a per-job schedule (weekly Monday / bi-weekly / monthly
+# 1st / quarterly, 8 AM, with a catch-up window for a missed run) to the
+# company's admins and the PMs chosen -- through the Shabbos queue and the
+# shared retry policy.
+#
+# ONE REPORT, from records only (lib/progress_report.compute): site check-ins
+# and filed daily logs for the period AND the previous period of the same
+# length, the daily logs as AMENDED (the chain head, the same pick the daily
+# report makes), DOB/DOT records read as of the period (lib/report_regulatory),
+# an imported project schedule when a person confirmed one, and financial
+# figures only when a person confirmed them. NOT chat, commitments, punch
+# items or any WhatsApp content: those are the GC's internal operation, and
+# nothing in this report is sent to a language model. Phone numbers never
+# appear. The facts printed are stored WITH the report (`snapshot`), so a
+# report can be audited as it was sent.
+# The PDF goes as the WhatsApp attachment; the link only when it can't.
+
+PROJECT_REPORTS = "project_reports"
+PROJECT_REPORT_SETTINGS = "project_report_settings"
+REPORT_DM_KIND = "project_report"
+PROJECT_SCHEDULES = "project_schedules"
+PROJECT_FINANCIALS = "project_financials"
+#: A scheduled report whose PDF could not be made is rebuilt on each tick
+#: (every 15 minutes) this many times; then an operator is told.
+REPORT_PDF_ATTEMPTS = 6
+
+
+class ReportSourceUnavailable(Exception):
+    """A record source could not be read: no report is made from it."""
+
+
+REPORT_UNAVAILABLE = "I couldn't read the job's records just now, so I didn't make the report. Try again in a few minutes."
+
+
+def _report_sync(project: dict, state: Optional[dict]) -> dict:
+    """What the regulatory section needs to know about the feed: whether the
+    project is tracked at all, when its DOB records were last fully checked
+    (`last_dob_sync_at`, written on every successful sync) and whether every
+    DOB source has a completed sync, and when DOT was."""
+    srcs = (state or {}).get("sources") or {}
+
+    def at(name: str):
+        return source_sync.as_utc((srcs.get(name) or {}).get("synced_at"))
+    dob_names = (source_sync.DOB_VIOLATIONS, source_sync.DOB_COMPLAINTS, source_sync.DOB_PERMITS)
+    rolling = source_sync.as_utc(project.get("last_dob_sync_at"))
+    per_source = [at(n) for n in dob_names]
+    dob = rolling or (min(a for a in per_source if a) if any(per_source) else None)
+    dot_at = [a for a in (at(source_sync.DOT_OATH), at(source_sync.DOT_PERMITS)) if a]
+    return {"tracking": bool(project.get("track_dob_status")), "dob": dob,
+            "dob_complete": all(per_source) if srcs else True,
+            "dot": min(dot_at) if dot_at else None}
+
+
+def _confirmed_by_name(rec: dict) -> str:
+    return str(rec.get("confirmed_by_name") or "")
+
+
+async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
+                       now: datetime) -> dict:
+    """Everything one job's report reads, for that job only: the period AND
+    the previous period of the same length (the comparison is computed from
+    the same rows), the daily logs resolved to their chain heads, the DOB/DOT
+    rows whole (their status is read as of the period, so history before it
+    matters), the city events, the confirmed schedule and financials, and the
+    sync state."""
+    pid = str(project.get("_id"))
+    # Defence in depth: every caller has scoped the project to the company
+    # already; a report never reads another company's job whatever called it.
+    if str(project.get("company_id") or "") != str(company_id or ""):
+        logger.error("[report] refused: project is not this company's")
+        raise ReportSourceUnavailable("project")
+    length = (end - start).days + 1
+    prev_start = start - timedelta(days=length)
+    lo = datetime.combine(prev_start - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    hi = datetime.combine(end + timedelta(days=2), datetime.min.time(), tzinfo=timezone.utc)
+    cf = _company_id_filter(company_id)
+
+    async def _q(coll, query, limit=50000, projection=None):
+        # A failed read is never "no records": the report would print zeros
+        # as fact (Codex on #795). It stops, and says so.
+        try:
+            return await coll.find(query, projection).to_list(limit)
+        except Exception as e:
+            logger.warning(f"[report] read failed: {type(e).__name__}")
+            raise ReportSourceUnavailable(getattr(coll, "name", "records")) from e
+
+    checkins = await _q(db.checkins, {"project_id": pid, "is_deleted": {"$ne": True},
+                                      "check_in_time": {"$gte": lo, "$lt": hi}},
+                        projection={"worker_id": 1, "worker_phone": 1, "worker_name": 1,
+                                    "worker_company": 1, "company": 1, "company_name": 1,
+                                    "check_in_time": 1})
+    in_window = [r for r in checkins if attendance.local_day(r.get("check_in_time")) and
+                 prev_start <= attendance.local_day(r["check_in_time"]) <= end]
+    # The first day anything was recorded on the job: working days count from
+    # it (lib/report_calendar), not from before the job began.
+    firsts = []
+    try:
+        first_ck = await db.checkins.find({"project_id": pid, "is_deleted": {"$ne": True}},
+                                          {"check_in_time": 1}).sort([("check_in_time", 1)]).to_list(1)
+        first_lg = await db.logbooks.find({"project_id": pid, "log_type": "daily_jobsite",
+                                           "status": "submitted", "is_deleted": {"$ne": True}},
+                                          {"date": 1}).sort([("date", 1)]).to_list(1)
+    except Exception as e:
+        logger.warning(f"[report] read failed: {type(e).__name__}")
+        raise ReportSourceUnavailable("records") from e
+    for r in first_ck:
+        d = attendance.local_day(r.get("check_in_time"))
+        if d:
+            firsts.append(d)
+    for r in first_lg:
+        d = project_report._d(r.get("date"))
+        if d:
+            firsts.append(d)
+    # EVERY daily_jobsite document of the window -- originals, amendments,
+    # drafts, withdrawn -- then the SAME chain resolution the daily report and
+    # the inspector's list use (collapse_amendment_chains -> _filed_log): the
+    # original until an amendment is signed and filed, then the amendment; a
+    # withdrawn or unsigned one never wins. The old filter excluded every
+    # amendment, so the report printed what the CP had formally corrected.
+    log_rows = await _q(db.logbooks, {"project_id": pid, "log_type": "daily_jobsite",
+                                      "is_deleted": {"$ne": True},
+                                      "date": {"$gte": prev_start.isoformat(), "$lte": end.isoformat()}},
+                        2 * length + 200,
+                        projection={"date": 1, "data.activities": 1, "data.checklist_items": 1,
+                                    "is_amendment": 1, "parent_logbook_id": 1, "amendment_reason": 1,
+                                    "status": 1, "is_locked": 1, "log_type": 1, "created_at": 1,
+                                    "updated_at": 1})
+    heads = []
+    for chain in collapse_amendment_chains(log_rows):
+        head = chain["head"]
+        if not logbook_is_filed(head) or logbook_is_withdrawn(head):
+            continue                     # a day with only a draft is a day with no filed log
+        h = dict(head)
+        h["_chain_length"] = chain["length"]
+        h["_competing"] = len(chain["competing"])
+        h["_amendment_reason"] = head.get("amendment_reason") if head.get("is_amendment") else None
+        heads.append(h)
+    dob_rows = await _q(db.dob_logs, {"project_id": pid, "is_deleted": {"$ne": True}}, 5000)
+    dot_rows = await _q(db.dot_logs, {"project_id": pid}, 5000)
+    # City dates only: a date a model read out of a chat message is a guess an
+    # owner would take for a commitment.
+    events = await _q(db.upcoming_events, {"company_id": cf, "project_id": pid, "source": "city"}, 2000)
+    state = (await _q(db[SOURCE_SYNC_STATE], {"_id": pid}, 1) or [None])[0]
+    sched = (await _q(db[PROJECT_SCHEDULES], {"company_id": cf, "project_id": pid, "status": "confirmed"}, 1)
+             or [None])[0]
+    fin = (await _q(db[PROJECT_FINANCIALS], {"_id": pid, "company_id": cf}, 1) or [None])[0]
+    return {"checkins": in_window, "logbooks": heads, "dob_rows": dob_rows, "dot_rows": dot_rows,
+            "events": events, "sync": _report_sync(project, state),
+            # The building(s) this job is: its own BIN plus any a person added.
+            # DOB records for another BIN are left out of the report (and listed
+            # for review): the address search can return a neighbour's.
+            "project_bins": [b for b in [project.get("nyc_bin"), *(project.get("additional_bins") or [])] if b],
+            "first_activity": min(firsts) if firsts else None,
+            "schedule": (sched or {}).get("doc"),
+            "schedule_meta": ({"source_name": sched.get("source_name"),
+                               "confirmed_by": _confirmed_by_name(sched),
+                               "schedule_id": str(sched["_id"])} if sched else None),
+            "financials": fin}
+
+
+def _report_pdf(html_text: str) -> bytes:
+    """The PDF bytes. Blocking: only ever called through asyncio.to_thread
+    (build_project_report), like every other weasyprint render here."""
+    import weasyprint
+
+    def _render_pdf(h: str) -> bytes:
+        return weasyprint.HTML(string=h).write_pdf()
+    return _render_pdf(html_text)
+
+
+REPORT_PHOTO_VERDICTS = "report_photo_verdicts"
+#: Photos sent to vision per report (each is one call, cached by photo).
+REPORT_JUDGE_MAX = 100
+REPORT_JUDGE_AT_ONCE = 8
+
+
+def _report_photo_bytes(c: dict) -> Optional[bytes]:
+    """A report photo's bytes: a daily-log photo from any copy it still has
+    (R2 or inline, as the log viewer serves it -- Codex on #803), a
+    walkthrough photo from R2."""
+    sources = _logbook_photo_sources(c["photo"], "enhanced") if c.get("photo") else [("r2", c["key"])]
+    for kind, val in sources:
+        raw = _r2_fetch(val)[0] if kind == "r2" else _decode_image_data_url(val)
+        if raw:
+            return raw
+    return None
+
+
+async def _photo_verdict(raw: bytes, project_id: Any, endpoint: str) -> Optional[dict]:
+    """One vision call on a photo: {ok, kind, score, caption}, or None."""
+    if not QWEN_API_KEY or not raw:
+        return None
+    data, _err = await asyncio.to_thread(_vision_jpeg, raw)
+    if not data:
+        return None
+    await record_vision_call(db, endpoint=endpoint, project_id=str(project_id) if project_id else None)
+    try:
+        async with ServerHttpClient(timeout=45.0) as client:
+            resp = await client.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
+                json={"model": QWEN_MODEL, "max_tokens": 200, "temperature": 0,
+                      "messages": [{"role": "user", "content": [
+                          {"type": "image_url", "image_url": {
+                              "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
+                          {"type": "text", "text": progress_report.JUDGE_PROMPT}]}]})
+            if resp.status_code >= 400:
+                logger.warning(f"[photo] vision HTTP {resp.status_code}")
+                return None
+            said = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"[photo] vision failed: {type(e).__name__}")
+        return None
+    return progress_report.parse_verdict(said)
+
+
+async def _photo_verdict_cache(key: str, v: dict, meta: Optional[dict] = None) -> None:
+    """Store one verdict. `meta` (project_id, company_id, log_id, date, photo_key)
+    is what lets a later report, or a schedule chart, ask "every photo of this
+    project in this period" without judging anything again."""
+    try:
+        await db[REPORT_PHOTO_VERDICTS].update_one(
+            {"_id": key}, {"$set": {**v, **(meta or {}), "at": datetime.now(timezone.utc)}}, upsert=True)
+    except Exception:
+        pass
+
+
+def _verdict_id(key: str) -> str:
+    return f"report-v3:{key}"
+
+
+async def _stored_verdicts(keys: List[str]) -> Dict[str, dict]:
+    """{photo key: its stored verdict} for the keys already judged (by the filing-
+    time pipeline or an earlier report). One query; never raises."""
+    ids = [_verdict_id(k) for k in dict.fromkeys(keys) if k]
+    out: Dict[str, dict] = {}
+    if not ids:
+        return out
+    try:
+        for doc in await db[REPORT_PHOTO_VERDICTS].find({"_id": {"$in": ids}}).to_list(len(ids)):
+            if isinstance(doc, dict) and "ok" in doc:
+                out[str(doc["_id"])[len("report-v3:"):]] = {k: v for k, v in doc.items() if k not in ("_id", "at")}
+    except Exception as e:
+        logger.warning(f"[photos] stored verdicts unreadable: {type(e).__name__}")
+    return out
+
+
+async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
+    """The vision model's verdict on one photo, cached by its key: {ok,
+    kind, score, caption}. None (and nothing cached) when it can't be read
+    or judged -- such a photo is never shown."""
+    key = c["key"]
+    # A verdict is cached under the JUDGE'S VERSION: the group-photo flow shares
+    # this collection with another prompt and shape, and an older report verdict
+    # (progress / other only) would pass a photo of stacked materials.
+    ckey = f"report-v3:{key}"
+    try:
+        cached = await db[REPORT_PHOTO_VERDICTS].find_one({"_id": ckey})
+    except Exception:
+        cached = None
+    if cached:
+        return cached
+    if not QWEN_API_KEY:
+        return None
+    raw = await asyncio.to_thread(_report_photo_bytes, c)
+    if not raw:
+        logger.info("[report] photo not read")
+        return None
+    v = await _photo_verdict(raw, project_id, VISION_REPORT_PHOTO)
+    if v is not None:
+        await _photo_verdict_cache(ckey, v)
+    return v
+
+
+# ── THE FILING-TIME PHOTO PIPELINE ──────────────────────────────────────────
+#
+# A photograph is judged ONCE, soon after its daily log is filed, and the verdict
+# is stored (REPORT_PHOTO_VERDICTS, with project / company / log / date). A report
+# or a schedule chart then READS what is already known instead of judging a
+# fortnight of photographs while someone waits (the real 588 period held 209).
+# A sweep, not a hook in the submit endpoint: logs are filed, amended and
+# appended to by several routes, and a sweep catches every one of them, survives a
+# restart, and is safe to run twice. Nothing here sends anything.
+PHOTO_PIPELINE_DAYS = 7        # logs dated within this many days are looked at
+PHOTO_PIPELINE_BUDGET = 150    # photographs judged per tick (a backlog drains over ticks)
+PHOTO_PIPELINE_TRIES = 3       # ticks a photo the model cannot read is tried before it is left alone
+
+
+def _failure_id(key: str) -> str:
+    return f"report-v3-fail:{key}"
+
+
+async def _photo_pipeline_tick(now: Optional[datetime] = None, days: int = PHOTO_PIPELINE_DAYS,
+                               budget: int = PHOTO_PIPELINE_BUDGET) -> dict:
+    """Judge and store every unjudged photo of the recent FILED daily logs.
+    Returns counts. Never raises."""
+    report = {"logs": 0, "photos": 0, "already": 0, "judged": 0, "failed": 0, "given_up": 0}
+    if not QWEN_API_KEY:
+        return report
+    now = now or datetime.now(timezone.utc)
+    since = (now - timedelta(days=days)).date().isoformat()
+    try:
+        logs = await db.logbooks.find(
+            await unattended_project_filter({"log_type": "daily_jobsite", "is_deleted": {"$ne": True},
+                                             "date": {"$gte": since}}),
+            {"date": 1, "project_id": 1, "company_id": 1, "status": 1, "is_locked": 1, "is_amendment": 1,
+             "withdrawn": 1, "withdrawn_at": 1, "data.activities": 1}).to_list(3000)
+    except Exception as e:
+        logger.warning(f"[photo-pipeline] logs unreadable: {type(e).__name__}")
+        return report
+    found: List[Tuple[dict, dict]] = []
+    for lg in logs:
+        if not logbook_is_filed(lg) or logbook_is_withdrawn(lg):
+            continue
+        report["logs"] += 1
+        found += [(lg, ph) for ph in progress_report.log_photos(lg)]
+    report["photos"] = len(found)
+    stored = await _stored_verdicts([ph["key"] for _, ph in found])
+    tried: Dict[str, int] = {}
+    try:
+        ids = [_failure_id(k) for k in {ph["key"] for _, ph in found if ph["key"] not in stored}]
+        for doc in await db[REPORT_PHOTO_VERDICTS].find({"_id": {"$in": ids}}).to_list(len(ids) or 1):
+            tried[str(doc["_id"])[len("report-v3-fail:"):]] = int(doc.get("attempts") or 0)
+    except Exception:
+        pass
+    pending = []
+    for lg, ph in sorted(found, key=lambda x: str(x[1]["date"]), reverse=True):   # yesterday's first
+        if ph["key"] in stored:
+            report["already"] += 1
+        elif tried.get(ph["key"], 0) >= PHOTO_PIPELINE_TRIES:
+            report["given_up"] += 1
+        else:
+            pending.append((lg, ph))
+    sem = asyncio.Semaphore(REPORT_JUDGE_AT_ONCE)
+
+    async def one(lg: dict, ph: dict) -> None:
+        async with sem:
+            raw = await asyncio.to_thread(_report_photo_bytes, {"photo": ph["photo"], "key": ph["key"]})
+            v = await _photo_verdict(raw, lg.get("project_id"), VISION_REPORT_PHOTO) if raw else None
+            if v is None:
+                report["failed"] += 1
+                try:
+                    await db[REPORT_PHOTO_VERDICTS].update_one(
+                        {"_id": _failure_id(ph["key"])},
+                        {"$inc": {"attempts": 1}, "$set": {"at": datetime.now(timezone.utc),
+                                                           "project_id": str(lg.get("project_id") or "")}}, upsert=True)
+                except Exception:
+                    pass
+                return
+            await _photo_verdict_cache(_verdict_id(ph["key"]), v, {
+                "photo_key": ph["key"], "project_id": str(lg.get("project_id") or ""),
+                "company_id": str(lg.get("company_id") or ""), "log_id": ph["log_id"], "date": ph["date"],
+                "source": "filing"})
+            report["judged"] += 1
+    await asyncio.gather(*(one(lg, ph) for lg, ph in pending[:budget]), return_exceptions=True)
+    logger.info(f"[photo-pipeline] {report}")
+    return report
+
+
+async def _photo_pipeline_job() -> None:
+    try:
+        await _photo_pipeline_tick()
+    except Exception as e:
+        logger.error(f"[photo-pipeline] tick failed: {type(e).__name__}: {e}")
+
+
+# ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
+
+async def _group_photo_company(row: dict, company_id: Any, project_id: Any) -> Tuple[str, str, str]:
+    """(company, name, how) of who sent a group photo, from the company's
+    own records: a user of the company is the GC team; a worker who checked
+    in at this job, their check-in's company; else People. ("", "", "") when
+    nobody knows."""
+    person = await _attention_resolve(str(row.get("sender_jid") or ""), str(company_id or ""),
+                                      str(project_id or ""), {})
+    if person.get("status") != "resolved":
+        return "", "", ""
+    name = str(person.get("name") or "")
+    if person.get("kind") == "user":
+        return wa_sender_map.GC_TEAM, name, "user"
+    if person.get("kind") == "worker" and person.get("id"):
+        try:
+            ck = await db.checkins.find(
+                {"project_id": str(project_id), "company_id": _company_id_filter(company_id),
+                 "worker_id": person["id"], "is_deleted": {"$ne": True}},
+                {"worker_company": 1, "company": 1, "company_name": 1}).sort(
+                [("check_in_time", -1)]).to_list(1)
+        except Exception:
+            ck = []
+        co = attendance.checkin_company(ck[0]) if ck else ""
+        if co:
+            return co, name, "checkin"
+    if person.get("sub_company"):
+        return str(person["sub_company"]), name, "people"
+    return "", name, ""
+
+
+async def _group_photo_capture(row: dict, parsed: dict, project_id: Any, company_id: Any,
+                               body: str, now: datetime) -> Optional[dict]:
+    """A photo posted in a linked job group: the original in R2 (company /
+    job scoped), who sent it and their company, the caption -- and what the
+    vision model sees, once. Never raises: the message is stored either
+    way."""
+    if not project_id or not row or not row.get("_id"):
+        return None
+    try:
+        photo_key, quality = parsed.get("photo_key"), parsed.get("photo_quality")
+        shared = bool(photo_key)            # a punch completion photo, already kept
+        record: dict = {}
+        if not photo_key:
+            photo_key, quality, record = await _punch_store_photo(
+                parsed, wa_photos.key(company_id, project_id, parsed.get("message_id")))
+        co, name, how = await _group_photo_company(row, company_id, project_id)
+        photo = wa_photos.doc(photo_key, quality, wa_photos.caption(body), sender_company=co,
+                              sender_name=name or str(row.get("sender_name") or ""), company_how=how,
+                              shared=shared, at=row.get("timestamp") or now,
+                              media_ref=wa_media_ref(parsed.get("raw") or {}))
+        if not photo_key:
+            # Not captured: who sent it, the caption and where WhatsApp keeps
+            # it are kept all the same (Codex on #804) -- the log says so.
+            photo.update(key=None, quality=None, failed=True, capture=record)
+            await db.whatsapp_messages.update_one({"_id": row["_id"]}, {"$set": {"photo": photo}})
+            logger.warning("[group-photo] not captured")
+            return None
+        await db.whatsapp_messages.update_one({"_id": row["_id"]}, {"$set": {"photo": photo}})
+        raw = await asyncio.to_thread(_r2_bytes, photo_key)
+        v = await _photo_verdict(raw, project_id, VISION_GROUP_PHOTO) if raw else None
+        if v is not None:
+            photo["vision"] = v
+            await db.whatsapp_messages.update_one({"_id": row["_id"]}, {"$set": {"photo.vision": v}})
+            await _photo_verdict_cache(photo_key, v)
+        row["photo"] = photo
+        # Indexed already (the indexer ran first)? Its words now include what
+        # the photo shows.
+        mem = await db.project_memory.find_one({"_id": f"wa:{row['_id']}"}, {"group_name": 1})
+        if mem is not None and project_memory.indexable_message(row):
+            await _memory_upsert({"_id": f"wa:{row['_id']}", **_memory_wa_doc(row, mem.get("group_name") or "")},
+                                 datetime.now(timezone.utc))
+        return photo
+    except Exception as e:
+        logger.warning(f"[group-photo] capture failed: {type(e).__name__}")
+        return None
+
+
+async def _report_photos(rep: dict, project_id: str) -> List[dict]:
+    """Up to 15 daily-log photos for the report: vision screens a capped set
+    (blurry, people-only, documents out), then the pick."""
+    # Verdicts the filing-time pipeline (or an earlier report) already stored cost
+    # nothing; only photos with none are sent to vision, spread over the period.
+    verdicts: Dict[str, dict] = await _stored_verdicts([c["key"] for c in rep["photo_candidates"]])
+    missing = [c for c in rep["photo_candidates"] if c["key"] not in verdicts]
+    todo = progress_report.to_judge(missing, REPORT_JUDGE_MAX)
+    sem = asyncio.Semaphore(REPORT_JUDGE_AT_ONCE)
+
+    async def one(c):
+        async with sem:
+            v = await _report_judge_photo(c, project_id)
+            if v:
+                verdicts[c["key"]] = v
+    await asyncio.gather(*(one(c) for c in todo))
+    # A photo the model gave no usable answer for is asked about ONCE more (a
+    # transient error or a cut-off reply), then counted: the real 588 run lost
+    # about a third of its judged photos with no trace.
+    again = [c for c in todo if c["key"] not in verdicts]
+    if again:
+        await asyncio.gather(*(one(c) for c in again))
+    unjudged = [c for c in todo if c["key"] not in verdicts]
+    filed = len(rep.get("photo_candidates") or [])
+    logger.info(f"[report] photos: {filed} filed, {filed - len(missing)} already judged, {len(todo)} sent to be "
+                f"judged now, {len(unjudged)} with no usable verdict after a retry")
+    rep["photos_unjudged"] = len(unjudged)
+    judged = [c for c in rep["photo_candidates"] if c["key"] in verdicts]
+    chosen = progress_report.pick_photos(judged, verdicts)
+    rep["photo_review"] = progress_report.photo_review(judged, verdicts, chosen)
+    return chosen
+
+
+def _report_image(c: dict) -> Optional[str]:
+    """A chosen photo as a data URI for the PDF (at most 900 px)."""
+    raw = _report_photo_bytes(c)
+    if not raw:
+        return None
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(raw)) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im = report_image.trim_black_bars(im)       # padding, never picture
+            im.thumbnail((900, 900))
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=78)
+        return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode()
+    except Exception:
+        return None
+
+
+async def build_project_report(company_id: str, projects: List[dict], start: _Date, end: _Date, *,
+                               now: Optional[datetime] = None, by: str = "",
+                               source: str = "app", key: Optional[str] = None,
+                               kind: str = "", dry_run: bool = False) -> dict:
+    """Compute, render, store and link one report (one job, or several).
+
+    `dry_run`: read, compute and render only -- nothing is stored, uploaded,
+    linked or sent; the result is {"pdf", "html", "snapshot", "title", "photos"}.
+    It is how a report is checked against a database without touching it.
+
+    `key`: a scheduled report's once-only key. A report already built under it
+    WITH ITS PDF is returned, never built twice. One whose PDF could not be
+    made is NOT: the old code returned that PDF-less document on every later
+    tick, so a transient R2 or WeasyPrint failure lost the period's report for
+    good. It is rebuilt in place (same id and key, `attempts` counted) until
+    it has a PDF."""
+    now = now or datetime.now(timezone.utc)
+    old = None
+    if key:
+        old = await db[PROJECT_REPORTS].find_one({"key": key})
+        if old and old.get("r2_key"):
+            return old
+    gc = await _punch_link_gc_name(company_id) or ""
+    reps = []
+    for p in projects:
+        rows = await _report_rows(p, company_id, start, end, now)
+        rep = progress_report.compute(
+            job=wa_assistant.street_label(p), address=str(p.get("address") or ""), gc=gc,
+            start=start, end=end, now=now, kind=kind, **rows)
+        rep["photos"] = await _report_photos(rep, str(p.get("_id")))
+        reps.append(rep)
+    images = {}
+    for rep in reps:
+        for ph in rep["photos"]:
+            uri = await asyncio.to_thread(_report_image, ph)
+            if uri:
+                images[ph["key"]] = uri
+        # A photo that could not be read is not in the report: the section
+        # shows what was fetched, never a hole.
+        rep["photos"] = [ph for ph in rep["photos"] if ph["key"] in images]
+    title = progress_report_render.title_for(reps)
+    rid = str((old or {}).get("_id") or uuid.uuid4())
+    html_text = progress_report_render.render_html(reps, gc=gc, title=title, now=now, images=images,
+                                                   report_id=rid)
+    if dry_run:
+        try:
+            pdf_bytes = await asyncio.to_thread(_report_pdf, html_text)
+        except (ImportError, OSError) as e:       # WeasyPrint's native libraries are missing (Windows)
+            logger.warning(f"[report] dry run: no PDF engine here ({type(e).__name__})")
+            pdf_bytes = None
+        return {"pdf": pdf_bytes, "html": html_text, "title": title,
+                "snapshot": [progress_report.snapshot(r) for r in reps],
+                "photos": [{k: v for k, v in ph.items() if k != "key"} for r in reps for ph in r["photos"]],
+                "photo_review": [x for r in reps for x in r.get("photo_review") or []],
+                "reports": reps}
+    r2_key = f"reports/{company_id}/{rid}.pdf"
+    stored, error = False, None
+    try:
+        pdf = await asyncio.to_thread(_report_pdf, html_text)
+        stored = bool(await asyncio.to_thread(_upload_to_r2, pdf, r2_key, "application/pdf"))
+        if not stored:
+            error = "PDF not stored"
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"[:200]
+        logger.error(f"[report] PDF failed: {error}")
+    token = await _mint_temp_media_token(r2_key, "application/pdf",
+                                         ttl_seconds=project_report.LINK_DAYS * 86400) if stored else None
+    heads = [progress_report.whatsapp_message(r, attached=False) for r in reps[:4]]
+    fields = {"company_id": str(company_id), "project_ids": [str(p.get("_id")) for p in projects],
+              "start": start.isoformat(), "end": end.isoformat(), "title": title,
+              "summary": "\n\n".join(heads).splitlines(),
+              "r2_key": r2_key if stored else None, "link": _public_temp_media_url(token) if token else None,
+              "link_expires": now + timedelta(days=project_report.LINK_DAYS),
+              "created_by": by, "source": source, "key": key, "kind": kind or None,
+              "filename": re.sub(r"[^A-Za-z0-9 ._-]+", "", title).strip()[:80] + ".pdf",
+              # What was printed and what it rests on, kept with the report: its
+              # inputs change (a violation is resolved, a log is amended) and a
+              # regenerated report would not match the one that was sent.
+              "engine": progress_report.ENGINE_VERSION, "generated_at": now,
+              "snapshot": [progress_report.snapshot(r) for r in reps],
+              "status": "ok" if stored else "failed", "pdf_error": None if stored else error,
+              "attempts": int((old or {}).get("attempts") or 0) + 1}
+    if old:
+        await db[PROJECT_REPORTS].update_one({"_id": rid}, {"$set": fields})
+        doc = {**old, **fields}
+    else:
+        doc = {"_id": rid, "created_at": now, **fields}
+        try:
+            await db[PROJECT_REPORTS].insert_one(doc)
+        except Exception as e:
+            from pymongo.errors import DuplicateKeyError
+            if isinstance(e, DuplicateKeyError) and key:        # another instance built it first
+                return await db[PROJECT_REPORTS].find_one({"key": key}) or doc
+            raise
+    logger.info(f"[report] {rid} {title} source={source} stored={stored} photos={len(images)}")
+    return doc
+
+
+def _report_message(doc: dict, attached: bool = True) -> str:
+    """The short message: the job, the work, the site, what is open -- and
+    "Full report (PDF) attached." when the PDF goes with it; the link only
+    when it can't."""
+    lines = [l for l in doc.get("summary") or []]
+    if attached and doc.get("r2_key"):
+        lines.append(progress_report.ATTACHED_LINE)
+    elif doc.get("link"):
+        lines.append(f"Full report (PDF): {doc['link']}")
+    else:
+        lines.append("The PDF could not be made just now -- it's in the app under Project → Reports.")
+    return "\n".join(lines)
+
+
+async def _send_report_media(chat_id: str, doc: dict, caption: str = "") -> bool:
+    """The PDF itself, as a WhatsApp document (with `caption` on it)."""
+    if not doc.get("r2_key") or not WAAPI_INSTANCE_ID or not WAAPI_TOKEN:
+        return False
+    try:
+        tok = await _mint_temp_media_token(doc["r2_key"], "application/pdf", ttl_seconds=3600)
+        async with ServerHttpClient(timeout=60) as client_http:
+            resp = await client_http.post(
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
+                headers={"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"},
+                json={"chatId": chat_id, "mediaUrl": _public_temp_media_url(tok),
+                      "mediaName": doc.get("filename") or "report.pdf", "caption": caption})
+            return 200 <= resp.status_code < 300
+    except Exception as e:
+        logger.warning(f"[report] PDF send failed: {type(e).__name__}")
+        return False
+
+
+async def _report_link_fallback(chat_id: str, doc: dict) -> None:
+    """The PDF did not go: the link instead (never "attached" with nothing)."""
+    if doc.get("link"):
+        await send_whatsapp_message(chat_id, f"The PDF didn't attach. Full report (PDF): {doc['link']}")
+    else:
+        await send_whatsapp_message(chat_id, "The PDF didn't attach -- it's in the app under Project → Reports.")
+
+
+async def _dm_report_turn(ident: dict, dm_chat: str, text: str, now: datetime) -> bool:
+    """"send me a report for 588 for the last 2 weeks" -- built now, sent
+    here: the PDF, with the short message on it. True when it was a request."""
+    if not project_report.is_request(text):
+        return False
+    if not ident["projects"]:
+        await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
+        return True
+    jobs = await _dm_jobs(ident)
+    if project_report.wants_all_jobs(text):
+        picked = [j["project"] for j in jobs]
+    else:
+        ids = wa_assistant.find_jobs(text, jobs)
+        if not ids:
+            jid = wa_assistant.job_named(text, jobs, in_sentence=True)
+            ids = [jid] if jid else []
+        if ids:
+            picked = [j["project"] for j in jobs if j["id"] in ids]
+        elif len(jobs) == 1:
+            picked = [jobs[0]["project"]]
+        else:
+            if project_report.names_a_job(text):
+                await send_whatsapp_message(
+                    dm_chat, "I don't see that job. Your jobs: "
+                    + ", ".join(j["label"] for j in jobs[:8]) + ". Or say \"report all jobs\".")
+                return True
+            picked = [j["project"] for j in jobs]
+    start, end, _label = project_report.period_for(text, now)
+    try:
+        await _shared_limit("report", str(ident.get("user_id") or ""), REPORT_LIMIT)
+    except HTTPException:
+        await send_whatsapp_message(dm_chat, "That's a lot of reports in a short time -- give it a few minutes.")
+        return True
+    try:
+        doc = await build_project_report(ident["company_id"], picked, start, end, now=now,
+                                         by=str(ident.get("user_id") or ""), source="dm")
+    except ReportSourceUnavailable:
+        await send_whatsapp_message(dm_chat, REPORT_UNAVAILABLE)
+        return True
+    # The PDF with the message as its caption; the link only when it can't
+    # go.
+    if not await _send_report_media(dm_chat, doc, caption=_report_message(doc)):
+        await send_whatsapp_message(dm_chat, _report_message(doc, attached=False))
+    return True
+
+
+# ── SCHEDULED ────────────────────────────────────────────────────────────────
+
+async def _report_settings(project_id: str) -> dict:
+    """{schedules, recipient_ids, pm_ids, delivery} (project_report.
+    settings_from), and `schedule` -- the old one-choice field, for an app
+    build from before."""
+    row = await db[PROJECT_REPORT_SETTINGS].find_one({"_id": str(project_id)}) or {}
+    out = project_report.settings_from(row)
+    periodic = [k for k in out["schedules"] if k in ("biweekly", "monthly")]
+    return {**out, "schedule": periodic[0] if periodic else "off"}
+
+
+def _report_person_ok(u: dict, project_id: str) -> bool:
+    """An admin, or a PM who can see this job."""
+    role = wa_dm.norm_role(u.get("role"))
+    if role == "admin":
+        return True
+    return role == "pm" and (not pm_scoped_to_assigned(u)
+                             or str(project_id) in {str(p) for p in u.get("assigned_projects") or []})
+
+
+async def _report_people(company_id: str, project_id: str) -> List[dict]:
+    """Who a job's reports can go to: its company's admins, and the PMs on
+    the job."""
+    users = await db.users.find({"company_id": _company_id_filter(company_id),
+                                 "is_deleted": {"$ne": True}}).to_list(500)
+    return [u for u in users if _report_person_ok(u, project_id)]
+
+
+async def _report_recipients(company_id: str, project_id: str, settings: Any) -> List[dict]:
+    """The people chosen for this job's reports: those picked in the app
+    (admins and PMs on the job), else -- a row from before the picker -- the
+    company's admins and the PMs chosen. A list of pm ids is read as the
+    latter too."""
+    if isinstance(settings, list):
+        settings = {"recipient_ids": None, "pm_ids": settings}
+    people = await _report_people(company_id, project_id)
+    picked = settings.get("recipient_ids")
+    if picked is None:
+        pm_ids = set(settings.get("pm_ids") or [])
+        return [u for u in people if wa_dm.norm_role(u.get("role")) == "admin" or str(u["_id"]) in pm_ids]
+    return [u for u in people if str(u["_id"]) in set(picked)]
+
+
+async def _report_email(doc: dict, users: List[dict], *, lines: Optional[List[str]] = None,
+                        trigger: str = "project_progress_report") -> int:
+    """A report by email to each of `users` who has an address: the short
+    message and the PDF attached (a link when it is over 15 MB or can't be
+    read). Once per report and person (send_notification's ledger). How
+    many went."""
+    from lib.email_templates import render_for_trigger
+    from lib.notifications import send_notification
+    attachments = None
+    if doc.get("r2_key"):
+        raw = await asyncio.to_thread(_r2_bytes, doc["r2_key"])
+        if raw and len(raw) <= 15 * 1024 * 1024:
+            attachments = [{"filename": doc.get("filename") or "report.pdf",
+                            "content": base64.b64encode(raw).decode("ascii")}]
+    sent = 0
+    for u in users:
+        email = str(u.get("email") or "").strip().lower()
+        if not email or "@" not in email:
+            continue
+        subject, html, text = render_for_trigger(trigger, {
+            "recipient_name": u.get("full_name") or u.get("name") or "",
+            "title": doc.get("title") or "", "lines": lines if lines is not None else doc.get("summary") or [],
+            "attached": bool(attachments), "link": doc.get("link") or "",
+            "action_link": (f"{APP_BASE_URL.rstrip('/')}/projects/{(doc.get('project_ids') or [''])[0]}/reports"
+                            if doc.get("project_ids") else "")})
+        try:
+            res = await send_notification(
+                db, permit_renewal_id=f"project_report:{doc['_id']}", trigger_type=trigger,
+                recipient=email, subject=subject, html=html, text=text, attachments=attachments,
+                metadata={"report_id": doc["_id"], "project_ids": doc.get("project_ids") or [],
+                          "pdf_attached": bool(attachments)})
+            sent += 1 if res.get("status") == "sent" else 0
+        except Exception as e:
+            logger.warning(f"[report] email failed: {type(e).__name__}")
+    return sent
+
+
+async def _report_deliver(spec: dict) -> Any:
+    """One scheduled report to one person: the message (gated, ledgered),
+    then the PDF in the same chat -- or, when it can't go, its link."""
+    sent = await send_whatsapp_dm(spec["user_id"], spec["message"], kind=REPORT_DM_KIND,
+                                  window=spec["window"])
+    if sent:
+        doc = await db[PROJECT_REPORTS].find_one({"_id": spec.get("report_id")})
+        optin = await db[WA_OPTINS].find_one({"user_id": spec["user_id"], "status": "active"})
+        if doc and optin:
+            chat = optin.get("chat_id") or wa_dm.dm_chat_id(optin["phone"])
+            if not await _send_report_media(chat, doc):
+                await _report_link_fallback(chat, doc)
+    return sent
+
+
+async def _report_schedule_tick(now: Optional[datetime] = None) -> dict:
+    """Every scheduled progress report that is due -- weekly, bi-weekly,
+    monthly, quarterly, any combination per job: built once per job, kind and
+    period, sent once to each recipient by WhatsApp (the ledger; held over
+    Shabbos / Yom Tov, retried on the shared schedule when WhatsApp fails)
+    and / or by email (send_notification's ledger). The daily report goes
+    with the daily report email (check_and_send_reports).
+
+    DUE MEANS DUE SINCE 8 AM on its due day and for a few days after
+    (project_report.CATCH_UP_DAYS): a server that was down across the 8 AM
+    hour builds the report on its next tick, and the once-per-period key keeps
+    it to one. One job's failure never reaches another's: each is isolated,
+    counted and logged."""
+    now = now or datetime.now(timezone.utc)
+    report = {"due": 0, "built": 0, "sent": 0, "queued": 0, "retrying": 0, "skipped": 0,
+              "emailed": 0, "failed": 0, "unavailable": 0, "pdf_failed": 0}
+    rows = await db[PROJECT_REPORT_SETTINGS].find(
+        {"$or": [{"schedule": {"$in": ["biweekly", "monthly"]}},
+                 {"schedules": {"$in": list(project_report.PERIODIC)}}]}).to_list(2000)
+    for row in rows:
+        try:
+            await _report_schedule_one(row, now, report)
+        except Exception as e:
+            report["failed"] += 1
+            logger.error(f"[report] schedule for {row.get('_id')} failed: {type(e).__name__}: {e}")
+    if report["due"]:
+        logger.info(f"[report] schedule {report}")
+    return report
+
+
+async def _report_schedule_one(row: dict, now: datetime, report: dict) -> None:
+    settings = project_report.settings_from(row)
+    pid, cid = str(row["_id"]), str(row.get("company_id") or "")
+    changed = source_sync.as_utc(row.get("updated_at"))
+    project = None
+    for kind in settings["schedules"]:
+        if kind not in project_report.PERIODIC:
+            continue
+        for start, end, due_day in project_report.due_periods(kind, now):
+            # A schedule switched on after a report fell due is not owed that
+            # report: only one that was already on at its 8 AM.
+            due_at = datetime.combine(due_day, datetime.min.time().replace(hour=project_report.SEND_HOUR),
+                                      tzinfo=project_report.NY).astimezone(timezone.utc)
+            if changed is not None and changed > due_at:
+                continue
+            project = project or await _bot_project_scope(cid, pid)
+            if not project or project.get("is_deleted"):
+                return
+            report["due"] += 1
+            # Bi-weekly and monthly keep the key they had: a period built
+            # before this change is not built again.
+            key = (f"sched:{pid}:{start.isoformat()}:{end.isoformat()}"
+                   if kind in ("biweekly", "monthly")
+                   else f"sched:{pid}:{kind}:{start.isoformat()}:{end.isoformat()}")
+            try:
+                doc = await build_project_report(cid, [project], start, end, now=now, source="schedule",
+                                                 key=key, kind=kind)
+            except ReportSourceUnavailable:
+                report["unavailable"] += 1
+                continue                     # nothing stored: the next tick tries again
+            if not doc.get("r2_key"):
+                # No PDF: nothing is sent, and the next tick rebuilds it. After
+                # REPORT_PDF_ATTEMPTS an operator is told, once.
+                report["pdf_failed"] += 1
+                tries = int(doc.get("attempts") or 1)
+                if tries >= REPORT_PDF_ATTEMPTS and not doc.get("alerted"):
+                    await _send_failed_alert(
+                        "report_pdf", key, company_id=cid, error=doc.get("pdf_error") or "PDF not made",
+                        first_at=doc.get("created_at"), attempts=tries, now=now,
+                        what="A scheduled progress report could not be made into a PDF and was not sent.")
+                    await db[PROJECT_REPORTS].update_one({"_id": doc["_id"]}, {"$set": {"alerted": True}})
+                continue
+            report["built"] += 1
+            people = await _report_recipients(cid, pid, settings)
+            if settings["delivery"].get("email"):
+                report["emailed"] += await _report_email(doc, people)
+            if settings["delivery"].get("whatsapp"):
+                await _report_whatsapp(doc, people, cid, pid, start, end, now, report)
+
+
+async def _report_whatsapp(doc: dict, people: List[dict], cid: str, pid: str, start: _Date,
+                           end: _Date, now: datetime, report: dict, *, window: Optional[str] = None,
+                           message: Optional[str] = None) -> None:
+    """A report to each DM-eligible person once (the ledger): the message,
+    then the PDF -- held over Shabbos / Yom Tov, retried when WhatsApp
+    fails."""
+    message = message or _report_message(doc)
+    window = window or f"{pid}:{start.isoformat()}:{end.isoformat()}"
+    for u in people:
+        if not wa_dm.is_dm_eligible(u):
+            continue
+        uid = str(u["_id"])
+        if await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(uid, None, REPORT_DM_KIND, window)},
+                                        {"_id": 1}):
+            continue
+        if await _dm_refusal_reason(uid, REPORT_DM_KIND):
+            report["skipped"] += 1
+            continue
+        spec = {"via": "report_dm", "user_id": uid, "message": message, "window": window,
+                "report_id": doc["_id"], "kind": REPORT_DM_KIND}
+        until = await _shabbos_quiet(cid, pid, now)
+        if until:
+            held = wa_dm.ledger_key(uid, None, REPORT_DM_KIND, window)
+            # The hold's key rides with the send, so the queue lifts the
+            # hold before the DM takes its own claim (Codex on #795).
+            await _quiet_enqueue({**spec, "ledger_id": held}, company_id=cid, project_id=pid,
+                                 kind=REPORT_DM_KIND, until=until, now=now)
+            await _ledger_hold(held, "queued_shabbos",
+                               user_id=uid, company_id=cid, kind=REPORT_DM_KIND, window=window)
+            report["queued"] += 1
+            continue
+        if await _report_deliver(spec):
+            report["sent"] += 1
+            continue
+        led = await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(uid, None, REPORT_DM_KIND, window)},
+                                           {"status": 1, "error": 1})
+        if (led or {}).get("status") == "failed":
+            await _retry_later(spec, company_id=cid, project_id=pid, kind=REPORT_DM_KIND,
+                               error=led.get("error"), deadline=_ny_day_end(now), now=now)
+            report["retrying"] += 1
+
+
+async def _report_schedule_job() -> None:
+    try:
+        await _report_schedule_tick()
+    except Exception as e:
+        logger.error(f"[report] schedule tick failed: {type(e).__name__}: {e}")
+
+
+# ── THE APP: Project → Reports ──────────────────────────────────────────────
+
+class ProjectReportRequest(BaseModel):
+    preset: Optional[str] = None     # project_report.PRESETS
+    range: Optional[str] = None      # words, as in the DM ("last 2 weeks")
+    start: Optional[str] = None      # a custom range, YYYY-MM-DD
+    end: Optional[str] = None
+
+
+class ProjectReportSettingsIn(BaseModel):
+    schedules: Optional[List[str]] = None          # any of project_report.KINDS
+    recipient_ids: Optional[List[str]] = None      # admins and PMs on the job
+    delivery: Optional[Dict[str, bool]] = None     # {"whatsapp": …, "email": …}
+    # An app build from before: one choice, and the PMs (admins always).
+    schedule: Optional[str] = None
+    pm_ids: Optional[List[str]] = None
+
+
+REPORT_SOURCE_WORDS = {"schedule": "Scheduled", "dm": "Asked in WhatsApp", "app": "Made in the app"}
+
+
+def _report_view(doc: dict, names: Optional[Dict[str, str]] = None, *, show_summary: bool = True) -> dict:
+    exp = doc.get("link_expires")
+    live = isinstance(exp, datetime) and (exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)) \
+        > datetime.now(timezone.utc)
+    by = str(doc.get("created_by") or "")
+    who = (names or {}).get(by) or ""
+    try:
+        period = project_report.period_label(_Date.fromisoformat(doc["start"]), _Date.fromisoformat(doc["end"]))
+    except (KeyError, TypeError, ValueError):
+        period = ""
+    return {"id": doc["_id"], "title": doc.get("title"), "start": doc.get("start"), "end": doc.get("end"),
+            "period": period, "kind": doc.get("kind"),
+            "kind_label": project_report.KIND_LABELS.get(doc.get("kind") or "", ""),
+            # A multi-job report's summary lines name every job in it: only
+            # someone who can see all of them gets them.
+            "summary": (doc.get("summary") or []) if show_summary else [], "source": doc.get("source"),
+            "source_label": REPORT_SOURCE_WORDS.get(doc.get("source"), ""),
+            # Who asked: a person, or the schedule.
+            "requested_by": who if doc.get("source") != "schedule" else "Schedule",
+            "created_at": _iso_utc(doc["created_at"]) if isinstance(doc.get("created_at"), datetime) else None,
+            "link": doc.get("link") if live else None, "has_pdf": bool(doc.get("r2_key")),
+            "status": doc.get("status") or ("ok" if doc.get("r2_key") else "failed")}
+
+
+async def _report_names(docs: List[dict]) -> Dict[str, str]:
+    ids = {str(d.get("created_by")) for d in docs if d.get("created_by")}
+    out: Dict[str, str] = {}
+    for uid in ids:
+        try:
+            u = await db.users.find_one({"_id": to_query_id(uid)}, {"full_name": 1, "name": 1})
+        except Exception:
+            u = None
+        out[uid] = (u or {}).get("full_name") or (u or {}).get("name") or ""
+    return out
+
+
+# ── A LIMIT THAT HOLDS ACROSS INSTANCES ──────────────────────────────────────
+#
+# lib/rate_limits.py counts in process memory: with N backend instances the
+# real ceiling is N times the number written. A report is a database sweep, a
+# PDF render and an R2 upload, so the routes that make one (and the schedule
+# import, which parses a file of up to 20 MB) are ALSO counted in the
+# database, where every instance sees the same number. One row per hit, a TTL
+# on it, a count of the person's rows inside the window: insert-then-count
+# can only over-count a race (two instances both see each other), never
+# under-count it. If the database cannot answer, the in-process limit above
+# still stands and the request is let through -- a limiter that blocks
+# everyone when Mongo is slow is worse than the abuse it guards against.
+
+RATE_WINDOWS = "rate_limit_hits"
+REPORT_LIMIT = (6, 600)          # reports a person may ask for, per 10 minutes
+SCHEDULE_IMPORT_LIMIT = (10, 600)
+
+
+async def _shared_limit(bucket: str, who: str, limit: Tuple[int, int]) -> None:
+    """Raise 429 when `who` has made `limit[0]` `bucket` requests in the last
+    `limit[1]` seconds, counting every instance."""
+    n, window = limit
+    now = datetime.now(timezone.utc)
+    key = f"{bucket}:{who}"
+    try:
+        await db[RATE_WINDOWS].insert_one({"_id": str(uuid.uuid4()), "key": key, "at": now,
+                                           "expires_at": now + timedelta(seconds=window)})
+        seen = await db[RATE_WINDOWS].count_documents({"key": key, "at": {"$gte": now - timedelta(seconds=window)}})
+    except Exception as e:
+        logger.warning(f"[rate] shared counter unavailable: {type(e).__name__}")
+        return
+    if seen > n:
+        raise HTTPException(status_code=429, headers={"Retry-After": str(window)},
+                            detail="That's a lot of reports in a short time -- wait a few minutes and try again.")
+
+
+@api_router.get("/projects/{project_id}/project-reports",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def list_project_reports(project_id: str, current_user=Depends(get_current_user)):
+    """Every report of this job -- scheduled or asked for, in the app or in
+    WhatsApp -- newest first: its period, when, who asked, and its PDF."""
+    company_id = await _memory_project(project_id, current_user)
+    rows = await db[PROJECT_REPORTS].find({"company_id": str(company_id),
+                                           "project_ids": str(project_id)}).to_list(500)
+    rows.sort(key=lambda r: r.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    rows = rows[:200]
+    names = await _report_names(rows)
+    admin = is_company_admin(current_user)
+    return {"reports": [_report_view(r, names, show_summary=admin or len(r.get("project_ids") or []) <= 1)
+                        for r in rows],
+            "settings": await _report_settings(project_id),
+            "presets": [{"key": k, "label": project_report.PRESET_LABELS[k]} for k in project_report.PRESETS]}
+
+
+def _project_start(project: dict) -> Optional[_Date]:
+    """The job's start: its expected start date when one was given, else the
+    day it was added."""
+    d = project_report._d(project.get("expected_start_date"))
+    return d or project_report._d(project.get("created_at"))
+
+
+@api_router.post("/projects/{project_id}/project-reports",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def create_project_report(project_id: str, body: ProjectReportRequest,
+                                current_user=Depends(get_current_user)):
+    """Generate now: a preset (last 7 days, last 2 weeks, this month, last
+    month, this quarter, the whole project), a custom range, or words."""
+    company_id = await _memory_project(project_id, current_user)
+    await _shared_limit("report", str(current_user.get("id") or current_user.get("_id") or ""), REPORT_LIMIT)
+    project = await _bot_project_scope(company_id, project_id)
+    now = datetime.now(timezone.utc)
+    if body.start and body.end:
+        try:
+            start, end = _Date.fromisoformat(body.start), _Date.fromisoformat(body.end)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Dates are YYYY-MM-DD")
+        if end < start or (end - start).days > project_report.MAX_DAYS:
+            raise HTTPException(status_code=400,
+                                detail=f"Pick a period of at most {project_report.MAX_DAYS} days")
+    elif body.preset:
+        got = project_report.preset_period(body.preset, now, _project_start(project or {}))
+        if not got:
+            raise HTTPException(status_code=400,
+                                detail="preset: " + ", ".join(project_report.PRESETS))
+        start, end, _ = got
+    else:
+        start, end, _ = project_report.period_for(body.range or "", now)
+    by = str(current_user.get("id") or current_user.get("_id") or "")
+    try:
+        doc = await build_project_report(company_id, [project], start, end, now=now, by=by, source="app")
+    except ReportSourceUnavailable:
+        raise HTTPException(status_code=503, detail=REPORT_UNAVAILABLE)
+    return _report_view(doc, await _report_names([doc]),
+                        show_summary=is_company_admin(current_user) or len(doc.get("project_ids") or []) <= 1)
+
+
+@api_router.get("/project-reports/{report_id}/pdf", dependencies=[Depends(require_approved)])
+async def get_project_report_pdf(report_id: str, current_user=Depends(get_current_user)):
+    doc = await db[PROJECT_REPORTS].find_one({"_id": report_id})
+    if not doc or str(doc.get("company_id")) != str(get_user_company_id(current_user)):
+        raise HTTPException(status_code=404, detail="Report not found")
+    for pid in doc.get("project_ids") or []:
+        await _memory_project(pid, current_user)
+    if not doc.get("r2_key") or not _r2_client or not R2_BUCKET_NAME:
+        raise HTTPException(status_code=404, detail="PDF not stored")
+    obj = await asyncio.to_thread(_r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=doc["r2_key"])
+    return Response(content=obj["Body"].read(), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{doc.get("filename") or "report.pdf"}"'})
+
+
+@api_router.get("/project-reports/{report_id}/snapshot", dependencies=[Depends(require_approved)])
+async def get_project_report_snapshot(report_id: str, current_user=Depends(get_current_user)):
+    """The facts a report printed and the evidence they rest on, as stored when
+    it was made (admins, and PMs on every job in it). A report regenerated
+    later reads changed records; this is what was sent."""
+    doc = await db[PROJECT_REPORTS].find_one({"_id": report_id})
+    if not doc or str(doc.get("company_id")) != str(get_user_company_id(current_user)):
+        raise HTTPException(status_code=404, detail="Report not found")
+    for pid in doc.get("project_ids") or []:
+        await _memory_project(pid, current_user)
+    return {"id": doc["_id"], "engine": doc.get("engine"), "generated_at": _iso_utc(doc.get("generated_at"))
+            if isinstance(doc.get("generated_at"), datetime) else None,
+            "start": doc.get("start"), "end": doc.get("end"), "snapshot": doc.get("snapshot") or []}
+
+
+@api_router.get("/projects/{project_id}/project-report-settings",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_report_settings(project_id: str, current_user=Depends(get_current_user)):
+    """The job's report schedule: which reports (daily, weekly, bi-weekly,
+    monthly, quarterly -- any combination), to whom (admins and PMs on the
+    job), and how (WhatsApp DM, email)."""
+    company_id = await _memory_project(project_id, current_user)
+    people = await _report_people(company_id, project_id)
+    settings = await _report_settings(project_id)
+    chosen = {str(u["_id"]) for u in await _report_recipients(company_id, project_id, settings)}
+    project = await db.projects.find_one({"_id": to_query_id(project_id)},
+                                         {"report_send_time": 1, "report_email_list": 1}) or {}
+    return {**settings,
+            "recipient_ids": sorted(chosen),
+            "people": [{"id": str(u["_id"]), "name": u.get("full_name") or u.get("name") or "",
+                        "role": wa_dm.norm_role(u.get("role")),
+                        "email": bool(str(u.get("email") or "").strip()),
+                        "whatsapp": wa_dm.is_dm_eligible(u)} for u in people],
+            "pms": [{"id": str(u["_id"]), "name": u.get("full_name") or u.get("name") or ""}
+                    for u in people if wa_dm.norm_role(u.get("role")) == "pm"],
+            "kinds": [{"key": k, "label": project_report.KIND_LABELS[k]} for k in project_report.KINDS],
+            "schedules_old": list(project_report.SCHEDULES),
+            "summary": project_report.schedule_summary(settings),
+            # The daily report's own settings live on this screen too (the old
+            # Report Settings screen is folded in): its send time and the
+            # extra addresses it goes to. The addresses only to those who
+            # may change them (PUT /projects/{id}/report-settings: admins);
+            # `email_list` stays a count for an app build from before.
+            "daily": {"send_time": project.get("report_send_time") or "18:00",
+                      "email_list": len(project.get("report_email_list") or []),
+                      **({"emails": list(project.get("report_email_list") or [])}
+                         if is_company_admin(current_user) else {})},
+            "can_edit": is_company_admin(current_user)}
+
+
+@api_router.put("/projects/{project_id}/project-report-settings",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def put_project_report_settings(project_id: str, body: ProjectReportSettingsIn,
+                                      current_user=Depends(get_current_user)):
+    company_id = await _memory_project(project_id, current_user)
+    if not is_company_admin(current_user):          # admins, and PMs with full access
+        raise HTTPException(status_code=403, detail="Admins set the report schedule")
+    old = await _report_settings(project_id)
+    if body.schedules is not None:
+        bad = [k for k in body.schedules if k not in project_report.KINDS]
+        if bad:
+            raise HTTPException(status_code=400, detail="schedules: " + ", ".join(project_report.KINDS))
+        schedules = [k for k in project_report.KINDS if k in body.schedules]
+    elif body.schedule is not None:
+        if body.schedule not in project_report.SCHEDULES:
+            raise HTTPException(status_code=400, detail="schedule: off, biweekly or monthly")
+        schedules = [body.schedule] if body.schedule != "off" else []
+    else:
+        schedules = old["schedules"]
+    people = {str(u["_id"]): u for u in await _report_people(company_id, project_id)}
+    if body.recipient_ids is not None:
+        recipient_ids = [x for x in body.recipient_ids if x in people]
+    elif body.pm_ids is not None:
+        # An app build from before: the admins, and the PMs it chose.
+        recipient_ids = [i for i, u in people.items() if wa_dm.norm_role(u.get("role")) == "admin"
+                         or i in set(body.pm_ids)]
+    else:
+        recipient_ids = old["recipient_ids"]
+    delivery = dict(old["delivery"])
+    keep_pm_ids = recipient_ids is None and body.pm_ids is None
+    for k, v in (body.delivery or {}).items():
+        if k in delivery and isinstance(v, bool):
+            delivery[k] = v
+    now = datetime.now(timezone.utc)
+    pm_ids = (old["pm_ids"] if keep_pm_ids else
+              [i for i in (recipient_ids or []) if wa_dm.norm_role((people.get(i) or {}).get("role")) == "pm"])
+    await db[PROJECT_REPORT_SETTINGS].update_one(
+        {"_id": str(project_id)},
+        {"$set": {"company_id": str(company_id), "schedules": schedules, "recipient_ids": recipient_ids,
+                  "pm_ids": pm_ids, "delivery": delivery,
+                  # Kept for an app build from before.
+                  "schedule": next((k for k in schedules if k in ("biweekly", "monthly")), "off"),
+                  "updated_at": now, "updated_by": str(current_user.get("id") or "")}}, upsert=True)
+    await audit_log("project_report_settings", str(current_user.get("id") or ""), "project",
+                    str(project_id), {"schedules": schedules, "recipient_ids": recipient_ids,
+                                      "delivery": delivery})
+    return await get_project_report_settings(project_id, current_user)
+
+
+# ── THE PROJECT SCHEDULE (lib/schedule_import.py, lib/schedule_plan.py) ─────
+#
+# The progress report says nothing about schedule or completion unless a
+# person imported a schedule and CONFIRMED what was read from it. The import
+# is one step away from files the GC already has: a Primavera P6 export (.xer),
+# an MS Project XML, an Excel / CSV table, or a text-based PDF schedule -- by
+# upload, or straight from the project's Dropbox-synced files (`candidates`
+# lists the ones whose names look like a schedule; one tap imports it). The
+# parse is a DRAFT: the admin sees what was found (activities, milestones,
+# data date, what could not be read) and confirms it, and only then does the
+# report use it. A new confirmation supersedes the last; discarding stops the
+# report using it. The original file is kept in R2 beside the parsed copy.
+#
+# Nothing here estimates anything: lib/schedule_plan reports dates, actuals
+# and a percent complete ONLY as the file states them.
+
+SCHEDULE_NAME_RE = re.compile(r"schedule|gantt|cpm|p6|baseline|programme|look-?ahead", re.IGNORECASE)
+SCHEDULE_EXTS = (".xlsx", ".xlsm", ".csv", ".tsv", ".xer", ".xml", ".pdf")
+MAX_SCHEDULE_DOC_BYTES = 12 * 1024 * 1024
+
+
+class ScheduleImportFile(BaseModel):
+    file_id: str
+
+
+class ScheduleConfirm(BaseModel):
+    reviewed: bool = False
+    #: Required when a confirmed schedule exists: an import never replaces
+    #: what a person confirmed unless a person says so.
+    replace_confirmed: bool = False
+
+
+def _schedule_view(rec: dict, *, detail: bool = False) -> dict:
+    doc = rec.get("doc") or {}
+    acts = doc.get("activities") or []
+    out = {"id": str(rec["_id"]), "status": rec.get("status"), "format": doc.get("format"),
+           "source_name": rec.get("source_name"), "data_date": doc.get("data_date"),
+           "project_name": doc.get("project_name"), "confidence": doc.get("confidence"),
+           "activities": sum(1 for a in acts if a.get("kind") != "summary"),
+           "milestones": sum(1 for a in acts if a.get("kind") == "milestone"),
+           "warnings": (doc.get("warnings") or [])[:12],
+           "imported_at": _iso_utc(rec["imported_at"]) if isinstance(rec.get("imported_at"), datetime) else None,
+           "confirmed_by": rec.get("confirmed_by_name") or None,
+           "confirmed_at": _iso_utc(rec["confirmed_at"]) if isinstance(rec.get("confirmed_at"), datetime) else None}
+    if detail and acts:
+        today = datetime.now(timezone.utc).astimezone(project_report.NY).date()
+        try:
+            a = schedule_plan.assess(doc, period_start=today - timedelta(days=13), period_end=today, today=today)
+            out["preview"] = schedule_plan.to_jsonable({
+                "usable": a["usable"], "counts": a["counts"], "project": a["project"],
+                "milestones": {k: [m.get("name") for m in v][:5] for k, v in a["milestones"].items()},
+                "limitations": a["limitations"]})
+        except Exception:
+            out["preview"] = None
+    return out
+
+
+async def _schedule_store_draft(project: dict, company_id: str, name: str, data: bytes,
+                                current_user: dict) -> dict:
+    """Parse an uploaded or Dropbox-synced schedule file into a DRAFT."""
+    if not data or len(data) > schedule_import.MAX_BYTES:
+        raise HTTPException(status_code=400, detail="That file is empty or larger than 20 MB.")
+    try:
+        doc = await asyncio.to_thread(schedule_import.parse_schedule, name, data)
+    except schedule_import.ScheduleImportError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if len(json.dumps(doc, default=str)) > MAX_SCHEDULE_DOC_BYTES:
+        raise HTTPException(status_code=413, detail="That schedule is too large to import.")
+    pid, cf = str(project["_id"]), _company_id_filter(company_id)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:80]
+    r2_key = f"schedules/{company_id}/{pid}/{doc['sha256'][:16]}-{safe}"
+    stored = bool(_r2_client and await asyncio.to_thread(_upload_to_r2, data, r2_key, "application/octet-stream"))
+    await db[PROJECT_SCHEDULES].update_many({"company_id": cf, "project_id": pid, "status": "draft"},
+                                            {"$set": {"status": "discarded"}})
+    now = datetime.now(timezone.utc)
+    rec = {"_id": str(uuid.uuid4()), "company_id": str(company_id), "project_id": pid, "status": "draft",
+           "doc": doc, "source_name": name[:120], "sha256": doc["sha256"], "r2_key": r2_key if stored else None,
+           "imported_by": str(current_user.get("id") or current_user.get("_id") or ""),
+           "imported_at": now}
+    await db[PROJECT_SCHEDULES].insert_one(rec)
+    await audit_log("project_schedule_import", rec["imported_by"], "project", pid,
+                    {"schedule_id": rec["_id"], "format": doc.get("format"), "source": name[:120]})
+    return rec
+
+
+@api_router.get("/projects/{project_id}/baseline-schedule",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_baseline_schedule(project_id: str, current_user=Depends(get_current_user)):
+    """The project's confirmed schedule, the draft waiting for confirmation,
+    and the synced files that look like schedules."""
+    company_id = await _memory_project(project_id, current_user)
+    cf = _company_id_filter(company_id)
+    recs = await db[PROJECT_SCHEDULES].find({"company_id": cf, "project_id": str(project_id),
+                                             "status": {"$in": ["confirmed", "draft"]}}).to_list(20)
+    files = await db.project_files.find({"project_id": str(project_id), "is_deleted": {"$ne": True}},
+                                        {"name": 1, "r2_key": 1}).to_list(1000)
+    cands = [{"id": str(f["_id"]), "name": f["name"]} for f in files
+             if f.get("r2_key") and SCHEDULE_NAME_RE.search(str(f.get("name") or ""))
+             and str(f.get("name") or "").lower().endswith(SCHEDULE_EXTS)]
+    newest = lambda st: max((r for r in recs if r.get("status") == st),  # noqa: E731
+                            key=lambda r: r.get("imported_at") or datetime.min.replace(tzinfo=timezone.utc),
+                            default=None)
+    confirmed, draft = newest("confirmed"), newest("draft")
+    return {"confirmed": _schedule_view(confirmed) if confirmed else None,
+            "draft": _schedule_view(draft, detail=True) if draft else None,
+            "candidates": cands[:20], "can_edit": is_company_admin(current_user),
+            "formats": ["Primavera P6 (.xer)", "MS Project XML (.xml)", "Excel (.xlsx)", "CSV", "PDF table"]}
+
+
+@api_router.post("/projects/{project_id}/baseline-schedule/from-file",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def import_baseline_schedule_from_file(project_id: str, body: ScheduleImportFile,
+                                             current_user=Depends(get_current_user)):
+    """Parse a file already synced to this project (Dropbox) into a draft."""
+    company_id = await _memory_project(project_id, current_user)
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admins import the schedule")
+    await _shared_limit("schedule", str(current_user.get("id") or current_user.get("_id") or ""), SCHEDULE_IMPORT_LIMIT)
+    project = await _bot_project_scope(company_id, project_id)
+    f = await db.project_files.find_one({"_id": to_query_id(body.file_id), "project_id": str(project_id),
+                                         "is_deleted": {"$ne": True}})
+    if not project or not f or not f.get("r2_key"):
+        raise HTTPException(status_code=404, detail="File not found")
+    name = str(f.get("name") or "schedule")
+    if not name.lower().endswith(SCHEDULE_EXTS):
+        raise HTTPException(status_code=400, detail="Not a schedule format Levelog can read")
+    data = await asyncio.to_thread(_r2_bytes, f["r2_key"])
+    if not data:
+        raise HTTPException(status_code=502, detail="The file could not be read from storage")
+    rec = await _schedule_store_draft(project, company_id, name, data, current_user)
+    return _schedule_view(rec, detail=True)
+
+
+@api_router.post("/projects/{project_id}/baseline-schedule/upload",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def upload_baseline_schedule(project_id: str, file: UploadFile = File(...),
+                                   current_user=Depends(get_current_user)):
+    """Parse an uploaded schedule file into a draft."""
+    company_id = await _memory_project(project_id, current_user)
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admins import the schedule")
+    await _shared_limit("schedule", str(current_user.get("id") or current_user.get("_id") or ""), SCHEDULE_IMPORT_LIMIT)
+    project = await _bot_project_scope(company_id, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    name = _sanitize_upload_filename(file.filename or "schedule")
+    if not name.lower().endswith(SCHEDULE_EXTS):
+        raise HTTPException(status_code=400, detail="Upload an .xer, .xml, .xlsx, .csv or .pdf schedule")
+    data = await file.read()
+    rec = await _schedule_store_draft(project, company_id, name, data, current_user)
+    return _schedule_view(rec, detail=True)
+
+
+@api_router.post("/projects/{project_id}/baseline-schedule/{schedule_id}/confirm",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def confirm_baseline_schedule(project_id: str, schedule_id: str, body: ScheduleConfirm,
+                                    current_user=Depends(get_current_user)):
+    """Confirm a draft: the report uses it from now on, and the one it
+    replaces is kept as superseded."""
+    company_id = await _memory_project(project_id, current_user)
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admins confirm the schedule")
+    if not body.reviewed:
+        raise HTTPException(status_code=400, detail="Confirm that you reviewed what was read from the file")
+    cf, pid = _company_id_filter(company_id), str(project_id)
+    rec = await db[PROJECT_SCHEDULES].find_one({"_id": schedule_id, "company_id": cf, "project_id": pid,
+                                                "status": "draft"})
+    if not rec:
+        raise HTTPException(status_code=404, detail="No draft schedule to confirm")
+    try:
+        today = datetime.now(timezone.utc).astimezone(project_report.NY).date()
+        usable = schedule_plan.assess(rec.get("doc") or {}, period_start=today - timedelta(days=13),
+                                      period_end=today, today=today)["usable"]
+    except Exception:
+        usable = False
+    if not usable:
+        raise HTTPException(status_code=422, detail="No dated activities could be read from that file, "
+                                                    "so it cannot be confirmed")
+    current = await db[PROJECT_SCHEDULES].find_one({"company_id": cf, "project_id": pid, "status": "confirmed"})
+    if current and not body.replace_confirmed:
+        raise HTTPException(status_code=409, detail=(
+            "A schedule is already confirmed (" + str(current.get("source_name") or "schedule")
+            + "). Confirm again with replace_confirmed to replace it; it is kept as superseded."))
+    now = datetime.now(timezone.utc)
+    await db[PROJECT_SCHEDULES].update_many({"company_id": cf, "project_id": pid, "status": "confirmed"},
+                                            {"$set": {"status": "superseded"}})
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    name = current_user.get("full_name") or current_user.get("name") or ""
+    await db[PROJECT_SCHEDULES].update_one(
+        {"_id": schedule_id}, {"$set": {"status": "confirmed", "confirmed_by": uid,
+                                        "confirmed_by_name": name, "confirmed_at": now}})
+    await audit_log("project_schedule_confirm", uid, "project", pid, {"schedule_id": schedule_id})
+    return _schedule_view({**rec, "status": "confirmed", "confirmed_by_name": name, "confirmed_at": now})
+
+
+@api_router.delete("/projects/{project_id}/baseline-schedule/{schedule_id}",
+                   dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def discard_baseline_schedule(project_id: str, schedule_id: str,
+                                    current_user=Depends(get_current_user)):
+    """Discard a draft, or stop using the confirmed schedule (the report then
+    says no schedule is on file)."""
+    company_id = await _memory_project(project_id, current_user)
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admins manage the schedule")
+    cf, pid = _company_id_filter(company_id), str(project_id)
+    res = await db[PROJECT_SCHEDULES].update_one(
+        {"_id": schedule_id, "company_id": cf, "project_id": pid, "status": {"$in": ["draft", "confirmed"]}},
+        {"$set": {"status": "discarded"}})
+    if not res.modified_count:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    await audit_log("project_schedule_discard", str(current_user.get("id") or ""), "project", pid,
+                    {"schedule_id": schedule_id})
+    return {"ok": True}
 
 
 # ── UPCOMING v1 (lib/upcoming.py) ─────────────────────────────────────────
@@ -51201,6 +54858,11 @@ async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
                     continue
                 sent = await send_whatsapp_dm(uid, text, kind=UPCOMING_DAY_BEFORE_KIND,
                                               window=tomorrow.isoformat())
+                if not sent and await _dm_retry_if_failed(
+                        uid, text, kind=UPCOMING_DAY_BEFORE_KIND, window=tomorrow.isoformat(),
+                        company_id=cid, deadline=_ny_day_end(now), now=now):
+                    report["retrying"] = report.get("retrying", 0) + 1
+                    continue
                 report["day_before_sent" if sent else "refused"] += 1
             except Exception as e:
                 logger.warning(f"[upcoming] day-before failed: {type(e).__name__}")
@@ -51230,6 +54892,11 @@ async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
                 continue
             sent = await send_whatsapp_dm(uid, f"Reminder{t}: {r.get('title')}",
                                           kind=UPCOMING_REMINDER_KIND, window=str(r["_id"]))
+            if not sent and await _dm_retry_if_failed(
+                    uid, f"Reminder{t}: {r.get('title')}", kind=UPCOMING_REMINDER_KIND,
+                    window=str(r["_id"]), company_id=cid, deadline=_ny_day_end(now), now=now):
+                report["retrying"] = report.get("retrying", 0) + 1
+                continue
             report["reminders_sent" if sent else "refused"] += 1
     logger.info(f"[upcoming] notify {report}")
     return report
@@ -51324,6 +54991,14 @@ async def _dm_jobs(ident: dict) -> list:
              "project": p} for p in ident["projects"]]
 
 
+#: The DM brain runs the change flow with its messages captured here instead
+#: of sent (it rephrases them), and in the eval with no state written.
+_DM_CAPTURE: contextvars.ContextVar = contextvars.ContextVar("dm_capture", default=None)
+_DM_DRY: contextvars.ContextVar = contextvars.ContextVar("dm_dry", default=False)
+#: The walk reads free text with the DM brain's model (flag dm_brain_v2).
+_WALK_BRAIN: contextvars.ContextVar = contextvars.ContextVar("walk_brain", default=False)
+
+
 async def _dm_state_get(kind: str, chat: str) -> Optional[dict]:
     try:
         row = await db[_DM_STATE].find_one(
@@ -51341,6 +55016,8 @@ async def _dm_state_get(kind: str, chat: str) -> Optional[dict]:
 
 
 async def _dm_state_set(kind: str, chat: str, seconds: int, **fields) -> None:
+    if _DM_DRY.get():
+        return
     now = datetime.now(timezone.utc)
     try:
         await db[_DM_STATE].update_one(
@@ -51355,6 +55032,8 @@ async def _dm_state_set(kind: str, chat: str, seconds: int, **fields) -> None:
 async def _dm_state_bump(kind: str, chat: str, **fields) -> None:
     """Update an open question WITHOUT moving its expiry: asking it again
     does not keep it alive (it expires 30 min after it was first asked)."""
+    if _DM_DRY.get():
+        return
     try:
         await db[_DM_STATE].update_one(
             {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": ""},
@@ -51380,6 +55059,8 @@ async def _dm_drop_pending(chat: str) -> bool:
 
 
 async def _dm_state_clear(kind: str, chat: str) -> None:
+    if _DM_DRY.get():
+        return
     try:
         await db[_DM_STATE].delete_one(
             {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": ""})
@@ -51447,13 +55128,12 @@ async def _dm_job_facts(company_id: str, project: dict, now: datetime,
     try:
         rows = await db.dob_logs.find({
             "project_id": pid, "company_id": _company_id_filter(company_id),
-            "record_type": {"$in": ["violation", "permit"]},
+            "record_type": {"$in": ["violation", "swo", "permit"]},
             "is_deleted": {"$ne": True}}).to_list(2000)
         latest = _gc_latest_per_record(rows)
         week_ago = now - timedelta(days=7)
-        open_v = [r for r in latest if r.get("record_type") == "violation"
-                  and str(r.get("resolution_state") or "").lower()
-                  not in _GC_CLOSED_STATES]
+        # The app's rule (wa_alerts.open_dob_violations): stop-work orders count.
+        open_v = wa_alerts.open_dob_violations(rows)
 
         def _when(r):
             v = r.get("detected_at")
@@ -51463,6 +55143,13 @@ async def _dm_job_facts(company_id: str, project: dict, now: datetime,
         lines.append(f"  open violations: {len(open_v)}; new in the last 7 days: {len(new_v)}")
         for r in new_v[:5]:
             facts = wa_gc.violation_facts(r)
+            if r.get("record_type") == "swo":
+                # A stop-work order keeps its number in its own field (Codex on #841).
+                num = str(r.get("stop_work_order_number") or r.get("violation_number") or "").strip()
+                lines.append(f"    new stop-work order {num or 'number not on record'} "
+                             f"issued {facts.get('violation_date', 'date not on record')}: "
+                             f"{facts.get('description', '')[:120]}")
+                continue
             lines.append(f"    new violation {facts.get('violation_number', '')} "
                          f"issued {facts.get('violation_date', 'date not on record')}: "
                          f"{facts.get('description', '')[:120]}")
@@ -51701,6 +55388,20 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         admin = holds_rank({**(ident.get("user") or {}), "role": ident.get("role")},
                            COMPANY_ADMIN_ROLES)
         memory = memory.get("full" if admin else "last4") or memory.get("none")
+    said = memory or reply
+    if said and wa_assistant.asks_about_voice_notes(body) \
+            and (str(said).strip() == project_memory.NO_SOURCE
+                 or wa_assistant.denies_voice_access(said)):
+        # NEVER "I can't find that in the project history" for a voice note
+        # (588, Oct 11 2:58 PM: "What was said on the last voicenote"): the
+        # notes are transcribed and stored. The notes themselves go out.
+        logger.info("[wa-assistant] voice question not answered from the notes; sending them")
+        return await _recent_voice_notes(ident["company_id"], str(project.get("_id")), 3)
+    if reply and punch.denies_walk(reply):
+        # NEVER "I can't create a checklist from images here, use the app"
+        # (Tue Oct 13): photos sent here are the punch list.
+        logger.info("[wa-assistant] reply denied a punch list from photos; saying how")
+        return punch.WALK_HELP
     if memory and any(t.get("tool") == "search_project_history" for t in trace):
         # The project-history answer is checked claim by claim against its
         # sources; it goes out as it is, not reworded by the agent.
@@ -51722,6 +55423,19 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         # 6:22 PM): what it replied to is in the question.
         logger.info("[wa-assistant] reply denied the replied-to message; saying what it was")
         return wa_assistant.quoted_fallback(body)
+    if reply and (wa_facts.about_attendance(body) or attendance.kind_of(body)) \
+            and wa_facts.denies_data(reply) \
+            and not any(t.get("tool") in ("sub_attendance", "site_headcount") for t in trace):
+        # NEVER "the data doesn't specify" how long a sub has been on site
+        # (Wed Oct 14, 10:12 AM, Arkon on 588): every check-in has it.
+        logger.info("[wa-assistant] reply denied attendance data; answering from check-ins")
+        return await _attendance_fallback(project, body)
+    if reply and wa_facts.claims_brief(reply) \
+            and not any(t.get("tool") == "brief_status" for t in trace):
+        # NEVER "the brief was sent" from nowhere (Wed Oct 14, 10:12 AM):
+        # only the send log says so.
+        logger.info("[wa-assistant] reply spoke of the brief without the log; reading it")
+        return await _brief_status_for(str(ident["user_id"]), None, datetime.now(timezone.utc))
     if not reply:
         return reply
     allowed = " ".join([body, wa_assistant.street_label(project)]
@@ -51877,6 +55591,8 @@ async def _recent_voice_notes(company_id: str, project_id: str, n: int = 3,
                else "") or wa_sender_map.label(r.get("sender_name") or "", jid)
         if sender and not wa_voice.name_matches(sender, who, r.get("sender_name")):
             continue
+        if _dm_is_asker(jid, person):
+            who = f"{who} {dm_brain.SELF_MARK}".strip()
         at = r.get("timestamp") if isinstance(r.get("timestamp"), datetime) else r.get("created_at")
         notes.append(wa_voice.voice_note_lines(r, who, gnames.get(r.get("group_id")) or "",
                                                _memory_ny(at)))
@@ -51906,12 +55622,11 @@ def _memory_wa_doc(row: dict, group_name: str) -> dict:
         "day": ny.strftime("%Y-%m-%d") if ny else None,
         # A voice note: its text is the transcript as said -- or, for one that
         # may not be what was said, only Whisper's English of the audio.
-        "text": project_memory.clean(
-            (row.get("voice") or {}).get("english_direct")
-            if wa_voice.unreliable_note(row.get("voice")) else row.get("body")
-        )[:project_memory.TEXT_MAX],
+        "text": (project_memory.clean((row.get("voice") or {}).get("english_direct"))
+                 if wa_voice.unreliable_note(row.get("voice"))
+                 else project_memory.message_text(row))[:project_memory.TEXT_MAX],
         "unreliable": wa_voice.unreliable_note(row.get("voice")),
-        "kind": "voice" if row.get("voice") else "text",
+        "kind": "voice" if row.get("voice") else "photo" if (row.get("photo") or {}).get("key") else "text",
         "voice": bool(row.get("voice")),
         "lang": (row.get("voice") or {}).get("lang"),
         "english": ((row.get("voice") or {}).get("english_direct")
@@ -52457,6 +56172,8 @@ async def _memory_present(rows: List[dict], company_id: str, project_id: str) ->
             person = await _attention_resolve(jid, company_id, project_id, cache) if jid else {}
             src["who"] = ((person or {}).get("name") if (person or {}).get("status") == "resolved"
                           else "") or wa_sender_map.label(r.get("sender_name") or "", jid)
+            if _dm_is_asker(jid, person):
+                src["who"] = f"{src['who']} {dm_brain.SELF_MARK}".strip()
             src["phone"] = phone_of.get(str(r.get("source_id") or ""))
         elif r.get("source") == project_memory.SOURCE_DAILY:
             src["who"] = r.get("author") or ""
@@ -52601,12 +56318,17 @@ def _dm_chat_ids(dm_chat: str) -> list:
 
 async def _dm_history(dm_chat: str, now: datetime) -> list:
     """This chat's last 20 messages within 4 hours, oldest first: theirs and
-    Levelog's (answers, menus, the morning brief)."""
+    Levelog's (answers, menus, the morning brief).
+
+    ORDERED ON (created_at, _id): a question and the reply stored in the same
+    clock tick must come back in the order they were written, or the repeat
+    guard pairs an answer with the wrong question. An ObjectId grows with
+    insertion; tests/test_history_ties.py injects the tie."""
     try:
         rows = await db.whatsapp_messages.find(
             {"group_id": {"$in": _dm_chat_ids(dm_chat)}, "is_dm": True,
              "created_at": {"$gte": now - timedelta(hours=wa_assistant.HISTORY_HOURS)}}
-        ).sort([("created_at", -1)]).to_list(wa_assistant.HISTORY_MAX)
+        ).sort([("created_at", -1), ("_id", -1)]).to_list(wa_assistant.HISTORY_MAX)
     except Exception as e:
         logger.warning(f"[wa-assistant] history read failed: {type(e).__name__}")
         return []
@@ -52628,12 +56350,13 @@ async def _dm_store_inbound(ident: dict, dm_chat: str, text: str,
 
 
 async def _dm_brief_sent_today(user_id: str, now: datetime) -> Optional[datetime]:
-    """When this person's morning brief went out today (New York), else None."""
+    """When this person's morning brief went out today (New York): its
+    first message's time, else None."""
     start, _end = wa_brief_day_range(now)
     try:
         row = await db[WA_LEDGER].find_one(
             {"user_id": str(user_id), "kind": MORNING_BRIEF_KIND, "status": "sent",
-             "created_at": {"$gte": start}}, sort=[("created_at", -1)])
+             "created_at": {"$gte": start}}, sort=[("created_at", 1)])
     except Exception:
         return None
     at = (row or {}).get("created_at")
@@ -52642,9 +56365,33 @@ async def _dm_brief_sent_today(user_id: str, now: datetime) -> Optional[datetime
     return None
 
 
+async def _dm_today_companies(ident: dict, job: dict) -> List[str]:
+    """The companies checked in at this job today, and its roster's."""
+    start, end = wa_brief_day_range(datetime.now(timezone.utc))
+    try:
+        rows = await db.checkins.find(
+            {"project_id": str(job["id"]), "company_id": _company_id_filter(ident["company_id"]),
+             "check_in_time": {"$gte": start, "$lt": end}, "is_deleted": {"$ne": True}},
+            {"worker_company": 1, "company": 1, "company_name": 1}).to_list(2000)
+    except Exception:
+        rows = []
+    return _dm_job_companies(rows, job.get("project"))
+
+
+def _dm_job_companies(rows: list, project: Optional[dict]) -> List[str]:
+    """Every company a headcount question could name: today's check-ins and
+    the job's roster."""
+    names = [wa_facts.checkin_company(r) for r in rows]
+    if project:
+        names += [str(a.get("company") or "") for a in _active_assignments(project)]
+    return [n for n in dict.fromkeys(names) if n]
+
+
 async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
                                dm_chat: str, *, since_iso: Optional[str] = None,
-                               since_said: str = "", challenged: bool = False) -> str:
+                               since_said: str = "", challenged: bool = False,
+                               names: Optional[bool] = None, own_words: Optional[str] = None,
+                               companies: Optional[List[str]] = None) -> str:
     """Count / who was added / who is on site, from today's check-ins for
     this job (the brief's rule). The model may only rephrase; `verify`
     decides whether its wording or the fixed answer goes out."""
@@ -52672,29 +56419,61 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
         "project_id": pid, "company_id": _company_id_filter(ident["company_id"]),
         "check_in_time": {"$gte": start, "$lt": end},
         "is_deleted": {"$ne": True}}).to_list(2000)
+    # A sub named ("how many arkon workers", "is J&G on site"): that sub
+    # only (Thu 11:35 AM: Arkon was asked, all 37 were answered).
+    # Their own words only -- never the answer they replied to, which names
+    # every sub (`said`; a challenge recounts the same scope: none).
+    # "How many subs on site": every company, never one named.
+    own = question if own_words is None else own_words
+    named = [] if kind == wa_headcount.SUBS else list(companies or []) if challenged else (
+        wa_style.company_in(own, _dm_job_companies(rows, job.get("project"))) if own else [])
+    company = None
+    if named:
+        keys = {wa_headcount.company_key(n) for n in named}
+        rows = [r for r in rows if wa_headcount.company_key(wa_facts.checkin_company(r)) in keys]
+        seen = [wa_facts.checkin_company(r) for r in rows if wa_facts.checkin_company(r)]
+        company = " / ".join(dict.fromkeys(seen)) if seen else " / ".join(named)
+    short_job = wa_style.short_job(job["label"])
     data = wa_headcount.summarize(rows, since)
-    fixed = wa_headcount.compose(kind, data, job["label"], since_label)
-    reply, used = fixed, "fixed"
-    phrased = await _dm_llm(wa_headcount.PHRASE_PROMPT, fixed) if OPENAI_API_KEY else None
+    if names is None:
+        names = kind == wa_headcount.LIST or wa_style.asks_for_list(question)
+    out = wa_headcount.compose_short(kind, data, short_job, since_label, question, company,
+                                     names=names)
+    fixed = out["short"]
+    # The companies answer goes out as built: `check` checks worker numbers,
+    # not a count of subs -- fixed by design, not a fallback.
+    reply, used = fixed, "fixed_by_design" if kind == wa_headcount.SUBS else "fixed"
+    rejected = {}
+    phrased = await _dm_llm(wa_headcount.PHRASE_PROMPT, fixed) \
+        if OPENAI_API_KEY and kind != wa_headcount.SUBS else None
     if phrased:
-        if wa_headcount.verify(phrased, data, job["label"], since_label):
+        why = wa_headcount.check(phrased, data, f"{short_job} {job['label']}", since_label)
+        if why is None and len(phrased) > max(len(fixed), wa_style.MAX_CHARS):
+            why = "too_long"
+        if why is None:
             reply, used = phrased, "phrased"
         else:
+            # The draft and why it was thrown away, so dm_eval can show it.
             used = "fixed_after_check_failed"
+            rejected = {"rejected": _dm_redact(phrased[:1000]), "check": why}
+    if out["full"] != fixed:
+        # "Want the names?" -> "yes" sends them (10 minutes).
+        await _dm_state_set("dm_more", dm_chat, wa_style.MORE_SECONDS, full=out["full"])
     if challenged:
         reply = "Rechecked the check-ins.\n" + reply
     await _dm_state_set("dm_last", dm_chat, DM_LAST_SECONDS, project_id=pid,
                         headcount=kind, since=since.isoformat() if since else None,
-                        since_label=since_label)
+                        since_label=since_label, names=names, companies=named)
     await _dm_log_answer(
         ident, pid, question, reply, "headcount",
-        tool_data={"kind": kind, "since": since.isoformat() if since else None,
+        tool_data={"kind": kind, "company": company,
+                   "since": since.isoformat() if since else None,
                    "total": data["total"], "by_company": data["by_company"],
                    "workers": [{"name": w["name"], "company": w["company"],
                                 "at": w["at"].isoformat() if w["at"] else None}
                                for w in data["workers"]],
                    "added": [w["name"] for w in data["added"]]},
-        wording=used, challenged=challenged)
+        wording=used, challenged=challenged, **rejected)
     return reply
 
 
@@ -52739,7 +56518,7 @@ def _dm_is_admin(ident: dict) -> bool:
 #: ident["projects"] are those jobs): save people, put subs on a job, set a
 #: sub's punch contact. A new job and a job's settings need an admin (or a
 #: PM with full access).
-_DM_PM_ACTIONS = ("add_person", "add_sub", "set_punch_contact")
+_DM_PM_ACTIONS = ("add_person", "add_sub", "set_punch_contact", "set_trade")
 
 
 async def _dm_action_model(text: str, jobs: List[str]) -> Optional[dict]:
@@ -52861,6 +56640,10 @@ async def _dm_company_subs(ident: dict) -> List[Tuple[dict, dict]]:
 
 
 async def _dm_say(dm_chat: str, lang: str, key: str, **kw) -> None:
+    cap = _DM_CAPTURE.get()
+    if cap is not None:
+        cap.append({"kind": key, "text": dm_actions.say(lang, key, **kw)})
+        return
     await send_whatsapp_message(dm_chat, dm_actions.say(lang, key, **kw))
 
 
@@ -52868,6 +56651,10 @@ async def _dm_ask(dm_chat: str, p: dict, step: str, text: str,
                   options: Optional[list] = None) -> None:
     await _dm_state_set(DM_ACTION_STATE, dm_chat, dm_actions.PENDING_SECONDS,
                         p=p, step=step, options=options or [], asked=text, misses=0)
+    cap = _DM_CAPTURE.get()
+    if cap is not None:
+        cap.append({"kind": step, "text": text})
+        return
     await send_whatsapp_message(dm_chat, text)
 
 
@@ -52913,7 +56700,8 @@ async def _dm_voice_unheard(dm_chat: str, vresult: Any, voice_message_id: str) -
     return True
 
 
-async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool) -> bool:
+async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool,
+                          quoted: str = "") -> bool:
     """A DM that asks for a change, or answers the open question about one.
     True when handled. `new`: may start a new request (after the reminders
     have had their turn); otherwise only an open question is answered."""
@@ -52932,6 +56720,8 @@ async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool) ->
         return False
     p["lang"] = dm_actions.reply_lang(text)
     p["said"] = dm_actions.redact(text)[:300]
+    if quoted:
+        p["quoted"] = dm_actions.redact(quoted)[:500]     # (a): the job of the message replied to
     if p["action"] not in ("unsupported",) and not _dm_is_approved(ident):
         await _dm_say(dm_chat, p["lang"], "not_approved")
         return True
@@ -52978,6 +56768,8 @@ async def _dm_action_answer(ident: dict, dm_chat: str, text: str, pending: dict)
         return True
     if step.startswith("choose:"):
         i = dm_actions.pick(text, [o.get("label") or "" for o in options])
+        if i is None and yn is True and step == "choose:_project_id" and p.get("_likely_first"):
+            i = 0                                 # "Which job — 588 …? Or another:" -> "yes"
         if i is None:
             return await _dm_action_restart_or(ident, dm_chat, text, pending,
                                                lambda: _dm_say(dm_chat, lang, "pick_again"))
@@ -53007,6 +56799,10 @@ async def _dm_action_answer(ident: dict, dm_chat: str, text: str, pending: dict)
 
 
 async def _dm_say_raw(dm_chat: str, text: str) -> None:
+    cap = _DM_CAPTURE.get()
+    if cap is not None:
+        cap.append({"kind": "raw", "text": text})
+        return
     await send_whatsapp_message(dm_chat, text)
 
 
@@ -53114,12 +56910,86 @@ async def _dm_recent_job(ident: dict, dm_chat: str) -> Optional[dict]:
         if pid else None
 
 
+async def _dm_latest_punch_job(ids: List[str]) -> Optional[str]:
+    """The job (of `ids`) with the latest punch activity: a walk saved, or
+    an item made or changed."""
+    if not ids:
+        return None
+    best: Tuple[Optional[datetime], Optional[str]] = (None, None)
+    try:
+        for coll, field in ((punch.SESSIONS, "updated_at"), (punch.COLLECTION, "updated_at"),
+                            (punch.COLLECTION, "created_at")):
+            row = await db[coll].find_one({"project_id": {"$in": ids}, field: {"$ne": None}},
+                                          {"project_id": 1, field: 1}, sort=[(field, -1)])
+            at = _utc(row.get(field)) if row else None
+            if at and (best[0] is None or at > best[0]):
+                best = (at, str(row.get("project_id")))
+    except Exception as e:
+        logger.warning(f"[wa-assistant] punch activity read failed: {type(e).__name__}")
+    return best[1]
+
+
+async def _dm_recent_walk_job(ident: dict, ids: List[str], now: datetime) -> Optional[str]:
+    """The job of their walk going on or finished in the last 2 hours."""
+    try:
+        row = await db[punch.SESSIONS].find_one(
+            {"user_id": str(ident.get("user_id")), "project_id": {"$in": ids},
+             "status": {"$ne": "cancelled"},
+             "updated_at": {"$gte": now - timedelta(seconds=wa_assistant.CONTEXT_WALK_SECONDS)}},
+            {"project_id": 1}, sort=[("updated_at", -1)])
+    except Exception as e:
+        logger.warning(f"[wa-assistant] walk read failed: {type(e).__name__}")
+        return None
+    return str(row["project_id"]) if row else None
+
+
+async def _dm_job_context(ident: dict, dm_chat: str, jobs: list, *, text: str = "",
+                          quoted_body: str = "", history: Optional[list] = None,
+                          now: Optional[datetime] = None, walk: bool = True,
+                          topic: bool = True) -> Tuple[Optional[dict], Optional[dict], str]:
+    """(job, likely, rule): the job a DM is about, by the rules in order
+    (lib/wa_assistant.py, "WHICH JOB, BEFORE EVER ASKING"): (a) the message
+    replied to, (b) the walk going on or just finished (2 h), (c) the job
+    named here in the last 30 min, (d) the only job the question could be
+    about. No job: `likely` is the one to offer first when asking.
+    `jobs`: _dm_jobs rows. `walk`/`topic`: rules (b)/(d) on or off."""
+    now = now or datetime.now(timezone.utc)
+    by_id = {str(j["id"]): j for j in jobs}
+    ids = list(by_id)
+    if quoted_body:
+        jid = wa_assistant.job_in_text(quoted_body, jobs)
+        if jid in by_id:
+            return by_id[jid], None, "replied_to"
+    if walk:
+        jid = await _dm_recent_walk_job(ident, ids, now)
+        if jid in by_id:
+            return by_id[jid], None, "walk"
+    remembered = await _dm_state_get("dm_job", dm_chat)
+    if remembered and str(remembered.get("project_id")) in by_id:
+        return by_id[str(remembered["project_id"])], None, "named_30min"
+    if history is None:
+        history = await _dm_history(dm_chat, now)
+    jid = wa_assistant.named_recently(history, jobs, now)
+    if jid in by_id:
+        return by_id[jid], None, "named_30min"
+    if len(jobs) == 1:
+        return jobs[0], None, "only_job"
+    punch_job = await _dm_latest_punch_job(ids) if wa_assistant.about_punch(text) else None
+    if topic and punch_job in by_id:
+        return by_id[punch_job], None, "punch_activity"
+    likely = wa_assistant.named_recently(history, jobs, now, wa_assistant.HISTORY_HOURS * 3600) \
+        or punch_job
+    return None, by_id.get(likely or ""), ""
+
+
 async def _dm_pick_job(ident: dict, dm_chat: str, p: dict) -> Optional[dict]:
     """The job `p` is about, or None after asking which (never a guess).
 
     "Which job?" is asked ONLY when it cannot be inferred: the job named in
-    the message, else their only job, else the job picked in this chat in the
-    last 30 minutes."""
+    the message, else the rules of _dm_job_context -- the message replied
+    to, the walk just finished (2 h), the job named here in the last 30
+    minutes, their only job. A change never takes a job from the topic
+    alone ((d)): that job is offered first instead."""
     lang = p.get("lang") or "en"
     projects = ident.get("projects") or []
     if p.get("_project_id"):
@@ -53134,17 +57004,24 @@ async def _dm_pick_job(ident: dict, dm_chat: str, p: dict) -> Optional[dict]:
     if len(found) == 1:
         p["_project_id"] = str(found[0]["_id"])
         return found[0]
-    if not found and not p.get("job") and len(projects) == 1:
-        p["_project_id"] = str(projects[0]["_id"])
-        return projects[0]
-    recent = await _dm_recent_job(ident, dm_chat) if not p.get("job") and not found else None
-    if recent:
-        p["_project_id"] = str(recent["_id"])
-        return recent
+    likely = None
+    if not p.get("job") and not found:
+        jobs = await _dm_jobs(ident)
+        ctx, likely, _rule = await _dm_job_context(
+            ident, dm_chat, jobs, text=p.get("said") or "", quoted_body=p.get("quoted") or "",
+            topic=False)
+        if ctx:
+            p["_project_id"] = str(ctx["id"])
+            return ctx["project"]
     choices = found or projects
+    if likely and not found:
+        choices = [likely["project"]] + [x for x in choices if str(x["_id"]) != str(likely["id"])]
     options = [{"label": _dm_job_label(x), "value": str(x["_id"])} for x in choices[:6]]
     question = dm_actions.say(lang, "no_job" if p.get("job") and not found else
-                              "which_one" if len(found) > 1 else "which_job")
+                              "which_one" if len(found) > 1 else
+                              "which_job_likely" if likely and not found else "which_job",
+                              job=_dm_job_label(likely["project"]) if likely else "")
+    p["_likely_first"] = bool(likely and not found)
     await _dm_ask(dm_chat, p, "choose:_project_id",
                   dm_actions.numbered(question, [o["label"] for o in options]), options)
     return None
@@ -53317,9 +57194,11 @@ async def _dm_action_step(ident: dict, dm_chat: str, p: dict) -> None:
         elif len({str(pr["_id"]) for pr, _r in subs}) > 1:
             # The sub is on several jobs: the job picked here in the last 30
             # minutes, when the sub is on it, before asking which.
-            recent = await _dm_recent_job(ident, dm_chat)
-            if recent and any(str(pr["_id"]) == str(recent["_id"]) for pr, _r in subs):
-                subs = [(pr, r) for pr, r in subs if str(pr["_id"]) == str(recent["_id"])]
+            recent, _likely, _rule = await _dm_job_context(
+                ident, dm_chat, await _dm_jobs(ident), text=p.get("said") or "",
+                quoted_body=p.get("quoted") or "", topic=False)
+            if recent and any(str(pr["_id"]) == str(recent["id"]) for pr, _r in subs):
+                subs = [(pr, r) for pr, r in subs if str(pr["_id"]) == str(recent["id"])]
         if not subs:
             await _dm_state_clear(DM_ACTION_STATE, dm_chat)
             await _dm_say(dm_chat, lang, "sub_not_on_job", company=p["company"],
@@ -53463,6 +57342,14 @@ async def _dm_action_do(ident: dict, dm_chat: str, p: dict) -> None:
     """Make the change, only as the code confirms it; say what changed."""
     lang = p.get("lang") or "en"
     a = p["action"]
+    if _DM_CAPTURE.get() is not None:
+        # The brain never makes a change: held for the person's own "yes".
+        asked = (f"{a.replace('_', ' ')} on {p.get('_job') or p.get('job') or 'the job'}"
+                 + (f" ({p.get('days')}, {'off' if p.get('off') else 'on'})" if p.get("setting") == "rest" else ""))
+        await _dm_state_set(DM_ACTION_STATE, dm_chat, dm_actions.PENDING_SECONDS, p=p,
+                            step="confirm", options=[], asked=f"Change {asked}?", misses=0)
+        _DM_CAPTURE.get().append({"kind": "confirm", "text": f"Ready to change {asked}. Needs their yes."})
+        return
     if not _dm_is_approved(ident):
         await _dm_say(dm_chat, lang, "not_approved")
         return
@@ -53621,7 +57508,8 @@ async def _dm_do_set_setting(ident: dict, p: dict):
 
 
 _DM_DO = {"add_job": _dm_do_add_job, "add_sub": _dm_do_add_sub, "add_person": _dm_do_add_person,
-          "set_punch_contact": _dm_do_set_punch_contact, "set_setting": _dm_do_set_setting}
+          "set_punch_contact": _dm_do_set_punch_contact, "set_setting": _dm_do_set_setting,
+          "set_trade": lambda ident, p: _dm_do_set_trade(ident, p)}
 
 
 async def _dm_restore_person(ident: dict, jid: str, before: Optional[dict]) -> None:
@@ -53648,7 +57536,7 @@ async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
         await _dm_say(dm_chat, lang, "not_approved")
         return
     if not _dm_is_admin(ident) and not (
-            u.get("kind") in ("person", "roster")
+            u.get("kind") in ("person", "roster", "roster_multi")
             or (u.get("kind") == "settings" and u.get("field") == "punch_contacts")):
         await _dm_say(dm_chat, lang, "admin_only")
         return
@@ -53660,6 +57548,10 @@ async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
                 {"$set": {"marked_for_deletion": True, "marked_by": ident["user_id"], "marked_at": now,
                           "updated_at": now, "delete_batch_id": owner_portal.new_batch_id()}})
             what = dm_actions.say(lang, "undo_job", job=u["job"])
+        elif u["kind"] == "roster_multi":
+            for item in u.get("items") or []:
+                await _save_roster(item["project_id"], item["before"])
+            what = f"{u.get('company')}'s trade on {u.get('job')}"
         elif u["kind"] == "roster":
             await _save_roster(u["project_id"], u["before"])
             what = dm_actions.say(lang, "undo_sub", company=u["company"], job=u["job"])
@@ -53687,9 +57579,38 @@ async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
     await _dm_say(dm_chat, lang, "undone", what=what)
 
 
+async def _dm_user_level_turn(ident: dict, dm_chat: str, text: str, now: datetime,
+                              topics: tuple = ("brief", "send_brief", "settings")) -> bool:
+    """"send me my brief", "brief all", "why didn't I get my brief", "what
+    are my settings": answered from their own records. True when answered."""
+    topic = wa_facts.user_topic(text)
+    if topic not in topics:
+        return False
+    uid = str(ident.get("user_id") or "")
+    if topic in ("send_brief", "brief_all"):
+        user = await db.users.find_one({"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
+        if not user:
+            return False
+        out = await _brief_resend(user, dm_chat, now, every_job=topic == "brief_all")
+        if out in ("error", "failed"):
+            await send_whatsapp_message(
+                dm_chat, "I couldn't send your brief just now — it's logged and the team "
+                         "will see it. Try again in a few minutes.")
+        return True
+    if topic == "brief":
+        reply, _trimmed = wa_style.tighten(await _brief_status_for(uid, None, now), text)
+        await send_whatsapp_message(dm_chat, reply)
+        return True
+    settings = await _brief_settings(uid)
+    optin = await db[WA_OPTINS].find_one({"user_id": uid, "status": "active"}, {"_id": 1})
+    enabled = bool((await get_whatsapp_prefs(uid, None)).get("enabled"))
+    await send_whatsapp_message(dm_chat, wa_facts.settings_text(settings, bool(optin), enabled))
+    return True
+
+
 async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                               message_id: str, heard: Optional[str] = None,
-                              quoted: Optional[dict] = None) -> None:
+                              quoted: Optional[dict] = None, brain: bool = False) -> None:
     """Answer one DM from an Admin/PM (see the block comment above).
 
     A conversation, not a string of new chats: the last 20 messages of this
@@ -53705,6 +57626,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     the request or question needs an existing job and none can be inferred
     (their only job, one named, or the one picked in the last 30 minutes). A
     new job never asks it."""
+    if brain:
+        # The DM brain (flag dm_brain_v2): one model, tools, guardrails.
+        await _dm_brain_reply(ident, dm_chat, body, message_id, heard=heard, quoted=quoted)
+        return
     text = (body or "").strip()
     if not text:
         return
@@ -53718,6 +57643,9 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     now = datetime.now(timezone.utc)
     history = await _dm_history(dm_chat, now)
     await _dm_store_inbound(ident, dm_chat, text, message_id)
+    # "brief all" (the brief's "+N more jobs" line): an exact command.
+    if await _dm_user_level_turn(ident, dm_chat, text, now, topics=("brief_all",)):
+        return
     # "disregard", "never mind", "cancel", "forget it": any open question is
     # dropped -- never answered with the same question again (Mon 7:17 PM:
     # a "Which job?" answered "Disregard" with "Which job?", 4 times).
@@ -53743,9 +57671,40 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     # before the jobs.
     if await _upcoming_dm_turn(ident, dm_chat, text, now):
         return
+    # (After a reminder's own yes / no.)
+    # "Show me" after an answer citing a sheet, "show me SSP-011": the sheet
+    # itself -- before "Want the names?" takes "show me" (Mon 10:21 AM).
+    if await _dm_sheet_turn(ident, dm_chat, text, history, qbody, qbot):
+        return
+    # "Want the names?" -> "yes", "names", "list them": the answer in full.
+    more = await _dm_state_get("dm_more", dm_chat)
+    if more and more.get("full") and wa_style.wants_more(text):
+        await _dm_state_clear("dm_more", dm_chat)
+        # The rest of an earlier model answer: no "check with X" either.
+        full = _dm_old_no_referral(str(more["full"]), ident=ident, path="more")
+        await send_whatsapp_message(dm_chat, full)
+        await _dm_log_answer(ident, None, text, full, "more")
+        return
+    # About THEM -- their brief, their settings -- never a job (Wed 10:11
+    # AM: "Why didn't I get morning brief" got "Which job?").
+    if await _dm_user_level_turn(ident, dm_chat, text, now, topics=("brief", "send_brief")):
+        return
     # A change asked in their own words (lib/dm_actions.py): add a job, a
     # sub, a person, a punch contact; a job's settings; undo.
-    if await _dm_action_turn(ident, dm_chat, text, new=True):
+    # A bare "Done" / "Cancel checklist" that none of the flows above took:
+    # fixed words about what is (not) open, never a model (dm_eval, Oct 20).
+    # BEFORE the new-action classifier: "Cancel checklist" matches its hint,
+    # and the action model may read "cancel" as "undo" and reverse the last
+    # change (Codex on #819). A pending action was asked first (new=False).
+    if not qbody and await _dm_closer_turn(ident, dm_chat, text, history, heard):
+        return
+    if await _dm_action_turn(ident, dm_chat, text, new=True, quoted=qbody):
+        return
+    # Their own settings, asked about (a change was the turn above).
+    if await _dm_user_level_turn(ident, dm_chat, text, now, topics=("settings",)):
+        return
+    # "send me a report for 588 for the last 2 weeks", "report all jobs September".
+    if await _dm_report_turn(ident, dm_chat, text, now):
         return
     if not ident["projects"]:
         await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
@@ -53770,7 +57729,9 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 ident, by_id[str(clarify["project_id"])], str(clarify.get("question") or text),
                 str(clarify.get("headcount") or wa_headcount.ADDED), dm_chat,
                 since_iso=chosen["since"], since_said=chosen["label"]), heard,
-                project_id=str(clarify["project_id"]))
+                project_id=str(clarify["project_id"]),
+                labels=[j["label"] for j in jobs], styled=True,
+                job_label=by_id[str(clarify["project_id"])]["label"])
             return
 
     # ── An open "Which job?" menu (10 minutes): a number, the house number
@@ -53781,6 +57742,13 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     if menu:
         options = [by_id[str(i)] for i in menu.get("options") or [] if str(i) in by_id]
         pick = wa_assistant.pick_from_menu(text, options)
+        if not pick and qbody and not to_menu:
+            # A reply to a message about one of the menu's jobs answers it
+            # (Thu 9:04 AM: "The list", replying to the 588 list).
+            jid = wa_assistant.job_in_text(qbody, options)
+            pick = jid if jid in {o["id"] for o in options} else None
+        if not pick and menu.get("likely") in by_id and dm_actions.yes_no(text) is True:
+            pick = str(menu["likely"])            # "Which job — 588 …? Or another:" -> "yes"
         if pick:
             job, question = by_id[pick], str(menu.get("question") or text)
             await _dm_state_clear("dm_menu", dm_chat)
@@ -53840,6 +57808,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     ref = wa_headcount.since_ref(core, now)
     if last_hc and str(last_hc.get("project_id")) in by_id and job is None and (
             hc == wa_headcount.CHALLENGE
+            # "how many subs on site across all my jobs": all of them, never
+            # the job counted last (Codex on #807).
+            or (hc == wa_headcount.SUBS
+                and wa_assistant.question_scope(core) != wa_assistant.SCOPE_ALL)
             or (hc is None and (ref or wa_headcount.refers_back(core)))):
         # A job named in the message wins over the last one counted ("the
         # count at 8 Walworth is wrong").
@@ -53853,14 +57825,18 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
             await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
                 ident, job, question, str(last_hc.get("headcount") or wa_headcount.COUNT),
                 dm_chat, since_iso=last_hc.get("since"),
-                since_said=str(last_hc.get("since_label") or ""), challenged=True), heard,
-                project_id=str(last_hc["project_id"]))
+                since_said=str(last_hc.get("since_label") or ""), challenged=True,
+                names=last_hc.get("names"), companies=last_hc.get("companies")), heard,
+                project_id=str(last_hc["project_id"]),
+                labels=[j["label"] for j in jobs], styled=True, job_label=job["label"])
             return
-        hc = wa_headcount.ADDED if (ref and ref[0] != wa_headcount.AT and ref[0] != wa_headcount.AMBIGUOUS) \
-            or re.search(r"\badded|\bnew\b", core, re.IGNORECASE) \
-            else str(last_hc.get("headcount") or wa_headcount.COUNT)
-        if ref and ref[0] == wa_headcount.AT:
-            hc = wa_headcount.ADDED
+        if hc != wa_headcount.SUBS:         # "what's the +1 sub": the job just counted
+            hc = wa_headcount.ADDED if (ref and ref[0] != wa_headcount.AT
+                                        and ref[0] != wa_headcount.AMBIGUOUS) \
+                or re.search(r"\badded|\bnew\b", core, re.IGNORECASE) \
+                else str(last_hc.get("headcount") or wa_headcount.COUNT)
+            if ref and ref[0] == wa_headcount.AT:
+                hc = wa_headcount.ADDED
     elif hc == wa_headcount.CHALLENGE:
         hc = None
 
@@ -53883,14 +57859,16 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 await send_whatsapp_message(dm_chat, refusal)
                 await _dm_log_answer(ident, None, question, refusal, "other_job")
                 return
-        if not named and wa_subs.company_question(core, _dm_sub_names(ident)):
+        if not named and hc != wa_headcount.SUBS and \
+                wa_subs.company_question(core, _dm_sub_names(ident)):
             # The company's subs list: answered for the company, with the
             # jobs each sub is on -- never "Which job?" (Tue Oct 13). After
             # a PM's "not on that job" (Codex on #780).
             subs_trace: list = []
             await _dm_send_answer(dm_chat, message_id,
                                   _dm_answer_subs(ident, question, subs_trace), heard,
-                                  log=(ident, None, question, "subs", subs_trace))
+                                  log=(ident, None, question, "subs", subs_trace),
+                                  labels=[j["label"] for j in jobs])
             return
         if len(named) == 1:
             job = named[0]
@@ -53915,14 +57893,26 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 return
             if scope == wa_assistant.SCOPE_ALL:
                 await _dm_send_answer(dm_chat, message_id, _dm_answer_all(ident, question),
-                                      heard, log=(ident, None, question, "all_jobs"))
+                                      heard, log=(ident, None, question, "all_jobs"),
+                                      labels=[j["label"] for j in jobs])
                 return
-            remembered = await _dm_state_get("dm_job", dm_chat)
+            # Before ever asking: the message replied to, the walk just
+            # finished, the job named here in the last 30 min, the only job
+            # the question could be about (Thu 9:03 AM: "Was it sent to the
+            # GC team group chat?" right after the 588 walk got "Which job?").
+            asks = bool(qbody) or _dm_is_new_question(core)
+            remembered = None if asks else await _dm_state_get("dm_job", dm_chat)
+            ctx, likely = None, None
             if remembered and str(remembered.get("project_id")) in by_id:
-                job = by_id[str(remembered["project_id"])]
-            elif len(jobs) == 1:
-                job = jobs[0]
-            elif not _dm_is_new_question(core):
+                ctx = by_id[str(remembered["project_id"])]
+            elif not asks and len(jobs) == 1:
+                ctx = jobs[0]
+            elif asks:
+                ctx, likely, _rule = await _dm_job_context(
+                    ident, dm_chat, jobs, text=core, quoted_body=qbody, history=history, now=now)
+            if ctx:
+                job = ctx
+            elif not asks:
                 # Not a question and no job: a hint, never "Which job?" for
                 # a message that asks nothing (Mon 8:28 PM: gibberish got
                 # the picker).
@@ -53931,7 +57921,7 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                                      "not_a_question")
                 return
             else:
-                await _dm_ask_which(dm_chat, jobs, question)
+                await _dm_ask_which(dm_chat, jobs, question, likely=likely)
                 return
 
     # The current job for this chat: 30 minutes, refreshed on every use.
@@ -53939,6 +57929,15 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                         project_id=job["id"])
     if hc is None:
         hc = wa_headcount.intent(core)
+    if hc is None and wa_style.asks_presence(core) and wa_style.company_in(
+            core, await _dm_today_companies(ident, job)):
+        hc = wa_headcount.PRESENCE        # "is J&G on site", "who from Power Direct is here"
+    if hc in (wa_headcount.PRESENCE, wa_headcount.SUBS):
+        await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
+            ident, job, question, hc, dm_chat, own_words=core), heard, project_id=str(job["id"]),
+            question=question, labels=[j["label"] for j in jobs], styled=True,
+            job_label=job["label"])
+        return
     if hc in (wa_headcount.COUNT, wa_headcount.ADDED, wa_headcount.LIST):
         ref = wa_headcount.since_ref(core, now)
         if ref and ref[0] == wa_headcount.AMBIGUOUS:
@@ -53967,13 +57966,17 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
             await _dm_log_answer(ident, job["id"], question, q, "clarify")
             return
         await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
-            ident, job, question, hc, dm_chat), heard, project_id=str(job["id"]))
+            ident, job, question, hc, dm_chat, own_words=core), heard, project_id=str(job["id"]),
+            question=question, labels=[j["label"] for j in jobs], styled=True,
+            job_label=job["label"])
         return
     trace: list = []
     await _dm_send_answer(dm_chat, message_id,
                           _dm_answer_job(ident, job["project"], dm_chat,
                                          question, message_id, trace, history), heard,
-                          log=(ident, job["id"], question, "job_agent", trace))
+                          log=(ident, job["id"], question, "job_agent", trace),
+                          question=question, labels=[j["label"] for j in jobs],
+                          job_label=job["label"])
 
 
 def _dm_pick_since(text: str, options: list) -> Optional[dict]:
@@ -54032,23 +58035,74 @@ async def _dm_other_company_job(ident: dict, text: str) -> Optional[str]:
 
 
 async def _dm_ask_which(dm_chat: str, jobs: list, question: str,
-                        again: bool = False, header: str = "Which job?") -> None:
+                        again: bool = False, header: str = "Which job?",
+                        likely: Optional[dict] = None) -> None:
+    if likely:
+        # The likely one first: "Which job — 588 Thomas S Boyland St? Or another:".
+        jobs, header = wa_assistant.likely_first(jobs, likely["id"])
     shown = jobs[:wa_assistant.MENU_MAX]
+    await _dm_state_clear("dm_more", dm_chat)       # "yes" now answers the menu
     await _dm_state_set("dm_menu", dm_chat, wa_assistant.MENU_SECONDS,
                         options=[j["id"] for j in shown], question=question,
-                        header=header, misses=0)
+                        header=header, misses=0, likely=likely["id"] if likely else None)
     text = wa_assistant.menu_text(shown, header)
     if again:
         text += "\n" + wa_assistant.MENU_AGAIN_TEXT
     await send_whatsapp_message(dm_chat, text)
 
 
+async def _dm_closer_turn(ident: dict, dm_chat: str, text: str, history: list,
+                          heard: Optional[str] = None) -> bool:
+    """"Done" -> "Done with what?" (the open walk named, else Levelog's last
+    message quoted); "Cancel checklist" -> "There's no checklist open here
+    to cancel." True when answered. A voice note's reply opens with
+    `Heard: "…"`, as every DM answer does."""
+    hit = wa_assistant.closer(text)
+    if not hit:
+        return False
+    kind, thing = hit
+    walk = await _punch_session(ident["user_id"])
+    walk_job = str((walk or {}).get("job_name") or "") if walk else ""
+    if kind == "done":
+        last_bot = next((str(r.get("body") or "") for r in reversed(list(history or []))
+                         if str(r.get("sender") or "") == "bot"), "")
+        reply = wa_assistant.done_reply(walk_job, last_bot)
+    else:
+        reply = wa_assistant.cancel_reply(thing, walk_job)
+    await _dm_log_answer(ident, (walk or {}).get("project_id"), text, reply, "closer")
+    if heard:
+        reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
+    await send_whatsapp_message(dm_chat, reply)
+    return True
+
+
+def _dm_old_no_referral(reply: Any, job_label: Optional[str] = None,
+                        ident: Optional[dict] = None, path: str = "") -> str:
+    """The OLD pipeline's model-written answer, without "check with X"
+    (dm_brain.no_referral); logged when anything was removed -- the company
+    and the path only, never the phone or the words."""
+    out, removed = dm_brain.no_referral(reply, job_label)
+    if removed:
+        logger.info(f"[dm-old] deflection removed company={(ident or {}).get('company_id') or '?'} "
+                    f"path={path or '?'} fallback={'yes' if out.startswith(dm_brain.NOT_FOUND_TEXT[:-1]) else 'no'}")
+    return out
+
+
 async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
                           heard: Optional[str] = None, log: Optional[tuple] = None,
-                          project_id: Optional[str] = None) -> None:
+                          project_id: Optional[str] = None, question: Optional[str] = None,
+                          labels: Any = (), styled: bool = False,
+                          job_label: Optional[str] = None) -> None:
     """Send the answer; 👀 on the question first if it takes over 5 s, and
     taken back if no answer comes. A voice note's answer opens with
-    `Heard: "…"`."""
+    `Heard: "…"`. Every answer goes through the style post-check
+    (lib/wa_style.py): short job names, no preamble, ~300 characters unless
+    a list was asked for -- the rest offered ("Want the names?").
+
+    NEVER "CHECK WITH X" (Oct 21: "How many framers in 588" got "check with
+    the site manager" -- they ARE the site manager / PM): the sentences that
+    send them elsewhere are dropped (dm_brain.no_referral); with nothing
+    left, "I couldn't find that in Levelog for <job>." -- never made up."""
     task = asyncio.ensure_future(answer_coro)
     eyes = False
     try:
@@ -54057,10 +58111,42 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
     except asyncio.TimeoutError:
         eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
         reply = await task
+    if reply:
+        reply = _dm_old_no_referral(reply, job_label, ident=log[0] if log else None,
+                                    path=log[3] if log else "headcount")
+    repeated = None
+    if reply:
+        asked = question if question is not None else (log[2] if log else "")
+        full = reply
+        # A headcount answer is already in the style (wa_headcount.compose_short),
+        # its names only when asked: never cut, only the job names shortened.
+        reply, trimmed = (wa_style.shorten_jobs(reply, labels), False) if styled \
+            else wa_style.tighten(reply, asked, labels)
+        # NEVER THE SAME ANSWER TO A DIFFERENT QUESTION (dm_eval, Oct 20):
+        # one short question instead. A headcount (`styled`) is exempt: the
+        # same count for "how many subs" and "how many companies" is right.
+        hist = [] if styled else await _dm_history(dm_chat, datetime.now(timezone.utc))
+        # Compared as it goes out: the send strips a trailing "Need anything
+        # else?", and the history holds the stripped text.
+        repeated = None if styled else wa_assistant.repeat_of_last(
+            _strip_generic_offer(reply), hist, asked, datetime.now(timezone.utc))
+        if repeated:
+            sheet = _requested_sheet_id(repeated) or ""
+            ask = wa_assistant.repeat_question(sheet)
+            asked_already = any(str(r.get("body") or "") == ask for r in hist
+                                if str(r.get("sender") or "") == "bot")
+            reply, trimmed = wa_assistant.repeat_question(sheet, asked_already), False
+            if log:
+                log = (log[0], log[1], log[2], "no_repeat") + tuple(log[4:5])
+        if trimmed:
+            await _dm_state_set("dm_more", dm_chat, wa_style.MORE_SECONDS,
+                                full=wa_style.clean(full, labels))
     if log:
-        # (ident, project_id, question, path[, tool trace])
+        # (ident, project_id, question, path[, tool trace]); a blocked repeat
+        # keeps the answer it would have sent, for the next dm_eval.
         await _dm_log_answer(log[0], log[1], log[2], reply, log[3],
-                             tool_data=log[4] if len(log) > 4 else None)
+                             tool_data=log[4] if len(log) > 4 else None,
+                             **({"repeated": _dm_redact(repeated)} if reply and repeated else {}))
     job_id = (log[1] if log else None) or project_id
     if heard and message_id and job_id:
         # A voice question answered about a job (the agent's answer or a
@@ -54075,6 +58161,1036 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         if heard:
             reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
         await send_whatsapp_message(dm_chat, reply)
+    elif eyes:
+        await _react_to_message(dm_chat, message_id, "")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# THE DM BRAIN (lib/dm_brain.py) -- per company, flag `dm_brain_v2`.
+#
+# One model (Qwen 3.8 Flash on DeepInfra; a stronger DeepInfra model for the
+# evidence-check retry and report summaries) answers every free-text DM, with this
+# chat's last 20 messages, who they are and their jobs, the chat's current
+# job and any open flow, and tools over the real records. It replaces the
+# routers, keyword matchers, reply templates, the length cutter and the
+# same-answer blocker above (all still there, for companies without the
+# flag). What stays in code:
+#   * exact commands to an open flow: "yes" / "no" to a pending change or
+#     reminder, the job's address typed back for live punch sends, "cancel"
+#     -- and the walkthrough itself (_punch_dm_turn: photos, "done P-588-1",
+#     "P23 ok", "start walkthrough at 588", and the walk's own text while one
+#     is open);
+#   * a change is only ever PROPOSED by the model: the existing change flow
+#     runs with its messages captured (_DM_CAPTURE) and its write held for
+#     the person's own "yes";
+#   * numbers and record ids must come from the tools, the chat or the
+#     context, or the model is asked again (never cut);
+#   * no phone numbers; every tool scoped to their company and jobs.
+# ══════════════════════════════════════════════════════════════════════════
+
+#: DeepInfra's key: the one already on Railway for the vision calls.
+DM_BRAIN_API_KEY = QWEN_API_KEY
+_DM_BRAIN_CLIENT: Any = None
+#: The model this turn uses (the eval runs each DM on both models).
+_DM_MODEL: contextvars.ContextVar = contextvars.ContextVar("dm_model", default=None)
+#: Who is asking this turn ({"user_id", "phone"}): a record they sent is
+#: marked dm_brain.SELF_MARK in the tool results; no other is.
+_DM_ASKER: contextvars.ContextVar = contextvars.ContextVar("dm_asker", default=None)
+#: How often the "typing…" indicator is sent again while the brain works.
+DM_TYPING_EVERY_SECONDS = 8.0
+
+
+def _dm_is_asker(jid: str, person: Optional[dict]) -> bool:
+    """Is this sender the person asking? Their user id (resolved), or the
+    same phone digits as their DM -- never a name match."""
+    asker = _DM_ASKER.get()
+    if not asker:
+        return False
+    if (person or {}).get("kind") == "user" and str((person or {}).get("id") or "") == str(asker.get("user_id") or ""):
+        return True
+    if str(jid or "").endswith("@lid"):
+        return False                                   # a @lid is not a phone
+    digits = wa_dm.phone_digits(jid or "")[-10:]
+    return len(digits) == 10 and digits in {str(p)[-10:] for p in asker.get("phones") or [] if p}
+
+
+async def _wa_chat_action(chat_id: str, action: str) -> bool:
+    """One WaAPI chat action (send-seen / send-typing / send-stop-typing,
+    body {chatId}). Never raises; a failure is logged with the action and
+    status only -- never the chat id (it holds their phone number)."""
+    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and chat_id):
+        return False
+    url = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/{action}"
+    code, _body, exc = await _waapi_post_raw(
+        url, {"chatId": chat_id}, {"Authorization": f"Bearer {WAAPI_TOKEN}",
+                                   "Content-Type": "application/json"})
+    ok = exc is None and code is not None and code < 400
+    inner = _body.get("data") if isinstance(_body, dict) else None
+    if ok and isinstance(inner, dict) and inner.get("status") == "error":
+        ok = False                                   # WaAPI's 200 that did not happen
+    if not ok:
+        # waapi_error scrubs numbers out of what WaAPI said.
+        logger.warning(f"[dm-brain] WaAPI {action} failed: "
+                       f"{send_retry.waapi_error(action, code, _body, exc)}")
+    return ok
+
+
+async def _wa_typing(chat_id: str, on: bool = True) -> bool:
+    """WaAPI send-typing / send-stop-typing {chatId}."""
+    return await _wa_chat_action(chat_id, "send-typing" if on else "send-stop-typing")
+
+
+async def _wa_seen(chat_id: str) -> bool:
+    """WaAPI send-seen {chatId}: their messages read (blue ticks when both
+    sides have read receipts on), the way a person opens the chat."""
+    return await _wa_chat_action(chat_id, "send-seen")
+
+
+async def _dm_typing_while(chat_id: str, done: asyncio.Event) -> None:
+    """What a person does: open the chat (read ticks), then "typing…" until
+    `done`, sent again every DM_TYPING_EVERY_SECONDS (WhatsApp drops it
+    after a while)."""
+    try:
+        await _wa_seen(chat_id)
+        while not done.is_set():
+            await _wa_typing(chat_id, True)
+            try:
+                await asyncio.wait_for(done.wait(), DM_TYPING_EVERY_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        await _wa_typing(chat_id, False)
+#: A tool result is data for the model, not the answer: generous, bounded.
+DM_BRAIN_TOOL_CHARS = 9000
+
+# The read tools the job agent already has, now for any of their jobs.
+_DM_BRAIN_JOB_TOOLS = (
+    "who_on_site", "site_headcount", "sub_attendance", "daily_log", "dob_status",
+    "open_items", "active_permits", "material_status", "check_drawing_set", "search_plans",
+    "project_info", "search_project_history", "recent_voice_notes", "punch_status",
+    "follow_ups", "upcoming_events")
+
+_JOB_PROP = {"type": "string", "description": (
+    "Which of their jobs: its id from the context, or as they said it (\"588\", "
+    "\"walworth\"). Leave it out to use the chat's current job.")}
+
+_DM_BRAIN_EXTRA_TOOLS = [
+    {"name": "headcount", "description": (
+        "Today's check-ins at a job: how many are on site now, by sub, each person and the time "
+        "they came in, who came since the morning brief (or a time), who left. For 'how many on "
+        "site', 'who's here', 'is Arkon on site', 'update on workers', 'subs on site'."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "company": {"type": "string", "description": "Only this sub (its name as on the subs list)."},
+         "since": {"type": "string", "description": "'brief' (their morning brief, the default), "
+                                                    "'start' (start of the work day) or a time like '9:30'."}},
+         "required": []}},
+    {"name": "dot_status", "description": (
+        "NYC DOT records for a job: street/sidewalk permits, violations, hearings, what's due."),
+     "input_schema": {"type": "object", "properties": {"job": _JOB_PROP}, "required": []}},
+    {"name": "list_subs", "description": (
+        "The subs list: every sub on their jobs (or one job), its trade and the jobs it is on. "
+        "Use it to match a misspelled or misheard company name."),
+     "input_schema": {"type": "object", "properties": {"job": {
+         "type": "string", "description": "Only this job (id or as said). Leave out for all jobs."}},
+         "required": []}},
+    {"name": "find_sub", "description": (
+        "Search the subs list by trade or company name (\"plumber\", \"low voltage\", \"J&G\")."),
+     "input_schema": {"type": "object", "properties": {
+         "trade_or_name": {"type": "string"},
+         "job": {"type": "string", "description": "Only this job. Leave out for all their jobs."}},
+         "required": ["trade_or_name"]}},
+    {"name": "brief_status", "description": (
+        "Their own morning brief: whether it was sent today (and when) or why not."),
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "my_settings", "description": "Their own Levelog Assistant settings (brief time, alerts).",
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "resend_my_brief", "description": (
+        "Send them today's morning brief again, here. all_jobs: true for only the jobs "
+        "this morning's brief left out ('+N more jobs — reply brief all')."),
+     "input_schema": {"type": "object", "properties": {
+         "all_jobs": {"type": "boolean"}}, "required": []}},
+    {"name": "send_sheet", "description": (
+        "Send a drawing sheet's image here (to them), e.g. after a plans answer cites SSP-011.00 "
+        "and they say 'show me'."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP, "sheet": {"type": "string", "description": "The sheet number, e.g. 'SSP-011.00'."}},
+         "required": ["sheet"]}},
+    {"name": "send_report", "description": (
+        "Build a project report PDF and send it here (to them)."),
+     "input_schema": {"type": "object", "properties": {
+         "jobs": {"type": "array", "items": {"type": "string"},
+                  "description": "Job ids or names; [\"all\"] for all their jobs."},
+         "period": {"type": "string", "description": "As they said it: 'last 2 weeks', "
+                                                    "'September', 'last month', 'this week'."}},
+         "required": ["jobs", "period"]}},
+    {"name": "propose_change", "description": (
+        "PROPOSE a change: add a job, put a sub on a job (with its trade), save a person, set a "
+        "sub's punch contact, change a job's punch-send mode or chase rest days. Nothing is "
+        "changed: the result says what the system still needs to know or the confirm question; "
+        "ask them, and they confirm with yes."),
+     "input_schema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["add_job", "add_sub", "add_person",
+                                               "set_punch_contact", "set_setting"]},
+         "address": {"type": "string"}, "borough": {"type": "string"}, "zip": {"type": "string"},
+         "company": {"type": "string"}, "trade": {"type": "string"}, "job": {"type": "string"},
+         "name": {"type": "string"}, "phone": {"type": "string"}, "role": {"type": "string"},
+         "setting": {"type": "string", "enum": ["punch_sends", "rest"]},
+         "value": {"type": "string", "enum": ["shadow", "live"]},
+         "days": {"type": "string", "enum": ["shabbos", "sunday", "both"]},
+         "off": {"type": "boolean", "description": "rest: true = no chasing on those days."}},
+         "required": ["action"]}},
+    {"name": "answer_pending_change", "description": (
+        "Pass their answer to the open question of a pending change (a company, a trade, a pick "
+        "from the options, a phone, a borough). Not for the final yes -- that is theirs."),
+     "input_schema": {"type": "object", "properties": {"answer": {"type": "string"}},
+                      "required": ["answer"]}},
+    {"name": "cancel_pending_change", "description": "Drop the pending change or reminder.",
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "set_sub_trade", "description": (
+        "PROPOSE saving a sub's trade on the subs list (\"Arkon is framer\"). Nothing is changed "
+        "until they say yes."),
+     "input_schema": {"type": "object", "properties": {
+         "company": {"type": "string", "description": "The sub, as on the subs list if you can match it."},
+         "trade": {"type": "string"},
+         "job": {"type": "string", "description": "Only on this job. Leave out for every job it's on."}},
+         "required": ["company", "trade"]}},
+    {"name": "undo_last_change", "description": (
+        "PROPOSE undoing the last change made in this chat (within 10 minutes); they confirm with yes."),
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "remind_me", "description": (
+        "PROPOSE a reminder for them (the morning of the date); they confirm with yes."),
+     "input_schema": {"type": "object", "properties": {
+         "what": {"type": "string"}, "date": {"type": "string", "description": "YYYY-MM-DD"},
+         "time": {"type": "string", "description": "HH:MM, 24h, if they gave one."}},
+         "required": ["what", "date"]}},
+]
+
+_DM_BRAIN_TOOL_CACHE: Optional[list] = None
+
+
+def _dm_brain_tools() -> list:
+    """Every tool the brain can call: the agent's read tools (with a `job`)
+    and the brain's own, in a fixed order, as OpenAI function tools."""
+    global _DM_BRAIN_TOOL_CACHE
+    if _DM_BRAIN_TOOL_CACHE is not None:
+        return _DM_BRAIN_TOOL_CACHE
+    out = []
+    for t in _AGENT_TOOLS:
+        f = t.get("function") or {}
+        name = f.get("name")
+        if name not in _DM_BRAIN_JOB_TOOLS:
+            continue
+        schema = json.loads(json.dumps(f.get("parameters") or {"type": "object", "properties": {}}))
+        schema["type"] = "object"
+        schema.setdefault("properties", {})["job"] = _JOB_PROP
+        schema.setdefault("required", [])
+        out.append({"name": name, "description": f.get("description") or "", "input_schema": schema})
+    out += _DM_BRAIN_EXTRA_TOOLS
+    out.sort(key=lambda t: t["name"])
+    # OpenAI-compatible function tools (DeepInfra).
+    _DM_BRAIN_TOOL_CACHE = [{"type": "function", "function": {
+        "name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
+        for t in out]
+    return _DM_BRAIN_TOOL_CACHE
+
+
+def _dm_brain_client():
+    global _DM_BRAIN_CLIENT
+    if _DM_BRAIN_CLIENT is None:
+        from openai import AsyncOpenAI
+        _DM_BRAIN_CLIENT = AsyncOpenAI(base_url=dm_brain.API_BASE, api_key=DM_BRAIN_API_KEY or "none",
+                                       timeout=60.0, max_retries=2)
+    return _DM_BRAIN_CLIENT
+
+
+async def _dm_brain_route(ident: Optional[dict]) -> Tuple[bool, str]:
+    """(on, reason): whether the brain answers this person, and why not
+    ("no_ident", "no_key", "flag_off"); reason "on" when it does."""
+    if not ident:
+        return False, "no_ident"
+    if not DM_BRAIN_API_KEY:
+        return False, "no_key"
+    try:
+        off = await feature_flags.is_feature_enabled(
+            db, dm_brain.OFF_FLAG, company_id=str(ident.get("company_id") or ""),
+            user_id=str(ident.get("user_id") or ""))
+    except Exception as e:
+        logger.warning(f"[dm-brain] off-switch read failed: {type(e).__name__}")
+        return True, "on"                            # the brain is the default
+    return (False, "flag_off") if off else (True, "on")
+
+
+async def _dm_brain_on(ident: Optional[dict]) -> bool:
+    """The brain answers this person: on for everyone by default, unless
+    their company (or they) is on the off switch (flag dm_brain_off), or
+    the model can't be reached (no key). An opted-in admin / PM sent to the
+    old pipeline is logged with the reason -- the evidence of which path
+    answered (company only; never the phone or the words)."""
+    on, reason = await _dm_brain_route(ident)
+    if not on and ident:
+        logger.info(f"[dm-old] reason={reason} company={ident.get('company_id') or '?'}")
+    return on
+
+
+def _dm_brain_startup_line() -> str:
+    """The boot line: is the brain's key set, which model -- never the key."""
+    return (f"[dm-brain] startup key={'set' if DM_BRAIN_API_KEY else 'missing'} "
+            f"model={dm_brain.MODEL}")
+
+
+async def _dm_brain_history(dm_chat: str, now: datetime, before: Optional[datetime] = None) -> list:
+    """This chat's last messages (HISTORY_TURNS within HISTORY_DAYS), oldest
+    first. `before`: as the chat was at that moment (the eval)."""
+    q: Dict[str, Any] = {"group_id": {"$in": _dm_chat_ids(dm_chat)}, "is_dm": True,
+                         "created_at": {"$gte": now - timedelta(days=dm_brain.HISTORY_DAYS)}}
+    if before:
+        q["created_at"]["$lt"] = before
+    try:
+        rows = await db.whatsapp_messages.find(q).sort([("created_at", -1), ("_id", -1)]).to_list(
+            dm_brain.HISTORY_TURNS)
+    except Exception as e:
+        logger.warning(f"[dm-brain] history read failed: {type(e).__name__}")
+        return []
+    rows.reverse()
+    return rows
+
+
+async def _dm_brain_flows(ident: dict, dm_chat: str) -> List[str]:
+    """Open flows, in words for the model."""
+    out = []
+    walk = await _punch_session(ident["user_id"])
+    if walk and walk.get("status") not in ("sent", "dropped", "closed"):
+        out.append(f"A walkthrough (punch list) is open at {walk.get('job_name') or 'a job not yet named'}: "
+                   f"stage {walk.get('status')}, {len(walk.get('items') or [])} items so far.")
+    pending = await _dm_state_get(DM_ACTION_STATE, dm_chat)
+    if pending:
+        p = pending.get("p") or {}
+        step = str(pending.get("step") or "")
+        what = p.get("action")
+        if step == "confirm":
+            out.append(f"A change ({what}) is waiting for their yes. The system asked: "
+                       f"\"{pending.get('asked')}\"")
+        elif step == "type_address":
+            out.append(f"A change ({what}) is waiting for them to type the job's address to confirm.")
+        else:
+            opts = [o.get("label") for o in pending.get("options") or [] if o.get("label")]
+            out.append(f"A change ({what}) needs an answer. The system asked: \"{pending.get('asked')}\""
+                       + (f" Options: {'; '.join(opts)}." if opts else ""))
+    remind = await _dm_state_get(UPCOMING_REMIND_STATE, dm_chat)
+    if remind:
+        out.append(f"A reminder is waiting for their yes: \"{remind.get('what')}\" on {remind.get('date')}.")
+    return out
+
+
+def _dm_brain_find_job(ctx: dict, said: Any) -> Tuple[Optional[dict], str]:
+    """(job, "") for a job reference, or (None, why) to tell the model."""
+    jobs, by_id = ctx["jobs"], ctx["by_id"]
+    s = str(said or "").strip()
+    names = "; ".join(f"{j['id']}: {j['label']}" for j in jobs)
+    if not s:
+        if ctx.get("active") in by_id:
+            return by_id[ctx["active"]], ""
+        if len(jobs) == 1:
+            return jobs[0], ""
+        return None, f"No job given and no current job in this chat. Their jobs: {names}."
+    if s in by_id:
+        return by_id[s], ""
+    ids = wa_assistant.find_jobs(s, jobs)
+    if not ids:
+        jid = wa_assistant.job_named(s, jobs, in_sentence=True)
+        ids = [jid] if jid else []
+    if len(ids) == 1:
+        return by_id[ids[0]], ""
+    if len(ids) > 1:
+        return None, f"'{s}' matches more than one job: " + "; ".join(
+            f"{i}: {by_id[i]['label']}" for i in ids) + "."
+    return None, f"None of their jobs matches '{s}'. Their jobs: {names}."
+
+
+async def _dm_brain_headcount(ctx: dict, job: dict, args: dict) -> str:
+    ident = ctx["ident"]
+    now = datetime.now(timezone.utc)
+    pid = str(job["id"])
+    if not await _bot_project_scope(ident["company_id"], pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    start, end = wa_brief_day_range(now)
+    rows = await db.checkins.find({
+        "project_id": pid, "company_id": _company_id_filter(ident["company_id"]),
+        "check_in_time": {"$gte": start, "$lt": end},
+        "is_deleted": {"$ne": True}}).to_list(2000)
+    want = str(args.get("company") or "").strip()
+    if want:
+        key = wa_headcount.company_key(want)
+        rows = [r for r in rows if wa_headcount.company_key(wa_facts.checkin_company(r)) == key
+                or multilang.fold(want) in multilang.fold(wa_facts.checkin_company(r) or "")]
+    since_said = str(args.get("since") or "brief").strip().lower()
+    since, label = None, ""
+    if since_said in ("", "brief"):
+        since = await _dm_brief_sent_today(ident["user_id"], now)
+        label = f"their {wa_headcount.hhmm(since)} brief" if since else ""
+    elif since_said == "start":
+        work = wa_gc.work_start((await _whatsapp_project_settings(pid)).get("send_window"))
+        since, label = wa_headcount.day_start(now, work), "the start of the day"
+    else:
+        since = wa_headcount.parse_since(f"since {since_said}", now)
+        label = since_said if since else ""
+    data = wa_headcount.summarize(rows, since)
+    out = {
+        "job": job["label"], "as_of": wa_headcount.clock(now),
+        "only_sub": want or None,
+        "on_site_now": data["total"],
+        "subs_on_site": len(data["by_company"]),
+        "by_sub": [{"sub": c, "on_site": n} for c, n in data["by_company"]],
+        "people_on_site": [{"name": w["name"], "sub": w["company"], "in_at": wa_headcount.clock(w["at"])}
+                           for w in data["workers"]],
+        "since": label or None,
+        # The count itself, not just the list: a model that counts the names
+        # writes a figure no tool holds, and the evidence check re-asks
+        # (Oct 21 eval: "12" re-asked 3 of 8 cases, ~3s each).
+        "came_in_since_count": len(data.get("added") or []) if since else None,
+        "came_in_since": ([{"name": w["name"], "sub": w["company"], "in_at": wa_headcount.clock(w["at"])}
+                           for w in data.get("added") or []] if since else None),
+        "checked_in_today_and_left": data.get("checked_out") or 0,
+    }
+    if not since and since_said in ("", "brief"):
+        out["note"] = "No morning brief went to them today; 'since' not applied."
+    return json.dumps(out, ensure_ascii=False, default=str)
+
+
+async def _dm_brain_dot(ident: dict, job: dict) -> str:
+    pid = str(job["id"])
+    if not await _bot_project_scope(ident["company_id"], pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    rows = await db.dot_logs.find({"project_id": pid,
+                                   "company_id": _company_id_filter(ident["company_id"])}
+                                  ).sort([("issue_date", -1)]).to_list(40)
+    if not rows:
+        return f"No DOT records on file for {job['label']}."
+    keys = ("record_type", "number", "status", "issue_date", "description", "hearing_date",
+            "hearing_result", "compliance_status", "penalty_imposed", "balance_due")
+    lines = [f"DOT records for {job['label']} (newest first):"]
+    for r in rows:
+        lines.append("- " + "; ".join(f"{k}: {r.get(k)}" for k in keys if r.get(k) not in (None, "")))
+    return "\n".join(lines)
+
+
+async def _dm_brain_change(ctx: dict, run) -> str:
+    """Run part of the existing change flow with its messages captured (and,
+    in the eval, no state written): what it would have asked, and where the
+    change now stands."""
+    dm_chat = ctx["dm_chat"]
+    said: list = []
+    token_c = _DM_CAPTURE.set(said)
+    token_d = _DM_DRY.set(bool(ctx.get("dry_run")))
+    try:
+        await run()
+    finally:
+        _DM_CAPTURE.reset(token_c)
+        _DM_DRY.reset(token_d)
+    pending = None if ctx.get("dry_run") else await _dm_state_get(DM_ACTION_STATE, dm_chat)
+    step = str((pending or {}).get("step") or "")
+    if ctx.get("dry_run"):
+        status = "dry_run"
+    elif step == "confirm":
+        status = "waiting_for_their_yes"
+    elif step == "type_address":
+        status = "waiting_for_them_to_type_the_job_address"
+    elif pending:
+        status = "needs_an_answer"
+    else:
+        status = "not_pending"
+    opts = [o.get("label") for o in (pending or {}).get("options") or [] if o.get("label")]
+    return json.dumps({"status": status, "system_says": [s["text"] for s in said],
+                       "options": opts or None,
+                       "note": "Nothing has been changed. Ask them in your own words."
+                       if status != "not_pending" else
+                       "Nothing is pending. If the system said it can't, tell them why."},
+                      ensure_ascii=False)
+
+
+def _dm_brain_lang(text: str) -> str:
+    return dm_actions.reply_lang(text)
+
+
+async def _dm_brain_set_trade(ctx: dict, args: dict) -> str:
+    ident, dm_chat = ctx["ident"], ctx["dm_chat"]
+    want = str(args.get("company") or "").strip()
+    trade_said = str(args.get("trade") or "").strip()
+    if not want or not trade_said:
+        return "Need both the company and the trade."
+    if not _dm_is_approved(ident):
+        return "Their account isn't approved for changes yet."
+    subs = await _dm_company_subs(ident)
+    if args.get("job"):
+        job, why = _dm_brain_find_job(ctx, args.get("job"))
+        if not job:
+            return why
+        subs = [(p, r) for p, r in subs if str(p["_id"]) == str(job["id"])]
+    fw = multilang.fold(want)
+    names = sorted({str(r.get("company") or "") for _p, r in subs if r.get("company")})
+    # As typed or misheard ("Akron" for Arkon Builders): the whole name, then
+    # its first word, close enough.
+    cores = {multilang.fold(n).split()[0]: n for n in names if multilang.fold(n).split()}
+    hit = [n for n in names if multilang.fold(n) == fw] or \
+        [n for n in names if fw and (fw in multilang.fold(n) or multilang.fold(n) in fw)] or \
+        difflib.get_close_matches(want, names, n=1, cutoff=0.75) or \
+        [cores[k] for k in difflib.get_close_matches(fw.split()[0] if fw.split() else fw,
+                                                     list(cores), n=1, cutoff=0.75)]
+    if not hit:
+        return json.dumps({"status": "not_on_subs_list", "company": want,
+                           "subs_on_list": names[:40],
+                           "note": "Not on any of their jobs' rosters. To add it to a job with "
+                                   "that trade, use propose_change add_sub."}, ensure_ascii=False)
+    company = hit[0]
+    known = await _company_trade_list(ident["company_id"])
+    trade = lib_trades.resolve(trade_said, known) or lib_trades.new_label(trade_said) or trade_said
+    targets = []
+    for p, r in subs:
+        if str(r.get("company") or "") != company:
+            continue
+        targets.append({"project_id": str(p["_id"]), "row_id": str(r.get("id") or ""),
+                        "job": _dm_job_label(p), "before": str(r.get("trade") or "")})
+    if all(_roster_key(t["before"]) == _roster_key(trade) for t in targets):
+        return json.dumps({"status": "already", "company": company, "trade": trade,
+                           "jobs": [t["job"] for t in targets]}, ensure_ascii=False)
+    jobs = ", ".join(t["job"] for t in targets)
+    was = ", ".join(sorted({t["before"] or "no trade" for t in targets}))
+    asked = f"Save {company} as {trade} on {jobs}? (now: {was})"
+    p = {"action": "set_trade", "company": company, "trade": trade, "_targets": targets,
+         "lang": _dm_brain_lang(ctx["text"]), "said": dm_actions.redact(ctx["text"])[:300]}
+    if not ctx.get("dry_run"):
+        await _dm_state_set(DM_ACTION_STATE, dm_chat, dm_actions.PENDING_SECONDS,
+                            p=p, step="confirm", options=[], asked=asked, misses=0)
+    return json.dumps({"status": "dry_run" if ctx.get("dry_run") else "waiting_for_their_yes",
+                       "would_change": asked,
+                       "note": "Nothing is saved yet. Ask them to confirm with yes."}, ensure_ascii=False)
+
+
+async def _dm_do_set_trade(ident: dict, p: dict):
+    """A sub's trade on every roster row named (set_sub_trade, confirmed)."""
+    items, jobs = [], []
+    for t in p.get("_targets") or []:
+        project = await db.projects.find_one({"_id": to_query_id(t["project_id"]),
+                                              "company_id": _company_id_filter(ident["company_id"])})
+        if not project:
+            continue
+        before = [dict(r) for r in _active_assignments(project)]
+        after = []
+        for r in before:
+            r2 = dict(r)
+            if (t["row_id"] and str(r.get("id") or "") == t["row_id"]) or (
+                    not t["row_id"] and str(r.get("company") or "") == p["company"]):
+                r2["trade"] = p["trade"]
+            after.append(r2)
+        await _save_roster(t["project_id"], after)
+        items.append({"project_id": t["project_id"], "before": before})
+        jobs.append(t["job"])
+        await _dm_audit(ident, p, "project", t["project_id"], {"trade": t["before"]},
+                        {"company": p["company"], "trade": p["trade"]})
+    if not items:
+        raise RuntimeError("no roster rows")
+    return ({"kind": "roster_multi", "items": items, "company": p["company"], "job": ", ".join(jobs)},
+            f"Saved: {p['company']} — {p['trade']} on {', '.join(jobs)}.")
+
+
+async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
+    """One tool call from the brain. Every result is text for the model."""
+    ident, dm_chat = ctx["ident"], ctx["dm_chat"]
+    args = dict(args or {})
+    dry = bool(ctx.get("dry_run"))
+    now = datetime.now(timezone.utc)
+    if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet"):
+        job, why = _dm_brain_find_job(ctx, args.pop("job", None))
+        if not job:
+            return why
+        ctx["used_job"] = job["id"]
+        if name == "headcount":
+            return await _dm_brain_headcount(ctx, job, args)
+        if name == "dot_status":
+            return await _dm_brain_dot(ident, job)
+        if name == "send_sheet":
+            pid = str(job["id"])
+            if not await _bot_project_scope(ident["company_id"], pid):
+                return wa_security.BOT_SCOPE_REFUSAL
+            rows = await _find_named_sheet(pid, str(args.get("sheet") or ""))
+            page = rows[0] if rows else None
+            if not page:
+                return f"{str(args.get('sheet') or '').upper()} isn't in the indexed drawings for {job['label']}."
+            label = page.get("sheet_number") or str(args.get("sheet")).upper()
+            title = page.get("sheet_title") or page.get("title") or ""
+            if not page.get("page_jpeg_r2_key"):
+                return f"{label} is indexed but has no image yet (notes sheet or still rendering)."
+            # One picture of a sheet a turn: the answer's own picture of this
+            # sheet (after the words, _dm_plan_shots) is not sent again.
+            ctx.setdefault("sheets_sent", set()).add(str(page.get("_id")))
+            if dry:
+                ctx["sent"].append(f"[sheet {label}]")
+                return f"(eval) Would send the image of {label} {title} here."
+            # What this turn's plans evidence has on this sheet is marked on it.
+            shot = await _dm_plan_sheet_shot(ctx, page)
+            if await _dm_send_sheet(dm_chat, page, **shot):
+                ctx["sent"].append(f"[sheet {label}]")
+                return f"Sent the image of {label} {title} to them."
+            return f"Found {label} but the image couldn't be sent (may still be rendering)."
+        if name == "search_project_history" and _memory_disabled():
+            return "Project history search is off."
+        sink: list = []
+        out = await _dispatch_agent_tool(
+            name, args, project_id=str(job["id"]), group_id=dm_chat,
+            company_id=str(ident["company_id"]), sender=wa_dm.phone_digits(dm_chat),
+            reply_to=None, user_body=ctx["text"], record_sink=sink)
+        if sink and await _dm_plan_evidence(ctx, sink):
+            out += ("\n(A picture of the sheet, with where this is marked, goes to them right "
+                    "after your answer. No need to call send_sheet for it.)")
+        return out
+    if name in ("list_subs", "find_sub"):
+        project = None
+        if args.get("job"):
+            job, why = _dm_brain_find_job(ctx, args.pop("job"))
+            if not job:
+                return why
+            project = job["project"]
+        return await _dm_subs_tool(ident, name, args, project)
+    if name == "brief_status":
+        return await _brief_status_for(str(ident["user_id"]), None, now)
+    if name == "my_settings":
+        uid = str(ident["user_id"])
+        settings = await _brief_settings(uid)
+        optin = await db[WA_OPTINS].find_one({"user_id": uid, "status": "active"}, {"_id": 1})
+        enabled = bool((await get_whatsapp_prefs(uid, None)).get("enabled"))
+        return wa_facts.settings_text(settings, bool(optin), enabled)
+    if name == "resend_my_brief":
+        if dry:
+            return "(eval) Would resend today's brief here."
+        user = await db.users.find_one({"_id": to_query_id(ident["user_id"]), "is_deleted": {"$ne": True}})
+        out = await _brief_resend(user, dm_chat, now, every_job=args.get("all_jobs") is True) \
+            if user else "error"
+        if out not in ("error", "failed"):
+            ctx["sent"].append("[brief]")
+        return f"Brief resend: {out}."
+    if name == "send_report":
+        jobs = ctx["jobs"]
+        said = [str(x) for x in args.get("jobs") or []]
+        if not jobs:
+            return "They have no jobs."
+        if not said or any(s.lower() == "all" for s in said):
+            picked = jobs
+        else:
+            picked = []
+            for s in said:
+                job, why = _dm_brain_find_job(ctx, s)
+                if not job:
+                    return why
+                picked.append(job)
+        start, end, label = project_report.period_for(str(args.get("period") or ""), now)
+        names = ", ".join(j["label"] for j in picked)
+        if dry:
+            ctx["sent"].append("[report]")
+            return f"(eval) Would build and send the report for {names}, {label}."
+        try:
+            doc = await build_project_report(ident["company_id"], [j["project"] for j in picked],
+                                             start, end, now=now, by=str(ident.get("user_id") or ""),
+                                             source="dm")
+        except ReportSourceUnavailable:
+            return REPORT_UNAVAILABLE
+        if not await _send_report_media(dm_chat, doc, caption=_report_message(doc)):
+            # The PDF could not be attached: the link / app text went instead.
+            await send_whatsapp_message(dm_chat, _report_message(doc, attached=False))
+            ctx["sent"].append("[report link]")
+            return (f"The PDF could NOT be attached; sent the report's summary with a link instead, for "
+                    f"{names}, {label}. Say so plainly -- don't say the PDF was attached.")
+        ctx["sent"].append("[report]")
+        return f"Sent the report PDF for {names}, {label}, with this summary on it:\n{_report_message(doc)}"
+    if name == "propose_change":
+        raw = {k: v for k, v in args.items() if v not in (None, "")}
+        p = dm_actions.clean(raw)
+        if p.get("action") in (None, "none", "unsupported", "undo"):
+            return "That isn't a change this chat can make."
+        p["lang"] = _dm_brain_lang(ctx["text"])
+        p["said"] = dm_actions.redact(ctx["text"])[:300]
+        if not _dm_is_approved(ident):
+            return "Their account isn't approved for changes yet."
+        return await _dm_brain_change(ctx, lambda: _dm_action_step(ident, dm_chat, p))
+    if name == "answer_pending_change":
+        pending = await _dm_state_get(DM_ACTION_STATE, dm_chat)
+        if not pending:
+            return "No change is waiting for an answer."
+        if str(pending.get("step") or "") in ("confirm", "type_address"):
+            return "That step is theirs: they confirm with their own yes (or type the address)."
+        return await _dm_brain_change(ctx, lambda: _dm_action_answer(
+            ident, dm_chat, str(args.get("answer") or ""), pending))
+    if name == "cancel_pending_change":
+        if dry:
+            ctx.setdefault("acted", set()).add("cancelled")
+            return "(eval) Would drop the pending change."
+        had = await _dm_drop_pending(dm_chat)
+        if had:
+            ctx.setdefault("acted", set()).add("cancelled")
+        return "Dropped." if had else "Nothing was pending."
+    if name == "set_sub_trade":
+        return await _dm_brain_set_trade(ctx, args)
+    if name == "undo_last_change":
+        last = await _dm_state_get(DM_ACTION_LAST, dm_chat)
+        if not last or not last.get("undo"):
+            return "Nothing was changed here in the last 10 minutes."
+        u = last["undo"]
+        what = f"{u.get('kind')}: {u.get('company') or u.get('name') or u.get('job') or ''}".strip()
+        if not dry:
+            await _dm_state_set(DM_ACTION_STATE, dm_chat, dm_actions.PENDING_SECONDS,
+                                p={"action": "undo", "lang": _dm_brain_lang(ctx["text"])},
+                                step="confirm", options=[], asked=f"Undo the last change ({what})?",
+                                misses=0)
+        return json.dumps({"status": "dry_run" if dry else "waiting_for_their_yes",
+                           "would_undo": what}, ensure_ascii=False)
+    if name == "remind_me":
+        if _upcoming_disabled():
+            return "Reminders are off."
+        try:
+            day = _Date.fromisoformat(str(args.get("date") or ""))
+        except ValueError:
+            return "The date must be YYYY-MM-DD."
+        what = str(args.get("what") or "Reminder")[:120]
+        if not dry:
+            await _dm_state_set(UPCOMING_REMIND_STATE, dm_chat, UPCOMING_REMIND_SECONDS,
+                                what=what, date=day.isoformat(), time=args.get("time"),
+                                asked=ctx["text"][:300])
+        return json.dumps({"status": "dry_run" if dry else "waiting_for_their_yes",
+                           "reminder": what, "morning_of": upcoming.day_label(day.isoformat())},
+                          ensure_ascii=False)
+    return f"Unknown tool {name}."
+
+
+#: Tools that send something: one of each (same arguments) per turn.
+_DM_BRAIN_SENDS = ("send_sheet", "send_report", "resend_my_brief")
+
+
+def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
+    """Add one model call's tokens, cost (DeepInfra's estimated_cost, when it
+    sends one) and time to the turn's totals."""
+    u = getattr(resp, "usage", None)
+    usage["calls"] = usage.get("calls", 0) + 1
+    usage["seconds"] = round(usage.get("seconds", 0.0) + (_time.monotonic() - started), 2)
+    usage.setdefault("models", [])
+    if model not in usage["models"]:
+        usage["models"].append(model)
+    if u is None:
+        return
+    usage["input"] = usage.get("input", 0) + int(getattr(u, "prompt_tokens", 0) or 0)
+    usage["output"] = usage.get("output", 0) + int(getattr(u, "completion_tokens", 0) or 0)
+    details = getattr(u, "completion_tokens_details", None)
+    reasoning = getattr(details, "reasoning_tokens", None) if details is not None else None
+    if reasoning:
+        usage["reasoning"] = usage.get("reasoning", 0) + int(reasoning)
+    cost = getattr(u, "estimated_cost", None)
+    if cost is None and isinstance(getattr(u, "model_extra", None), dict):
+        cost = u.model_extra.get("estimated_cost")
+    if cost is not None:
+        try:
+            usage["cost_usd"] = round(usage.get("cost_usd", 0.0) + float(cost), 6)
+        except (TypeError, ValueError):
+            pass
+
+
+async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[str] = None) -> dict:
+    """The model, its tool calls (one after another, at most
+    dm_brain.MAX_TOOL_CALLS a turn), and the number check, until an answer.
+    Every retry (cut, evidence, claims, "you", deflect) is on the same model.
+    {reply, trace, rounds, retries, unverified, stop, usage}."""
+    client = _dm_brain_client()
+    tools = _dm_brain_tools()
+    use = model or _DM_MODEL.get() or dm_brain.MODEL
+    msgs = [{"role": "system", "content": system}] + [dict(m) for m in messages]
+    trace: List[dict] = []
+    sources = [system] + [m["content"] for m in messages if isinstance(m.get("content"), str)]
+    retries, deflects, calls, last_text, missing = 0, 0, 0, "", []
+    cuts, claimed, yous = 0, 0, 0
+    done_sends: set = set()
+    budget = dm_brain.MAX_TOKENS
+    usage: Dict[str, Any] = {"input": 0, "output": 0, "calls": 0, "seconds": 0.0, "models": []}
+
+    def acted() -> set:
+        # A plans answer's picture goes right after the words (_dm_plan_shots),
+        # so "here's the sheet" is true of it -- but only of the picture: a
+        # "sent the report" with no send this turn is still caught.
+        picture = ctx.get("plan_image_due") and dm_brain.sends_only_a_picture(last_text)
+        return set(ctx.get("acted") or set()) | (
+            {"sent"} if ctx.get("sent") or picture else set())
+
+    def fix(note: str) -> None:
+        msgs.append({"role": "assistant", "content": last_text or "(nothing)"})
+        msgs.append({"role": "user", "content": "[Levelog check, not from them] " + note})
+
+    def done(**kw):
+        return {"trace": trace, "retries": retries, "deflect_retries": deflects, "usage": usage,
+                "model": use, "tools_tried": [
+                    f"{t['tool']}({json.dumps(t.get('args') or {}, ensure_ascii=False)})" for t in trace],
+                **kw}
+    for rounds in range(1, dm_brain.MAX_ROUNDS + 1):
+        can_call = calls < dm_brain.MAX_TOOL_CALLS
+        t0 = _time.monotonic()
+        resp = await client.chat.completions.create(
+            model=use, messages=msgs, tools=tools, tool_choice="auto" if can_call else "none",
+            temperature=dm_brain.TEMPERATURE, max_tokens=budget,
+            **({"extra_body": {"reasoning_effort": dm_brain.REASONING_EFFORT}}
+               if dm_brain.REASONING_EFFORT else {}))
+        _dm_usage(usage, resp, use, t0)
+        choice = resp.choices[0]
+        m = choice.message
+        asked = list(getattr(m, "tool_calls", None) or []) if can_call else []
+        if asked:
+            # SEQUENTIAL: each call runs after the one before it; past the cap
+            # the rest are not run (and not shown as asked).
+            asked = asked[:dm_brain.MAX_TOOL_CALLS - calls]
+            msgs.append({"role": "assistant", "content": m.content or "", "tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name, "arguments": tc.function.arguments or "{}"}}
+                for tc in asked]})
+            for tc in asked:
+                calls += 1
+                name = tc.function.name
+                if name in _DM_BRAIN_SENDS:
+                    # The same send twice in one turn goes out once.
+                    key = (name, " ".join(str(tc.function.arguments or "").lower().split()))
+                    if key in done_sends:
+                        out = "Already done in this turn -- not sent again."
+                        trace.append({"tool": name, "args": {}, "result": out, "duplicate": True})
+                        msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out})
+                        continue
+                    done_sends.add(key)
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                    if not isinstance(args, dict):
+                        raise ValueError("not an object")
+                except ValueError:
+                    args, out, err = {}, "The arguments were not a JSON object. Call it again.", True
+                else:
+                    try:
+                        out, err = await _dm_brain_exec(ctx, name, dict(args)), False
+                    except Exception as e:
+                        logger.warning(f"[dm-brain] tool {name} failed: {type(e).__name__}: {e}")
+                        out, err = f"The tool failed ({type(e).__name__}). Say so plainly if it matters.", True
+                out = str(out)[:DM_BRAIN_TOOL_CHARS]
+                trace.append({"tool": name, "args": args, "result": out[:3000], **({"error": True} if err else {})})
+                sources.append(out)
+                msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out})
+            continue
+        if choice.finish_reason == "content_filter":
+            return done(reply=dm_brain.FAILED_TEXT, rounds=rounds, unverified=[], stop="content_filter")
+        last_text = dm_brain.final_text(m.content)
+        if dm_brain.truncated(last_text, choice.finish_reason, bool(trace)):
+            # NEVER A CUT REPLY ("*Ark", 26 s): once more with a bigger budget.
+            if cuts < 1:
+                cuts += 1
+                budget = dm_brain.RETRY_MAX_TOKENS
+                logger.info(f"[dm-brain] cut answer ({choice.finish_reason}, {len(last_text)} chars): retried")
+                fix(dm_brain.cut_note())
+                continue
+            if last_text and choice.finish_reason != "length" and not dm_brain._bold_unbalanced(last_text):
+                pass                                     # short, but whole: it goes
+            else:
+                return done(reply=dm_brain.TRUNCATED_TEXT, rounds=rounds, unverified=[],
+                            stop="truncated", draft=last_text)
+        missing = dm_brain.unverified(last_text, sources)
+        if missing and retries < dm_brain.VERIFY_RETRIES:
+            # The one retry, on the same model.
+            retries += 1
+            logger.info(f"[dm-brain] re-asked: unverified {missing[:6]}")
+            fix(dm_brain.verify_note(missing))
+            continue
+        if missing:
+            return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=missing,
+                        stop="unverified", draft=last_text)
+        unsupported = [c for c in dm_brain.action_claims(last_text) if c not in acted()]
+        if unsupported:
+            # "Sent" / "saved" / "cancelled" / "done" only when a tool did it.
+            if claimed < 1:
+                claimed += 1
+                logger.info(f"[dm-brain] re-asked: claimed {unsupported} with no tool doing it")
+                fix(dm_brain.claim_note(unsupported, [t["tool"] for t in trace]))
+                continue
+            return done(reply=dm_brain.ACTION_UNVERIFIED_TEXT, rounds=rounds, unverified=[],
+                        stop="unsupported_claim", draft=last_text)
+        if dm_brain.says_from_you(last_text) and not any(dm_brain.SELF_MARK in str(x) for x in sources[1:]):
+            # "From you" only when a record's sender is the person asking.
+            if yous < 1:
+                yous += 1
+                logger.info("[dm-brain] re-asked: said 'from you' with no record marked theirs")
+                fix(dm_brain.you_note())
+                continue
+            return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=["from you"],
+                        stop="unverified_sender", draft=last_text)
+        if dm_brain.cant_answer(last_text) and deflects < dm_brain.DEFLECT_RETRIES:
+            # Never "check with the site manager" / "not sure" before the
+            # tools (Tue 12:28 PM): asked again, with what it tried.
+            deflects += 1
+            logger.info(f"[dm-brain] re-asked: deflected after {[t['tool'] for t in trace]}")
+            fix(dm_brain.deflect_note([t["tool"] for t in trace]))
+            continue
+        return done(reply=last_text, rounds=rounds, unverified=[], stop=choice.finish_reason,
+                    cant_answer=dm_brain.cant_answer(last_text), cut_retries=cuts,
+                    claim_retries=claimed, you_retries=yous)
+    return done(reply=last_text or dm_brain.FAILED_TEXT, rounds=dm_brain.MAX_ROUNDS,
+                unverified=missing, stop="max_rounds")
+
+
+async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: list,
+                           now: datetime, dry_run: bool = False,
+                           flows: Optional[List[str]] = None,
+                           active: Optional[str] = None) -> dict:
+    """Build the context and run the brain for one message (the live path
+    and the eval). {reply, trace, ...} plus `sent` (what tools sent)."""
+    jobs = await _dm_jobs(ident) if ident.get("projects") else []
+    by_id = {j["id"]: j for j in jobs}
+    if active is None and not dry_run:
+        cur = await _dm_state_get("dm_job", dm_chat)
+        active = str(cur.get("project_id")) if cur else None
+    user = ident.get("user") or {}
+    company = user.get("company_name") or ""
+    if not company:
+        try:
+            co = await db.companies.find_one({"_id": to_query_id(ident["company_id"])}, {"name": 1})
+            company = (co or {}).get("name") or ""
+        except Exception:
+            company = ""
+    context = dm_brain.context_block(
+        user={"name": user.get("name") or user.get("full_name") or "",
+              "role": "admin" if ident.get("role") == "admin" else "project manager",
+              "company": company},
+        jobs=[{"id": j["id"], "label": j["label"], "aliases": j.get("aliases") or []} for j in jobs],
+        active_job=by_id.get(active) if active else None,
+        open_flows=flows if flows is not None else await _dm_brain_flows(ident, dm_chat),
+        now_label=datefmt.strftime(_memory_ny(now), "%a %b %-d %Y, %-I:%M %p"))
+    system = dm_brain.SYSTEM_PROMPT + "\n\n" + context
+    messages = dm_brain.turn_messages(dm_brain.history_messages(history, now), text)
+    ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
+           "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
+           "used_job": None}
+    _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phones": [
+        p for p in ("" if str(dm_chat).endswith("@lid") else wa_dm.phone_digits(dm_chat),
+                    wa_dm.phone_digits(str((ident.get("user") or {}).get("phone") or ""))) if p]})
+    try:
+        out = await _dm_brain_run(ctx, messages, system)
+    except Exception as e:
+        logger.error(f"[dm-brain] model failed: {type(e).__name__}: {e}")
+        out = {"reply": dm_brain.FAILED_TEXT, "trace": [], "rounds": 0, "retries": 0,
+               "unverified": [], "stop": f"error:{type(e).__name__}"}
+    if out.get("reply"):
+        out["reply"] = dm_brain.redact_phones(out["reply"])
+    # Where on the sheets the answer came from: sent after the words
+    # (_dm_brain_reply); the eval only records it.
+    out["plan_shots"] = _dm_plan_shots(ctx, out)
+    if dry_run:
+        ctx["sent"] += [f"[sheet {s['label']}]" for s in out["plan_shots"]]
+    out["sent"] = ctx["sent"]
+    out["used_job"] = ctx["used_job"]
+    return out
+
+
+async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
+                          heard: Optional[str] = None, quoted: Optional[dict] = None) -> None:
+    """Answer one DM with the brain (flag on). Exact commands to an open
+    flow are answered in code first; everything else is the model's."""
+    text = (text or "").strip()
+    if not text:
+        return
+    quoted = quoted or {}
+    qbody = str(quoted.get("body") or "").strip()
+    qtype = str(quoted.get("type") or "").strip()
+    if not qbody and wa_assistant.media_word(qtype):
+        qbody = wa_assistant.NO_CAPTION
+    now = datetime.now(timezone.utc)
+    history = await _dm_brain_history(dm_chat, now)
+    await _dm_store_inbound(ident, dm_chat, text, message_id)
+    lang = dm_actions.reply_lang(text)
+
+    # ── EXACT COMMANDS to an open flow: the person's own yes / no.
+    pending = await _dm_state_get(DM_ACTION_STATE, dm_chat)
+    if pending:
+        step = str(pending.get("step") or "")
+        if step == "type_address":
+            # Live punch sends: only the job's address typed back turns it on.
+            await _dm_action_answer(ident, dm_chat, text, pending)
+            return
+        if step == "confirm" and dm_brain.is_yes(text):
+            await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+            p = dict(pending.get("p") or {})
+            if p.get("action") == "undo":
+                await _dm_action_undo(ident, dm_chat, p.get("lang") or lang)
+            else:
+                await _dm_action_do(ident, dm_chat, p)
+            await _dm_log_answer(ident, None, text, f"[confirmed {p.get('action')}]", "brain_confirm")
+            return
+        if dm_brain.is_no(text):
+            await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+            await _dm_say(dm_chat, lang, "cancelled")
+            await _dm_log_answer(ident, None, text, "[cancelled]", "brain_confirm")
+            return
+    remind = await _dm_state_get(UPCOMING_REMIND_STATE, dm_chat)
+    if remind and (upcoming.is_yes(text) or upcoming.is_no(text)):
+        await _upcoming_dm_turn(ident, dm_chat, text, now)
+        return
+    # "brief all" (the brief's "+N more jobs" line): the rest of today's
+    # jobs, in code -- the same resend the resend_my_brief tool calls.
+    if not qbody and await _dm_user_level_turn(ident, dm_chat, text, now, topics=("brief_all",)):
+        await _dm_log_answer(ident, None, text, "[brief all]", "brain_command")
+        return
+
+    question = wa_assistant.with_quoted(text, qbody, bool(quoted.get("from_bot")), qtype) \
+        if (qbody or wa_assistant.media_word(qtype)) else text
+    if heard:
+        question = f"[voice note] {question}"
+
+    t_start = _time.monotonic()
+    task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history, now=now))
+    # "typing…" in their chat while the brain works, sent again every 8 s.
+    thinking = asyncio.Event()
+    typing = asyncio.ensure_future(_dm_typing_while(dm_chat, thinking))
+    eyes = False
+    try:
+        try:
+            out = await asyncio.wait_for(asyncio.shield(task), wa_react.WORKING_AFTER_SECONDS)
+        except asyncio.TimeoutError:
+            eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
+            out = await task
+    finally:
+        thinking.set()
+        try:
+            await asyncio.wait_for(typing, 10)
+        except Exception:
+            pass
+    reply = out.get("reply")
+    # Which path answered, provably: one line per brain answer (no phone, no words).
+    logger.info(f"[dm-brain] answered company={ident.get('company_id') or '?'} "
+                f"tools={len(out.get('trace') or [])} rounds={out.get('rounds') or 0} "
+                f"ms={int((_time.monotonic() - t_start) * 1000)} stop={out.get('stop') or '?'}")
+    if out.get("used_job"):
+        await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
+                            project_id=out["used_job"])
+    await _dm_log_answer(
+        ident, out.get("used_job"), question, reply or " | ".join(out.get("sent") or []), "brain",
+        tool_data=out.get("trace"), model=out.get("model") or dm_brain.MODEL, rounds=out.get("rounds"),
+        usage=out.get("usage"),
+        verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
+        stop=out.get("stop"), deflect_retries=out.get("deflect_retries") or None,
+        tools_tried=_dm_redact(out.get("tools_tried") or []),
+        **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
+    if out.get("cant_answer"):
+        # Every "can't answer" is logged with the tools it tried (rule 3).
+        logger.info(f"[dm-brain] cant_answer tools={_dm_redact(out.get('tools_tried') or [])}")
+    if heard and message_id and out.get("used_job"):
+        try:
+            await db.whatsapp_voice_events.update_one(
+                {"message_id_serialized": message_id, "where": "dm"},
+                {"$set": {"project_id": str(out["used_job"])}})
+        except Exception as e:
+            logger.warning(f"[voice] dm job stamp failed: {type(e).__name__}")
+    if reply:
+        if heard:
+            reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
+        await send_whatsapp_message(dm_chat, reply)
+        # The words first; then where on the sheet they came from.
+        await _dm_send_plan_shots(dm_chat, out.get("plan_shots") or [])
     elif eyes:
         await _react_to_message(dm_chat, message_id, "")
 
@@ -56828,6 +61944,10 @@ async def ensure_whatsapp_phase1_indexes():
         db["scheduler_leases"], keys=[("expires_at", 1)],
         name="scheduler_leases_ttl", expireAfterSeconds=0)
     await _ensure_index_resilient(
+        db[RATE_WINDOWS], keys=[("expires_at", 1)], name="rate_limit_hits_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[RATE_WINDOWS], keys=[("key", 1), ("at", 1)], name="rate_limit_hits_key_at")
+    await _ensure_index_resilient(
         db[WA_DM_WINDOWS], keys=[("expires_at", 1)],
         name="whatsapp_dm_reply_windows_ttl", expireAfterSeconds=0)
     await _ensure_index_resilient(
@@ -56836,6 +61956,12 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db[WA_LEDGER], keys=[("user_id", 1), ("created_at", -1)],
         name="whatsapp_notification_ledger_by_user")
+    await _ensure_index_resilient(
+        db[wa_facts.BRIEF_LOG], keys=[("expires_at", 1)],
+        name="brief_log_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[SEND_FAILURES], keys=[("expires_at", 1)],
+        name="outbound_failures_ttl", expireAfterSeconds=0)
     await _ensure_index_resilient(
         db[WA_OPTINS], keys=[("phone", 1)],
         name="whatsapp_optins_phone_unique", unique=True)
@@ -57613,9 +62739,86 @@ _GLYPH_PASS_RUNNING: set = set()
 _DOOR_SCHEDULE_TEXT = re.compile(r"DOOR\s+SCHEDULE", re.I)
 
 
+def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
+                       live: set) -> List[Tuple[str, List[dict]]]:
+    """[(drawing track, its current index rows)], the filed track first.
+
+    NEWEST PAGE PER TRACK; SUPERSESSION ONLY WITHIN A TRACK (ruling
+    2026-10-24). The index supersedes across every set by date, so on 588
+    Boyland the Owner's set (6/9/26, the owner's post-CO additions) hid the
+    filed AR set's A-101 to A-104 - and the pass placed floors 2 to the
+    mezzanine against the post-CO set only. Here each track's pages are
+    superseded among themselves (_supersession_winners, the index's own
+    rule), so the filed track keeps its own plans.
+
+    A mechanical sheet belongs to no track - the filed track holds it. A
+    non-filed track is its own architectural plans and the filed track's
+    mechanical plans they pair with (plan_derive.PLAN_SHEET, by number), so
+    each mechanical symbol is placed once per track that has a plan for its
+    floor, and a floor the track does not redraw is not run twice."""
+    from lib import plan_derive as _derive
+
+    track_of = {fid: (f.get("drawing_track") or "filed") for fid, f in files.items()}
+    by_track: Dict[str, List[dict]] = {}
+    for p in raw:
+        fid = str(p.get("file_id"))
+        if fid in live:
+            by_track.setdefault(track_of.get(fid, "filed"), []).append(p)
+    current: Dict[str, List[dict]] = {}
+    for t, rows in by_track.items():
+        fids = {str(r.get("file_id")) for r in rows}
+        losers = _supersession_winners(
+            rows, [dict(files[f], _id=f) for f in fids if f in files])
+        current[t] = [r for r in rows if r["_id"] not in losers]
+
+    def plan(p, letter):
+        m = _derive.PLAN_SHEET.match(str(p.get("sheet_number") or "").strip().upper())
+        return m.group(2) if m and m.group(1) == letter else None
+
+    out = [("filed", current.get("filed", []))]
+    for t in sorted(k for k in current if k != "filed"):
+        seqs = {plan(p, "A") for p in current[t]} - {None}
+        mech = [p for p in current.get("filed", []) if plan(p, "M") in seqs]
+        out.append((t, current[t] + mech))
+    return out
+
+
+async def _glyph_pages(pid: str) -> Tuple[List[Tuple[str, List[dict]]], Dict[str, dict]]:
+    """Each track's current index rows (_glyph_track_pages), and the files."""
+    live = set(await _live_plan_file_ids(pid) or [])
+    raw = await db.document_page_index.find(
+        {"project_id": pid},
+        {"file_id": 1, "file_hash": 1, "file_name": 1, "page_number": 1,
+         "sheet_number": 1, "sheet_title": 1, "discipline": 1,
+         "company_id": 1, "superseded_by": 1, "raw_text": 1,
+         "revision_date": 1, "sheet_position": 1},
+    ).to_list(5000)
+    files = {str(f["_id"]): f for f in await db.project_files.find(
+        {"project_id": pid, "is_deleted": {"$ne": True}},
+        {"r2_key": 1, "name": 1, "created_at": 1, "drawing_track": 1,
+         "drawing_track_label": 1}).to_list(2000)}
+    return _glyph_track_pages(raw, files, live), files
+
+
+async def _glyph_page_ids(pid: str) -> List[str]:
+    """The glyph census's scope: the index's current pages, and every page
+    some track's pass reads (the filed track's plans are superseded in the
+    index by the Owner's set). A blocking refusal cites a mechanical sheet,
+    which the index keeps current, so a failed track read narrows the scope
+    the fetch and the count share - it is logged, not raised."""
+    ids = set(await _current_record_page_ids(pid))
+    try:
+        tracks, _files = await _glyph_pages(pid)
+        ids |= {str(p["_id"]) for _t, ps in tracks for p in ps}
+    except Exception as e:
+        logger.warning("glyph track pages unavailable for %s: %r", pid, e)
+    return sorted(ids)
+
+
 async def _plan_glyph_pass(project_id: str) -> dict:
     """Run the equipment-placement pass over the project's current sheets
-    and write its rows (lib.plan_glyph_pass, lib.plan_emit).
+    and write its rows (lib.plan_glyph_pass, lib.plan_emit) - once per
+    drawing track (_glyph_track_pages), each mechanical sheet swept once.
 
     NOT CALLED BY THE INDEXER. It runs when an operator starts it
     (POST .../plan-glyphs/run): its rows change what the count-answer gate
@@ -57625,31 +62828,34 @@ async def _plan_glyph_pass(project_id: str) -> dict:
     from lib.plan_page import PlanPage
 
     pid = str(project_id)
-    live = set(await _live_plan_file_ids(pid) or [])
-    raw = await db.document_page_index.find(
-        {"project_id": pid},
-        {"file_id": 1, "file_hash": 1, "file_name": 1, "page_number": 1,
-         "sheet_number": 1, "sheet_title": 1, "discipline": 1,
-         "company_id": 1, "superseded_by": 1, "raw_text": 1},
-    ).to_list(5000)
-    pages, door_pages = [], []
-    for p in raw:
-        if p.get("file_id") not in live or p.get("superseded_by") in live:
-            continue
-        row = {"project_id": pid, "company_id": p.get("company_id"),
-               "file_id": p.get("file_id"), "file_hash": p.get("file_hash"),
-               "file_name": p.get("file_name"), "page_id": str(p["_id"]),
-               "page_number": p.get("page_number"),
-               "sheet_number": p.get("sheet_number"),
-               "sheet_title": p.get("sheet_title"),
-               "discipline": p.get("discipline")}
-        pages.append(row)
-        if _DOOR_SCHEDULE_TEXT.search(p.get("raw_text") or ""):
-            door_pages.append(row)
-    current_ids = [r["page_id"] for r in pages]
+    tracks, files = await _glyph_pages(pid)
+    by_track: List[Tuple[str, List[dict]]] = []
+    door_pages, seen_doors, current_ids = [], set(), set()
+    for track, rows_ in tracks:
+        pages = []
+        for p in rows_:
+            row = {"project_id": pid, "company_id": p.get("company_id"),
+                   "file_id": p.get("file_id"), "file_hash": p.get("file_hash"),
+                   "file_name": p.get("file_name"), "page_id": str(p["_id"]),
+                   "page_number": p.get("page_number"),
+                   "sheet_number": p.get("sheet_number"),
+                   "sheet_title": p.get("sheet_title"),
+                   "discipline": p.get("discipline")}
+            # THE FILE'S TRACK, ON EVERY PAGE (DRAWING_TRACKS): the rows placed
+            # against this page carry it, and the render names a post-CO set
+            frec = files.get(str(p.get("file_id"))) or {}
+            row["drawing_track"] = frec.get("drawing_track") or "filed"
+            row["drawing_track_label"] = frec.get("drawing_track_label")
+            pages.append(row)
+            current_ids.add(row["page_id"])
+            if (_DOOR_SCHEDULE_TEXT.search(p.get("raw_text") or "")
+                    and row["page_id"] not in seen_doors):
+                seen_doors.add(row["page_id"])
+                door_pages.append(row)
+        by_track.append((track, pages))
     sched = await db[PLAN_RECORDS].find(
         {"project_id": pid, "record_type": "schedule",
-         "page_id": {"$in": current_ids}, "sheet_number": {"$regex": "^M-"}},
+         "page_id": {"$in": sorted(current_ids)}, "sheet_number": {"$regex": "^M-"}},
         {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
          "payload.rows": 1},
     ).to_list(2000)
@@ -57659,9 +62865,6 @@ async def _plan_glyph_pass(project_id: str) -> dict:
                   "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
                  for s in sched]
 
-    files = {str(f["_id"]): f for f in await db.project_files.find(
-        {"project_id": pid, "is_deleted": {"$ne": True}},
-        {"r2_key": 1, "name": 1}).to_list(2000)}
     import tempfile as _tf
     with _tf.TemporaryDirectory(prefix="glyphpass-") as tmp:
         paths: Dict[str, str] = {}
@@ -57679,12 +62882,21 @@ async def _plan_glyph_pass(project_id: str) -> dict:
                 paths[fid] = path
             return PlanPage(paths[fid], int(page["page_number"]))
 
-        out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
-                                      door_pages)
-    written = await _write_glyph_records(pid, out["rows"])
-    out["summary"]["written"] = written
-    logger.info("plan glyph pass %s: %s", pid, out["summary"])
-    return out["summary"]
+        sweeps: Dict[Any, Any] = {}
+        rows: List[dict] = []
+        summary: Dict[str, Any] = {"tracks": {}}
+        for track, pages in by_track:
+            out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
+                                          door_pages, track=track, sweeps=sweeps)
+            rows += out["rows"]
+            summary["tracks"][track] = out["summary"]
+    # one numbering across the tracks: a row is (page_id, ordinal), and every
+    # track's rows of a mechanical sheet cite that sheet's page
+    for i, r in enumerate(rows):
+        r["ordinal"] = i
+    summary["written"] = await _write_glyph_records(pid, rows)
+    logger.info("plan glyph pass %s: %s", pid, summary)
+    return summary
 
 
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
@@ -59113,6 +64325,238 @@ async def _plan_index_worker() -> None:
             await asyncio.sleep(PLAN_INDEX_IDLE_SECONDS)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# SHEET TILES: the deep-zoom viewer's backend (lib/sheet_pipeline.py)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# A PDF is compiled once into a WebP tile pyramid and a per-page word/callout
+# index; the viewer then draws tiles and never parses a PDF. Nothing here touches
+# the plan-index pipeline: it has its own queue (`sheet_tile_jobs`) and worker.
+#
+# AUTH IS THE HEADER AND ONLY THE HEADER. These routes are for the viewer's
+# assets, which it fetches with `Authorization: Bearer`; a JWT in a URL ends up
+# in logs, history and referers. `get_current_user_header_only` refuses a
+# request that carries only `?token=`.
+
+SHEET_TILES_OFF = os.environ.get("SHEET_TILES_OFF", "").strip().lower() in ("1", "true", "yes")
+SHEET_TILE_IDLE_SECONDS = 5
+_SHEET_TILE_WORKER_TASK = None
+
+
+async def get_current_user_header_only(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    response: Response = None,
+):
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return await get_current_user(request, credentials, None, response)
+
+
+async def _sheet_put_object(key: str, data: bytes, content_type: str, content_encoding: Optional[str]) -> None:
+    if not _r2_client or not R2_BUCKET_NAME:
+        raise RuntimeError("R2 is not configured")
+    kwargs = {"Bucket": R2_BUCKET_NAME, "Key": key, "Body": data, "ContentType": content_type}
+    if content_encoding:
+        kwargs["ContentEncoding"] = content_encoding
+    await asyncio.to_thread(_r2_client.put_object, **kwargs)
+
+
+async def _sheet_fetch_pdf(file_rec: dict, dest: str) -> None:
+    """Download the source PDF to `dest` on disk (never held whole in memory)."""
+    if not _r2_client or not R2_BUCKET_NAME:
+        raise RuntimeError("R2 is not configured")
+    await asyncio.to_thread(_r2_client.download_file, R2_BUCKET_NAME, file_rec["r2_key"], dest)
+
+
+async def _sheet_fetch_object(key: str) -> Optional[bytes]:
+    data, _why = await asyncio.to_thread(_r2_fetch, key)
+    return data
+
+
+async def _sheet_delete_keys(keys: list) -> int:
+    return await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, keys)
+
+
+def _sheet_ctx() -> "sheet_pipeline.Ctx":
+    return sheet_pipeline.Ctx(db=db, put_object=_sheet_put_object, fetch_pdf=_sheet_fetch_pdf,
+                              delete_keys=_sheet_delete_keys, logger=logger)
+
+
+async def _enqueue_sheet_tiles(project_id: str, company_id: str, file_record: dict, *,
+                               source: str, force: bool = False) -> str:
+    if SHEET_TILES_OFF or not _r2_client:
+        return "off"
+    return await sheet_pipeline.enqueue(db, project_id, company_id, file_record, source=source,
+                                        to_query_id=to_query_id, skip=is_generated_report, force=force)
+
+
+async def _sheet_tile_worker() -> None:
+    import socket as _socket
+    import uuid as _uuid
+    worker = f"{_socket.gethostname()}:{os.getpid()}:{_uuid.uuid4().hex[:6]}"
+    logger.warning(f"Sheet tile worker started ({worker})")
+    while True:
+        try:
+            if SHEET_TILES_OFF or not _r2_client:
+                await asyncio.sleep(60)
+                continue
+            job = await sheet_pipeline.claim(db, worker)
+            if not job:
+                await asyncio.sleep(SHEET_TILE_IDLE_SECONDS)
+                continue
+            logger.info(f"Sheet tiles: claimed {job.get('file_name')} (attempt {job.get('attempts')})")
+            status = await sheet_pipeline.run_job(_sheet_ctx(), job, worker, to_query_id)
+            logger.info(f"Sheet tiles: {job.get('file_name')} -> {status}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Sheet tile worker error: {e!r}")
+            await asyncio.sleep(SHEET_TILE_IDLE_SECONDS)
+
+
+async def _sheet_tiles_sweep_job() -> None:
+    """Queue PDFs that have no tiles (uploaded before this existed, or whose
+    enqueue was lost). A few per run, so a backlog drains instead of flooding."""
+    if SHEET_TILES_OFF or not _r2_client:
+        return
+    try:
+        rows = await sheet_pipeline.files_needing_tiles(db, limit=40, skip=is_generated_report, to_query_id=to_query_id)
+        for r in rows:
+            await _enqueue_sheet_tiles(str(r["project_id"]), str(r.get("company_id") or ""), r, source="sweep")
+    except Exception as e:
+        logger.error(f"[sheet-tiles] sweep failed: {type(e).__name__}: {e}")
+
+
+_SHEET_DECISIONS = sheet_serve.DecisionCache()
+_SHEET_BYTES = sheet_serve.ByteLru()
+
+
+async def _sheet_file_or_403(project_id: str, file_id: str, current_user: dict, *, remember: bool = False) -> dict:
+    """The same gate as `stream_project_file`, with the header-only user.
+
+    `remember=True` (tile and preview reads only) reuses a passing decision for a few
+    seconds per (user, project, file): a deep zoom is dozens of requests and each would
+    otherwise cost three database reads. Nothing that writes, and not the manifest or
+    the index, ever uses it."""
+    key = (str(current_user.get("id") or current_user.get("_id") or ""), project_id, file_id)
+    if remember and key[0]:
+        hit = _SHEET_DECISIONS.get(key)
+        if hit is not None:
+            return hit
+    rec = await _sheet_file_checked(project_id, file_id, current_user)
+    if remember and key[0]:
+        _SHEET_DECISIONS.put(key, rec)
+    return rec
+
+
+async def _sheet_file_checked(project_id: str, file_id: str, current_user: dict) -> dict:
+    await _assert_project_access(project_id, current_user)
+    try:
+        rec = await db.project_files.find_one({"_id": ObjectId(file_id), "project_id": project_id})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    if not rec or rec.get("is_deleted"):
+        raise HTTPException(status_code=404, detail="File not found")
+    _same_company_or_403(rec, current_user)
+    if _is_site_device(current_user):
+        _project = await db.projects.find_one({"_id": to_query_id(project_id)})
+        if not _site_device_may_retrieve(_project or {}, current_user, rec.get("dropbox_path") or ""):
+            raise HTTPException(status_code=403, detail="Access denied to this file")
+    return rec
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets")
+async def get_sheet_manifest(project_id: str, file_id: str, current_user=Depends(get_current_user_header_only)):
+    """The viewer's manifest. A PDF with no tiles yet is queued here (so opening
+    a drawing starts its compile) and answers status "queued"; the client keeps
+    the PDF viewer until the status is "ready"."""
+    rec = await _sheet_file_or_403(project_id, file_id, current_user)
+    if SHEET_TILES_OFF:
+        return {"status": "off", "pages": []}
+    if (rec.get("tiles") or {}).get("status") in (None, "failed") or \
+            (rec.get("tiles") or {}).get("build") != sheet_pipeline.build_id(rec):
+        outcome = await _enqueue_sheet_tiles(project_id, str(rec.get("company_id") or ""), rec, source="open")
+        if outcome in ("queued", "already"):
+            rec = await db.project_files.find_one({"_id": rec["_id"]}) or rec
+        elif outcome == "skipped":
+            return {"status": "skipped", "pages": [], "build": None}
+    return await sheet_pipeline.manifest_for(db, project_id, rec)
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets/{page}/index")
+async def get_sheet_index(project_id: str, file_id: str, page: int, b: str,
+                          current_user=Depends(get_current_user_header_only)):
+    rec = await _sheet_file_or_403(project_id, file_id, current_user)
+    if (rec.get("tiles") or {}).get("build") != b:
+        raise HTTPException(status_code=404, detail="Stale build")
+    index = await sheet_pipeline.index_for(db, _sheet_fetch_object, project_id, rec, page)
+    if index is None:
+        raise HTTPException(status_code=404, detail="No index for this page")
+    return JSONResponse(index, headers={"Cache-Control": "private, max-age=300"})
+
+
+async def _sheet_image(request: Request, project_id: str, file_id: str, page: int, b: str, key_fn, etag_parts,
+                       current_user) -> Response:
+    """Serve one immutable tile or preview.
+
+    NOT A PROXY ON EVERY REQUEST. The object is named by its build, so it never
+    changes: the client keeps it for a year (immutable) and revalidates with
+    If-None-Match, which is answered 304 here, after the access check and before R2 is
+    touched. A miss is served from a byte-bounded in-process LRU before R2 is asked.
+    (A redirect to a presigned R2 URL was considered and not used: it needs R2 CORS for
+    the web viewer and sends the app off our auth for the one request that matters.)"""
+    rec = await _sheet_file_or_403(project_id, file_id, current_user, remember=True)
+    tiles = rec.get("tiles") or {}
+    if tiles.get("build") != b or tiles.get("status") not in ("ready", "complete"):
+        raise HTTPException(status_code=404, detail="Stale build")
+    headers = {"Cache-Control": sheet_serve.IMMUTABLE}
+    etag = sheet_serve.etag_for(b, file_id, *etag_parts)
+    headers["ETag"] = etag
+    if sheet_serve.matches_etag(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    key = key_fn(project_id, file_id, b)
+    data = _SHEET_BYTES.get(key)
+    if data is None:
+        data = await _sheet_fetch_object(key)
+        if not data:
+            raise HTTPException(status_code=404, detail="No such tile")
+        _SHEET_BYTES.put(key, data)
+    return Response(content=data, media_type="image/webp", headers=headers)
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets/{page}/tiles/{z}/{x}/{y}")
+async def get_sheet_tile(request: Request, project_id: str, file_id: str, page: int, z: int, x: int, y: int, b: str,
+                         current_user=Depends(get_current_user_header_only)):
+    if not (0 <= z <= sheet_tiles.MAX_Z and x >= 0 and y >= 0 and page >= 1):
+        raise HTTPException(status_code=404, detail="No such tile")
+    return await _sheet_image(request, project_id, file_id, page, b,
+                              lambda p, f, bb: sheet_pipeline.tile_key(p, f, bb, page, z, x, y),
+                              (page, z, x, y), current_user)
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets/{page}/preview")
+async def get_sheet_preview(request: Request, project_id: str, file_id: str, page: int, b: str,
+                            current_user=Depends(get_current_user_header_only)):
+    if page < 1:
+        raise HTTPException(status_code=404, detail="No such page")
+    return await _sheet_image(request, project_id, file_id, page, b,
+                              lambda p, f, bb: sheet_pipeline.preview_key(p, f, bb, page),
+                              (page, "preview"), current_user)
+
+
+@api_router.post("/projects/{project_id}/files/{file_id}/sheets/compile")
+async def compile_sheet_tiles(project_id: str, file_id: str, force: bool = False,
+                              current_user=Depends(get_current_user_header_only)):
+    """Queue (or, with force, rebuild) a file's tiles. Owners and admins."""
+    if current_user.get("role") not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only company owners or admins can rebuild tiles")
+    await _assert_project_access(project_id, current_user)
+    rec = await _sheet_file_or_403(project_id, file_id, current_user)
+    outcome = await _enqueue_sheet_tiles(project_id, str(rec.get("company_id") or ""), rec, source="manual", force=force)
+    return {"outcome": outcome}
+
+
 async def _index_pdf_file(project_id: str, company_id: str, file_record: dict,
                           job: Optional[dict] = None) -> dict:
     """Download a PDF from R2 and index each page into document_page_index.
@@ -59405,59 +64849,18 @@ def _sheet_prefix(sheet_number: str) -> str:
     return sheet_number.split("-")[0] if "-" in sheet_number else ""
 
 
-async def _supersede_plan_pages(project_id: str) -> dict:
-    """One current row per sheet, within each discipline set.
-
-    ── THE DUPLICATES ────────────────────────────────────────────────────
-    #
-    # Page rows are keyed (file_id, page_number), and every re-upload of a
-    # drawing set mints a new file id. Two ways a page is someone else's copy:
-    #   same file_hash + page_number in another file — the identical PDF again
-    #   same sheet_number in another file of the SAME discipline set — a revision
-    # The losing row gets `superseded_by` = the winning file id.
-    #
-    # ── WHICH COPY WINS: THE DRAWING'S DATE, NOT THE UPLOAD'S ──────────────
-    #
-    # This used to be "the newest upload wins", and on 588 Boyland that hid
-    # the June 2026 owners set behind the March 2025 architectural set, because
-    # the March set had been re-synced most recently. Now, in order:
-    #   1. the date in the file name ('Owners set - 6.9.26.pdf')
-    #   2. the revision date read from the title block
-    #   3. upload time
-    # See _order for why the title-block date is the tie-break and not the
-    # lead: it is the date of a revision cloud, and the sheet that supersedes
-    # another frequently carries none.
-    #
-    # ── WITHIN A SET, AND NEVER FOR COVER / ENERGY / GENERAL SHEETS ────────
-    #
-    # A file's discipline is its most common sheet prefix. Sheet numbers are
-    # matched only between files of the same discipline: the structural set's
-    # T-001.00 cover was being hidden by the architectural set's, and MH's
-    # EN-001.00 by PL's. T-, EN- and GN- sheets are never superseded across
-    # files at all.
-    #
-    # NOTHING IS DELETED. Readers exclude a row only while the file that
-    # superseded it is still live, so deleting the newer file brings the older
-    # sheet straight back. A sheet that appears twice INSIDE one file is not a
-    # duplicate and both pages stay.
-    """
+def _supersession_winners(rows: List[dict], files: List[dict],
+                          project_id: str = "") -> Dict[Any, str]:
+    """{page row _id: the file id that supersedes it}, over `rows` and
+    `files` alone - the rule _supersede_plan_pages writes (see there).
+    Pure, so the glyph pass can apply it WITHIN ONE DRAWING TRACK
+    (_glyph_track_pages): the index supersedes across tracks by date.
+    `files` are project_files rows (_id, created_at, name)."""
     from collections import Counter as _Counter
     from datetime import date as _date
 
-    files = await db.project_files.find(
-        {"project_id": project_id, "is_deleted": {"$ne": True}},
-        {"_id": 1, "created_at": 1, "name": 1},
-    ).to_list(2000)
     uploaded = {str(f["_id"]): _file_upload_order(f) for f in files}
     name_date = {str(f["_id"]): _parse_sheet_date(f.get("name")) for f in files}
-    if not uploaded:
-        return {"superseded": 0}
-    rows = await db.document_page_index.find(
-        {"project_id": project_id, "file_id": {"$in": list(uploaded)}},
-        {"_id": 1, "file_id": 1, "file_hash": 1, "page_number": 1,
-         "sheet_number": 1, "superseded_by": 1, "revision_date": 1,
-         "sheet_position": 1},
-    ).to_list(20000)
 
     def _norm(sn):
         return re.sub(r"\s+", "", str(sn or "")).upper()
@@ -59560,14 +64963,72 @@ async def _supersede_plan_pages(project_id: str) -> dict:
             best = max(by_file, key=lambda f: _order(f, by_file[f]))
             winners[k] = (best, _order(best, by_file[best]))
 
-    by_winner: Dict[str, list] = {}
-    keep_ids = []
+    out: Dict[Any, str] = {}
     for r in rows:
         loser_to, loser_order = None, None
         for k in _keys(r):
             w = winners.get(k)
             if w and w[0] != r.get("file_id") and (loser_order is None or w[1] > loser_order):
                 loser_to, loser_order = w
+        if loser_to:
+            out[r["_id"]] = loser_to
+    return out
+
+
+async def _supersede_plan_pages(project_id: str) -> dict:
+    """One current row per sheet, within each discipline set.
+
+    ── THE DUPLICATES ────────────────────────────────────────────────────
+    #
+    # Page rows are keyed (file_id, page_number), and every re-upload of a
+    # drawing set mints a new file id. Two ways a page is someone else's copy:
+    #   same file_hash + page_number in another file — the identical PDF again
+    #   same sheet_number in another file of the SAME discipline set — a revision
+    # The losing row gets `superseded_by` = the winning file id.
+    #
+    # ── WHICH COPY WINS: THE DRAWING'S DATE, NOT THE UPLOAD'S ──────────────
+    #
+    # This used to be "the newest upload wins", and on 588 Boyland that hid
+    # the June 2026 owners set behind the March 2025 architectural set, because
+    # the March set had been re-synced most recently. Now, in order:
+    #   1. the date in the file name ('Owners set - 6.9.26.pdf')
+    #   2. the revision date read from the title block
+    #   3. upload time
+    # See _order for why the title-block date is the tie-break and not the
+    # lead: it is the date of a revision cloud, and the sheet that supersedes
+    # another frequently carries none.
+    #
+    # ── WITHIN A SET, AND NEVER FOR COVER / ENERGY / GENERAL SHEETS ────────
+    #
+    # A file's discipline is its most common sheet prefix. Sheet numbers are
+    # matched only between files of the same discipline: the structural set's
+    # T-001.00 cover was being hidden by the architectural set's, and MH's
+    # EN-001.00 by PL's. T-, EN- and GN- sheets are never superseded across
+    # files at all.
+    #
+    # NOTHING IS DELETED. Readers exclude a row only while the file that
+    # superseded it is still live, so deleting the newer file brings the older
+    # sheet straight back. A sheet that appears twice INSIDE one file is not a
+    # duplicate and both pages stay.
+    """
+    files = await db.project_files.find(
+        {"project_id": project_id, "is_deleted": {"$ne": True}},
+        {"_id": 1, "created_at": 1, "name": 1},
+    ).to_list(2000)
+    if not files:
+        return {"superseded": 0}
+    rows = await db.document_page_index.find(
+        {"project_id": project_id, "file_id": {"$in": [str(f["_id"]) for f in files]}},
+        {"_id": 1, "file_id": 1, "file_hash": 1, "page_number": 1,
+         "sheet_number": 1, "superseded_by": 1, "revision_date": 1,
+         "sheet_position": 1},
+    ).to_list(20000)
+
+    losers = _supersession_winners(rows, files, project_id)
+    by_winner: Dict[str, list] = {}
+    keep_ids = []
+    for r in rows:
+        loser_to = losers.get(r["_id"])
         if loser_to:
             if r.get("superseded_by") != loser_to:
                 by_winner.setdefault(loser_to, []).append(r["_id"])
@@ -59919,6 +65380,309 @@ async def _find_named_sheet(project_id: str, sheet_q: str) -> list:
     return rows[:1]
 
 
+# ── "SHOW ME", IN A DM: THE SHEET ITSELF (Mon 10:21 AM, 588) ───────────────
+#
+# "Window protection details are on SSP-011.00" was followed by "Show me" and
+# "Show me details", and both got the same words again: "show me" took the
+# "Want the names?" offer (wa_style.wants_more), and the agent never has
+# query_plan in a DM (it sends straight to WaAPI, outside the DM send gate).
+# A show request now sends the sheet -- the one it names, else the one
+# Levelog's last message in this chat cites -- through the DM gate.
+_DM_SHOW_VERBS = tuple(sorted(set(SHOW_VERBS) | {"let me see", "can i see", "send", "see",
+                                                  "pull it up", "pull that up", "show"},
+                              key=len, reverse=True))
+_DM_SHOW_FILLER = _SHOW_FILLER | {"details", "detail", "pic", "picture", "image", "page",
+                                  "photo", "more", "full", "pics", "pictures", "images", "photos"}
+# The thing itself, said with no verb: "the drawing", "picture", "drawing?"
+# (dm_eval, Oct 20: after a plans answer these got the same words again).
+_DM_SHOW_NOUNS = frozenset({"drawing", "drawings", "picture", "pictures", "pic", "pics",
+                            "image", "images", "photo", "photos", "sheet", "sheets", "page",
+                            "plan", "plans"})
+
+
+def _dm_show_words(body: Optional[str]) -> Optional[List[str]]:
+    """The words after a show verb ("show me details" -> ["details"]); a
+    message that is only the thing itself ("the drawing", "picture") is its
+    own words. None otherwise."""
+    s = " ".join(re.sub(r"[^\w\s/.-]", " ", re.sub(r"@\S+", " ", body or "").lower()).split())
+    verb = next((v for v in _DM_SHOW_VERBS if s == v or s.startswith(v + " ")), None)
+    if verb is not None:
+        return s[len(verb):].split()
+    toks = [t.strip(".") for t in s.split()]
+    if toks and len(toks) <= 4 and any(t in _DM_SHOW_NOUNS for t in toks) \
+            and all(t in _DM_SHOW_FILLER for t in toks):
+        return toks
+    return None
+
+
+def _dm_show_request(body: Optional[str]) -> bool:
+    """"show me", "show me details", "send it", "let me see": a show verb
+    with nothing else to show."""
+    words = _dm_show_words(body)
+    return words is not None and all(w.strip(".") in _DM_SHOW_FILLER for w in words)
+
+
+def _dm_cited_sheet(history: list, quoted: str = "", quoted_bot: bool = False) -> Optional[str]:
+    """The sheet Levelog's message cites: the one replied to, else its last
+    message in this chat (only that one -- an older answer is not "it")."""
+    if quoted and quoted_bot:
+        return _requested_sheet_id(quoted)
+    for row in reversed(list(history or [])):
+        if str(row.get("sender") or "") == "bot":
+            return _requested_sheet_id(str(row.get("body") or ""))
+    return None
+
+
+async def _dm_send_sheet(dm_chat: str, page: dict, *, jpeg: Optional[bytes] = None,
+                         caption: Optional[str] = None) -> bool:
+    """One sheet image to this DM chat, through the DM gate (opt-in or the
+    reply window, paced, in the ledger) -- never straight to WaAPI. Kept in
+    the chat's history as "[Sheet] SSP-011.00 — title". `jpeg`: this
+    picture of the sheet (a marked crop, _dm_plan_jpeg) instead of the
+    whole page; `caption`: its words."""
+    label = page.get("sheet_number") or page.get("sheet_title") or "drawing"
+    caption = caption or f"{label} — {page.get('sheet_title') or ''}".strip(" —")
+    verdict = await _dm_send_verdict(dm_chat, f"[sheet {label}]", None)
+    if not verdict["allowed"]:
+        logger.info(f"[wa-assistant] sheet refused ({verdict['reason']}) to {_log_chat(dm_chat)}")
+        return False
+    ledger_id = verdict.get("ledger_id")
+    media_url = (await _temp_jpeg_media_url(dm_chat, jpeg, label) if jpeg
+                 else await _plan_media_url(dm_chat, page))
+    ok, body, err = False, None, "no image"
+    if media_url:
+        ok, body, err = await _waapi_send_dm_paced(
+            f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
+            {"chatId": dm_chat, "mediaUrl": media_url, "caption": caption},
+            {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"})
+        inner = body.get("data") if isinstance(body, dict) else None
+        if ok and isinstance(inner, dict) and inner.get("status") == "error":
+            ok, err = False, "data.status error"       # WaAPI's 200 that is not a send
+    if ledger_id is not None:
+        await _ledger_finish(ledger_id, ok, err)
+    if not ok:
+        logger.warning(f"[wa-assistant] sheet {label} not sent to {_log_chat(dm_chat)}: {err}")
+        return False
+    try:
+        now = datetime.now(timezone.utc)
+        await db.whatsapp_messages.insert_one({
+            "group_id": dm_chat, "is_dm": True, "sender": "bot", "body": f"[Sheet] {caption}",
+            "has_audio": False, "message_id": "", "from_me": True,
+            "timestamp": now, "created_at": now})
+    except Exception as e:
+        logger.debug(f"[wa-assistant] sheet bot-log skipped: {type(e).__name__}")
+    return True
+
+
+# ── WHERE A PLANS ANSWER CAME FROM, ON THE SHEET (lib/plan_crop) ────────────
+#
+# "Window protection details are on SSP-011.00" still sends a superintendent
+# hunting across a 36-inch sheet. The records search_plans returned say where
+# they are (`bbox`), so after the words the DM gets the sheet cropped to that
+# region with it boxed in red -- every candidate boxed and numbered when the
+# answer could rest on more than one place, or on a record nobody checked. A
+# record with no box (notes, callouts: plan_records KNOWN GAP), or one whose
+# box cannot be placed on the page image, sends the whole sheet and says so.
+#
+# Private DMs only, after the text and never instead of it: a picture that
+# cannot be made or sent is logged and the answer stands.
+_DM_PLAN_PAGE_FIELDS = {"_id": 1, "project_id": 1, "file_id": 1, "file_name": 1,
+                        "page_number": 1, "sheet_number": 1, "sheet_title": 1,
+                        "page_jpeg_r2_key": 1, "is_spec_page": 1}
+#: A turn that ended on one of these sent a fallback, not its own answer:
+#: no picture of where an answer came from.
+_DM_PLAN_SHOT_NO = ("content_filter", "truncated", "unverified", "unsupported_claim",
+                    "unverified_sender", "max_rounds")
+
+
+async def _dm_plan_evidence(ctx: dict, sink: list) -> bool:
+    """Keep one search_plans call's records for this turn's picture, with
+    the pages they cite. True when one of them can be shown."""
+    ctx.setdefault("plan_evidence", []).extend(sink)
+    pages = ctx.setdefault("plan_pages", {})
+    for hit in sink:
+        for r in hit.get("records") or []:
+            pid = str(r.get("page_id") or "")
+            if not pid or pid in pages:
+                continue
+            try:
+                pages[pid] = await db.document_page_index.find_one(
+                    {"_id": to_query_id(pid)}, _DM_PLAN_PAGE_FIELDS) or {}
+            except Exception as e:
+                logger.warning(f"[dm-brain] plan page read failed: {type(e).__name__}")
+                pages[pid] = {}
+    if _dm_plan_records(ctx):
+        ctx["plan_image_due"] = True
+    return bool(ctx.get("plan_image_due"))
+
+
+def _dm_plan_records(ctx: dict) -> list:
+    """This turn's plans evidence a picture can show, best first: records a
+    citation can name, on a page with an image. Not located-symbol rows: a
+    count rests on all of them and their census, never on one box."""
+    pages = ctx.get("plan_pages") or {}
+    return [r for hit in ctx.get("plan_evidence") or [] for r in hit.get("records") or []
+            if not plan_search.is_glyph_evidence(r) and plan_search.cite(r)
+            and (pages.get(str(r.get("page_id") or "")) or {}).get("page_jpeg_r2_key")]
+
+
+def _dm_plan_shots(ctx: dict, out: dict) -> list:
+    """The pictures that follow this answer, one per sheet (plan_crop.pick
+    decides which records it rests on and whether that is one place):
+    [{page, label, marks: [(number, record)], total, ambiguous, unverified,
+    pictures}]. None when the turn searched no plans, ended without its own
+    answer, or already sent those sheets (send_sheet)."""
+    reply = out.get("reply") or ""
+    stop = str(out.get("stop") or "")
+    if not reply or out.get("cant_answer") or stop in _DM_PLAN_SHOT_NO or stop.startswith("error"):
+        return []
+    records = _dm_plan_records(ctx)
+    if not records:
+        return []
+    choice = plan_crop.pick(records, reply)
+    groups = plan_crop.by_page(choice["marks"])
+    total = sum(len(marks) for _pid, marks in groups)
+    pages, sent = ctx["plan_pages"], ctx.get("sheets_sent") or set()
+    return [{"page": pages[pid], "marks": marks, "total": total,
+             "label": pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+             "ambiguous": choice["ambiguous"], "unverified": choice["unverified"],
+             "pictures": len(groups)}
+            for pid, marks in groups if pid not in sent]
+
+
+def _dm_plan_jpeg(src: bytes, page: dict, marks: list, numbered: bool
+                  ) -> Optional[Tuple[bytes, List[int]]]:
+    """(jpeg, the numbers boxed): the page image cropped to `marks` and
+    marked, or None when no mark's box can be placed on it.
+
+    A box is in PDF points (plan_crop); the page image is pdftoppm's render at
+    _render_dpi_for(file_name, page_number) -- the same call, on the same
+    name and page, that the indexer rendered it with -- so a point is dpi/72
+    pixels. A page missing either has no mapping, and gets none guessed."""
+    from PIL import Image
+    import io as _io
+    if not page.get("file_name") or not page.get("page_number"):
+        return None
+    dpi = _render_dpi_for(page["file_name"], int(page["page_number"]))
+    img = Image.open(_io.BytesIO(src))
+    scale = plan_crop.px_per_pt(dpi)
+    boxes = []
+    for n, r in marks:
+        box = plan_crop.to_pixels(r.get("bbox"), scale, img.size) if r.get("bbox") else None
+        if not box:
+            # One mark that can't be placed: a crop would claim to show
+            # every spot while one is missing -- the whole sheet instead
+            # (Codex on #836).
+            return None
+        boxes.append((n, box))
+    shot = plan_crop.render(img, boxes, px_per_inch=dpi, numbered=numbered)
+    buf = _io.BytesIO()
+    shot.save(buf, format="JPEG", quality=90)
+    return _compress_jpeg_for_whatsapp(buf.getvalue()), [n for n, _b in boxes]
+
+
+async def _dm_plan_picture(shot: dict) -> dict:
+    """{jpeg, caption} for one planned picture: the marked crop, or jpeg None
+    (the whole sheet) with a caption that says it is the whole sheet."""
+    page, marks = shot["page"], shot["marks"]
+    jpeg, numbers = None, [n for n, _r in marks]
+    if all(r.get("bbox") for _n, r in marks):
+        try:
+            src = await _fetch_page_jpeg(page)
+            got = await asyncio.to_thread(
+                _dm_plan_jpeg, src, page, marks, shot["total"] > 1) if src else None
+            if got:
+                jpeg, numbers = got
+        except Exception as e:
+            logger.warning(f"[dm-brain] plan crop of {shot['label']} failed: {type(e).__name__}: {e}")
+    return {"jpeg": jpeg, "caption": plan_crop.caption(
+        shot["label"], numbers=numbers, total=shot["total"], ambiguous=shot["ambiguous"],
+        unverified=shot["unverified"], whole=jpeg is None, title=page.get("sheet_title") or "",
+        pictures=shot["pictures"])}
+
+
+async def _dm_plan_sheet_shot(ctx: dict, page: dict) -> dict:
+    """send_sheet's picture of `page` when this turn's plans evidence is on
+    it: {jpeg, caption} of the marked crop; {} for the whole sheet."""
+    pid = str(page.get("_id"))
+    marks = plan_crop.distinct([r for r in _dm_plan_records(ctx)
+                                if str(r.get("page_id")) == pid])[:plan_crop.MAX_MARKS]
+    if not marks:
+        return {}
+    shot = {"page": page, "marks": list(enumerate(marks, start=1)), "total": len(marks),
+            "label": page.get("sheet_number") or plan_search.cite(marks[0]) or "drawing",
+            "ambiguous": False, "unverified": any(plan_crop.is_unverified(r) for r in marks),
+            "pictures": 1}
+    pic = await _dm_plan_picture(shot)
+    return pic if pic["jpeg"] else {}
+
+
+async def _dm_send_plan_shots(dm_chat: str, shots: list) -> None:
+    """The pictures after a plans answer, one by one. Never raises: the
+    answer is already out."""
+    for shot in shots:
+        try:
+            await _dm_send_sheet(dm_chat, shot["page"], **await _dm_plan_picture(shot))
+        except Exception as e:
+            logger.warning(f"[dm-brain] plan picture of {shot.get('label')} failed: {type(e).__name__}")
+
+
+async def _dm_sheet_turn(ident: dict, dm_chat: str, text: str, history: list,
+                         quoted: str = "", quoted_bot: bool = False) -> bool:
+    """A show request in a DM: the sheet it names ("show me SSP-011"), or the
+    one Levelog's last message cites ("Show me", "Show me details"). The job:
+    one named here, else this chat's current job, else their only job; with
+    none, the turn is not this one. True when answered."""
+    words = _dm_show_words(text)
+    if words is None:
+        return False
+    named = _requested_sheet_id(" ".join(words))
+    if not named:
+        if not _dm_show_request(text):
+            return False
+        named = _dm_cited_sheet(history, quoted, quoted_bot)
+        if not named:
+            return False
+    jobs = await _dm_jobs(ident)
+    by_id = {j["id"]: j for j in jobs}
+    jid = wa_assistant.job_named(text, jobs, in_sentence=True)
+    if not jid:
+        current = await _dm_state_get("dm_job", dm_chat)
+        jid = str(current.get("project_id")) if current else None
+    if jid not in by_id:
+        jid = jobs[0]["id"] if len(jobs) == 1 else None
+    if not jid:
+        return False
+    job = by_id[jid]
+    pid = str(job["id"])
+    # A request of its own: an open offer, "Which job?" menu or "Since 8:07
+    # or since 7am?" is dropped, as a new question drops them (Codex on #808).
+    for kind in ("dm_more", "dm_menu", "dm_clarify"):
+        await _dm_state_clear(kind, dm_chat)
+    if not await _bot_project_scope(ident["company_id"], pid):
+        await send_whatsapp_message(dm_chat, wa_security.BOT_SCOPE_REFUSAL)
+        return True
+    short = wa_style.short_job(job["label"])
+    rows = await _find_named_sheet(pid, named)
+    page = rows[0] if rows else None
+    label = (page or {}).get("sheet_number") or named.upper()
+    if not page:
+        reply = f"{named.upper()} isn't in the indexed drawings for {short}."
+    elif not page.get("page_jpeg_r2_key"):
+        reply = (f"{label} is a notes sheet — indexed, can't render yet."
+                 if page.get("is_spec_page") else f"{label} is indexed, but its image isn't available yet.")
+    elif await _dm_send_sheet(dm_chat, page):
+        reply = None
+    else:
+        reply = f"Found {label} but couldn't send the image. It may still be rendering."
+    if reply:
+        await send_whatsapp_message(dm_chat, reply)
+    await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS, project_id=pid)
+    await _dm_log_answer(ident, pid, text, reply or f"[Sheet] {label}", "sheet",
+                         tool_data={"sheet": label, "sent": reply is None})
+    return True
+
+
 def _names_a_sheet(text: str) -> bool:
     """True when the text contains something shaped like a sheet id.
 
@@ -60144,12 +65908,10 @@ def _compress_jpeg_for_whatsapp(src_bytes: bytes, max_dim: int = 4800,
         return src_bytes
 
 
-async def _send_plan_image(
-    group_id: str, page_rec: dict, caption: str,
-) -> bool:
-    """Fetch a page's pre-rendered JPEG from R2, downscale to WhatsApp-safe
-    size, upload to R2 via presigned URL, and send-image to the group.
-    Returns True on success."""
+async def _plan_media_url(chat_id: str, page_rec: dict) -> Optional[str]:
+    """A page's pre-rendered JPEG from R2, downscaled to a WhatsApp-safe
+    size and uploaded as a temporary file: the URL WaAPI's send-media
+    fetches (1 hour), or None."""
     sheet_ref = page_rec.get("sheet_number") or page_rec.get("_id")
     jpeg_src = await _fetch_page_jpeg(page_rec)
     if not jpeg_src:
@@ -60157,23 +65919,43 @@ async def _send_plan_image(
             f"plan send: jpeg fetch returned empty for sheet={sheet_ref} "
             f"key={page_rec.get('page_jpeg_r2_key')}"
         )
-        return False
+        return None
     jpeg = await asyncio.to_thread(_compress_jpeg_for_whatsapp, jpeg_src)
     logger.info(
         f"plan send: jpeg ok for sheet={sheet_ref} "
         f"src_size={len(jpeg_src)} compressed_size={len(jpeg)}"
     )
+    return await _temp_jpeg_media_url(chat_id, jpeg, sheet_ref)
+
+
+async def _temp_jpeg_media_url(chat_id: str, jpeg: bytes, sheet_ref: Any) -> Optional[str]:
+    """JPEG bytes uploaded as a temporary file: the URL WaAPI's send-media
+    fetches (1 hour), or None."""
     import uuid as _uuid
-    temp_key = f"temp/whatsapp/{group_id}/{_uuid.uuid4()}.jpg"
+    # A person's chat is a phone: the temporary key carries a random id, never it.
+    folder = chat_id if wa_dm.is_group_chat(chat_id) else "dm"
+    temp_key = f"temp/whatsapp/{folder}/{_uuid.uuid4()}.jpg"
     try:
         await asyncio.to_thread(_upload_to_r2, jpeg, temp_key, "image/jpeg")
         # WaAPI does a HEAD preflight. R2 presigned URLs are method-scoped
         # (signed GET returns 403 on HEAD), so we hand WaAPI a URL that
         # points to our own backend proxy — it handles HEAD+GET cleanly.
         tok = await _mint_temp_media_token(temp_key, "image/jpeg", ttl_seconds=3600)
-        media_url = _public_temp_media_url(tok)
+        return _public_temp_media_url(tok)
     except Exception as e:
         logger.warning(f"plan send: temp upload failed sheet={sheet_ref}: {e}")
+        return None
+
+
+async def _send_plan_image(
+    group_id: str, page_rec: dict, caption: str,
+) -> bool:
+    """Fetch a page's pre-rendered JPEG from R2, downscale to WhatsApp-safe
+    size, upload to R2 via presigned URL, and send-image to the group.
+    Returns True on success."""
+    sheet_ref = page_rec.get("sheet_number") or page_rec.get("_id")
+    media_url = await _plan_media_url(group_id, page_rec)
+    if not media_url:
         return False
     # WaAPI endpoint is `send-media` with a `mediaUrl` field (NOT send-image
     # with `image`, which returns 404). Discovered via probe-waapi-endpoints.
@@ -60280,7 +66062,10 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
     the same way the pass derived them (plan_glyph_pass.families)."""
     from lib.plan_glyph_pass import families as _families
     pid = str(project_id)
-    page_ids = await _current_record_page_ids(pid)
+    # THE PAGES THE PASS READ, EVERY TRACK'S (_glyph_track_pages): the filed
+    # track's plans are superseded in the index by the Owner's set, and a
+    # refusal row citing one must still be counted.
+    page_ids = await _glyph_page_ids(pid)
     if not page_ids:
         return []
     sched = await db[PLAN_RECORDS].find(
@@ -60299,10 +66084,19 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
     if not want:
         return []
     proj = {"_id": 0, "embedding": 0}
-    checks = [(plan_search.glyph_family_filter(pid, page_ids, name, tags),
-               ("family", name, tags)) for name, tags in sorted(want.items())]
-    checks.append((plan_search.glyph_refusal_filter(pid, page_ids),
-                   ("refusals", None, [])))
+    # A CENSUS PER DRAWING TRACK (ruling 2026-10-24): each track's rows are
+    # checked against the database on their own. Rows written before
+    # EMIT_VERSION 7 carry no track: one census over all of them, as before.
+    tracks = sorted({(r.get("payload") or {}).get("track") for r in
+                     await db[PLAN_RECORDS].find(
+                         {"project_id": pid, "record_type": "glyph"},
+                         {"payload.track": 1}).to_list(GLYPH_EVIDENCE_MAX)} - {None}) or [None]
+    checks = []
+    for track in tracks:
+        checks += [(plan_search.glyph_family_filter(pid, page_ids, name, tags, track=track),
+                    ("family", name, tags, track)) for name, tags in sorted(want.items())]
+        checks.append((plan_search.glyph_refusal_filter(pid, page_ids, track=track),
+                       ("refusals", None, [], track)))
     # THE SCHEDULE'S QTY, per tag, from the same best-tier reading the
     # families come from - so a building total can be checked against what
     # the schedule prints (plan_search._qty_check).
@@ -60314,13 +66108,14 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
             best[nm] = s
     rows: List[dict] = []
     census: List[dict] = []
-    for flt, (kind, name, tags) in checks:
+    for flt, (kind, name, tags, track) in checks:
         rows += await db[PLAN_RECORDS].find(flt, proj).to_list(GLYPH_EVIDENCE_MAX)
         n = await db[PLAN_RECORDS].count_documents(flt)
         qty = (plan_search.schedule_quantities((best.get(name) or {}).get("payload"), tags)
                if kind == "family" else None)
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
-                                               family=name, tags=tags, qty=qty))
+                                               family=name, tags=tags, qty=qty,
+                                               track=track))
     return rows + census
 
 
@@ -61689,6 +67484,13 @@ _AGENT_TOOLS = [
 ]
 # The company's subs list (DM only; see _run_group_agent's filter).
 _AGENT_TOOLS += wa_subs.TOOLS
+# What the assistant used to say "the data doesn't specify" about (Wed Oct
+# 14, lib/wa_facts.py): days on site, punch, follow-ups, upcoming, the brief.
+_AGENT_TOOLS += [attendance.SUB_ATTENDANCE_TOOL, attendance.SITE_HEADCOUNT_TOOL, wa_facts.PUNCH_STATUS_TOOL,
+                 wa_facts.FOLLOW_UPS_TOOL, wa_facts.UPCOMING_TOOL, wa_facts.BRIEF_STATUS_TOOL]
+#: Read in a direct message only: the brief is the person's own; follow-ups
+#: name who owes what, which a group of subs does not read about each other.
+_DM_ONLY_FACT_TOOLS = ("follow_ups", "brief_status")
 
 
 # ── THE STANCE COMES FIRST, BECAUSE IT DECIDES THE OTHER RULES ─────────────
@@ -62603,7 +68405,9 @@ AGENT_MODEL = "gpt-4o"
 #   list_workers  reads the WHOLE company's roster, which a PM may not see
 #                 (who_on_site answers for the job);
 #   query_plan    sends sheet images straight to WaAPI, outside the DM send
-#                 gate (search_plans still answers what the drawings say).
+#                 gate (search_plans still answers what the drawings say; a
+#                 DM's "show me" sends the sheet through the gate, in
+#                 _dm_sheet_turn).
 _DM_WRITE_TOOLS = frozenset({"start_permit_renewal", "start_checklist",
                              "list_workers", "query_plan"})
 AGENT_MAX_TOKENS = 800
@@ -62760,6 +68564,10 @@ async def _run_group_agent(
             continue
         # The company's subs list: a DM only (it spans the person's jobs).
         if name in ("find_sub", "list_subs") and not dm:
+            continue
+        if name in _DM_ONLY_FACT_TOOLS and not dm:
+            continue
+        if name in ("sub_attendance", "site_headcount") and not features.get("who_on_site", True):
             continue
         if name == "who_on_site" and not features.get("who_on_site", True):
             continue
@@ -62986,6 +68794,128 @@ async def _run_group_agent(
         return None
 
 
+async def _attendance_rows(project_id: str, since: datetime) -> list:
+    """The job's check-ins since `since`: who, their company, when."""
+    return await db.checkins.find(
+        {"project_id": project_id, "is_deleted": {"$ne": True},
+         "check_in_time": {"$gte": since}},
+        {"worker_id": 1, "worker_phone": 1, "worker_name": 1, "worker_company": 1,
+         "company": 1, "company_name": 1, "check_in_time": 1}).to_list(100000)
+
+
+async def _attendance_fallback(project: dict, body: str, now: Optional[datetime] = None) -> str:
+    """The answer from the check-ins, when the model said they don't say."""
+    now = now or datetime.now(timezone.utc)
+    rows = await _attendance_rows(str(project.get("_id")), now - timedelta(days=1100))
+    kind = attendance.kind_of(body) or "sub_attendance"
+    if kind == "sub_attendance":
+        sub = wa_facts.sub_in_question(body, {wa_facts.checkin_company(r) for r in rows})
+        return attendance.answer("sub_attendance", {"sub": sub}, rows, now,
+                                 wa_assistant.street_label(project), body)
+    return attendance.answer("site_headcount", {"view": kind}, rows, now,
+                             wa_assistant.street_label(project), body)
+
+
+async def _attendance_by_trade(company_id: str, project: dict, rows: list, args: dict,
+                               question: str, now: datetime, job: str) -> str:
+    """A trade's subs on the job -- the job's subs list rows for it, and the
+    check-in companies whose name says it ("Arctic Mechanical") -- and
+    each one's days on site (lib/attendance.trade_text)."""
+    said = str(args.get("trade") or "").strip()
+    label = lib_trades.resolve(said, await _company_trade_list(company_id)) or said
+    listed = []
+    for r in _active_assignments(project):
+        t = str(r.get("trade") or "").strip()
+        c = str(r.get("company") or "").strip()
+        if c and t and (_roster_key(t) == _roster_key(label)
+                        or _roster_key(lib_trades.resolve(t, [label]) or "") == _roster_key(label)):
+            listed.append(c)
+    named = sorted({c for c in (wa_facts.checkin_company(r) for r in rows)
+                    if c and lib_trades.resolve(c, [label])})
+    a, b, range_label = attendance.resolve_range(args, question, now)
+    return attendance.trade_text(rows, now, label, listed, named, job, a, b, range_label)
+
+
+def _fact_day(v: Any) -> Optional[_Date]:
+    try:
+        return _Date.fromisoformat(str(v).strip()[:10]) if v else None
+    except ValueError:
+        return None
+
+
+async def _facts_tool(name: str, args: dict, *, company_id: str, project_id: str,
+                      group_id: Optional[str], now: Optional[datetime] = None,
+                      question: str = "") -> str:
+    """sub_attendance / punch_status / follow_ups / upcoming_events /
+    brief_status (lib/wa_facts.py). The caller proved the project is the
+    company's; every read here is that project's."""
+    now = now or datetime.now(timezone.utc)
+    project = await _bot_project_scope(company_id, project_id)
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    job = wa_assistant.street_label(project) if isinstance(project, dict) else ""
+    in_dm = bool(group_id) and not str(group_id).endswith("@g.us")
+    if name in ("sub_attendance", "site_headcount"):
+        # Evidence only (lib/attendance.py): every number counted from the
+        # job's check-ins, for the period as the user said it.
+        frm, _to, _label = attendance.resolve_range(args, question, now)
+        since = datetime.combine(frm, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=1) \
+            if frm else now - timedelta(days=1100)
+        rows = await _attendance_rows(project_id, since)
+        if name == "sub_attendance" and str(args.get("trade") or "").strip() \
+                and not str(args.get("sub") or "").strip():
+            # "how many days hvac worked in 588" (Tue 12:28 PM: "check with the
+            # site manager"): the trade's subs on this job, then their days.
+            return await _attendance_by_trade(company_id, project, rows, args, question, now, job)
+        return attendance.answer(name, args, rows, now, job, question)
+    if name == "punch_status":
+        rows = await db[punch.COLLECTION].find(
+            {"project_id": project_id, "company_id": _company_id_filter(company_id),
+             "status": {"$in": ["open", "ready_to_check", "closed"]}},
+            {"status": 1, "assignee": 1, "pid": 1, "assigned_at": 1, "created_at": 1,
+             "walk_id": 1, "sent_via": 1, "send_mode": 1}).to_list(5000)
+        last_walk = await db[punch.SESSIONS].find_one(
+            {"project_id": project_id, "sent_at": {"$ne": None}},
+            {"sent_at": 1, "send_mode": 1, "status": 1, "undelivered": 1, "queued_until": 1},
+            sort=[("sent_at", -1)])
+        return wa_facts.punch_text(rows, now, str(args.get("assignee") or "").strip() or None, job,
+                                   last_walk=last_walk)
+    if name == "follow_ups":
+        if not in_dm:
+            return "Follow-ups are read in a direct message only."
+        items = await db.attention_items.find(
+            {"project_id": project_id, "company_id": _company_id_filter(company_id),
+             "status": {"$in": ["open", "rescheduled"]}}).to_list(2000)
+        ids = [str(i["_id"]) for i in items]
+        chased: Dict[str, datetime] = {}
+        if ids:
+            for n in await db[wa_chase.COLLECTION].find(
+                    {"item_ids": {"$in": ids}}, {"item_ids": 1, "at": 1}).to_list(5000):
+                at = _utc(n.get("at"))
+                for i in n.get("item_ids") or []:
+                    if at and (i not in chased or at > chased[i]):
+                        chased[i] = at
+        return wa_facts.follow_ups_text(items, chased, now, str(args.get("owner") or "").strip() or None, job)
+    if name == "upcoming_events":
+        try:
+            days = max(1, min(60, int(args.get("days") or 14)))
+        except (TypeError, ValueError):
+            days = 14
+        today = wa_brief.local_now(now).date()
+        events = await db.upcoming_events.find(
+            {"company_id": _company_id_filter(company_id), "project_id": project_id,
+             "status": "open", "date": {"$gte": today.isoformat()}}).to_list(500)
+        return wa_facts.upcoming_text(events, now, days, job)
+    if name == "brief_status":
+        if not in_dm:
+            return "The brief is read in a direct message only."
+        ident = await _dm_assistant_identity(group_id)
+        if not ident or str(ident.get("company_id")) != str(company_id):
+            return wa_security.BOT_SCOPE_REFUSAL
+        return await _brief_status_for(str(ident["user_id"]), args.get("date"), now)
+    return f"Unknown tool {name}."
+
+
 async def _dispatch_agent_tool(
     name: str, args: dict, *, project_id: str, group_id: str,
     company_id: Optional[str], sender: str, reply_to: Optional[str] = None,
@@ -63019,6 +68949,11 @@ async def _dispatch_agent_tool(
             if project is None:
                 return wa_security.BOT_SCOPE_REFUSAL
             return await _dm_subs_tool(ident, name, args, project)
+        if name in ("sub_attendance", "site_headcount", "punch_status", "follow_ups", "upcoming_events",
+                    "brief_status"):
+            return await _facts_tool(name, args or {}, company_id=str(company_id),
+                                     project_id=str(project_id), group_id=group_id,
+                                     question=str(user_body or ""))
         if name == "recent_voice_notes":
             if not group_id or str(group_id).endswith("@g.us"):
                 return "Voice notes are read in a direct message only."
@@ -63669,7 +69604,9 @@ async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
             row["quoted_message_id"] = str(hit.get("message_id") or "")
             row["quoted_author"] = row["quoted_author"] or str(hit.get("sender_jid") or "")
             row["quoted_link"] = "body_match"
-    await db.whatsapp_messages.insert_one(row)
+    res = await db.whatsapp_messages.insert_one(row)
+    if row.get("_id") is None and getattr(res, "inserted_id", None) is not None:
+        row["_id"] = res.inserted_id
     return row
 
 
@@ -64030,11 +69967,31 @@ async def _punch_store_photo(parsed: dict, key: str) -> Tuple[Optional[str], Opt
 # assignee's page say "Original unavailable — preview only"). Nothing is
 # deleted. At startup (in the background) and by scripts/punch_photo_backfill.py.
 
-def _r2_bytes(key: str) -> Optional[bytes]:
+def _r2() -> Any:
+    """The R2 client, made on first use. A script imports server without its
+    startup (scripts/repair_punch_walk.py): `_r2_client` was None there and
+    every read failed silently -- all 39 photos of walk 6a868363 got "See
+    photo" in the dry run."""
+    global _r2_client
+    if _r2_client is None:
+        _r2_client = _get_r2_client()
+    return _r2_client
+
+
+def _r2_fetch(key: str) -> Tuple[Optional[bytes], Optional[str]]:
+    """(bytes, None) or (None, why) -- the why is shown, never swallowed."""
+    client = _r2()
+    if client is None:
+        return None, "R2 not configured (R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT_URL)"
     try:
-        return _r2_client.get_object(Bucket=R2_BUCKET_NAME, Key=key)["Body"].read()
-    except Exception:
-        return None
+        return client.get_object(Bucket=R2_BUCKET_NAME, Key=key)["Body"].read(), None
+    except Exception as e:
+        code = getattr(e, "response", {}).get("Error", {}).get("Code") if hasattr(e, "response") else None
+        return None, f"{type(e).__name__}{(' ' + code) if code else ''}"
+
+
+def _r2_bytes(key: str) -> Optional[bytes]:
+    return _r2_fetch(key)[0]
 
 
 def _full_key(key: str) -> str:
@@ -64257,12 +70214,16 @@ async def _punch_session(user_id: str) -> Optional[dict]:
 
 
 async def _punch_recent_job(ident: dict, dm_chat: str) -> Optional[dict]:
-    """The job picked in this DM in the last 30 minutes (the assistant's
-    current job), when it is one of the walker's."""
+    """The job picked or named in this DM in the last 30 minutes (rule (c)
+    of _dm_job_context), when it is one of the walker's. A new walk is a new
+    visit: never the last walk's job alone ((b)) -- the start message names
+    the job it took."""
     remembered = await _dm_state_get("dm_job", dm_chat)
     if remembered:
         return _punch_project_of(ident, remembered.get("project_id"))
-    return None
+    now = datetime.now(timezone.utc)
+    jid = wa_assistant.named_recently(await _dm_history(dm_chat, now), await _dm_jobs(ident), now)
+    return _punch_project_of(ident, jid) if jid else None
 
 
 async def _punch_set_job(sess: dict, project: dict, dm_chat: str) -> None:
@@ -64291,7 +70252,8 @@ def _punch_simple(sess: dict) -> bool:
 
 
 def _punch_draft(sess: dict) -> str:
-    return punch.draft_text(sess["job_name"], sess["items"], simple=_punch_simple(sess))
+    return punch.draft_text(sess["job_name"], sess["items"], simple=_punch_simple(sess),
+                            unplaced=sess.get("unplaced") or None)
 
 
 async def _punch_company_detail(company_id: Any) -> str:
@@ -64365,7 +70327,7 @@ _PUNCH_LOCKS: Dict[tuple, asyncio.Lock] = {}
 
 
 async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
-                         voice: Optional[dict] = None) -> bool:
+                         voice: Optional[dict] = None, brain: bool = False) -> bool:
     """A walkthrough turn in the walker's DM, or False when this message is
     not about one (the assistant answers it as before).
 
@@ -64390,7 +70352,8 @@ async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
             return True
         beat = asyncio.create_task(_punch_lease_keep(uid, token)) if token else None
         try:
-            return await _punch_dm_turn_locked(ident, dm_chat, parsed, body, voice)
+            return await _punch_dm_turn_locked(ident, dm_chat, parsed, body, voice,
+                                               **({"brain": True} if brain else {}))
         finally:
             if beat:
                 beat.cancel()
@@ -64465,8 +70428,9 @@ def _punch_time(at: Any) -> str:
 
 
 async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: str,
-                                voice: Optional[dict] = None) -> bool:
+                                voice: Optional[dict] = None, brain: bool = False) -> bool:
     now = datetime.now(timezone.utc)
+    _WALK_BRAIN.set(bool(brain))
     msg_id = parsed.get("message_id_serialized") or parsed.get("message_id") or ""
     text = _punch_caption(parsed, body)
     sess = await _punch_session(ident["user_id"])
@@ -64482,9 +70446,10 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
                 await send_whatsapp_message(dm_chat, reply)
                 return True
     if not parsed.get("has_image") and not voice:
-        q = punch.parse_query(text)
+        # (The DM brain answers punch questions with punch_status.)
+        q = None if brain else punch.parse_query(text)
         if q:
-            await send_whatsapp_message(dm_chat, await _punch_answer(ident, q))
+            await send_whatsapp_message(dm_chat, await _punch_answer(ident, q, dm_chat, text))
             return True
         if punch.super_verdict(text):
             reply = await _punch_verdict(ident, text, now)
@@ -64518,6 +70483,13 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
     if not sess:
         start = punch.start_request(text) if not parsed.get("has_image") else None
         if not start and not parsed.get("has_image"):
+            if not brain and punch.walk_intent(text):
+                # "I'm going to show you some pictures, I need to do a
+                # checklist" (Oct 13): how, in fixed words -- never "use the
+                # app". No walk is opened until the first photo comes.
+                await send_whatsapp_message(dm_chat, punch.WALK_HELP)
+                await _dm_log_answer(ident, None, text, punch.WALK_HELP, "walk_help")
+                return True
             return False
         hint = (start or {}).get("job")
         project, why = punch.match_project(hint, ident.get("projects") or [])
@@ -64621,13 +70593,21 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
         note = await _punch_recheck_assign(sess)
         if note:
             await send_whatsapp_message(dm_chat, note + "\n\n"
-                                        + punch.assign_text(sess.get("assign") or {}))
+                                        + punch.assign_text(sess.get("assign") or {}, simple=_punch_simple(sess)))
             return True
     if not parsed.get("has_image") and said.strip() and sess["status"] in PUNCH_THINK_STAGES \
             and not await _punch_fast(sess, said, text, voice):
         # FREE TEXT: what the walker meant, read with the walk's state by the
         # model; the code checks each action and applies it (1:43 PM). None:
         # the model could not say -- the stage reads it as before.
+        done = await _punch_think(ident, sess, dm_chat, parsed, said, now)
+        if done is not None:
+            return done
+    if brain and sess["status"] == "capturing" and not parsed.get("has_image") and said.strip() \
+            and not _punch_capture_command(sess, said, text, voice):
+        # THE BRAIN READS THE WALK WHILE PHOTOS COME IN (Tue 12:28 PM: "All of
+        # the above is for 3rd floor moving up to 4th now" set #2-#4 only and
+        # became a note). Exact commands stay in code.
         done = await _punch_think(ident, sess, dm_chat, parsed, said, now)
         if done is not None:
             return done
@@ -64656,7 +70636,7 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
 # applies it. Fixed commands stay a fast path (_punch_fast).
 
 #: Stages where free text is read by the model.
-PUNCH_THINK_STAGES = ("capturing", "locating", "draft", "assign", "recap", "due")
+PUNCH_THINK_STAGES = ("locating", "draft", "assign", "recap", "due")
 
 
 async def _punch_fast(sess: dict, said: str, text: str, voice: Optional[dict]) -> bool:
@@ -64696,13 +70676,57 @@ async def _punch_fast(sess: dict, said: str, text: str, voice: Optional[dict]) -
         return bool(r.get("ok") or r.get("group") or r.get("who") or r.get("pairs") or r.get("all"))
     if st in ("recap", "due"):
         trades = {it.get("trade") or punch.UNKNOWN for it in items}
-        return bool(punch.parse_due_answer(said, trades) or punch.parse_assign_reply(said).get("ok"))
+        return bool(punch.parse_due_answer(said, trades) or punch.parse_assign_reply(said).get("ok")
+                    or punch.is_go(said))
     return True
 
 
-async def _punch_brain_model(state: dict, said: str) -> Optional[dict]:
+def _punch_capture_command(sess: dict, said: str, text: str, voice: Optional[dict]) -> bool:
+    """While photos come in, with the brain on: the exact commands the code
+    reads itself -- the job, send / done / cancel / undo, "add: ...", "#n
+    words", the number answering "Add to which photo?", "#12-20 roof".
+    Everything else is the brain's."""
+    if not sess.get("project_id"):
+        return True
+    low = " ".join(str(said or "").lower().split()).strip(".!")
+    if not low or low in punch.SEND_WORDS or low in punch.DONE_WORDS or low in punch.CANCEL_WORDS \
+            or low in ("undo", "undo that", "undo it", "send", "send it", "send it now", "send now",
+                       "go ahead", "finish") or punch.is_escape(said):
+        return True
+    if re.match(r"^\s*add\s*[:\-–]", said or "", re.IGNORECASE):
+        return True
+    if not voice and (punch.target_ref(text) or re.fullmatch(r"#?\s*\d{1,3}", low)):
+        return True
+    grp = punch.read_group_location(said)
+    return bool(grp and grp["scope"] == "numbers")
+
+
+async def _walk_brain_json(system: str, user: str, dm_chat: Optional[str] = None,
+                           max_tokens: int = 1200) -> Optional[dict]:
+    """The DM brain's model reading for the walk: the instructions, this DM's
+    last turns (when `dm_chat`), then the message; the answer is one JSON
+    object. None on any error."""
+    if not DM_BRAIN_API_KEY:
+        return None
+    try:
+        now = datetime.now(timezone.utc)
+        history = dm_brain.history_messages(await _dm_brain_history(dm_chat, now), now) if dm_chat else []
+        resp = await _dm_brain_client().chat.completions.create(
+            model=_DM_MODEL.get() or dm_brain.MODEL, max_tokens=max_tokens, temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": system}] + dm_brain.turn_messages(history, user))
+        return dm_brain.json_object(resp.choices[0].message.content)
+    except Exception as e:
+        logger.warning(f"[punch] brain read failed: {type(e).__name__}")
+        return None
+
+
+async def _punch_brain_model(state: dict, said: str, dm_chat: Optional[str] = None) -> Optional[dict]:
     """The model's reading (punch_brain.PROMPT): one JSON object, or None
-    without a key, on any error, or when it is not one."""
+    without a key, on any error, or when it is not one. With the DM brain on,
+    the brain's model reads it with the chat's last turns."""
+    if _WALK_BRAIN.get():
+        return await _walk_brain_json(punch_brain.PROMPT, punch_brain.user_message(state, said), dm_chat)
     if not OPENAI_API_KEY:
         return None
     try:
@@ -64742,7 +70766,8 @@ async def _punch_think(ident: dict, sess: dict, dm_chat: str, parsed: dict, said
     walker = str((ident.get("user") or {}).get("name") or "")
     state = punch_brain.state_for(sess, detail=sess.get("detail") or punch.DEFAULT_DETAIL,
                                   walker=walker, recipients=_punch_recipients_view(sess))
-    got = await _punch_brain_model(state, said)
+    # (dm_chat only with the brain on: stand-ins for the old reader keep its signature.)
+    got = await _punch_brain_model(state, said, **({"dm_chat": dm_chat} if _WALK_BRAIN.get() else {}))
     plan = punch_brain.clean_plan(got, state, said) if got is not None else None
     if plan is None:
         # The model is down: still the plain asks the walk was stuck on.
@@ -64769,7 +70794,18 @@ async def _punch_apply_plan(ident: dict, sess: dict, dm_chat: str, parsed: dict,
     late: List[dict] = []
     changed = False
     nxt: Optional[Tuple[str, dict]] = None
+    # Words about the recent photos first: their batch is the photos since
+    # the previous text, before a location in the same message moves it.
+    for a in [a for a in plan["actions"] if a["do"] == "describe"]:
+        lines.append(await _punch_batch_apply(sess, a["text"], now))
     for a in plan["actions"]:
+        if a["do"] == "describe":
+            continue
+        if a["do"] == "default_location":
+            await _punch_save(sess, default_loc=a["place"])
+            lines.append(f"Next photos: {punch.loc_phrase(a['place'])}." if a["place"]
+                         else "Next photos: no set place.")
+            continue
         do = a["do"]
         if do == "cancel":
             await _punch_save(sess, status="cancelled")
@@ -64959,7 +70995,7 @@ async def _punch_show_stage(sess: dict, dm_chat: str) -> bool:
         assign = sess.get("assign") or {}
         await send_whatsapp_message(dm_chat, punch.WHO_GETS_IT if not any(assign.values())
                                     and (_punch_simple(sess) or list(assign) == [punch.UNKNOWN])
-                                    else punch.assign_text(assign))
+                                    else punch.assign_text(assign, simple=_punch_simple(sess)))
         return True
     return await _punch_show_recap(sess, dm_chat)
 
@@ -65089,6 +71125,8 @@ async def _punch_photo_item(sess, parsed, words, voice, msg_id, now, *,
         parsed, _punch_photo_key(sess.get("project_id") or "unassigned", sess["_id"], captured))
     it = punch.new_item(n or captured, words, photo_key=key, message_id=msg_id, voice=voice, at=now)
     it["captured"] = captured
+    # "Moving up to 4th now": the next photos' place, unless theirs says another.
+    punch.apply_default_location(it, sess.get("default_loc"))
     it["photo_failed"] = key is None
     it["photo_quality"] = quality
     # How it was had (the diag shows it) and where the original lives on
@@ -65148,8 +71186,9 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
                                        "$set": {"updated_at": datetime.now(timezone.utc)}})
             await send_whatsapp_message(dm_chat, punch.orphan_text(orphans, _punch_time))
             return True
-        # NO DRAFT WITH AN ITEM NOBODY CAN FIND: each one missing a location
-        # is asked about first, one at a time.
+        # NEVER A BLANK ITEM (3:37 PM): a photo with no words of its own or
+        # from its batch gets a short description of what it shows, "(auto)".
+        await _punch_describe_blanks(sess, dm_chat)
         return await _punch_ask_where(sess, dm_chat, intro=True)
     words = (voice or {}).get("transcript") or text
     if parsed.get("has_image"):
@@ -65157,12 +71196,12 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
         await _react_to_message(dm_chat, parsed.get("message_id_serialized"), "👍")
         return True
     if voice or text:
-        last = items[-1] if items else None
         if low in ("undo", "undo that", "undo it") and sess.get("loc_undo"):
             return await _punch_undo_group(sess, dm_chat)
-        group = await _punch_read_group(words) if items and not low.startswith("add") else None
-        if group and group["scope"] != "last":
-            return await _punch_apply_group(sess, dm_chat, group)
+        grp = punch.read_group_location(words) if items else None
+        if grp and grp["scope"] == "numbers":
+            # "#12-20 roof": those numbers.
+            return await _punch_apply_group(sess, dm_chat, grp)
         ref = punch.target_ref(text) if not voice else None
         if ref and _punch_item_no(items, ref[0]):
             # "#2 4th floor Apt 4F": about that photo.
@@ -65174,43 +71213,511 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
             # The answer to "Add to which photo?".
             return await _punch_item_words(sess, dm_chat, parsed,
                                            _punch_item_no(items, int(bare.group(1))), pending, now)
-        if last and not last.get("text"):
-            # The words for the photo just sent (a caption typed or spoken after it).
-            fresh = punch.new_item(last["n"], words, photo_key=last.get("photo_key"),
-                                   message_id=last.get("message_id"), voice=voice, at=last.get("at"))
-            items[-1] = {**last, **{k: fresh[k] for k in ("text", "voice", "floor", "area", "trade",
-                                                           "trade_guess")},
-                         "caption_ids": list(last.get("caption_ids") or []) + [msg_id]}
-            await _punch_save(sess, items=items, last_captioned=last.get("captured"))
-            await send_whatsapp_message(dm_chat, punch.noted_text(items[-1]))
-            return True
-        if voice or low.startswith("add"):
-            # A spoken item with no photo, or "add: …".
-            w = re.sub(r"^\s*add\s*[:\-]?\s*", "", words, flags=re.IGNORECASE) if not voice else words
-            added = punch.new_item(len(items) + 1, w, photo_key=None, message_id=msg_id,
-                                   voice=voice, at=now)
-            if not voice:
-                added["text"] = punch.clean_caption(w)       # "Tile cracked", Apt 4F its own field
+        add = re.match(r"^\s*add\s*[:\-–]\s*(?P<w>\S.*)$", words or "", re.IGNORECASE | re.DOTALL)
+        if add:
+            # "add: …" -- the ONE way words alone make an item (Tue Oct 13,
+            # 3:37 PM): never a text, never a voice note.
+            w = add.group("w")
+            added = punch.new_item(max([i.get("n") or 0 for i in items] or [0]) + 1, w,
+                                   photo_key=None, message_id=msg_id, at=now)
+            added["text"] = punch.clean_caption(w)           # "Tile cracked", Apt 4F its own field
+            added["captured"] = max([i.get("captured") or 0 for i in items] or [0]) + 1
             items.append(added)
             await _punch_save(sess, items=items)
-            await send_whatsapp_message(dm_chat, punch.noted_text(added))
+            await send_whatsapp_message(dm_chat, punch.added_text(added))
             return True
-        # ANYTHING ELSE TYPED DURING A WALK is about the walk, never a
-        # question for the assistant: a note on the photo just sent, or,
-        # when the last photo is not recent, which photo?
-        if not items:
-            await send_whatsapp_message(dm_chat, (
-                "Send each photo with a caption or a voice note; 'done' when you're finished."))
-            return True
-        at = last.get("at")
-        if isinstance(at, datetime) and not at.tzinfo:
-            at = at.replace(tzinfo=timezone.utc)
-        if isinstance(at, datetime) and now - at <= timedelta(minutes=punch.NOTE_LAST_MINUTES):
-            return await _punch_item_words(sess, dm_chat, parsed, last, text, now)
-        await _punch_save(sess, pending_note=text)
-        await send_whatsapp_message(dm_chat, punch.WHICH_PHOTO)
-        return True
+        if low.strip(".!") in ("send", "send it", "send it now", "send now", "go ahead", "finish"):
+            # "send" while taking photos: finished (never words for a photo).
+            return await _punch_capture(ident, sess, dm_chat, parsed, "done", None, msg_id, now)
+        return await _punch_batch_text(ident, sess, dm_chat, parsed, words, now)
     return False
+
+
+# ── A TEXT ABOUT THE PHOTOS BEFORE IT (lib/punch_batch.py) ──────────────────
+#
+# Tue Oct 13, 3:37 PM, 588: "Last 8 pics all interior" became photo #13's
+# words and the 7 before it stayed blank. Only photos make items; a text
+# describes its batch: the photos since the previous text, or "last N pics".
+
+async def _punch_batch_model(text: str, prompt: Optional[str] = None) -> Optional[dict]:
+    """The model's reading of a text about a batch (punch_batch.BATCH_PROMPT,
+    or `prompt`); None without a key, on any error, or when it is not one
+    JSON object."""
+    if _WALK_BRAIN.get():
+        return await _walk_brain_json(prompt or punch_batch.BATCH_PROMPT, str(text)[:4000],
+                                       max_tokens=600)
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        async with ServerHttpClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 200,
+                      "response_format": {"type": "json_object"},
+                      "messages": [{"role": "system", "content": prompt or punch_batch.BATCH_PROMPT},
+                                   {"role": "user", "content": str(text)[:4000]}]})
+            resp.raise_for_status()
+            got = json.loads(resp.json()["choices"][0]["message"]["content"])
+        return got if isinstance(got, dict) else None
+    except Exception as e:
+        logger.warning(f"[punch] batch read failed: {type(e).__name__}")
+        return None
+
+
+async def _punch_read_batch(text: str) -> dict:
+    """What a text says about its photos: the model's reading, checked;
+    else (or when it found nothing) the words read here. {"kind": "command"}
+    when it tells the walk to do something."""
+    if punch_brain.wants_simple(text) or punch_brain.wants_detailed(text) or punch_batch.is_ask(text):
+        return {"kind": "command"}
+    got = punch_batch.clean_batch_model(await _punch_batch_model(text), text)
+    if got and got.get("kind") == "command":
+        return got
+    if not got or punch_batch.is_empty(got):
+        got = {"kind": "annotation", **punch_batch.read_batch(text)}
+    return got
+
+
+async def _punch_batch_text(ident, sess, dm_chat, parsed, words, now) -> bool:
+    """A text (or a voice note) during the photos: what it says, applied to
+    its batch -- one line back. Never an item; never one photo's words when
+    it was about the burst."""
+    items = sess["items"]
+    if not punch_batch.photo_items(items):
+        await send_whatsapp_message(dm_chat, "Send the photos first, then one text about "
+                                             "them (where, and what's wrong).")
+        return True
+    if punch_batch.is_trivial(words):
+        await send_whatsapp_message(dm_chat, "👍 Keep going — say done when you're finished.")
+        return True
+    ann = await _punch_read_batch(words)
+    if ann.get("kind") == "command":
+        done = await _punch_think(ident, sess, dm_chat, parsed, words, now)
+        if done is not None:
+            return done
+        # A question or an ask the walk could not act on just now: never
+        # words for the photos (Codex on #785).
+        await send_whatsapp_message(dm_chat, "I can't do that right now — your photos are as they "
+                                             "were. Keep going, or say done when you're finished.")
+        return True
+    await send_whatsapp_message(dm_chat, await _punch_batch_apply(sess, words, now, ann))
+    return True
+
+
+async def _punch_batch_apply(sess: dict, words: str, now: datetime, ann: Optional[dict] = None) -> str:
+    """Apply what a text says about its batch; the line to say back."""
+    items = sess["items"]
+    if ann is None:
+        ann = await _punch_read_batch(words)
+        if ann.get("kind") == "command":
+            ann = {"kind": "annotation", **punch_batch.read_batch(words)}
+    if punch_batch.is_empty(ann):
+        ann["description"] = punch.capitalize(" ".join(str(words or "").split()))[:120]
+    # The previous text's end: a batch text, or a location message (#783).
+    mark = max(int(sess.get("batch_mark") or 0), int(sess.get("loc_mark") or 0))
+    batch = punch_batch.targets(items, mark, ann.get("last_n"), sess.get("batch_prev"))
+    undo, changed = punch_batch.apply_batch(batch, ann, now)
+    photos = punch_batch.photo_items(items)
+    await _punch_save(sess, items=items,
+                      batch_mark=max([it.get("captured") or 0 for it in photos] or [0]),
+                      batch_prev=[it.get("captured") for it in batch],
+                      loc_undo={"items": undo, "mark": sess.get("loc_mark") or 0,
+                                "batch": {"mark": sess.get("batch_mark") or 0,
+                                          "prev": sess.get("batch_prev")}})
+    return (punch_batch.confirm(ann, changed) if changed else
+            "Those photos already have that. Reply to a photo to change one.")
+
+
+# ── A WALK TAKEN UNDER THE OLD RULE, PUT RIGHT (scripts/repair_punch_walk.py) ─
+#
+# Tue Oct 13, 3:37 PM, 588 (47 items, shadow): each text became the last
+# photo's words (or an item of its own) and 33 photos went out blank. The
+# walk's messages are read back from the webhook log (kept 30 days) in the
+# order they came, each text applied to its batch under the rules above;
+# the items a text made are removed; every photo keeps its number and its
+# P-id; the shadow rows it made are deleted; the walk is a draft again.
+
+_LOG_MID = re.compile(r'"_serialized"\s*:\s*"([^"]+)"')
+_LOG_TYPE = re.compile(r'"type"\s*:\s*"(\w+)"')
+_LOG_FROM = re.compile(r'"from"\s*:\s*"([^"]+)"')
+_LOG_ME = re.compile(r'"fromMe"\s*:\s*true')
+
+
+def _wa_log_event(row: dict) -> Optional[dict]:
+    """One webhook-log row as a walk event: {"chat", "from_me", "kind":
+    photo|text|voice|other, "message_id", "text", "quoted", "at"}; None
+    when it is not a message. An image's body is cut at 4 KB, so it is read
+    for its id, type and sender when it does not parse."""
+    body = str(row.get("raw_body_preview") or "")
+    at = row.get("received_at")
+    try:
+        p = parse_inbound_message(json.loads(body), vendor=WHATSAPP_VENDOR)
+        if p.get("event") and p.get("event") not in ("message", "message_create"):
+            return None
+        kind = "photo" if p.get("has_image") else "voice" if p.get("has_audio") else \
+            "text" if (p.get("body") or "").strip() else "other"
+        return {"chat": p.get("from") or p.get("sender") or "", "from_me": bool(p.get("from_me")),
+                "kind": kind, "message_id": p.get("message_id_serialized") or p.get("message_id") or "",
+                "text": (p.get("body") or "").strip() if kind == "text" else "",
+                "quoted": p.get("quoted_message_id") or "", "at": at}
+    except Exception:
+        mid, typ, frm = _LOG_MID.search(body), _LOG_TYPE.search(body), _LOG_FROM.search(body)
+        if not mid or not frm:
+            return None
+        t = typ.group(1) if typ else ""
+        return {"chat": frm.group(1), "from_me": bool(_LOG_ME.search(body)),
+                "kind": "photo" if t == "image" else "voice" if t in ("ptt", "audio") else "other",
+                "message_id": mid.group(1), "text": "", "quoted": "", "at": at}
+
+
+async def _punch_walk_events(sess: dict, store=None) -> List[dict]:
+    """The walker's own DM messages during the walk, oldest first."""
+    d = db if store is None else store
+    start = sess.get("created_at")
+    end = sess.get("sent_at") or sess.get("updated_at") or datetime.now(timezone.utc)
+    if not isinstance(start, datetime):
+        return []
+    q = {"received_at": {"$gte": start - timedelta(minutes=2), "$lte": end + timedelta(minutes=2)}}
+    # The walk's window only (the TTL index on received_at serves the range);
+    # put in order here.
+    rows = sorted(await d.whatsapp_webhook_log.find(q).to_list(20000),
+                  key=lambda r: r.get("received_at") or start)
+    want = wa_dm.phone_digits(sess.get("chat") or "")
+    out, seen = [], set()
+    for r in rows:
+        e = _wa_log_event(r)
+        if not e or e["from_me"] or e["kind"] == "other":
+            continue
+        if e["chat"] != sess.get("chat") and (not want or wa_dm.phone_digits(e["chat"]) != want):
+            continue
+        key = punch.short_message_id(e["message_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(e)
+    # What the assistant said in the chat meanwhile ("Where is #3 'Back of
+    # building'?"): a text right after a question about one item answers it.
+    try:
+        bot = await d.whatsapp_messages.find(
+            {"group_id": sess.get("chat"), "from_me": True,
+             "timestamp": {"$gte": start, "$lte": end + timedelta(minutes=2)}}).to_list(5000)
+    except Exception:
+        bot = []
+    for r in bot:
+        out.append({"chat": sess.get("chat"), "from_me": True, "kind": "bot", "message_id": "",
+                    "text": str(r.get("body") or ""), "quoted": "", "at": r.get("timestamp")})
+
+    def _when(e):
+        at = e.get("at")
+        if isinstance(at, datetime):
+            return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+        return start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+    return sorted(out, key=_when)
+
+
+async def _punch_place_reference(ref: dict) -> Optional[dict]:
+    """"Same for the last batch of pics": which photos, by the model, from
+    the walk's batches -- checked (punch_batch.clean_reference); None when
+    it is not clear (then it is listed as "couldn't place")."""
+    if not ref.get("batches"):
+        return None
+    lines = [f"batch {i}: photos {punch.numbers_text(b['ns'])} -- text: {b['text']!r}"
+             for i, b in enumerate(ref["batches"])]
+    got = await _punch_batch_model("Batches:\n" + "\n".join(lines) + f"\n\nThe text: {ref['text']!r}",
+                                   prompt=punch_batch.REFERENCE_PROMPT)
+    return punch_batch.clean_reference(got, ref)
+
+
+def _punch_text_is_command(text: str) -> bool:
+    """A text that ran the walk ("done", "send to me", "go ahead"), never
+    words about photos."""
+    t = " ".join(str(text or "").split())
+    low = t.lower().strip(".!")
+    return bool(low in punch.SEND_WORDS or low in punch.DONE_WORDS or low in punch.CANCEL_WORDS
+                or low in ("undo", "undo that", "undo it") or punch.is_escape(t) or punch.is_go(t)
+                or punch.send_shortcut(t) or punch.start_request(t) or punch.parse_edits(t)
+                or re.fullmatch(r"#?\s*\d{1,3}", low) or punch_brain.wants_simple(t)
+                or punch_brain.wants_detailed(t) or punch_batch.is_ask(t) or punch_batch.is_trivial(t))
+
+
+async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool = False,
+                             events: Optional[List[dict]] = None, vision: bool = True,
+                             say=lambda line: None) -> dict:
+    """Put one walk right (see above). Dry run unless `apply`. `events`:
+    the walk's messages (else read from the webhook log). Returns
+    {"ok", "why", "applied", "removed", "kept", "described", "draft"}."""
+    d = db if store is None else store
+    sess = await d[punch.SESSIONS].find_one({"_id": walk_id})
+    if not sess:
+        return {"ok": False, "why": "no such walk"}
+    rows = await d[punch.COLLECTION].find({"walk_id": walk_id}).to_list(5000)
+    if any(r.get("send_mode") == "live" for r in rows):
+        return {"ok": False, "why": "this walk went out LIVE -- not reopened (its items were sent)"}
+    events = events if events is not None else await _punch_walk_events(sess, d)
+    # A voice note's words are not in the log: its transcript is on the item
+    # the old rule put it on (a photo's caption, or an item of its own) --
+    # replayed as the text it was (Codex on #785).
+    spoken = {}
+    for it in sess.get("items") or []:
+        tr = ((it.get("voice") or {}).get("transcript") or "").strip()
+        if tr:
+            for mid in [it.get("message_id")] + list(it.get("caption_ids") or []):
+                if mid:
+                    spoken.setdefault(punch.short_message_id(mid), tr)
+    events = [({**e, "kind": "text", "text": spoken[punch.short_message_id(e.get("message_id"))],
+                "voice": True}
+               if e.get("kind") == "voice" and punch.short_message_id(e.get("message_id")) in spoken
+               else e) for e in events]
+    # Texts sent together are one message ("Correction. 3rd floor interior"
+    # + "Last 3 photos", 11:52).
+    events = punch_batch.merge_texts(events, is_command=_punch_text_is_command)
+    readings: Dict[int, dict] = {}
+    for i, e in enumerate(events):
+        if e.get("kind") != "text":
+            continue
+        if _punch_text_is_command(e.get("text") or ""):
+            readings[i] = {"kind": "command"}
+            continue
+        if punch_batch.is_reference(e.get("text") or ""):
+            readings[i] = {"kind": "reference"}
+            continue
+        readings[i] = await _punch_read_batch(e["text"])
+    items = [dict(it) for it in sess.get("items") or []]
+    plan = punch_batch.replay(items, events, readings)
+    # "Same for the last batch of pics": placed by the model, or listed.
+    unplaced_refs: List[dict] = []
+    for ref in plan["references"]:
+        placed = await _punch_place_reference(ref)
+        if placed:
+            ns = punch_batch.apply_reference(plan["items"], placed, ref.get("at"))
+            plan["outcome"][ref["i"]] = (f"same as batch -> {punch.numbers_text(ns)}: "
+                                         + punch_batch.describe(placed["ann"]))
+        else:
+            label = f"{_punch_time(ref.get('at'))} \"{ref['text']}\""
+            plan["unplaced"].append(label)
+            # Kept with the words it would copy, so the walker's "9 10" in
+            # the draft applies them (Codex on #793).
+            unplaced_refs.append(punch_batch.unplaced_entry(label, ref))
+            plan["outcome"][ref["i"]] = "couldn't place -- listed in the draft"
+    by_n = {r.get("n"): r for r in rows}
+    for it in plan["items"]:
+        r = by_n.get(it.get("n"))
+        if r and r.get("pid"):
+            it["pid"] = r["pid"]                         # its P-id, kept
+    for i, e in enumerate(events):
+        k = e.get("kind")
+        if k == "bot":
+            say(f"  {_punch_time(e.get('at'))}  bot   {(e.get('text') or '')[:70]!r}"
+                + (f"\n           -> {plan['outcome'][i]}" if plan["outcome"].get(i) else ""))
+            continue
+        if k == "photo":
+            say(f"  {_punch_time(e.get('at'))}  photo {plan['outcome'].get(i, '')}")
+            continue
+        label = "voice" if (k == "voice" or e.get("voice")) else "text"
+        said = repr((e.get("text") or "")[:90]) if e.get("text") else "(no words)"
+        say(f"  {_punch_time(e.get('at'))}  {label} {said}\n           -> {plan['outcome'].get(i, '')}")
+    for it in plan["removed"]:
+        say(f"  removed (a text made it): #{it.get('n')} {str(it.get('text') or '')[:60]!r}")
+    if plan["unmatched"]:
+        say(f"  photos in the log with no item: {len(plan['unmatched'])}")
+    blanks = punch_batch.blank(plan["items"])
+    out = {"ok": True, "why": "", "applied": plan["applied"], "removed": len(plan["removed"]),
+           "kept": len(plan["items"]), "described": len(blanks), "rows": len(rows),
+           "unplaced": plan["unplaced"], "outcome": plan["outcome"]}
+    simple = (sess.get("detail") or punch.DEFAULT_DETAIL) == punch.DETAIL_SIMPLE
+    if not apply:
+        # The real draft: the vision model's words on every photo with none,
+        # marked (auto) -- in memory only; nothing is saved.
+        if vision and blanks:
+            sem = asyncio.Semaphore(PUNCH_DESCRIBE_AT_ONCE)
+
+            async def _one(it):
+                async with sem:
+                    got = await _punch_vision(it, sess.get("project_id"), d)
+                punch_batch.set_auto(it, got["words"], got["error"])
+                return it, got
+            results = await asyncio.gather(*[_one(it) for it in blanks])
+            # The real description, or the exact reason there is none.
+            for it, got in sorted(results, key=lambda r: r[0].get("n") or 0):
+                if got["words"]:
+                    say(f"  vision #{it.get('n')}: {got['words']} (auto)   [{got['source']}]")
+                else:
+                    say(f"  vision #{it.get('n')}: NO DESCRIPTION -- {got['error']}")
+            failed = sum(1 for _it, got in results if not got["words"])
+            if failed:
+                say(f"  vision: {failed} of {len(results)} photo(s) without a description (reasons above)")
+        say(f"  {'described' if vision else 'would describe'} {len(blanks)} photo(s) with no words; "
+            f"would delete {len(rows)} shadow row(s); the walk would be a draft again")
+        out["draft"] = punch.draft_text(sess.get("job_name") or "", plan["items"], simple=simple,
+                                        unplaced=plan["unplaced"])
+        return out
+    now = datetime.now(timezone.utc)
+    att_ids = [r.get("attention_item_id") for r in rows if r.get("attention_item_id")]
+    if rows:
+        await d[punch.COLLECTION].delete_many({"walk_id": walk_id, "send_mode": {"$ne": "live"}})
+    for a in att_ids:
+        try:
+            await d.attention_items.delete_one({"_id": to_query_id(a)})
+        except Exception:
+            pass
+    sess["items"] = plan["items"]
+    photos = punch_batch.photo_items(plan["items"])
+    fields = {"items": plan["items"], "status": "draft", "where_asked": True, "asking": None,
+              "assign": {}, "whole": None, "target": None, "due": {}, "choose": None,
+              "shortcut": None, "sent_at": None, "nudge": {}, "loc_undo": None,
+              "batch_mark": max([it.get("captured") or 0 for it in photos] or [0]),
+              "batch_prev": None, "group_loc_v2": True, "trade_asked": False,
+              "rebatched_at": now, "updated_at": now, "unplaced": unplaced_refs}
+    await d[punch.SESSIONS].update_one({"_id": walk_id}, {"$set": fields})
+    sess.update(fields)
+    out["described"] = await _punch_describe_blanks(sess)
+    out["draft"] = _punch_draft(sess)
+    logger.info(f"[punch] walk={walk_id} re-read: kept={out['kept']} removed={out['removed']} "
+                f"described={out['described']} rows_deleted={len(rows)}")
+    if dm and sess.get("chat"):
+        await send_whatsapp_message(sess["chat"], (
+            f"I re-read your walkthrough at {sess.get('job_name') or 'the job'}: each text now "
+            "describes the photos before it, and photos with no words have a short description "
+            "marked (auto). Nothing was sent.\n\n") + out["draft"])
+    return out
+
+
+# ── A PHOTO WITH NO WORDS: what it shows (vision model, "(auto)") ──────────
+
+def _vision_jpeg(raw: bytes) -> Tuple[Optional[bytes], Optional[str]]:
+    """The photo as a JPEG at most 1024 px (what the vision model is sent)."""
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(raw)) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((1024, 1024))
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=85)
+        return out.getvalue(), None
+    except Exception as e:
+        return None, f"not an image ({type(e).__name__}, {len(raw)} bytes)"
+
+
+def _punch_vision_jpeg(key: str) -> Optional[bytes]:
+    raw = _r2_bytes(key)
+    return _vision_jpeg(raw)[0] if raw else None
+
+
+async def _punch_photo_bytes(it: dict, store=None) -> Tuple[Optional[bytes], str, Optional[str]]:
+    """A punch photo's bytes: R2 (the full photo, then the stored key), else
+    WhatsApp's media for its message (the webhook log's reference). Returns
+    (bytes, where from, None) or (None, "", every reason it failed)."""
+    why = []
+    key = it.get("photo_key")
+    if key:
+        for k in dict.fromkeys([_full_key(key), key]):
+            raw, err = await asyncio.to_thread(_r2_fetch, k)
+            if raw:
+                return raw, f"r2:{k}", None
+            why.append(f"R2 {k}: {err}")
+            if err and err.startswith("R2 not configured"):
+                break
+    else:
+        why.append("no photo_key on the item")
+    mid = it.get("message_id") or ""
+    ref = it.get("media_ref") or (await _webhook_media_ref(mid, store) if mid else {})
+    if mid or ref:
+        try:
+            img = await download_image({"message_id_serialized": mid, "message_id": mid, "raw": ref})
+        except Exception as e:
+            img = None
+            why.append(f"WhatsApp media: {type(e).__name__}: {e}"[:200])
+        else:
+            if img:
+                return img, "whatsapp", None
+            why.append("WhatsApp media: nothing came back" + ("" if ref else " (no media reference in the log)"))
+    else:
+        why.append("no message id for WhatsApp media")
+    return None, "", "; ".join(why)
+
+
+async def _punch_vision(it: dict, project_id: Any = None, store=None) -> Dict[str, Any]:
+    """The vision model on one punch photo: {"words", "error", "source"}.
+    `words` at most 8, or None; `error` says exactly why there are none (no
+    key, no photo bytes and why, the HTTP status and body, the model's own
+    "none"). Logged per photo -- never a silent None."""
+    n = it.get("n")
+    if not QWEN_API_KEY:
+        return {"words": None, "source": "", "error": "no vision key (QWEN_API_KEY / DASHSCOPE_API_KEY unset)"}
+    raw, source, err = await _punch_photo_bytes(it, store)
+    if not raw:
+        logger.warning(f"[punch] vision #{n}: no photo ({err})")
+        return {"words": None, "source": "", "error": f"no photo: {err}"}
+    data, err = await asyncio.to_thread(_vision_jpeg, raw)
+    if not data:
+        logger.warning(f"[punch] vision #{n}: {err} from {source}")
+        return {"words": None, "source": source, "error": f"{err} from {source}"}
+    await record_vision_call(db, endpoint=VISION_PUNCH_PHOTO,
+                             project_id=str(project_id) if project_id else None)
+    try:
+        async with ServerHttpClient(timeout=45.0) as client:
+            resp = await client.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {QWEN_API_KEY}",
+                         "Content-Type": "application/json"},
+                json={"model": QWEN_MODEL, "max_tokens": 40, "temperature": 0,
+                      "messages": [{"role": "user", "content": [
+                          {"type": "image_url", "image_url": {
+                              "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
+                          {"type": "text", "text": punch_batch.PHOTO_PROMPT}]}]})
+            if resp.status_code >= 400:
+                body = " ".join(str(resp.text or "").split())[:200]
+                logger.warning(f"[punch] vision #{n}: HTTP {resp.status_code} {body}")
+                return {"words": None, "source": source, "error": f"vision HTTP {resp.status_code}: {body}"}
+            said = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"[punch] vision #{n}: {type(e).__name__}: {e}")
+        return {"words": None, "source": source, "error": f"vision call failed: {type(e).__name__}: {e}"[:240]}
+    words = punch_batch.clean_description(said)
+    if not words:
+        return {"words": None, "source": source,
+                "error": f"the model saw nothing wrong (answered {str(said or '').strip()[:40]!r})"}
+    return {"words": words, "source": source, "error": None}
+
+
+async def _punch_describe_photo(key: str, project_id: Any = None) -> Optional[str]:
+    """At most 8 words for a stored photo (by its key); None with the reason
+    logged."""
+    return (await _punch_vision({"photo_key": key}, project_id))["words"] if key else None
+
+
+#: How many photos are described at once.
+PUNCH_DESCRIBE_AT_ONCE = 4
+
+
+async def _punch_describe_blanks(sess: dict, dm_chat: Optional[str] = None,
+                                 trades: bool = True) -> int:
+    """Every live item with no words gets the vision model's, marked
+    "(auto)"; one it cannot describe keeps the reason and is shown "(no
+    description)" -- never a stand-in description. Returns how many."""
+    todo = punch_batch.blank(sess["items"])
+    if not todo:
+        return 0
+    if dm_chat and len(todo) > 3:
+        await send_whatsapp_message(dm_chat, f"Writing a short description for the {len(todo)} "
+                                             "photos with none — one moment.")
+    gate = asyncio.Semaphore(PUNCH_DESCRIBE_AT_ONCE)
+
+    async def one(it):
+        # A photo item with no stored copy (photo_failed) still has its
+        # WhatsApp media: the same fallback as the dry run (Codex on #796).
+        is_photo = it.get("photo_key") or it.get("photo_failed")
+        async with gate:
+            got = await _punch_vision(it, sess.get("project_id")) if is_photo \
+                else {"words": None, "error": "no photo"}
+        words = got["words"]
+        punch_batch.set_auto(it, words, got["error"])
+        if trades and words and ((it.get("trade") or punch.UNKNOWN) == punch.UNKNOWN or it.get("trade_guess")):
+            it["trade"], it["trade_guess"] = punch.trade_for(words)
+    await asyncio.gather(*(one(it) for it in todo))
+    await _punch_save(sess, items=sess["items"])
+    return len(todo)
 
 
 # ── A LOCATION FOR A GROUP OF PHOTOS (during the walk) ────────────────────
@@ -65279,6 +71786,14 @@ async def _punch_apply_group(sess: dict, dm_chat: str, group: dict) -> bool:
 async def _punch_undo_group(sess: dict, dm_chat: str) -> bool:
     items = sess["items"]
     u = sess.get("loc_undo") or {}
+    if u.get("batch") is not None:
+        # A text about a batch: its words, place and note taken back off.
+        ns = punch_batch.restore(items, u.get("items") or [])
+        await _punch_save(sess, items=items, loc_undo=None, batch_mark=u["batch"].get("mark") or 0,
+                          batch_prev=u["batch"].get("prev"))
+        await send_whatsapp_message(dm_chat, f"Undone — {punch.numbers_text(ns)} back as they were."
+                                    if ns else "Nothing to undo.")
+        return True
     ns = []
     for before in u.get("items") or []:
         it = _punch_item_by_captured(items, before.get("captured"))
@@ -65392,11 +71907,34 @@ async def _punch_draft_turn(ident, sess, dm_chat, text, voice) -> bool:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
+    pending = sess.get("unplaced") or []
+    answer = punch_batch.unplaced_reply(words) if pending else None
+    if answer:
+        # The answer to "Couldn't place — tell me which photos", for the
+        # first one listed: its words go on those photos, or it is let go.
+        # Read before the send words: "skip" here answers that line.
+        first = pending[0] if isinstance(pending[0], dict) else {"label": str(pending[0]), "copy": None}
+        if answer.get("skip"):
+            note = f"Skipped {first['label']}."
+        else:
+            changed, missing = punch_batch.place_unplaced(items, first, answer["ns"])
+            if not changed:
+                bad = missing or answer["ns"]
+                await send_whatsapp_message(dm_chat, (
+                    f"No photo {punch.numbers_text(bad)} in this walkthrough. "
+                    if missing else "Nothing to copy from that one. ") + punch.UNPLACED_FOOT)
+                return True
+            note = (f"Applied {first['label']} to {punch.numbers_text(changed)}."
+                    + (f" No photo {punch.numbers_text(missing)}." if missing else ""))
+        await _punch_save(sess, items=items, unplaced=pending[1:], nudge={})
+        await send_whatsapp_message(dm_chat, note + "\n\n" + _punch_draft(sess))
+        return True
     escape = punch.is_escape(words)
     if low in punch.SEND_WORDS or escape:
         # NOTHING OPTIONAL STOPS A SEND (1:43 PM: "Send" -> "43 still need a
         # trade (5, 2, 3, 8, 19 ...)"): on to who gets it; one soft line there.
-        await _punch_save(sess, nudge={})
+        # A reference still unplaced is let go with it -- never a stale line.
+        await _punch_save(sess, nudge={}, unplaced=[])
         return await _punch_to_assign(ident, sess, dm_chat)
     edits = punch.parse_edits(words)
     where = None if edits else punch.parse_batch_where(
@@ -65477,7 +72015,7 @@ async def _punch_to_assign(ident, sess, dm_chat) -> bool:
         # never a "? → ?" row (1:43 PM).
         assign[punch.UNKNOWN] = _punch_who(await _punch_walker(sess))
     await _punch_save(sess, status="assign", whole=None, choose=None, assign=assign)
-    await send_whatsapp_message(dm_chat, "\n\n".join(x for x in (soft, punch.assign_text(assign)) if x))
+    await send_whatsapp_message(dm_chat, "\n\n".join(x for x in (soft, punch.assign_text(assign, simple=_punch_simple(sess))) if x))
     return True
 
 
@@ -65514,7 +72052,7 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
         # 'ok' with a trade nobody has: that one short question, never the
         # whole list again (1:43 PM).
         n = await _punch_nudge(sess)
-        await send_whatsapp_message(dm_chat, punch.open_trades_question(open_now, stuck=n >= 2))
+        await send_whatsapp_message(dm_chat, punch.open_trades_question(open_now, stuck=n >= 2, simple=_punch_simple(sess)))
         return True
     if r.get("group"):
         # The job's group: the whole list posted there, each trade's owner
@@ -65524,7 +72062,7 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
     if r.get("who"):
         # 11:05 PM: "who can you send it to?" got the same list again.
         await send_whatsapp_message(dm_chat, await _punch_people_text(sess) + "\n\n"
-                                    + punch.assign_text(assign))
+                                    + punch.assign_text(assign, simple=_punch_simple(sess)))
         return True
     if choose and not (r.get("all") or r.get("pairs") or r.get("fill")):
         await send_whatsapp_message(dm_chat, punch.which_text(choose["said"], choose["options"]))
@@ -65553,7 +72091,7 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
             return await _punch_assign_to(sess, dm_chat, assign, "all", person, [])
         if miss:
             await send_whatsapp_message(dm_chat, _punch_unknown(", ".join(miss), pool) + "\n\n"
-                                        + punch.assign_text(assign))
+                                        + punch.assign_text(assign, simple=_punch_simple(sess)))
             return True
     elif r.get("pairs"):
         for t, name in r["pairs"]:
@@ -65579,7 +72117,7 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
             return await _punch_assign_to(sess, dm_chat, assign, "fill", person, [])
         if miss:
             await send_whatsapp_message(dm_chat, _punch_unknown(", ".join(miss), pool) + "\n\n"
-                                        + punch.assign_text(assign))
+                                        + punch.assign_text(assign, simple=_punch_simple(sess)))
             return True
     elif not r.get("ok") and not punch.is_escape(text):
         # Never the whole list again for words it cannot read: short.
@@ -65605,7 +72143,7 @@ def _punch_who_text(sess: dict, assign: Dict[str, Optional[dict]]) -> str:
     plain question; else "Who gets what?"."""
     if not any(assign.values()) and (_punch_simple(sess) or list(assign) == [punch.UNKNOWN]):
         return punch.WHO_GETS_IT
-    return punch.assign_text(assign)
+    return punch.assign_text(assign, simple=_punch_simple(sess))
 
 
 async def _punch_people_text(sess) -> str:
@@ -65706,7 +72244,7 @@ async def _punch_apply_shortcut(sess: dict, dm_chat: str) -> bool:
         return True
     await _punch_save(sess, status="assign")
     await send_whatsapp_message(dm_chat, _punch_unknown(sc.get("name") or "", pool) + "\n\n"
-                                + punch.assign_text(assign))
+                                + punch.assign_text(assign, simple=_punch_simple(sess)))
     return True
 
 
@@ -65838,7 +72376,11 @@ async def _punch_recheck_assign(sess) -> str:
     for t, p in assign.items():
         # Only a real refusal takes a name off -- never a failed check.
         if p and await _recipient_refusal(sess["company_id"], p) == RECIPIENT_REFUSED:
-            gone.append(f"{t} → {p.get('name') or p.get('company') or '?'}")
+            who = p.get('name') or p.get('company') or '?'
+            if who not in gone and _punch_simple(sess):
+                gone.append(who)                  # simple: never a trade named
+            elif not _punch_simple(sess):
+                gone.append(f"{t} → {who}")
             assign[t] = None
     whole = sess.get("whole")
     if whole and await _recipient_refusal(sess["company_id"], whole) == RECIPIENT_REFUSED:
@@ -65858,7 +72400,7 @@ async def _punch_show_recap(sess, dm_chat, head: str = "") -> bool:
         # A name taken off: "Who gets what?" again, never a recap with a hole.
         await _punch_save(sess, status="assign")
         await send_whatsapp_message(dm_chat, "\n\n".join(
-            x for x in (head, note, punch.assign_text(sess.get("assign") or {})) if x))
+            x for x in (head, note, punch.assign_text(sess.get("assign") or {}, simple=_punch_simple(sess))) if x))
         return True
     settings = await _whatsapp_project_settings(sess["project_id"])
     mode = settings.get("punch_sends") if settings.get("punch_sends") in punch.SEND_MODES \
@@ -65866,7 +72408,7 @@ async def _punch_show_recap(sess, dm_chat, head: str = "") -> bool:
     await send_whatsapp_message(dm_chat, (head + "\n\n" if head else "") + punch.recap_text(
         sess["items"], sess.get("assign") or {}, sess.get("due") or {}, mode, sess.get("whole"),
         target=sess.get("target"), group_name=await _punch_group_name(settings.get("gc_group_id")),
-        default_due=punch.due_default(settings.get("punch_due_default"))))
+        default_due=punch.due_default(settings.get("punch_due_default")), simple=_punch_simple(sess)))
     return True
 
 
@@ -65879,7 +72421,9 @@ async def _punch_recap_turn(ident, sess, dm_chat, text) -> bool:
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
     if low in punch.SEND_WORDS or punch.parse_assign_reply(text).get("ok") \
-            or punch.is_escape(text):
+            or punch.is_escape(text) or punch.is_go(text):
+        # "go ahead" / "do it" / "yes send" / "send it" are ok (3:37 PM: the
+        # recap again).
         return await _punch_send_now(ident, sess, dm_chat)
     live_trades = {it["trade"] for it in sess["items"] if it.get("status", "draft") != "dropped"}
     trades = sorted(set((sess.get("assign") or {}).keys()) | live_trades)
@@ -65907,6 +72451,9 @@ async def _punch_recap_turn(ident, sess, dm_chat, text) -> bool:
 async def _punch_send_now(ident, sess, dm_chat) -> bool:
     """'ok' at the recap: each trade's due (the job's default where none was
     said), then the send."""
+    # Never a blank item out (3:37 PM) -- words only: a trade named now
+    # would not be in "Who gets what?".
+    await _punch_describe_blanks(sess, trades=False)
     live = [it for it in sess["items"] if it.get("status", "draft") != "dropped"]
     assign = dict(sess.get("assign") or {})
     if not sess.get("whole") and sess.get("target") != "group":
@@ -65918,7 +72465,7 @@ async def _punch_send_now(ident, sess, dm_chat) -> bool:
             for t in orphan:
                 assign[t] = None
             await _punch_save(sess, status="assign", assign=assign, choose=None)
-            await send_whatsapp_message(dm_chat, punch.open_trades_question(orphan))
+            await send_whatsapp_message(dm_chat, punch.open_trades_question(orphan, simple=_punch_simple(sess)))
             return True
     settings = await _whatsapp_project_settings(sess["project_id"])
     default = punch.due_default(settings.get("punch_due_default"))
@@ -66185,9 +72732,11 @@ async def _punch_send(ident: dict, sess: dict) -> str:
         for t, _p, _w in refused:
             assign[t] = None
         await _punch_save(sess, status="assign", assign=assign, whole=None)
-        names = "; ".join(f"{t} → {p.get('name') or '?'}" for t, p, _w in refused)
+        names = "; ".join(dict.fromkeys(p.get('name') or '?' for _t, p, _w in refused)) \
+            if _punch_simple(sess) else \
+            "; ".join(f"{t} → {p.get('name') or '?'}" for t, p, _w in refused)   # simple: no trade
         return (f"Not sent: {names} — {RECIPIENT_REFUSED}. Nothing was posted.\n\n"
-                + punch.assign_text(assign))
+                + punch.assign_text(assign, simple=_punch_simple(sess)))
     if whole and not to_group and not whole.get("jid"):
         await _punch_save(sess, status="recap")
         return (f"{punch.who_label(whole)} has no WhatsApp number to DM. Say \"to the group\" "
@@ -66207,11 +72756,28 @@ async def _punch_send(ident: dict, sess: dict) -> str:
         b = by_person.setdefault(key, {"person": None if to_group else person, "items": [], "dues": {}})
         b["items"].append(it)
         b["dues"][it["trade"]] = due_of.get(it["trade"]) or default_due
+    simple = _punch_simple(sess)
     for b in by_person.values():
         # One due for all of a message's items, else "electrical Mon, tile Fri".
         days = sorted(set(b["dues"].values()))
-        b["due_words"] = days[0] if len(days) == 1 else ", ".join(
-            f"{t} {punch.due_label(d)}" for t, d in sorted(b["dues"].items()))
+        if len(days) == 1:
+            b["due_words"] = days[0]
+        elif simple:
+            # Never a trade on a simple walk (Codex on #801): the group post
+            # by person, a person's own message by day.
+            names: Dict[tuple, str] = {}
+            by_who: Dict[tuple, List[str]] = {}
+            for t, d in sorted(b["dues"].items()):
+                p = owner_of({"trade": t})
+                k = punch._person_key(p) if p else ("", "")
+                names[k] = (p.get("name") or p.get("company") or "?") if p else "the rest"
+                by_who.setdefault(k, []).append(d)
+            b["due_words"] = (", ".join(f"{names[k]} {' / '.join(sorted(set(ds)))}"
+                                        for k, ds in by_who.items())
+                              if to_group and len(by_who) > 1 else " / ".join(days))
+        else:
+            b["due_words"] = ", ".join(
+                f"{t} {punch.due_label(d)}" for t, d in sorted(b["dues"].items()))
     # Real @mentions: every person resolved together (one get-lid call per 50
     # unresolved @lids) -- per trade owner for the group post.
     people = {}
@@ -66230,8 +72796,14 @@ async def _punch_send(ident: dict, sess: dict) -> str:
         rows = []
         for it in b["items"]:
             person = owner_of(it)
-            seq = await _punch_next_seq(sess["project_id"])
-            pid = punch.punch_id(sess["job_code"] or "JOB", seq)
+            if it.get("pid"):
+                # A walk sent before (in shadow) and reopened: its photos keep
+                # their P-ids (3:37 PM repair).
+                pid = it["pid"]
+                seq = int(str(pid).rsplit("-", 1)[-1]) if str(pid).rsplit("-", 1)[-1].isdigit() else 0
+            else:
+                seq = await _punch_next_seq(sess["project_id"])
+                pid = punch.punch_id(sess["job_code"] or "JOB", seq)
             item_due = b["dues"].get(it["trade"]) or default_due
             due_at = punch.due_date(item_due, now)
             due_doc = {"due_text": "" if item_due == punch.NO_DUE else item_due,
@@ -66293,7 +72865,8 @@ async def _punch_send(ident: dict, sess: dict) -> str:
                 tgt = tgts.get(f"{p['kind']}:{p['id']}") if p else None
                 if tgt:
                     mentions[t] = tgt["handle"]
-                    tlist.append(tgt)
+                    if all(x["handle"] != tgt["handle"] for x in tlist):
+                        tlist.append(tgt)                  # each person mentioned once
                     if p.get("name") not in named_list:
                         named_list.append(p.get("name"))
             for r in rows:
@@ -66389,8 +72962,9 @@ async def _punch_post(sess: dict, group_id: str, batches: List[dict]) -> str:
                      "(the items are kept with them; ask \"show P23 photo\").")
     if quiet and done:
         from lib import shabbos as _shabbos
+        await _punch_save(sess, queued_until=quiet)     # "was it sent?": held, not sent
         lines.append(f"It's Shabbos / Yom Tov: these go out after it ends "
-                     f"({quiet.astimezone(_shabbos.NY):%a %-I:%M %p}).")
+                     f"({datefmt.strftime(quiet.astimezone(_shabbos.NY), '%a %-I:%M %p')}).")
     if failed:
         await _punch_save(sess, status="resend",
                           undelivered=[r["pid"] for b in failed for r in b["items"]])
@@ -66959,11 +73533,21 @@ async def _punch_verdict(ident: dict, text: str, now: datetime) -> Optional[str]
     return f"{row['pid']} reopened; it will be chased again."
 
 
-async def _punch_answer(ident: dict, q: dict) -> str:
+async def _punch_answer(ident: dict, q: dict, dm_chat: str = "", text: str = "") -> str:
     projects = ident.get("projects") or []
     if q["q"] == "open":
         project, why = punch.match_project(q.get("job"), projects)
+        likely = None
+        if not project and not q.get("job") and dm_chat:
+            # No job said: the walk just finished, the job named here in the
+            # last 30 min, the job with the latest punch activity.
+            ctx, likely, _rule = await _dm_job_context(ident, dm_chat, await _dm_jobs(ident),
+                                                       text=text or "punch")
+            project = ctx["project"] if ctx else None
         if not project:
+            if likely:
+                return (f"Which job — {likely['label']}? Ask e.g. "
+                        f"\"what's open on 6 at {wa_assistant.house_number(likely['label']) or likely['label']}?\"")
             return "Which job? Ask e.g. \"what's open on 6 at 588?\""
         pid = str(project.get("_id") or project.get("id"))
         rows = await db[punch.COLLECTION].find({"project_id": pid}).to_list(2000)
@@ -67640,9 +74224,14 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         parsed["photo_meta"] = parsed.get("_photo_meta")
                 except Exception as e:
                     logger.warning(f"[punch] completion photo failed: {type(e).__name__}")
-            await _store_group_message(parsed, group_id, project_id, msg_company_id,
-                                       stored_body if voice_block else body, now,
-                                       voice=voice_block)
+            stored_row = await _store_group_message(parsed, group_id, project_id, msg_company_id,
+                                                    stored_body if voice_block else body, now,
+                                                    voice=voice_block)
+            # A photo posted in a linked job group is kept, with who sent it
+            # and what it shows (lib/wa_photos.py) -- history, like the
+            # message itself: not subject to bot_enabled.
+            if parsed.get("has_image"):
+                await _group_photo_capture(stored_row, parsed, project_id, msg_company_id, body, now)
 
             # Master kill switch — stop all bot-initiated behavior below this point
             if not bot_enabled:
@@ -68025,8 +74614,16 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 if not parsed.get("has_image") or _punch_photo_caption_ref(
                     parsed, parsed.get("body") or "") else None
             reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
-            await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
+            if reply:
+                await send_whatsapp_message(dm_chat, reply)
+            elif await _dm_start_hint_due(dm_chat, parsed.get("raw")):
+                await send_whatsapp_message(dm_chat, wa_assistant.START_HINT_TEXT)
             return
+        # Opted in but never welcomed (START before the welcome existed):
+        # welcomed now, once, and their message is still answered below.
+        await _dm_welcome(ident["user"], dm_chat, "dm_welcomed")
+        # The DM brain answers this person (everyone, unless dm_brain_off).
+        dm_brain_on = await _dm_brain_on(ident)
 
         # Transcribe audio if present.
         # Phase F1: voice notes go through the orchestration module
@@ -68219,7 +74816,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
         # edits, assigning, the due day, send; and punch questions / "P23 ok".
         if parsed.get("has_image") or body:
             try:
-                if await _punch_dm_turn(ident, dm_chat, parsed, body or "", voice=dm_voice):
+                if await _punch_dm_turn(ident, dm_chat, parsed, body or "", voice=dm_voice,
+                                        brain=dm_brain_on):
                     return
             except Exception as e:
                 logger.warning(f"[punch] dm turn failed: {type(e).__name__}")
@@ -68231,7 +74829,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
         # question is visible (it replaces the old "Reply CORRECT" cue,
         # which confirmed a write this assistant no longer makes).
         await _dm_assistant_reply(
-            ident, dm_chat, body, parsed.get("message_id_serialized") or "",
+            ident, dm_chat, body, parsed.get("message_id_serialized") or "", brain=dm_brain_on,
             heard=body if parsed.get("has_audio") else None,
             quoted={"body": parsed.get("quoted_body") or "",
                     "type": parsed.get("quoted_type") or "",
@@ -70815,16 +77413,26 @@ VOICE_LOG_PAGE = 100
 VOICE_LOG_SCAN_MAX = 5000
 
 
-async def _voice_log_stream(company_id: str, project_id: str, before: Optional[datetime]):
-    """The job's voice notes, newest first, a page at a time: its groups'
-    rows (whatsapp_messages) and DM voice events, merged on time. Yields
-    (at, "group" | "dm", row)."""
+async def _voice_log_stream(company_id: str, project_id: str, before: Optional[datetime],
+                            media: str = ""):
+    """The job's voice notes and group photos, newest first, a page at a
+    time: its groups' rows (whatsapp_messages) and DM voice events, merged on
+    time. `media`: "voice", "photo", or both. Yields (at, "group" | "dm",
+    row)."""
     async def pages(kind):
         cur = before
+        if kind == "dm" and media == "photo":
+            return
         while True:
             if kind == "group":
                 q = {"project_id": str(project_id), "company_id": _company_id_filter(company_id),
-                     "has_audio": True, "sender": {"$ne": "bot"}}
+                     "sender": {"$ne": "bot"}}
+                if media == "voice":
+                    q["has_audio"] = True
+                elif media == "photo":
+                    q["photo"] = {"$exists": True}
+                else:
+                    q["$or"] = [{"has_audio": True}, {"photo": {"$exists": True}}]
                 if cur is not None:
                     q["timestamp"] = {"$lt": cur}
                 batch = await db.whatsapp_messages.find(q).sort(
@@ -70868,7 +77476,7 @@ def _utc_aware(v: datetime) -> datetime:
                  dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def get_project_voice_log(project_id: str, sender: str = "", lang: str = "",
                                 status: str = "", before: str = "", limit: int = VOICE_LOG_PAGE,
-                                current_user=Depends(get_current_user)):
+                                media: str = "", current_user=Depends(get_current_user)):
     """Admin only: every voice note of this job, newest first -- its groups'
     notes, and DM voice notes answered about this job. Per note: when, who
     (a name; never a number), where (group / DM), language, confidence, what
@@ -70880,6 +77488,8 @@ async def get_project_voice_log(project_id: str, sender: str = "", lang: str = "
     while reading, page after page; `next_before` continues (pass it as
     `before`), null when the history is read to the end."""
     company_id = await _attention_admin_project(project_id, current_user)
+    if media and media not in ("voice", "photo"):
+        raise HTTPException(status_code=422, detail="media: voice or photo")
     if status and status not in wa_voice.LOG_STATUSES:
         raise HTTPException(status_code=422,
                             detail="status: " + ", ".join(wa_voice.LOG_STATUSES))
@@ -70900,7 +77510,7 @@ async def get_project_voice_log(project_id: str, sender: str = "", lang: str = "
     kept: List[dict] = []
     langs: set = set()
     scanned, last_at, exhausted = 0, None, True
-    stream = _voice_log_stream(company_id, project_id, before_at)
+    stream = _voice_log_stream(company_id, project_id, before_at, media)
     async for at, kind, r in stream:
         if len(kept) >= limit or scanned >= VOICE_LOG_SCAN_MAX:
             exhausted = False
@@ -70912,9 +77522,15 @@ async def get_project_voice_log(project_id: str, sender: str = "", lang: str = "
             person = await _attention_resolve(jid, company_id, project_id, cache) if jid else {}
             who = ((person or {}).get("name") if (person or {}).get("status") == "resolved"
                    else "") or wa_sender_map.label(r.get("sender_name") or "", jid)
-            view = wa_voice.log_row(r, who=who, where="group",
-                                    place=gnames.get(r.get("group_id")) or "",
-                                    at=_iso_utc(at), produced=[])
+            if r.get("photo") is not None and not r.get("has_audio"):
+                pkey = (r.get("photo") or {}).get("key")
+                url = await asyncio.to_thread(_presign_r2_get, pkey, 900) if pkey else ""
+                view = wa_photos.log_row(r, who=who, place=gnames.get(r.get("group_id")) or "",
+                                         at=_iso_utc(at), photo_url=url or "")
+            else:
+                view = wa_voice.log_row(r, who=who, where="group",
+                                        place=gnames.get(r.get("group_id")) or "",
+                                        at=_iso_utc(at), produced=[])
         else:
             uid = str(r.get("user_id") or "")
             if uid and uid not in users:
@@ -71309,9 +77925,9 @@ async def _sender_map_apply(company_id: str, jid: str, row: Optional[dict]) -> i
 
 
 @api_router.get("/projects/{project_id}/whatsapp/people",
-                dependencies=[Depends(require_approved), Depends(require_project_access)])
+                dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def get_whatsapp_people(project_id: str,
-                              project=Depends(require_project_access),
+                              project=Depends(require_project_admin_access),
                               current_user=Depends(get_project_admin_user)):
     """Admin / PM: this company's unknown group senders, and who they were
     said to be. Company choices are this project's subs and the GC team."""
@@ -71335,9 +77951,9 @@ async def get_whatsapp_people(project_id: str,
 
 
 @api_router.put("/projects/{project_id}/whatsapp/people/{key}",
-                dependencies=[Depends(require_approved), Depends(require_project_access)])
+                dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def set_whatsapp_person(project_id: str, key: str, body: SenderMapBody,
-                              project=Depends(require_project_access),
+                              project=Depends(require_project_admin_access),
                               current_user=Depends(get_project_admin_user)):
     """Say who a sender is. Applies to every group of this company, and
     re-points this company's OPEN attention items at them."""
@@ -71384,9 +78000,9 @@ class SenderLanguageBody(BaseModel):
 
 
 @api_router.put("/projects/{project_id}/whatsapp/people/{key}/language",
-                dependencies=[Depends(require_approved), Depends(require_project_access)])
+                dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def set_whatsapp_person_language(project_id: str, key: str, body: SenderLanguageBody,
-                                       project=Depends(require_project_access),
+                                       project=Depends(require_project_admin_access),
                                        current_user=Depends(get_project_admin_user)):
     """What a sender speaks: auto (Whisper detects it), en, es or yi. Their
     voice notes are then transcribed with it as Whisper's language hint.
@@ -71407,9 +78023,9 @@ async def set_whatsapp_person_language(project_id: str, key: str, body: SenderLa
 
 
 @api_router.delete("/projects/{project_id}/whatsapp/people/{key}",
-                   dependencies=[Depends(require_approved), Depends(require_project_access)])
+                   dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def clear_whatsapp_person(project_id: str, key: str,
-                                project=Depends(require_project_access),
+                                project=Depends(require_project_admin_access),
                                 current_user=Depends(get_project_admin_user)):
     """Forget who a sender is. Open items that named them through the map go
     back to unresolved."""
@@ -72520,7 +79136,7 @@ async def list_failed_plan_index_jobs(current_user=Depends(get_admin_seat_user))
 
 
 @api_router.post("/projects/{project_id}/plan-glyphs/run",
-                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+                 dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_user)):
     """Start the equipment-placement pass for a project (admin only).
 
@@ -72546,7 +79162,7 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
 
 
 @api_router.post("/projects/{project_id}/plan-index/{file_id}/retry",
-                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+                 dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def retry_plan_index_job(project_id: str, file_id: str,
                                current_user=Depends(get_admin_user)):
     """Put a given-up file back on the queue, keeping the pages it finished.
@@ -74497,6 +81113,8 @@ async def shutdown_db_client():
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting Levelog API with Sync Support...")
+    # Which DM path can answer (the brain needs its key): one line at boot.
+    logger.info(_dm_brain_startup_line())
 
     # ── WHICH VISION MODEL IS THIS BOX ACTUALLY RUNNING ────────────────────
     #
@@ -74599,6 +81217,9 @@ async def startup_event():
     # The plan index queue survives restarts; this drains it.
     global _PLAN_INDEX_WORKER_TASK
     _PLAN_INDEX_WORKER_TASK = asyncio.create_task(_plan_index_worker())
+
+    global _SHEET_TILE_WORKER_TASK
+    _SHEET_TILE_WORKER_TASK = asyncio.create_task(_sheet_tile_worker())
 
     # ── EVERY UNIQUE BUILD GOES THROUGH THE RESILIENT HELPER ───────────────
     #
@@ -76216,6 +82837,27 @@ async def startup_event():
         unique=True,
     )
 
+    # Project reports: one report per scheduled period (the key), and the
+    # list a job's Reports screen reads.
+    await _ensure_index_resilient(
+        db[PROJECT_REPORTS],
+        keys=[("key", 1)],
+        name="project_reports_key_unique",
+        unique=True,
+        partialFilterExpression={"key": {"$type": "string"}},
+    )
+    await _ensure_index_resilient(
+        db[PROJECT_REPORTS],
+        keys=[("company_id", 1), ("project_ids", 1), ("created_at", -1)],
+        name="project_reports_company_project_created",
+    )
+    await _ensure_index_resilient(
+        db[PROJECT_SCHEDULES],
+        keys=[("company_id", 1), ("project_id", 1), ("status", 1)],
+        name="project_schedules_company_project_status",
+    )
+
+
     # Phase B1a — digest_dispatcher cron. 15-minute cadence, same
     # interval as the DOB nightly_dob_scan so digest-eligible items
     # never wait more than one tick past their scheduled_send_at.
@@ -76373,6 +83015,17 @@ async def startup_event():
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
     )
+    # Scheduled project reports (bi-weekly Monday / monthly 1st, 8 AM New
+    # York): checked every 15 minutes; each is built and sent once (ledger).
+    scheduler.add_job(
+        _report_schedule_job,
+        IntervalTrigger(minutes=15),
+        id='project_reports',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=6),
+    )
     # What waited over Shabbos / Yom Tov, delivered in order once it ends.
     scheduler.add_job(
         _quiet_queue_job,
@@ -76393,6 +83046,51 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=8),
+    )
+    # DOT holiday embargo (lib/dot_embargo.py). 05:30 New York: read the
+    # stipulations (waiver = 410) of every matched permit that is active or
+    # starts within 30 days. 07:00 New York: email the permits that are exposed
+    # to Nov 15 - Jan 2 without the waiver (Nov 1, Nov 12, first sight; once
+    # each, dot_alert_ledger). The grace time lets a deploy at 07:00 still run.
+    scheduler.add_job(
+        _dot_stipulations_job,
+        CronTrigger(hour=5, minute=30, timezone="America/New_York"),
+        id='dot_stipulations',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _dot_embargo_alert_job,
+        CronTrigger(hour=7, minute=0, timezone="America/New_York"),
+        id='dot_embargo_alerts',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    # Filing-time photo pipeline: every unjudged photo of a recent filed daily log
+    # is judged once and the verdict stored, so reports are instant. Every 20 min.
+    scheduler.add_job(
+        _photo_pipeline_job,
+        IntervalTrigger(minutes=20),
+        id='photo_pipeline',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
+    # Queue drawings that have no tiles yet (40 per run). Queued at the lowest priority: a drawing someone
+    # opens, or a fresh upload, is compiled first.
+    scheduler.add_job(
+        _sheet_tiles_sweep_job,
+        IntervalTrigger(minutes=10),
+        id='sheet_tiles_sweep',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=6),
     )
     # One log line per group for last week: items, filter pass %, tokens, cost.
     scheduler.add_job(

@@ -21,7 +21,7 @@ import {
   Building2,
   ClipboardList,
   ClipboardCheck,
-  Settings,
+  FileBarChart,
   Wifi,
   ChevronRight,
   HardHat,
@@ -43,6 +43,7 @@ import {
   ListChecks,
   Activity,
   AlertTriangle,
+  BookOpen,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -61,6 +62,8 @@ import NotificationsList from '../../src/components/NotificationsList';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { canSeePunch } from '../../src/utils/punchList';
+import { canSeeReports } from '../../src/utils/projectReports';
+import { canOpenLogBooksTile } from '../../src/utils/pmLogbooks';
 import { useToast, ToastHost } from '../../src/components/Toast';
 import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { useProjects } from '../../src/hooks/useProjects';
@@ -75,10 +78,15 @@ import { isValidBin } from '../../src/utils/bin';
 import * as NfcHelper from '../../src/utils/nfcHelper';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, chrome, border, surface, text as tokenText, withAlpha } from '../../src/styles/semanticColors';
+import { auraRim, auraShadow } from '../../src/styles/aura';
+import CardSheen from '../../src/components/CardSheen';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
+import { useT } from '../../src/i18n';
 
+import SectionLabel from '../../src/components/SectionLabel';
+import SheenView from '../../src/components/SheenView';
 // Site device API for project-specific devices
 const siteDevicesAPI = {
   getByProject: async (projectId) => {
@@ -122,7 +130,7 @@ const deskStyles = StyleSheet.create({
     flex: 1, minWidth: 150, borderWidth: 1, borderRadius: borderRadius.lg,
     paddingVertical: spacing.md, paddingHorizontal: spacing.md,
   },
-  tileNumber: { fontSize: 32, fontWeight: '300', letterSpacing: -0.5 },
+  tileNumber: { fontSize: 32, fontFamily: typography.num, fontWeight: '600', letterSpacing: -0.5 },
   tileLabel: { fontSize: typography.sizes.sm, marginTop: 2 },
   qaItem: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm, height: 44,
@@ -152,6 +160,7 @@ export default function ProjectDetailScreen() {
   const { id: projectId } = useLocalSearchParams();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
+  const tc = useT('compliance');
   // Desktop (RN-Web >=1024) renders the 2-column triage layout; mobile renders
   // exactly what it does today. Called unconditionally (hooks rule).
   const isDesktop = useIsDesktop();
@@ -636,12 +645,12 @@ export default function ProjectDetailScreen() {
 
   // No valid BIN flag — shared isValidBin() (mirrors backend
   // _is_placeholder_bin). When false, DOB scans silently return nothing, so we
-  // flag it on the DOB Compliance action card (the dob-logs screen has the full
+  // flag it on the Compliance action card (the dob-logs screen has the full
   // "No BIN on File" remediation flow). Same predicate as the DOB tab.
   const hasValidBin = isValidBin(project?.nyc_bin);
 
   const quickActions = [
-    { title: 'Plans & Files', icon: FileText, path: `/projects/${projectId}/files`, color: '#3b82f6' },
+    { title: 'Plans & Files', icon: FileText, path: `/projects/${projectId}/files`, color: colors.primary },
     // THE DAILY LOG TILE IS GONE, AND NO CAPABILITY WENT WITH IT.
     // It opened app/daily-log.jsx, which wrote to db.daily_logs -- a
     // collection whose last row is dated 16 April 2026. The daily record
@@ -653,19 +662,24 @@ export default function ProjectDetailScreen() {
     // lost something: this was the wrong door to a room that is still
     // open.
     // MR.14 commit 3 — v1 monitoring product surface. Activity feed
-    // sits ABOVE the legacy DOB Compliance entry; both are reachable.
+    // sits ABOVE the legacy Compliance entry; both are reachable.
     { title: 'Activity', icon: Activity, path: `/project/${projectId}/activity`, color: '#0ea5e9' },
-    // DOB Compliance + Check-in Trades are CORE modules — give them active
+    // Compliance + Check-in Trades are CORE modules — give them active
     // accent colors (like Plans/Daily Log/Activity) so they don't read as
     // disabled/greyed. They were never gated; the grey was only this hardcoded
-    // semantic.neutral. Report Settings stays neutral (genuinely secondary).
-    { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444', warn: !hasValidBin },
-    { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: semantic.neutral },
-    { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#f59e0b' },
+    // semantic.neutral.
+    { title: tc('title'), icon: Shield, path: `/project/${projectId}/dob-logs`, color: semantic.critical, warn: !hasValidBin },
+    // No Report Settings tile: the daily report's time and email list are on
+    // Reports, with the rest of the job's reports.
+    { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: semantic.attention },
     // Admins: the GC WhatsApp group and the DOB alerts Levelog posts there.
     ...(isAdmin ? [{ title: 'WhatsApp', icon: MessageCircle, path: `/projects/${projectId}/whatsapp-groups`, color: '#25D366' /* brand: WhatsApp */ }] : []),
     // Admins and PMs: punch items from walkthroughs in WhatsApp.
     ...(canSeePunch(user) ? [{ title: 'Punch list', icon: ClipboardCheck, path: `/projects/${projectId}/punch`, color: '#f97316' }] : []),
+    // Admins and PMs: PDF project reports (generate, list, download, schedule).
+    ...(canSeeReports(user) ? [{ title: 'Reports', icon: FileBarChart, path: `/projects/${projectId}/reports`, color: colors.primary }] : []),
+    // Site Manager / PM: the job's logs, read-only, with photographs.
+    ...(canOpenLogBooksTile(user) ? [{ title: 'Log Books', icon: BookOpen, path: `/logbooks?projectId=${projectId}`, color: semantic.verified }] : []),
   ];
 
   // ── Desktop 2-column triage layout. Replaces the mobile header + stats +
@@ -710,7 +724,7 @@ export default function ProjectDetailScreen() {
         <View style={deskStyles.cols}>
           {/* LEFT (primary) — DOB exposure, forecast, operational tiles. */}
           <View style={deskStyles.colLeft}>
-            <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>DOB EXPOSURE</Text>
+            <SectionLabel label="DOB EXPOSURE" />
             {!dobExpLoading && dobExpState !== 'ok' && (
               <OfflineNotice
                 mode={dobExpState}
@@ -737,7 +751,7 @@ export default function ProjectDetailScreen() {
               onUpdated={setProject}
             />
 
-            <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>ON SITE</Text>
+            <SectionLabel label="ON SITE" />
             <View style={deskStyles.tileRow}>
               {/* A read that never landed shows "—". Rendering 0 here would
                   assert an empty site / no tags / no devices. */}
@@ -749,7 +763,7 @@ export default function ProjectDetailScreen() {
 
           {/* RIGHT (secondary) — quick actions as a compact list. */}
           <View style={deskStyles.colRight}>
-            <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>QUICK ACTIONS</Text>
+            <SectionLabel label="QUICK ACTIONS" />
             {quickActions.map((action) => {
               const Icon = action.icon;
               return (
@@ -871,7 +885,8 @@ export default function ProjectDetailScreen() {
                 </View>
                 {project?.project_class && project.project_class !== 'regular' && (
                   <View style={[s.projectClassBadge, {
-                    backgroundColor: project.project_class === 'major_b' ? semantic.neutralBg : semantic.attentionBg,
+                    backgroundColor: project.project_class === 'major_b' ? 'transparent' : semantic.attentionBg,
+                    ...(project.project_class === 'major_b' && { borderWidth: 1.5, borderColor: colors.text.muted }),
                   }]}>
                     <Text style={{
                       fontSize: 10, fontWeight: '700', letterSpacing: 0.5,
@@ -920,35 +935,26 @@ export default function ProjectDetailScreen() {
 
           {/* Stats Row */}
           <View style={s.statsRow}>
-            <StatCard style={s.statCard}>
-              <IconPod style={s.statIcon}>
-                <Users size={18} strokeWidth={1.5} color={colors.text.secondary} />
-              </IconPod>
+            <StatCard style={[s.statCard, { borderTopColor: colors.accent }]}>
               {/* "—" when the check-in read failed: unknown, never a 0 that
                   claims the site is empty. */}
               <Text style={s.statValue}>{onSiteState === 'ok' ? stats.onSiteWorkers : '—'}</Text>
               <Text style={s.statLabel}>ON SITE</Text>
             </StatCard>
             <StatCard style={s.statCard}>
-              <IconPod style={s.statIcon}>
-                <Wifi size={18} strokeWidth={1.5} color={colors.text.secondary} />
-              </IconPod>
               <Text style={s.statValue}>
                 {nfcState !== 'ok' && nfcTags.length === 0 ? '—' : nfcTags.length}
               </Text>
               <Text style={s.statLabel}>NFC TAGS</Text>
             </StatCard>
             <StatCard style={s.statCard}>
-              <IconPod style={s.statIcon}>
-                <Smartphone size={18} strokeWidth={1.5} color={colors.text.secondary} />
-              </IconPod>
               <Text style={s.statValue}>{devicesState === 'ok' ? siteDevices.length : '—'}</Text>
               <Text style={s.statLabel}>DEVICES</Text>
             </StatCard>
           </View>
 
           {/* Quick Actions */}
-          <Text style={s.sectionLabel}>QUICK ACTIONS</Text>
+          <SectionLabel label="QUICK ACTIONS" />
           <View style={s.actionsGrid}>
             {quickActions.map((action) => {
               const Icon = action.icon;
@@ -961,8 +967,11 @@ export default function ProjectDetailScreen() {
                     pressed && s.actionCardPressed,
                   ]}
                 >
-                  <View style={[s.actionIcon, { backgroundColor: `${action.color}20` }]}>
-                    <Icon size={24} strokeWidth={1.5} color={action.color} />
+                  {({ hovered, pressed }) => (
+                  <>
+                  <CardSheen radius={borderRadius.xl} active={!!(hovered || pressed)} intro />
+                  <View style={[s.actionIcon, { backgroundColor: colors.primary }]}>
+                    <Icon size={20} strokeWidth={1.8} color={colors.onPrimary} />
                   </View>
                   <Text style={s.actionTitle}>{action.title}</Text>
                   {action.warn && (
@@ -970,6 +979,8 @@ export default function ProjectDetailScreen() {
                       <AlertTriangle size={12} strokeWidth={2} color={semantic.attention} />
                       <Text style={s.actionWarnText}>No BIN</Text>
                     </View>
+                  )}
+                  </>
                   )}
                 </Pressable>
               );
@@ -985,7 +996,7 @@ export default function ProjectDetailScreen() {
               standalone route page. The unread count flows up via
               onUnreadCountChange for the section heading badge. */}
           <View style={s.sectionHeader}>
-            <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>NOTIFICATIONS</Text>
+            <SectionLabel label="NOTIFICATIONS" style={s.headerRuledLabel} />
             {notificationsUnreadCount > 0 && (
               <View style={s.notificationsBadge}>
                 <Text style={s.notificationsBadgeText}>
@@ -1058,15 +1069,15 @@ export default function ProjectDetailScreen() {
               onPress={() => router.push(`/projects/${projectId}/whatsapp-checklists`)}
               style={({ pressed }) => [
                 { flexDirection: 'row', alignItems: 'center', padding: spacing.md,
-                  borderRadius: 12, backgroundColor: 'rgba(59,130,246,0.08)',
-                  borderWidth: 1, borderColor: 'rgba(59,130,246,0.2)',
+                  borderRadius: 12, backgroundColor: withAlpha(colors.primary, 0.08),
+                  borderWidth: 1, borderColor: withAlpha(colors.primary, 0.2),
                   marginBottom: spacing.md },
                 pressed && { opacity: 0.7 },
               ]}
             >
-              <ListChecks size={20} strokeWidth={1.5} color="#3b82f6" />
+              <ListChecks size={20} strokeWidth={1.5} color={colors.primary} />
               <View style={{ flex: 1, marginLeft: spacing.sm }}>
-                <Text style={{ color: '#3b82f6', fontSize: 13, fontWeight: '600' }}>
+                <Text style={{ color: colors.primary, fontSize: 13, fontWeight: '600' }}>
                   Action Items
                 </Text>
                 <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 2 }}>
@@ -1108,7 +1119,7 @@ export default function ProjectDetailScreen() {
           {isAdmin && (
             <>
               <View style={s.sectionHeader}>
-                <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>NFC CHECK-IN TAGS</Text>
+                <SectionLabel label="NFC CHECK-IN TAGS" style={s.headerRuledLabel} />
                 <Pressable
                   onPress={() => setShowAddNfcModal(true)}
                   style={s.headerAddBtn}
@@ -1189,7 +1200,7 @@ export default function ProjectDetailScreen() {
           {isAdmin && (
             <>
               <View style={s.sectionHeader}>
-                <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>SITE DEVICES</Text>
+                <SectionLabel label="SITE DEVICES" style={s.headerRuledLabel} />
                 <Pressable
                   onPress={() => setShowAddDeviceModal(true)}
                   style={s.headerAddBtn}
@@ -1264,13 +1275,13 @@ export default function ProjectDetailScreen() {
               the tree. This row states which it is and taps through. */}
           {isAdmin && (
             <>
-              <Text style={s.sectionLabel}>FILES</Text>
+              <SectionLabel label="FILES" />
               <Pressable
                 onPress={() => router.push(`/projects/${projectId}/files`)}
                 style={({ pressed }) => [pressed && { opacity: 0.7 }]}
               >
                 <GlassCard style={s.dropboxRow}>
-                  <Cloud size={20} strokeWidth={1.5} color="#0061FF" />
+                  <Cloud size={20} strokeWidth={1.5} color={isDark ? '#4D8DFF' : '#0061FF'} />
                   <View style={s.dropboxRowInfo}>
                     <Text style={s.dropboxRowPath} numberOfLines={1}>
                       {project?.dropbox_folder_path || 'Not linked'}
@@ -1288,7 +1299,7 @@ export default function ProjectDetailScreen() {
           )}
 
           {/* On-Site Workers */}
-          <Text style={s.sectionLabel}>ON-SITE WORKERS</Text>
+          <SectionLabel label="ON-SITE WORKERS" />
           {workersByCompany.length > 0 ? (
             workersByCompany.map((company) => (
               <GlassCard key={company.name} style={s.companyCard}>
@@ -1343,7 +1354,7 @@ export default function ProjectDetailScreen() {
               button that would 403. */}
           {isAdmin ? (
             <View style={s.sectionHeader}>
-              <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>CHECKLISTS</Text>
+              <SectionLabel label="CHECKLISTS" style={s.headerRuledLabel} />
               <Pressable
                 onPress={() => router.push(`/admin/checklists?assignTo=${encodeURIComponent(projectId)}`)}
                 style={s.headerAddBtn}
@@ -1354,7 +1365,7 @@ export default function ProjectDetailScreen() {
               </Pressable>
             </View>
           ) : (
-            <Text style={s.sectionLabel}>CHECKLISTS</Text>
+            <SectionLabel label="CHECKLISTS" />
           )}
           {loadingChecklists ? (
             <ActivityIndicator size="small" color={colors.text.primary} style={{ marginVertical: spacing.lg }} />
@@ -1520,7 +1531,7 @@ export default function ProjectDetailScreen() {
                     <>
                       <View style={s.scanSection}>
                         <View style={s.scanHeader}>
-                          <Radio size={20} strokeWidth={1.5} color="#3b82f6" />
+                          <Radio size={20} strokeWidth={1.5} color={colors.primary} />
                           <Text style={s.scanTitle}>Scan NFC Tag</Text>
                         </View>
 
@@ -1538,7 +1549,7 @@ export default function ProjectDetailScreen() {
                             <Zap 
                               size={20} 
                               strokeWidth={1.5} 
-                              color={scanningNfc ? '#4ade80' : colors.text.primary} 
+                              color={scanningNfc ? semantic.verified : colors.text.primary} 
                             />
                           }
                           onPress={handleScanNfcTag}
@@ -1674,7 +1685,7 @@ export default function ProjectDetailScreen() {
                 Save these credentials for the on-site device:
               </Text>
 
-              <View style={s.credentialsBox}>
+              <SheenView style={s.credentialsBox}>
                 <View style={s.credentialRow}>
                   <Text style={s.credentialLabel}>Username</Text>
                   <Text style={s.credentialValueMono}>{showCredentials?.username}</Text>
@@ -1683,7 +1694,7 @@ export default function ProjectDetailScreen() {
                   <Text style={s.credentialLabel}>Password</Text>
                   <Text style={s.credentialValueMono}>{showCredentials?.password}</Text>
                 </View>
-              </View>
+              </SheenView>
 
               <GlassButton
                 title="Done"
@@ -1760,8 +1771,10 @@ function buildStyles(colors, isDark) {
     minWidth: 0,
   },
   projectName: {
-    fontSize: 28,
-    fontWeight: '300',
+    fontFamily: typography.display,
+    fontSize: 24,
+    fontWeight: '800',
+    letterSpacing: -0.6,
     color: colors.text.primary,
     marginBottom: spacing.xs,
     flexShrink: 1,
@@ -1785,7 +1798,7 @@ function buildStyles(colors, isDark) {
     flex: 1,
     minWidth: 0,
     fontSize: 14,
-    color: colors.text.muted,
+    color: colors.text.secondary,
   },
   statsRow: {
     flexDirection: 'row',
@@ -1794,19 +1807,23 @@ function buildStyles(colors, isDark) {
   },
   statCard: {
     flex: 1,
+    borderTopWidth: 3,
+    borderTopColor: colors.glass.border,
   },
   statIcon: {
     marginBottom: spacing.sm,
   },
   statValue: {
-    fontSize: 28,
-    fontWeight: '200',
+    fontFamily: typography.num,
+    fontSize: 40,
+    fontWeight: '600',
     color: colors.text.primary,
     marginBottom: spacing.xs,
   },
   statLabel: {
     ...typography.label,
-    fontSize: 9,
+    fontSize: 10,
+    fontWeight: '600',
     color: colors.text.muted,
   },
   sectionLabel: {
@@ -1831,6 +1848,9 @@ function buildStyles(colors, isDark) {
   // standalone use; inside the centered sectionHeader row those throw off
   // vertical centering (text jams to the top) and double the left inset.
   // Strip them when the label lives in a header.
+  // A ruled label inside a header row (a badge or an add button sits to its right): it takes the row's width, and the
+  // row supplies the margins.
+  headerRuledLabel: { flex: 1, marginTop: 0, marginBottom: 0, marginRight: spacing.sm },
   sectionHeaderLabel: {
     // The sectionHeader row already supplies marginTop; zero it on the label
     // inside so in-header labels don't double the top margin.
@@ -1872,14 +1892,14 @@ function buildStyles(colors, isDark) {
     height: 22,
     borderRadius: 11,
     paddingHorizontal: 6,
-    backgroundColor: 'rgba(96, 165, 250, 0.25)',
+    backgroundColor: withAlpha(colors.primary, 0.25),
     borderWidth: 1,
-    borderColor: 'rgba(96, 165, 250, 0.6)',
+    borderColor: withAlpha(colors.primary, 0.6),
     alignItems: 'center',
     justifyContent: 'center',
   },
   notificationsBadgeText: {
-    color: '#60a5fa',
+    color: colors.primary,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -1893,26 +1913,26 @@ function buildStyles(colors, isDark) {
     width: '47%',
     backgroundColor: colors.glass.background,
     borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    padding: spacing.lg,
-    alignItems: 'center',
-    gap: spacing.sm,
+    ...auraRim(colors),
+    ...auraShadow(colors, undefined, { translucent: true }),
+    padding: spacing.md,
+    alignItems: 'flex-start',
+    gap: spacing.md,
   },
   actionCardPressed: {
     opacity: 0.8,
     transform: [{ scale: 0.98 }],
   },
   actionIcon: {
-    width: 56,
-    height: 56,
-    borderRadius: borderRadius.lg,
+    width: 40,
+    height: 40,
+    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
   },
   actionTitle: {
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '700',
     color: colors.text.primary,
   },
   actionWarnBadge: {
@@ -2239,8 +2259,8 @@ function buildStyles(colors, isDark) {
     marginTop: spacing.md,
   },
   scanButton: {
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    borderColor: 'rgba(59, 130, 246, 0.3)',
+    backgroundColor: withAlpha(colors.primary, 0.1),
+    borderColor: withAlpha(colors.primary, 0.3),
   },
   scanButtonActive: {
     backgroundColor: semantic.verifiedBg,

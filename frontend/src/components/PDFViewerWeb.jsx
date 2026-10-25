@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, TextInput, ScrollView } from 'react-native';
-import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users } from 'lucide-react-native';
+import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users, Search } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
-import { authorizedPdfUrl } from '../utils/pdfSrc';
+import { resolvePdfForIframe } from '../utils/pdfSrc';
+import { openSignedDownload } from '../utils/fileDownload';
+import { downloadSource, signedUrlErrorKey } from '../utils/fileDownloadPlan';
+import { useToast } from './Toast';
+import { useT } from '../i18n';
 import { semantic, withAlpha } from '../styles/semanticColors';
 
 // Build a stable document identifier for an annotation. Direct-upload files
@@ -21,19 +25,21 @@ function documentKeyFor(file) {
 const API_BASE = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://api.levelog.com';
 
 // Resolve a URL returned by the backend into something an <iframe src> can load.
-// Handles three shapes: relative `/api/...` (backend-proxy), absolute backend proxy,
-// or any other absolute URL (already presigned / Dropbox / R2 public). Backend-proxy
-// URLs get a `?token=` query param appended so the iframe request is authenticated.
-//
-// The rule about WHICH urls may be given the token lives in utils/pdfSrc.js and
-// is shared with the native viewer: only our own origin, checked by origin and
-// not merely by path shape.
-async function resolvePdfSrc(rawUrl) {
+// Our own proxy is fetched with `Authorization: Bearer` into a Blob and the iframe
+// gets a `blob:` url (utils/pdfSrc.js), so the session token is NEVER in a url; a
+// presigned R2 / Dropbox url is used bare. There is no `?token=` anywhere.
+async function resolvePdfSrc(rawUrl, signal) {
   if (!rawUrl) return null;
   let token = null;
   try { token = await AsyncStorage.getItem('blueview_token'); } catch {}
-  return authorizedPdfUrl(rawUrl, { apiBase: API_BASE, token });
+  return resolvePdfForIframe(rawUrl, { apiBase: API_BASE, token, signal });
 }
+import { useFeatureFlag } from '../hooks/useFeatureFlag';
+import { useSheetSession, viewerMode } from '../viewer/useSheetSession';
+import sheetPlatform from '../viewer/sheetPlatform';
+import sheetApi from '../viewer/sheetClient';
+import SheetViewerPane from '../viewer/SheetViewerPane';
+import SheetBoundary from '../viewer/SheetBoundary';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth, isCompanyAdmin } from '../context/AuthContext';
 import { spacing } from '../styles/theme';
@@ -41,6 +47,8 @@ import { spacing } from '../styles/theme';
 export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
   const { colors } = useTheme();
   const { user } = useAuth();
+  const toast = useToast();
+  const tDl = useT('fileDownload');
   const [url, setUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -58,6 +66,29 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
   const [selectedRecipientIds, setSelectedRecipientIds] = useState([]); // empty = 'all'
   const [showRecipientPicker, setShowRecipientPicker] = useState(false);
   const containerRef = useRef(null);
+  // The blob url (if any) the iframe is showing: revoked when it is replaced or the viewer closes.
+  const srcRef = useRef(null);
+  const abortRef = useRef(null);
+
+  // ── THE TILE VIEWER, WHEN THIS DRAWING HAS TILES ────────────────────────
+  //
+  // Behind `sheet_tiles_viewer`. A drawing whose tiles are ready draws on a
+  // canvas from WebP tiles (viewer/): no PDF is fetched, so there is no blob to
+  // hand an iframe at all. Anything else (flag off, tiles compiling or failed, an
+  // old backend, no canvas support, a render error) keeps the iframe path below.
+  const tilesFlag = useFeatureFlag('sheet_tiles_viewer');
+  const tileFileId = file?.id || file?._id || null;
+  const tilesEnabled = Boolean(visible && tilesFlag && tileFileId && /\.pdf$/i.test(file?.name || ''));
+  const session = useSheetSession({
+    enabled: tilesEnabled,
+    projectId, fileId: tileFileId, cacheVersion: file?.cache_version, platform: sheetPlatform, api: sheetApi,
+  });
+  const [tilesFailed, setTilesFailed] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  useEffect(() => { setTilesFailed(false); setSearchOpen(false); }, [visible, tileFileId]);
+  const mode = viewerMode({ enabled: tilesEnabled, state: session.state, failed: tilesFailed });
+  const tiled = mode === 'tiled';
+  const awaitingTiles = mode === 'pending';
 
   /**
    * ONE loader, for the first open AND for Try Again.
@@ -79,7 +110,14 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
         raw = res?.url || null;
       }
       if (!raw) { setError(true); setLoading(false); return; }
-      setUrl(await resolvePdfSrc(raw));
+      if (abortRef.current) abortRef.current.abort();
+      const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      abortRef.current = ctl;
+      const resolved = await resolvePdfSrc(raw, ctl ? ctl.signal : undefined);
+      if (ctl && ctl.signal.aborted) { if (resolved) resolved.revoke(); return; }
+      if (srcRef.current) srcRef.current.revoke();
+      srcRef.current = resolved;
+      setUrl(resolved ? resolved.src : null);
       setLoading(false);
     } catch (_e) {
       setError(true);
@@ -88,9 +126,13 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
   }, [projectId, file]);
 
   useEffect(() => {
-    if (visible) loadPdf();
-    return () => { setUrl(null); };
-  }, [visible, loadPdf]);
+    if (visible && !tiled && !awaitingTiles) loadPdf();
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+      if (srcRef.current) { srcRef.current.revoke(); srcRef.current = null; }
+      setUrl(null);
+    };
+  }, [visible, loadPdf, tiled, awaitingTiles]);
 
   // Load annotations — direct-upload files use `file:{id}` as the key.
   const docKey = documentKeyFor(file);
@@ -132,6 +174,14 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
     setNewComment('');
   }, [pinModeActive]);
 
+  // The tile viewer reports the page and the spot on it (fractions of that page).
+  const handlePlacePin = useCallback(({ x, y, page }) => {
+    setPendingPosition({ x, y, page });
+    setPinModeActive(false);
+    setShowNotePanel(true);
+    setNewComment('');
+  }, []);
+
   const handleCreateNote = useCallback(async () => {
     if (!pendingPosition) return;
     try {
@@ -139,8 +189,8 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
       // across renames/R2 key changes), fall back to document_path.
       const payload = {
         project_id: projectId,
-        page_number: 1,
-        position: pendingPosition,
+        page_number: pendingPosition.page || 1,
+        position: { x: pendingPosition.x, y: pendingPosition.y },
         comment: newComment || '',
         recipients: selectedRecipientIds.length ? selectedRecipientIds : 'all',
       };
@@ -206,7 +256,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
     if (annotation.status === 'resolved') return semantic.verified;
     const creatorId = annotation.created_by?._id || annotation.created_by?.id || annotation.created_by;
     const currentUserId = user?._id || user?.id;
-    if (creatorId === currentUserId) return '#1565C0';
+    if (creatorId === currentUserId) return '#243746';
     return semantic.neutral;
   };
 
@@ -214,6 +264,24 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
     const creatorId = annotation.created_by?._id || annotation.created_by?.id || annotation.created_by;
     const currentUserId = user?._id || user?.id;
     return creatorId === currentUserId || isCompanyAdmin(user);
+  };
+
+  // OPEN IN BROWSER. `url` is what the <iframe> loads, and for our own proxy
+  // that carries the session token, so it must never be opened as a page of
+  // its own. A stored file gets a 15-minute signed link instead; anything
+  // else (a Dropbox link) never had a token and opens as it is.
+  const openInBrowser = async () => {
+    try {
+      if (downloadSource(file) === 'stored') {
+        await openSignedDownload(file.id || file._id);
+      } else if (url && !/[?&]token=/.test(url)) {
+        window.open(url, '_blank');
+      } else {
+        toast.error(tDl('failTitle'), tDl('notStored'));
+      }
+    } catch (error) {
+      toast.error(tDl('failTitle'), tDl(error?.code || signedUrlErrorKey(error)));
+    }
   };
 
   if (!visible) return null;
@@ -229,25 +297,33 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
         <View style={{ flex: 1 }} />
         <Pressable
           onPress={() => { setPinModeActive(!pinModeActive); setSelectedAnnotation(null); setShowNotePanel(false); }}
-          style={[styles.closeBtn, pinModeActive && { backgroundColor: '#3b82f6' }]}
+          style={[styles.closeBtn, pinModeActive && { backgroundColor: '#E3C27A' }]}
         >
-          <MapPin size={20} strokeWidth={1.5} color="#fff" />
+          <MapPin size={20} strokeWidth={1.5} color={pinModeActive ? '#141A1F' : '#fff'} />
         </Pressable>
-        {url && (
-          <Pressable onPress={() => window.open(url, '_blank')} style={styles.closeBtn}>
+        {tiled && (
+          <Pressable
+            onPress={() => setSearchOpen((v) => !v)} accessibilityRole="button" accessibilityLabel="Search this drawing"
+            style={[styles.closeBtn, searchOpen && { backgroundColor: '#E3C27A' }]}
+          >
+            <Search size={20} strokeWidth={1.5} color={searchOpen ? '#141A1F' : '#fff'} />
+          </Pressable>
+        )}
+        {(url || tiled) && (
+          <Pressable onPress={openInBrowser} style={styles.closeBtn}>
             <Download size={20} strokeWidth={1.5} color="#fff" />
           </Pressable>
         )}
       </View>
 
-      {loading && (
+      {loading && !tiled && (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#3b82f6" />
+          <ActivityIndicator size="large" color={'#E3C27A'} />
           <Text style={styles.loadingText}>Loading document...</Text>
         </View>
       )}
 
-      {error && (
+      {error && !tiled && (
         <View style={styles.center}>
           <FileText size={48} strokeWidth={1} color="#64748b" />
           <Text style={styles.errorTitle}>Could not load document</Text>
@@ -259,9 +335,24 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
         </View>
       )}
 
-      {!loading && !error && url && (
+      {(tiled || (!loading && !error && url)) && (
         <View style={{ flex: 1, flexDirection: 'row' }}>
-          {/* PDF container with annotations overlay */}
+          {tiled ? (
+            <View style={{ flex: 1 }}>
+              <SheetBoundary onFail={() => setTilesFailed(true)}>
+                <SheetViewerPane
+                  controller={session.controller} onFail={() => setTilesFailed(true)}
+                manifest={session.manifest} projectId={projectId} fileId={tileFileId}
+                  api={sheetApi} platform={sheetPlatform} annotations={annotations} markerColor={getMarkerColor}
+                  selectedId={selectedAnnotation ? (selectedAnnotation._id || selectedAnnotation.id) : null}
+                  pinModeActive={pinModeActive} onPlacePin={handlePlacePin}
+                  onSelectAnnotation={(ann) => { setSelectedAnnotation(ann); setShowNotePanel(false); setReplyText(''); }}
+                  searchOpen={searchOpen} onCloseSearch={() => setSearchOpen(false)}
+                />
+              </SheetBoundary>
+            </View>
+          ) : (
+          /* PDF container with annotations overlay */
           <div
             ref={containerRef}
             onClick={handleContainerClick}
@@ -289,7 +380,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
             {pinModeActive && (
               <div style={{
                 position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-                backgroundColor: 'rgba(59, 130, 246, 0.08)',
+                backgroundColor: withAlpha('#E3C27A', 0.08),
                 display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
                 paddingBottom: 32,
                 zIndex: 10,
@@ -331,6 +422,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
               );
             })}
           </div>
+          )}
 
           {/* Note creation panel (right side) */}
           {showNotePanel && (
@@ -360,7 +452,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                     borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12,
                   }}
                 >
-                  <Users size={16} strokeWidth={1.5} color="#93c5fd" />
+                  <Users size={16} strokeWidth={1.5} color={'#E3C27A'} />
                   <Text style={{ color: '#e2e8f0', fontSize: 14, marginLeft: 8, flex: 1 }}>
                     {selectedRecipientIds.length === 0
                       ? 'Everyone on the project'
@@ -376,7 +468,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                     style={{
                       marginTop: 6, maxHeight: 220,
                       borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
-                      borderRadius: 8, backgroundColor: '#0b1220',
+                      borderRadius: 8, backgroundColor: '#0E161D',
                     }}
                   >
                     <ScrollView style={{ maxHeight: 220 }}>
@@ -391,8 +483,8 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                       >
                         <View style={{
                           width: 18, height: 18, borderRadius: 4,
-                          borderWidth: 1, borderColor: '#3b82f6',
-                          backgroundColor: selectedRecipientIds.length === 0 ? '#3b82f6' : 'transparent',
+                          borderWidth: 1, borderColor: '#E3C27A',
+                          backgroundColor: selectedRecipientIds.length === 0 ? '#E3C27A' : 'transparent',
                           marginRight: 10,
                         }} />
                         <Text style={{ color: '#e2e8f0', fontSize: 14 }}>Everyone</Text>
@@ -411,8 +503,8 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                           >
                             <View style={{
                               width: 18, height: 18, borderRadius: 4,
-                              borderWidth: 1, borderColor: '#3b82f6',
-                              backgroundColor: checked ? '#3b82f6' : 'transparent',
+                              borderWidth: 1, borderColor: '#E3C27A',
+                              backgroundColor: checked ? '#E3C27A' : 'transparent',
                               marginRight: 10,
                             }} />
                             <View style={{ flex: 1 }}>
@@ -525,7 +617,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
 }
 
 const styles = StyleSheet.create({
-  overlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999, backgroundColor: '#050a12', display: 'flex', flexDirection: 'column' },
+  overlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999, backgroundColor: '#131E27', display: 'flex', flexDirection: 'column' },
   topBar: { flexDirection: 'row', alignItems: 'center', padding: 12, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.1), gap: 12 },
   closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: withAlpha('#ffffff', 0.1), alignItems: 'center', justifyContent: 'center' },
   fileName: { color: '#e2e8f0', fontSize: 15, fontWeight: '600', maxWidth: 400 },
@@ -533,8 +625,8 @@ const styles = StyleSheet.create({
   loadingText: { color: '#94a3b8', marginTop: 12, fontSize: 14 },
   errorTitle: { color: '#e2e8f0', fontSize: 18, fontWeight: '600', marginTop: 16 },
   errorSub: { color: '#64748b', fontSize: 14, marginTop: 8, textAlign: 'center' },
-  retryBtn: { marginTop: 20, paddingHorizontal: 24, paddingVertical: 10, backgroundColor: '#3b82f6', borderRadius: 8 },
-  retryText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  retryBtn: { marginTop: 20, paddingHorizontal: 24, paddingVertical: 10, backgroundColor: '#E3C27A', borderRadius: 8 },
+  retryText: { color: '#141A1F', fontSize: 14, fontWeight: '600' },
 
   // Side panel
   sidePanel: { width: 340, backgroundColor: '#0f172a', borderLeftWidth: 1, borderLeftColor: withAlpha('#ffffff', 0.1), padding: 20 },
@@ -543,20 +635,20 @@ const styles = StyleSheet.create({
   panelSubtitle: { color: '#94a3b8', fontSize: 13, marginBottom: 16 },
   textInput: { backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 12, color: '#e2e8f0', fontSize: 14, minHeight: 80, textAlignVertical: 'top' },
   panelActions: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  sendBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#3b82f6', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
-  sendBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  sendBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#E3C27A', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
+  sendBtnText: { color: '#141A1F', fontSize: 14, fontWeight: '600' },
   cancelBtn: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: withAlpha('#ffffff', 0.08) },
   cancelBtnText: { color: '#94a3b8', fontSize: 14, fontWeight: '600' },
 
   // Thread
   threadScroll: { flex: 1, marginTop: 12 },
   threadEntry: { marginBottom: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.06) },
-  threadAuthor: { color: '#93c5fd', fontSize: 13, fontWeight: '600', marginBottom: 4 },
+  threadAuthor: { color: '#E3C27A', fontSize: 13, fontWeight: '600', marginBottom: 4 },
   threadMessage: { color: '#e2e8f0', fontSize: 14, lineHeight: 20 },
   threadTime: { color: '#475569', fontSize: 11, marginTop: 4 },
   replyRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
   replyInput: { flex: 1, backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 10, color: '#e2e8f0', fontSize: 14 },
-  replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#3b82f6', alignItems: 'center', justifyContent: 'center' },
+  replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#E3C27A', alignItems: 'center', justifyContent: 'center' },
   threadActions: { flexDirection: 'row', gap: 12, marginTop: 16, paddingTop: 12, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08) },
   resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.verifiedBg },
   resolveBtnText: { color: semantic.verified, fontSize: 13, fontWeight: '600' },

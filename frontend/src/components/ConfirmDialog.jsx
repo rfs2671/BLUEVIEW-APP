@@ -42,8 +42,8 @@ export default function ConfirmDialog({
       <View style={styles.backdrop}>
         <View style={[styles.card, { backgroundColor: isDark ? '#0f172a' : '#ffffff', borderColor: isDark ? '#1e293b' : '#e2e8f0' }]}>
           <View style={styles.header}>
-            <View style={[styles.iconWrap, { backgroundColor: destructive ? semantic.criticalBg : 'rgba(59,130,246,0.15)' }]}>
-              <AlertTriangle size={22} strokeWidth={2} color={destructive ? semantic.critical : '#3b82f6'} />
+            <View style={[styles.iconWrap, { backgroundColor: destructive ? semantic.criticalBg : withAlpha(colors.primary, 0.15) }]}>
+              <AlertTriangle size={22} strokeWidth={2} color={destructive ? semantic.critical : colors.primary} />
             </View>
             <Text style={[styles.title, { color: colors.text.primary }]}>{title}</Text>
           </View>
@@ -56,7 +56,7 @@ export default function ConfirmDialog({
             <View style={styles.details}>
               {details.map((line, i) => (
                 <View key={i} style={styles.detailRow}>
-                  <Text style={[styles.detailBullet, { color: destructive ? semantic.criticalText : '#3b82f6' }]}>•</Text>
+                  <Text style={[styles.detailBullet, { color: destructive ? semantic.criticalText : colors.primary }]}>•</Text>
                   <Text style={[styles.detailText, { color: colors.text.secondary }]}>{line}</Text>
                 </View>
               ))}
@@ -79,10 +79,10 @@ export default function ConfirmDialog({
               style={({ pressed }) => [
                 styles.btn,
                 styles.btnConfirm,
-                { backgroundColor: destructive ? semantic.criticalFill : '#2563eb', opacity: pressed ? 0.85 : 1 },
+                { backgroundColor: destructive ? semantic.criticalFill : colors.primary, opacity: pressed ? 0.85 : 1 },
               ]}
             >
-              <Text style={styles.btnConfirmText}>{confirmLabel}</Text>
+              <Text style={[styles.btnConfirmText, !destructive && { color: colors.onPrimary }]}>{confirmLabel}</Text>
             </Pressable>
           </View>
         </View>

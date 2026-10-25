@@ -8,7 +8,6 @@ import {
   Pressable,
   ActivityIndicator,
   KeyboardAvoidingView,
-  Platform,
   Modal,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -191,7 +190,7 @@ export default function PublicCheckInScreen() {
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior="padding"
           style={s.keyboardView}
         >
           <ScrollView
@@ -209,7 +208,7 @@ export default function PublicCheckInScreen() {
             {/* Project Info Card */}
             <GlassCard style={s.projectCard}>
               <View style={s.projectHeader}>
-                <Building2 size={24} strokeWidth={1.5} color="#3b82f6" />
+                <Building2 size={24} strokeWidth={1.5} color={colors.primary} />
                 <Text style={s.projectName}>{projectInfo.project_name}</Text>
               </View>
               <View style={s.projectLocation}>
@@ -359,7 +358,7 @@ export default function PublicCheckInScreen() {
                                   </Text>
                                 </View>
                                 {selected && (
-                                  <Check size={18} strokeWidth={2} color="#4ade80" />
+                                  <Check size={18} strokeWidth={2} color={semantic.verified} />
                                 )}
                               </Pressable>
                             );
@@ -444,8 +443,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.xs,
   },
   headerTitle: {
-    fontSize: 42,
-    fontWeight: '200',
+    fontSize: 32,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     letterSpacing: -1,
   },
@@ -588,7 +587,7 @@ function buildStyles(colors, isDark) {
     flex: 1,
   },
   tradeOptionTextSelected: {
-    color: '#4ade80',
+    color: semantic.verified,
     fontWeight: '500',
   },
   submitButton: {

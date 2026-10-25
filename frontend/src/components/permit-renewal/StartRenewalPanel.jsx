@@ -45,6 +45,7 @@ import { spacing, borderRadius, typography } from '../../styles/theme';
 import { semantic } from '../../styles/semanticColors';
 import { useTheme } from '../../context/ThemeContext';
 
+import SheenView from '../SheenView';
 // ── Field → section assignment ────────────────────────────────────
 //
 // MR.4's mapper emits a flat dict of field_name → FieldValue. Operator
@@ -245,7 +246,7 @@ const StartRenewalPanel = ({ visible, fieldMap, onClose, onReopenDob }) => {
     : [];
 
   return (
-    <View style={s.panel}>
+    <SheenView style={s.panel}>
       <View style={s.header}>
         <View style={s.headerText}>
           <Text style={s.headerTitle}>Renewal Values</Text>
@@ -264,7 +265,7 @@ const StartRenewalPanel = ({ visible, fieldMap, onClose, onReopenDob }) => {
       </View>
 
       <Pressable style={s.dobButton} onPress={onReopenDob}>
-        <ExternalLink size={14} color="#fff" />
+        <ExternalLink size={14} color={colors.onPrimary} />
         <Text style={s.dobButtonText}>Open DOB NOW (new tab)</Text>
       </Pressable>
 
@@ -353,7 +354,7 @@ const StartRenewalPanel = ({ visible, fieldMap, onClose, onReopenDob }) => {
           </View>
         )}
       </ScrollView>
-    </View>
+    </SheenView>
   );
 };
 
@@ -405,12 +406,12 @@ function buildStyles(colors) {
       paddingVertical: spacing.sm,
       paddingHorizontal: spacing.md,
       borderRadius: borderRadius.md,
-      backgroundColor: '#3b82f6',
+      backgroundColor: colors.primary,
     },
     dobButtonText: {
       fontFamily: typography.semibold,
       fontSize: 13,
-      color: '#fff',
+      color: colors.onPrimary,
       letterSpacing: 0.3,
     },
     body: {

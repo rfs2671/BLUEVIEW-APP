@@ -87,7 +87,6 @@ BASELINE = {
     ("document_page_index", "sheet_number"),
     # is_spec_page and sheet_title left this list on 2026-09-15: the
     # supersession pass and document-index-status stopped filtering on them.
-    ("feature_flags", "flag"),
     # Both written by `_set_hot_work_day`'s UPSERT FILTER, not by its $set:
     # `update_one({"project_id": ..., "date": ...}, {...}, upsert=True)`, and
     # Mongo copies a filter's equality fields into the document it inserts. The

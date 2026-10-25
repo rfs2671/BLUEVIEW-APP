@@ -5,13 +5,15 @@ import GlassButton from './GlassButton';
 import { useDatabaseContext as useDatabase } from '../context/DatabaseContext';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { useToast } from './Toast';
-import { colors, spacing, typography } from '../styles/theme';
+import { colors, spacing, typography, borderRadius } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
+import { auraRim, auraShadow } from '../styles/aura';
+import CardSheen from './CardSheen';
 
 export default function SyncButton({ showLabel = true, size = 'md' }) {
   const { colors, isDark } = useTheme();
   const styles = buildStyles(colors, isDark);
-  const { performSync, isSyncing, lastSyncTime, queueStatus } = useDatabase();
+  const { performSync, isSyncing, queueStatus } = useDatabase();
   const { isOnline } = useNetworkStatus();
   const toast = useToast();
   const [isRotating, setIsRotating] = useState(false);
@@ -39,24 +41,6 @@ export default function SyncButton({ showLabel = true, size = 'md' }) {
     }
   };
 
-  const getLastSyncText = () => {
-    if (!lastSyncTime) return 'Never synced';
-    
-    const now = new Date();
-    const diff = now - lastSyncTime;
-    const minutes = Math.floor(diff / 60000);
-    
-    if (minutes < 1) return 'Just now';
-    if (minutes === 1) return '1 min ago';
-    if (minutes < 60) return `${minutes} mins ago`;
-    
-    const hours = Math.floor(minutes / 60);
-    if (hours === 1) return '1 hour ago';
-    if (hours < 24) return `${hours} hours ago`;
-    
-    return 'Over a day ago';
-  };
-
   if (!showLabel) {
     // Icon-only button
     return (
@@ -81,45 +65,43 @@ export default function SyncButton({ showLabel = true, size = 'md' }) {
   }
 
   return (
-    <View style={styles.container}>
+    // The action sits alone in the middle of its card. The last-sync time is not shown here (the owner asked for the
+    // button alone); a count of changes still waiting to upload IS shown, under the button, because it is the one thing
+    // that tells someone a sync is needed.
+    <View style={[styles.container, auraRim(colors), auraShadow(colors, undefined, { translucent: true })]}>
+      <CardSheen radius={borderRadius.lg} intro />
+
       {/* title=, NOT children. GlassButton renders {title} in its own <Text>
           and never reads children, so the label was discarded and this
           rendered as an icon beside an EMPTY text slot - not an icon-only
           control, just a default-variant button missing its title.
-          variant="secondary" is not the icon variant; GlassButton
-          special-cases only "icon", so this always took the default path.
+          The variant here is a filled action (GlassButton special-cases "icon" and the filled variants).
 
           It matters most when disabled: the button greys out offline, and
           with no label there was nothing telling anyone why it would not
           respond. */}
       <GlassButton
-        variant="secondary"
+        variant="filled"
         title={isSyncing ? 'Syncing...' : 'Sync Now'}
         icon={
           isSyncing ? (
-            <ActivityIndicator size="small" color={colors.text.primary} />
+            <ActivityIndicator size="small" color={colors.onPrimary} />
           ) : (
             <RefreshCw 
               size={18} 
               strokeWidth={1.5} 
-              color={isOnline ? colors.text.primary : colors.text.secondary}
+              color={colors.onPrimary}
             />
           )
         }
         onPress={handleSync}
         disabled={!isOnline || isSyncing}
       />
-      
-      <View style={styles.info}>
-        <Text style={[styles.infoText, { color: colors.text.secondary }]}>
-          Last sync: {getLastSyncText()}
+      {queueStatus.size > 0 && (
+        <Text style={styles.queueText}>
+          {queueStatus.size} pending change{queueStatus.size !== 1 ? 's' : ''}
         </Text>
-        {queueStatus.size > 0 && (
-          <Text style={styles.queueText}>
-            {queueStatus.size} pending change{queueStatus.size !== 1 ? 's' : ''}
-          </Text>
-        )}
-      </View>
+      )}
     </View>
   );
 }
@@ -127,13 +109,14 @@ export default function SyncButton({ showLabel = true, size = 'md' }) {
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
   container: {
-    gap: spacing.sm,
-  },
-  info: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
     gap: spacing.xs,
-  },
-  infoText: {
-    fontSize: typography.sizes.sm,
+    paddingVertical: spacing.md - 4,
+    paddingHorizontal: spacing.md - 4,
+    borderRadius: borderRadius.lg,
+    backgroundColor: colors.glass.background,
   },
   queueText: {
     fontSize: typography.sizes.xs,

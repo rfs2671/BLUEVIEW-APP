@@ -579,7 +579,7 @@ function buildStyles(colors, isDark) {
     },
     drawer: {
       height: '100%',
-      backgroundColor: isDark ? '#0A1929' : '#ffffff',
+      backgroundColor: isDark ? '#151A1D' : '#ffffff',
       borderLeftWidth: 1,
       borderLeftColor: colors.border.subtle,
       paddingTop: spacing.lg,
@@ -817,7 +817,7 @@ function buildStyles(colors, isDark) {
     },
     reviewChoiceActive: {
       backgroundColor: semantic.verifiedBg,
-      borderColor: '#22c55e',
+      borderColor: semantic.verified,
     },
     reviewChoiceText: {
       color: colors.text.primary,

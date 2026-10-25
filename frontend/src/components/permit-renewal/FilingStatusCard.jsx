@@ -64,9 +64,10 @@ import {
   ShieldCheck,
 } from 'lucide-react-native';
 import { spacing, borderRadius, typography } from '../../styles/theme';
-import { semantic } from '../../styles/semanticColors';
+import { semantic, withAlpha } from '../../styles/semanticColors';
 import { useTheme } from '../../context/ThemeContext';
 
+import SheenView from '../SheenView';
 const formatDate = (value) => {
   if (!value) return '—';
   const d = new Date(value);
@@ -128,7 +129,7 @@ const FilingStatusCard = ({
   // ── Branch 3: Renewed ──────────────────────────────────────────
   if (isRenewedState(renewal)) {
     return (
-      <View style={s.card}>
+      <SheenView style={s.card}>
         <View style={[s.banner, s.bannerSuccess]}>
           <ShieldCheck size={16} color={semantic.verified} />
           <Text style={[s.bannerText, s.bannerTextSuccess]}>
@@ -155,16 +156,16 @@ const FilingStatusCard = ({
           LeveLog detected this renewal automatically via the NYC Open
           Data feed; no further action is needed.
         </Text>
-      </View>
+      </SheenView>
     );
   }
 
   // ── Branch 2: In-progress (operator clicked, watcher hasn't seen it yet) ──
   if (isInProgressState(renewal)) {
     return (
-      <View style={s.card}>
+      <SheenView style={s.card}>
         <View style={[s.banner, s.bannerInfo]}>
-          <Clock size={16} color="#3b82f6" />
+          <Clock size={16} color={colors.primary} />
           <Text style={[s.bannerText, s.bannerTextInfo]}>
             Filing in progress — refresh after submitting at DOB NOW.
           </Text>
@@ -181,13 +182,13 @@ const FilingStatusCard = ({
             <Text style={s.linkText}>View values again</Text>
           </Pressable>
         )}
-      </View>
+      </SheenView>
     );
   }
 
   // ── Branch 1: Pre-renewal (idle / start) ───────────────────────
   return (
-    <View style={s.card}>
+    <SheenView style={s.card}>
       {readinessLoading || readiness === null ? (
         <Pressable disabled style={[s.startButton, s.startButtonDisabled]}>
           <ActivityIndicator size="small" color={colors.text.muted} />
@@ -221,14 +222,14 @@ const FilingStatusCard = ({
           >
             {starting ? (
               <>
-                <ActivityIndicator size="small" color="#fff" />
+                <ActivityIndicator size="small" color={colors.onPrimary} />
                 <Text style={[s.startButtonText, s.startButtonTextActive]}>
                   Starting…
                 </Text>
               </>
             ) : (
               <>
-                <Send size={14} color="#fff" />
+                <Send size={14} color={colors.onPrimary} />
                 <Text style={[s.startButtonText, s.startButtonTextActive]}>
                   Start Renewal
                 </Text>
@@ -261,7 +262,7 @@ const FilingStatusCard = ({
           )}
         </View>
       )}
-    </View>
+    </SheenView>
   );
 };
 
@@ -313,8 +314,8 @@ function buildStyles(colors) {
       borderColor: semantic.verifiedBorder,
     },
     bannerInfo: {
-      backgroundColor: '#3b82f615',
-      borderColor: '#3b82f640',
+      backgroundColor: withAlpha(colors.primary, 0.08),
+      borderColor: withAlpha(colors.primary, 0.25),
     },
     bannerText: {
       flex: 1,
@@ -326,7 +327,7 @@ function buildStyles(colors) {
       color: '#065f46',
     },
     bannerTextInfo: {
-      color: '#1e3a8a',
+      color: '#204358',
     },
 
     // ── helper text ───────────────────────────────────────────────
@@ -376,7 +377,7 @@ function buildStyles(colors) {
       borderRadius: borderRadius.md,
     },
     startButtonActive: {
-      backgroundColor: '#3b82f6',
+      backgroundColor: colors.primary,
     },
     startButtonDisabled: {
       backgroundColor: colors.glass.background,
@@ -391,7 +392,7 @@ function buildStyles(colors) {
       letterSpacing: 0.3,
     },
     startButtonTextActive: {
-      color: '#fff',
+      color: colors.onPrimary,
     },
     buttonDisabled: {
       opacity: 0.6,

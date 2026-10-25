@@ -275,8 +275,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.xs,
   },
   welcomeTitle: {
-    fontSize: 32,
-    fontWeight: '200',
+    fontSize: 28,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
   },
   form: { gap: spacing.md },

@@ -40,6 +40,8 @@ import WhatsAppCard from '../../src/components/WhatsAppCard';
 
 // Dropbox brand color
 const DROPBOX_BLUE = '#0061FF';
+// Lifted just enough to clear the 3:1 icon floor on the dark theme's navy surfaces (#0061FF is 2.4:1 there). Fills keep DROPBOX_BLUE.
+const DROPBOX_BLUE_ON_DARK = '#4D8DFF';
 
 export default function AdminIntegrationsScreen() {
   const { colors, isDark } = useTheme();
@@ -316,7 +318,7 @@ export default function AdminIntegrationsScreen() {
                 {/* Dropbox Header */}
                 <View style={s.integrationHeader}>
                   <View style={s.integrationIcon}>
-                    <Cloud size={28} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                    <Cloud size={28} strokeWidth={1.5} color={(isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE)} />
                   </View>
                   <View style={s.integrationInfo}>
                     <Text style={s.integrationName}>Dropbox</Text>
@@ -451,7 +453,7 @@ export default function AdminIntegrationsScreen() {
                           style={s.projectItem}
                         >
                           <IconPod size={40}>
-                            <FolderOpen size={18} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                            <FolderOpen size={18} strokeWidth={1.5} color={(isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE)} />
                           </IconPod>
                           <View style={s.projectInfo}>
                             <Text style={s.projectName}>{project.name}</Text>
@@ -494,7 +496,7 @@ export default function AdminIntegrationsScreen() {
                           <FolderOpen
                             size={18}
                             strokeWidth={1.5}
-                            color={project.dropbox_folder_path ? DROPBOX_BLUE : colors.text.muted}
+                            color={project.dropbox_folder_path ? (isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE) : colors.text.muted}
                           />
                         </IconPod>
                         <View style={s.projectInfo}>
@@ -567,8 +569,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.sm,
   },
   titleText: {
-    fontSize: 48,
-    fontWeight: '200',
+    fontSize: 32,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     letterSpacing: -1,
   },
@@ -762,7 +764,7 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
-    backgroundColor: '#4ade80',
+    backgroundColor: semantic.verified,
     borderRadius: borderRadius.lg,
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.lg,

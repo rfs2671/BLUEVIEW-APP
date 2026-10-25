@@ -79,11 +79,26 @@ on:
         default: false
         type: boolean
 
+# ONE PUBLISH AT A TIME, AND THE NEWEST WINS. The job below can wait up to 20
+# minutes for the backend. Two quick merges would otherwise both wait and publish
+# in whatever order they finish -- and EAS serves the LAST publish, so an older
+# bundle could land on top of a newer one. A newer push includes the older one's
+# changes, so cancelling the older run loses nothing.
+concurrency:
+  group: eas-update-${{ inputs.branch || 'production' }}
+  cancel-in-progress: true
+
 jobs:
   update:
     runs-on: ubuntu-latest
+    # The backend gate below waits up to 20 minutes; bundling takes ~5.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the backend gate asks git whether the deployed commit
+          # INCLUDES this one (merge-base --is-ancestor).
+          fetch-depth: 0
 
       # FIRST, before Setup Node / Setup Expo / npm ci / Metro. A refused
       # publish costs seconds rather than four minutes of bundling, and
@@ -115,6 +130,22 @@ jobs:
           if [ "$EAS_BRANCH" != "production" ]; then
             echo "::warning::Publishing to EAS branch '${EAS_BRANCH}'. If no build has ever used the matching channel, this update reaches no device. See the branch input note."
           fi
+
+      # THE BACKEND FIRST. Every store install runs this bundle the moment it is
+      # published, and the bundle calls the API. On 2026-10-21 Railway paused
+      # deploys platform-wide after #826 while this workflow kept publishing, so
+      # phones ran screens whose endpoints the backend did not have (the schedule
+      # screen 404'd). Publish only once /api/version serves a commit that
+      # INCLUDES this one; after 20 minutes fail the job, which skips the publish.
+      # Re-run the job when /api/version catches up.
+      #
+      # Production only: a `preview` publish reaches a test build, and is the way
+      # to try a bundle against the live API on purpose.
+      - name: Wait for the backend to serve this commit
+        if: ${{ (inputs.branch || 'production') == 'production' }}
+        env:
+          API_BASE: https://api.levelog.com
+        run: python3 .github/scripts/backend_deploy.py wait --sha "$GITHUB_SHA" --timeout 1200 --interval 30
 
       - name: Setup Node
         uses: actions/setup-node@v4

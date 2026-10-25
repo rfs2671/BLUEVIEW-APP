@@ -116,6 +116,11 @@ class ActivityChip(BaseModel):
     # from trades must exclude it. It is excluded in
     # frontend/src/utils/dailyJobsiteModel.js (deriveGeneralDescription).
     trade: Optional[str] = None
+    # WHY THIS CHIP IS WHERE IT IS, in plain words ("continuing - logged 3 days
+    # running", "next after MEP rough-in"). Set only when the position comes
+    # from this crew's own history on this project; None for a chip placed by
+    # the rule table alone. Informational: it never selects or blocks a chip.
+    reason: Optional[str] = None
 
 
 class ActivityRanking(BaseModel):

@@ -65,13 +65,19 @@ def _db():
     )
 
 
-def _optin(db, user_id, phone, chat=None):
+def _optin(db, user_id, phone, chat=None, *, welcomed=True):
+    """An active opt-in, as START leaves it: welcomed already (the welcome
+    is tested in test_whatsapp_dm_welcome.py), unless `welcomed=False`."""
     chat = chat or f"{phone}@c.us"
+    company = CO_A if user_id != "u_b" else CO_B
     db[server.WA_OPTINS].rows.append({
         "_id": f"o_{user_id}", "phone": phone, "user_id": user_id,
-        "company_id": CO_A if user_id != "u_b" else CO_B, "status": "active",
+        "company_id": company, "status": "active",
         "chat_id": chat, "chat_digits": "".join(c for c in chat if c.isdigit()),
         "phone_verified": True})
+    if welcomed:
+        db[server.WA_DM_WELCOMES].rows.append({
+            "_id": user_id, "company_id": company, "card": "vcard"})
 
 
 def _payload(chat, body, mid="D1"):
@@ -116,25 +122,61 @@ class _Harness:
 
 class WhoMayUseIt(_Harness, unittest.TestCase):
 
-    def test_unknown_cp_super_and_not_opted_in_get_one_line(self):
+    def test_unknown_cp_super_get_no_reply_at_all(self):
+        """Not on the list: silence -- no "for admins only" line telling a
+        stranger this number is a bot."""
         db = _db()
         _optin(db, "u_cp", CP_PHONE)          # even with an opt-in row, a CP is refused
         _optin(db, "u_super", SUPER_PHONE)
         with _Ctx(db=db) as c:
-            for phone in (UNKNOWN_PHONE, CP_PHONE, SUPER_PHONE, ADMIN_PHONE):
+            for i, phone in enumerate((UNKNOWN_PHONE, CP_PHONE, SUPER_PHONE)):
                 with self.subTest(phone):
-                    reply = self._send(c, f"{phone}@c.us", "who's on site at 588 Thomas")
-                    self.assertEqual(reply, wa_assistant.NOT_FOR_YOU_TEXT)
+                    self._send(c, f"{phone}@c.us", "who's on site at 588 Thomas", mid=f"S{i}")
+            self.assertEqual([p for p in c.wire.calls if "message" in p], [])
         self.assertEqual(self.agent_calls, [])
         self.assertEqual(self.llm_calls, [])
+
+    def test_an_admin_not_opted_in_gets_the_start_hint_once_a_day(self):
+        db = _db()
+        with _Ctx(db=db) as c:
+            self.assertEqual(self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site"),
+                             wa_assistant.START_HINT_TEXT)
+            self._send(c, f"{ADMIN_PHONE}@c.us", "hello?", mid="D2")
+            sent = [p["message"] for p in c.wire.calls if "message" in p]
+        self.assertEqual(sent, [wa_assistant.START_HINT_TEXT])         # once, not per message
+        self.assertEqual(self.agent_calls, [])
+
+    def test_no_hint_for_a_shared_number_or_after_stop(self):
+        """Codex on #838: START refuses a number on two people, and STOP means
+        quiet -- neither gets "Text START"."""
+        db = _db()
+        admin = next(u for u in db.users.rows if u["_id"] == "u_admin")
+        db.users.rows.append(dict(admin, _id="u_twin", name="Twin"))
+        with _Ctx(db=db) as c:
+            self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site")
+            self.assertEqual([p for p in c.wire.calls if "message" in p], [])
+        db = _db()
+        db[server.WA_OPTINS].rows.append({"_id": "o_stop", "phone": ADMIN_PHONE, "user_id": "u_admin",
+                                          "status": "opted_out", "chat_digits": ADMIN_PHONE})
+        with _Ctx(db=db) as c:
+            self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site", mid="D3")
+            self.assertEqual([p for p in c.wire.calls if "message" in p], [])
+
+    def test_the_daily_hint_is_claimed_once(self):
+        """Codex on #838: two deliveries racing -- one claim, one hint."""
+        db = _db()
+        with _Ctx(db=db):
+            async def both():
+                return await asyncio.gather(server._dm_start_hint_due(f"{ADMIN_PHONE}@c.us"),
+                                            server._dm_start_hint_due(f"{ADMIN_PHONE}@c.us"))
+            self.assertEqual(sorted(_run(both())), [False, True])
 
     def test_a_changed_profile_phone_fails_closed(self):
         db = _db()
         _optin(db, "u_admin", ADMIN_PHONE)
         db.users.rows[0]["phone"] = "+15550007777"
         with _Ctx(db=db) as c:
-            self.assertEqual(self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site"),
-                             wa_assistant.NOT_FOR_YOU_TEXT)
+            self.assertIsNone(self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site"))
         self.assertEqual(self.agent_calls, [])
 
     def test_a_lid_sender_is_resolved_through_its_opt_in(self):
@@ -249,8 +291,12 @@ class WhichJob(_Harness, unittest.TestCase):
                 (row["expires_at"] - datetime.now(timezone.utc)).total_seconds(),
                 30 * 60, delta=5)
             row["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+            # ...and the chat that named it is over 30 minutes old: asked,
+            # with 8 Walworth first (named in the last 4 hours).
+            for m in db.whatsapp_messages.rows:
+                m["created_at"] = datetime.now(timezone.utc) - timedelta(minutes=31)
             reply = self._send(c, f"{ADMIN_PHONE}@c.us", "and the open items?", "m3")
-        self.assertTrue(reply.startswith("Which job?"))
+        self.assertTrue(reply.startswith("Which job — 8 Walworth St? Or another: 1) 8 Walworth St"), reply)
 
     def test_a_number_without_a_menu_is_just_a_message(self):
         db = self._admin()

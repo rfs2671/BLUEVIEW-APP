@@ -124,3 +124,6 @@ dump.rdb
 # every bearer token the session sent -- the same class of leak as the JWT that
 # test_reports/iteration_4.json carried into history.
 *.har
+
+# real-data report dry runs (contain production data)
+docs/samples/real/

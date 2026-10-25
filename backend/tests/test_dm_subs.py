@@ -172,8 +172,9 @@ class TheLiveDm(_Dm, unittest.TestCase):
                        "Yes — Spark Data & Security (Low Voltage) is on 588 Thomas S Boyland St; "
                        "punch contact Chris Lopez.")
         replies, db = self.ask(model)
-        self.assertEqual(replies, ["Yes — Spark Data & Security (Low Voltage) is on 588 Thomas S "
-                                   "Boyland St; punch contact Chris Lopez."])
+        # The short job name (Thu 11:35 AM, lib/wa_style.py).
+        self.assertEqual(replies, ["Yes — Spark Data & Security (Low Voltage) is on 588; "
+                                   "punch contact Chris Lopez."])
         self.assertEqual(self.agent_calls, [])               # not the job agent
         self.assertEqual(model.calls[0][1], "required")      # a tool first, always
         tool_msg = model.calls[1][0][-1]
@@ -190,7 +191,7 @@ class TheLiveDm(_Dm, unittest.TestCase):
                 self.assertNotIn("Which job", replies[0])
         replies, _db_ = self.ask(_model(None))
         self.assertTrue(replies[0].startswith("Yes — 1 match for low voltage"), replies[0])
-        self.assertIn("588 Thomas S Boyland St", replies[0])
+        self.assertIn("on 588", replies[0])                  # the short job name
 
     def test_a_denial_is_replaced_by_the_tool(self):
         model = _model(("find_sub", {"trade_or_name": "low voltage"}), DENIAL)
@@ -269,10 +270,9 @@ class TheJobAgent(_Dm, unittest.TestCase):
             reply = [p["message"] for p in c.wire.calls if "message" in p][-1]
         self.assertEqual(self.agent_calls[0]["project_id"], THOMAS)     # never an "add a sub"
         self.assertEqual(reply, "\n".join([
-            "2 subs on 588 Thomas S Boyland St:",
-            "• Power Direct (Electrical) — on 588 Thomas S Boyland St",
-            "• Spark Data & Security (Low Voltage) — on 588 Thomas S Boyland St — "
-            "punch contact Chris Lopez"]))
+            "2 subs on 588:",
+            "• Power Direct (Electrical) — on 588",
+            "• Spark Data & Security (Low Voltage) — on 588 — punch contact Chris Lopez"]))
 
     def test_a_question_is_never_a_request_to_add(self):
         from lib import dm_actions

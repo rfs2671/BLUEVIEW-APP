@@ -1,0 +1,35 @@
+# THE BACKEND MUST NOT FALL BEHIND MAIN SILENTLY.
+#
+# On 2026-10-21 Railway paused deploys after #826 and nothing said so: ten
+# merges sat on main undeployed for most of a day while /api/version answered
+# 200 from the old build. This fails when the OLDEST merge on main that the
+# deployed commit does not include is more than 30 minutes old.
+#
+# Every 15 minutes, so it goes red 30-45 minutes after a stuck merge (GitHub
+# may delay scheduled runs further under load). A failed scheduled run emails
+# the person who last edited the cron line below; the job summary names the
+# stuck commit. It changes nothing -- it only reads /api/version and git.
+#
+# Scheduled workflows run from the default branch, so this starts once merged.
+name: backend deploy lag
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  lag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fail if /api/version is still behind main 30 minutes after a merge
+        env:
+          API_BASE: https://api.levelog.com
+        run: |
+          set -o pipefail
+          python3 .github/scripts/backend_deploy.py lag --max-minutes 30 --ref origin/main \
+            | tee -a "$GITHUB_STEP_SUMMARY"

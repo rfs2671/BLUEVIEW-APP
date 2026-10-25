@@ -457,7 +457,7 @@ const SignaturePad = ({
                 <Text style={styles.actionText}>{t('clearResign')}</Text>
               </Pressable>
               <Pressable onPress={handleAffirm} style={[styles.actionBtn, styles.affirmBtn]}>
-                <Check size={16} strokeWidth={1.5} color="#fff" />
+                <Check size={16} strokeWidth={1.5} color="#141A1F" />
                 <Text style={styles.confirmText}>{t('affirm')}</Text>
               </Pressable>
             </>
@@ -480,7 +480,7 @@ const SignaturePad = ({
                 ]}
                 disabled={!canConfirm}
               >
-                <Check size={16} strokeWidth={1.5} color="#fff" />
+                <Check size={16} strokeWidth={1.5} color="#141A1F" />
                 <Text style={styles.confirmText}>Confirm Signature</Text>
               </Pressable>
             </>
@@ -558,6 +558,7 @@ function buildStyles(colors, isDark) {
       gap: spacing.sm,
     },
     title: {
+      flexShrink: 1,
       fontSize: 16,
       fontWeight: '500',
       color: colors.text.primary,
@@ -695,20 +696,21 @@ function buildStyles(colors, isDark) {
       fontSize: 14,
       color: colors.text.muted,
     },
+    // Both fills are light tones with ink labels, so they read the same on paper and on navy (the pad can be pinned light).
     confirmBtn: {
       flex: 2,
-      backgroundColor: '#4ade80',
-      borderColor: '#4ade80',
+      backgroundColor: '#5FBF8A',
+      borderColor: '#5FBF8A',
     },
     confirmText: {
       fontSize: 14,
-      fontWeight: '500',
-      color: '#fff',
+      fontWeight: '600',
+      color: '#141A1F',
     },
     affirmBtn: {
       flex: 2,
-      backgroundColor: semantic.attention,
-      borderColor: semantic.attention,
+      backgroundColor: '#D8A044',
+      borderColor: '#D8A044',
     },
     clearBtn: {
       flex: 1,

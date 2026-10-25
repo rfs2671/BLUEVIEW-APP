@@ -63,17 +63,17 @@ ok(norm(T.outdoor.backgroundEnd) === norm(L.background.end),
 
 // ── The card ─────────────────────────────────────────────────────────────────
 console.log('\n── The card fill GlassCard renders in light mode ──');
-// GlassCard's LIGHT_GRADIENT is [withAlpha('#ffffff', 0.92), 'rgba(219, 234, 254, 0.65)'].
+// GlassCard's LIGHT_GRADIENT is [withAlpha('#ffffff', 0.84), 'rgba(250, 251, 248, 0.80)'].
 const glassSrc = fs.readFileSync(
   path.join(__dirname, '..', 'components', 'GlassCard.js'), 'utf8');
 const gradMatch = glassSrc.match(/const LIGHT_GRADIENT = \[([\s\S]*?)\];/);
 ok(!!gradMatch, 'GlassCard still declares a LIGHT_GRADIENT');
 if (gradMatch) {
   const block = gradMatch[1];
-  ok(/withAlpha\('#ffffff',\s*0\.92\)/.test(block),
-    'GlassCard tops the card at white 0.92');
-  ok(norm(T.outdoor.cardTop) === norm('rgba(255,255,255,0.92)'),
-    'outdoor.cardTop is that same white 0.92');
+  ok(/withAlpha\('#ffffff',\s*0\.84\)/.test(block),
+    'GlassCard tops the card at white 0.84');
+  ok(norm(T.outdoor.cardTop) === norm('rgba(255,255,255,0.84)'),
+    'outdoor.cardTop is that same white 0.84');
   const bottom = (block.match(/'(rgba\([^)]*\))'/) || [])[1];
   ok(!!bottom && norm(T.outdoor.cardBottom) === norm(bottom),
     `outdoor.cardBottom matches GlassCard's bottom stop (${bottom})`);
@@ -96,20 +96,30 @@ ok(norm(T.outdoor.textDim) === norm(L.text.muted),
 ok(norm(T.outdoor.surfaceSelected) === norm(L.primary),
   `outdoor.surfaceSelected matches _light.primary (${L.primary})`);
 
+ok(norm(T.outdoor.selected) === norm(L.selected),
+  `outdoor.selected matches _light.selected (${L.selected})`);
+ok(norm(T.outdoor.onSelected) === norm(L.onSelected),
+  `outdoor.onSelected matches _light.onSelected (${L.onSelected})`);
+ok(norm(T.outdoor.bar) === norm(L.bar),
+  `outdoor.bar matches _light.bar (${L.bar})`);
+ok(norm(T.outdoor.onBar) === norm(L.onBar),
+  `outdoor.onBar matches _light.onBar (${L.onBar})`);
+
 // ── Shadow ───────────────────────────────────────────────────────────────────
-console.log('\n── The soft diffuse shadow ──');
-ok(norm(T.outdoorShadow.shadowColor) === norm(L.shadow.color),
-  `shadowColor matches _light.shadow.color (${L.shadow.color})`);
-ok(T.outdoorShadow.shadowRadius === L.shadow.radius,
-  `shadowRadius matches _light.shadow.radius (${L.shadow.radius})`);
-ok(T.outdoorShadow.shadowOpacity === L.shadow.opacity,
-  `shadowOpacity matches _light.shadow.opacity (${L.shadow.opacity})`);
-ok(T.outdoorShadow.shadowOffset.height === L.shadow.offset.height
-  && T.outdoorShadow.shadowOffset.width === L.shadow.offset.width,
-`shadowOffset matches _light.shadow.offset (${JSON.stringify(L.shadow.offset)})`);
-ok(/elevation:\s*6/.test(glassSrc),
-  'GlassCard still uses elevation 6, and outdoorShadow does too');
-ok(T.outdoorShadow.elevation === 6, 'outdoorShadow.elevation === 6');
+console.log('\n── The card aura ──');
+ok(norm(T.outdoorShadow.shadowColor) === norm(L.aura.color),
+  `shadowColor matches _light.aura.color (${L.aura.color})`);
+ok(T.outdoorShadow.shadowRadius === L.aura.radius,
+  `shadowRadius matches _light.aura.radius (${L.aura.radius})`);
+ok(T.outdoorShadow.shadowOpacity === L.aura.opacity,
+  `shadowOpacity matches _light.aura.opacity (${L.aura.opacity})`);
+ok(T.outdoorShadow.shadowOffset.height === L.aura.offset.height
+  && T.outdoorShadow.shadowOffset.width === L.aura.offset.width,
+`shadowOffset matches _light.aura.offset (${JSON.stringify(L.aura.offset)})`);
+const auraSrc = fs.readFileSync(path.join(__dirname, 'aura.js'), 'utf8');
+ok(/elevation:\s*4/.test(auraSrc),
+  'the aura gives Android elevation 4, and outdoorShadow does too');
+ok(T.outdoorShadow.elevation === 4, 'outdoorShadow.elevation === 4');
 
 // ── It must NOT flip ─────────────────────────────────────────────────────────
 console.log('\n── It is pinned, not live ──');
@@ -126,12 +136,12 @@ ok(!/get \w+\(\)/.test(src.slice(src.indexOf('export const outdoor'),
 
 // ── The card geometry the app uses ───────────────────────────────────────────
 console.log('\n── Card geometry ──');
-ok(T.borderRadius.xxl === 32, 'borderRadius.xxl is 32 — GlassCard\'s corner');
+ok(T.borderRadius.xxl === 14, 'borderRadius.xxl is 14 — GlassCard\'s corner');
 ok(/borderRadius: borderRadius\.xxl/.test(glassSrc),
   'GlassCard still rounds its container to xxl');
-ok(T.spacing.xl === 32, 'spacing.xl is 32 — GlassCard\'s internal padding');
-ok(/padding: spacing\.xl/.test(glassSrc),
-  'GlassCard still pads its content by xl');
+ok(T.spacing.md === 16, 'spacing.md is 16 — GlassCard\'s internal padding');
+ok(/padding: spacing\.md/.test(glassSrc),
+  'GlassCard still pads its content by md');
 ok(T.borderRadius.full === 9999, 'borderRadius.full is the pill radius');
 
 console.log(`\n${passed} passed, ${failed} failed`);

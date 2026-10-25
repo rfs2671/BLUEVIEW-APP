@@ -5,6 +5,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { X, RefreshCw, Check, Trash2, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import { chrome, withAlpha } from '../styles/semanticColors';
+import { colors } from '../styles/theme';
 
 /**
  * The camera's CHROME, with no camera in it.
@@ -191,8 +192,8 @@ export default function CameraOverlay({
               accessibilityRole="button"
               accessibilityLabel={shots.length > 0 ? `Done, ${shots.length} photos` : 'Done'}
             >
-              <Check size={16} strokeWidth={2.5} color="#fff" />
-              <Text style={styles.doneText}>
+              <Check size={16} strokeWidth={2.5} color={colors.onPrimary} />
+              <Text style={[styles.doneText, { color: colors.onPrimary }]}>
                 {shots.length > 0 ? `Done (${shots.length})` : 'Done'}
               </Text>
             </Pressable>

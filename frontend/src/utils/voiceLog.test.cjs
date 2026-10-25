@@ -47,7 +47,20 @@ const screen = read('app/projects/[id]/voice-log.jsx');
 ok(/getVoiceLog/.test(screen) && /producedLines/.test(screen) && /PLAY_LABEL/.test(screen),
    'lists, produced, play');
 ok(/voice-log/.test(read('app/projects/[id]/whatsapp-groups.jsx')), 'linked from the WhatsApp tab');
-ok(V.emptyText(false) === 'No voice notes yet.' && /filters/.test(V.emptyText(true)), 'empty texts');
+ok(V.emptyText(false) === 'No voice notes or photos yet.' && /filters/.test(V.emptyText(true)), 'empty texts');
+
+console.log('photos');
+const ph = { id: 'p1', kind: 'photo', where: 'group', place: '588 – Site', who: 'Yoel',
+  company: 'Arkon Builders', caption: '3rd floor framing', seen: 'Metal stud framing',
+  quality: 'original', status: 'kept', photo_url: 'https://r2/x.jpg' };
+ok(V.isPhoto(ph) && !V.isPhoto(g), 'a photo row is a photo');
+ok(V.photoHead(ph) === 'Yoel · Arkon Builders · 588 – Site', V.photoHead(ph));
+ok(V.photoLines(ph).map((l) => l.text).join('|') === '3rd floor framing|Shows: Metal stud framing',
+   'caption, then what it shows');
+ok(/Preview only/.test(V.photoLines({ ...ph, quality: 'preview' }).pop().text), 'a preview says so');
+ok(V.MEDIA_FILTERS.join() === ',voice,photo' && V.MEDIA_LABELS.photo === 'Photos', 'media filter');
+ok(/isPhoto/.test(screen) && /photo_url/.test(screen) && /media/.test(screen), 'the screen shows photos');
+ok(/'media'/.test(read('src/utils/api.js')), 'the media filter is sent');
 const merged = V.appendPage([{ id: 'a', where: 'group' }], { notes: [
   { id: 'a', where: 'group' }, { id: 'a', where: 'dm' }, { id: 'b', where: 'group' }] });
 ok(merged.map((n) => `${n.where}-${n.id}`).join() === 'group-a,dm-a,group-b', 'a page appends, no repeats');

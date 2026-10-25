@@ -2,7 +2,7 @@
 
 Supports: equality (incl. a scalar against an array field), $in, $nin, $ne,
 $gt, $gte, $lt, $lte, $exists, $regex, $or; updates $set, $setOnInsert, $inc,
-$push, $addToSet (with $each),
+$push (with $each, $slice), $addToSet (with $each),
 $unset; unique `_id` and optional unique single fields; find / find_one /
 find_one_and_update / insert_one / update_one / update_many / replace_one /
 count_documents / delete_one / create_index (recorded, not enforced except
@@ -193,7 +193,7 @@ class Coll:
 
     async def insert_one(self, doc):
         doc = dict(doc)
-        doc.setdefault("_id", f"oid{next(_ids)}")
+        doc.setdefault("_id", f"oid{next(_ids):010d}")  # fixed width: sorts in insertion order, like an ObjectId
         self._check_unique(doc)
         self.rows.append(doc)
         return _Res(inserted_id=doc["_id"])
@@ -236,7 +236,13 @@ class Coll:
         for k, v in (update.get("$push") or {}).items():
             cur = _get(doc, k)
             cur = list(cur) if isinstance(cur, list) else []
-            cur.append(v)
+            if isinstance(v, dict) and "$each" in v:
+                cur.extend(v["$each"])
+                if isinstance(v.get("$slice"), int):
+                    n = v["$slice"]
+                    cur = cur[n:] if n < 0 else cur[:n]
+            else:
+                cur.append(v)
             _set(doc, k, cur)
 
     async def update_one(self, query, update, upsert=False, **k):
@@ -272,7 +278,10 @@ class Coll:
         return _Res(0, 0)
 
     async def find_one_and_update(self, query, update, upsert=False, **k):
-        for r in self.rows:
+        candidates = [r for r in self.rows if matches(r, query)]
+        if k.get("sort") and len(candidates) > 1:           # like Mongo: the FIRST by sort order
+            candidates = _Cursor(candidates).sort(k["sort"]).rows
+        for r in candidates:
             if matches(r, query):
                 before = copy.deepcopy(r)
                 self._apply(r, update)

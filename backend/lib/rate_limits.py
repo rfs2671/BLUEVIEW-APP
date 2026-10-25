@@ -107,6 +107,15 @@ logger = logging.getLogger(__name__)
 # so the matcher stops at the right rule. We rely on first-match
 # semantics — see _match_rule.
 RATE_LIMITS: List[Tuple[str, str, str, str]] = [
+    # ── Sheet tile viewer (a deep zoom fetches dozens of tiles per gesture;
+    #    the 100/min default would stall it). Tiles are immutable and cached
+    #    by the client, so a sustained rate this high is a scraper, not a pinch.
+    ("GET", "/api/projects/{id}/files/{fid}/sheets/{page}/tiles/{z}/{x}/{y}", "4000/1 minute", "user"),
+    ("GET", "/api/projects/{id}/files/{fid}/sheets/{page}/preview", "600/1 minute", "user"),
+    ("GET", "/api/projects/{id}/files/{fid}/sheets/{page}/index", "300/1 minute", "user"),
+    ("GET", "/api/projects/{id}/files/{fid}/sheets", "120/1 minute", "user"),
+    ("POST", "/api/projects/{id}/files/{fid}/sheets/compile", "10/5 minutes", "user"),
+
     # ── Auth (highest abuse risk; brute-force + signup spam) ──────
     ("POST", "/api/auth/login", "5/5 minutes", "ip"),
     ("POST", "/api/auth/register", "3/1 hour", "ip"),
@@ -149,6 +158,15 @@ RATE_LIMITS: List[Tuple[str, str, str, str]] = [
     ("PATCH", "/api/projects/{id}", "30/5 minutes", "user"),
     ("DELETE", "/api/projects/{id}", "10/5 minutes", "user"),
 
+    # ── Progress report + schedule import (user-scoped) ───────────
+    # A report is a database sweep, a PDF render and an R2 upload; a
+    # schedule import parses a file of up to 20 MB. A person asks for a few
+    # in a sitting, never dozens: a loop, a double-tap storm or a hostile
+    # token is what these cap. The scheduled run does not pass through here.
+    ("POST", "/api/projects/{id}/project-reports", "6/10 minutes", "user"),
+    ("POST", "/api/projects/{id}/baseline-schedule/upload", "10/10 minutes", "user"),
+    ("POST", "/api/projects/{id}/baseline-schedule/from-file", "10/10 minutes", "user"),
+
     # ── WhatsApp webhook (IP-scoped; WaAPI is the only caller) ────
     #
     # IT WAS NEVER UNLIMITED, AND IT WAS NEVER NAMED EITHER. /api/whatsapp/
@@ -174,6 +192,18 @@ RATE_LIMITS: List[Tuple[str, str, str, str]] = [
     # nothing. This entry is a circuit breaker on a runaway sender. It is not
     # the spend control, and it should not be tuned down to act as one.
     ("POST", "/api/whatsapp/webhook", "120/1 minute", "ip"),
+
+    # ── Signed file download (IP-scoped; the link IS the credential) ──
+    #
+    # It carries no bearer, so "user" would only ever downgrade to IP --
+    # named "ip" so the table says what it does. Its OWN bucket, not the
+    # __default__ one: a PDF viewer asks one link for many byte ranges, and
+    # those must not spend the allowance of every other unmatched route from
+    # the same address (an office or a site behind one NAT). 600/minute is a
+    # circuit breaker on storage egress, not a guess at a viewer's needs.
+    # Forged or stale links are capped far tighter, before any signature is
+    # computed, by signed_download_refusal_limiter in server.py.
+    ("GET", "/api/files/{id}/download", "600/1 minute", "ip"),
 
     # ── Admin (IP-scoped — should never get hit hard) ─────────────
     # /api/admin/_sentry_test gets its own tighter rule because it

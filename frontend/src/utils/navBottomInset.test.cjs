@@ -1,17 +1,20 @@
 /**
- * The floating navs clear the system navigation bar.
+ * The bottom navs clear the system navigation bar.
  *
  * API 36 enforces edge-to-edge, so the app draws under the navigation bar and
- * every element has to account for it. Both navs are `position: 'absolute'`,
- * which puts them OUTSIDE the inset flow entirely — no parent padding and no
- * scroll padding reaches an absolutely positioned child. So the screens'
- * `SafeAreaView edges={['top']}` and their `paddingBottom: 120` do nothing at
- * all for these two, and a hardcoded `bottom: 24` is the whole story.
+ * every element has to account for it. All three navs are `position:
+ * 'absolute'`, which puts them OUTSIDE the inset flow entirely — no parent
+ * padding and no scroll padding reaches an absolutely positioned child. So the
+ * screens' `SafeAreaView edges={['top']}` and their `paddingBottom: 120` do
+ * nothing at all for these, and the nav has to read the inset itself.
  *
- * 24 approximates a GESTURE bar, which is why it looks right on a gesture
- * device and why an informal look missed it. On 3-button navigation the bar is
- * roughly 48dp and the nav sits underneath the buttons — on every screen, and
- * `CpNav` is on every screen the CP uses.
+ * THE GEOMETRY CHANGED, THE INVARIANT DID NOT. These were floating pills
+ * (`bottom: insets.bottom + 24`). They are now solid, full-width bars flush to
+ * the bottom edge: the container is `bottom: 0` and the BAR's own
+ * `paddingBottom` is `insets.bottom + <a named constant>`. The bar grows
+ * upward by the inset and its fill runs under the system bar, so the labels
+ * sit above the buttons on 3-button navigation (inset ~48) exactly as the
+ * pill did, and the colour reaches the screen edge instead of leaving a gap.
  *
  * `insets.bottom` is 0 where there is no bar, so this is a no-op on gesture
  * navigation, on iOS without a home indicator, and on web.
@@ -22,7 +25,7 @@ const fs = require('fs');
 const path = require('path');
 
 const FRONTEND = path.join(__dirname, '..', '..');
-const NAVS = ['CpNav', 'FloatingNav'];
+const NAVS = ['CpNav', 'FloatingNav', 'SiteNav'];
 
 let passed = 0; let failed = 0;
 function ok(cond, label) {
@@ -30,53 +33,75 @@ function ok(cond, label) {
   else { failed += 1; console.log('  FAIL ', label); }
 }
 
+// Comment-free source, so a rule explained in prose is not mistaken for code.
+const stripComments = (src) => src
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/(?<!:)\/\/[^\n]*/g, '');
+
 for (const nav of NAVS) {
   const file = path.join(FRONTEND, 'src', 'components', `${nav}.js`);
-  const src = fs.readFileSync(file, 'utf8');
+  const src = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+  const code = stripComments(src);
 
   console.log(`\n-- ${nav} --`);
 
-  ok(/position: 'absolute'/.test(src),
+  // The container block of the NAV's stylesheet (FloatingNav also carries a
+  // modal stylesheet, which is why this anchors on `container:`).
+  const containerBlock = (code.match(/^\s*container: \{[\s\S]*?\n\s*\},?$/m) || [''])[0];
+  const sheet = code.slice(code.lastIndexOf('StyleSheet.create'));
+
+  ok(/position: 'absolute'/.test(containerBlock),
     'ANCHOR: still absolutely positioned, which is why insets do not reach it');
 
   ok(/import \{ useSafeAreaInsets \} from 'react-native-safe-area-context';/.test(src),
     'reads the real inset rather than assuming a bar height');
 
-  ok(/const insets\s*=\s*useSafeAreaInsets\(\);/.test(src),
+  ok(/const insets\s*=\s*useSafeAreaInsets\(\);/.test(code),
     'and calls the hook inside the component');
+
+  // Flush to the bottom edge, full width: no float gap, no inset in `bottom`.
+  ok(/\bbottom: 0\b/.test(containerBlock)
+    && /\bleft: 0\b/.test(containerBlock)
+    && /\bright: 0\b/.test(containerBlock),
+    'the bar is flush to the bottom edge and spans the full width');
+  ok(!/borderRadius/.test(containerBlock),
+    'and is a flat strip, not a rounded pill');
+  ok(!/\bbottom: insets\.bottom/.test(code),
+    'the inset is NOT added to `bottom` (the old float) — the bar stays at '
+    + '0 and grows upward');
 
   // The override must be at the USE SITE. Putting insets in the StyleSheet is
   // impossible (it is created once at module load, before any inset exists),
   // so a fix that "looks right" in the stylesheet would silently be a constant.
-  //
-  // THE OFFSET MAY BE A LITERAL OR A NAMED CONSTANT. It was `+ 24` in both
-  // navs until CpNav needed to EXPORT it: the three CP screens now derive
-  // their scroll clearance from the nav's own geometry
-  // (CP_NAV_CLEARANCE = offset + pill height + breathing room), and a
-  // clearance built on a number typed twice is the drift this whole change
-  // removes. Naming it is what lets one value serve both the pill's position
-  // and the clearance that keeps content off it.
-  //
-  // The VALUE is still pinned — see the check below — just pinned at its
-  // definition rather than at its use.
-  const OFFSET = '(?:24|[A-Z][A-Z0-9_]*_OFFSET)';
-  ok(new RegExp(`style=\\{\\[styles\\.container, \\{ bottom: insets\\.bottom \\+ ${OFFSET} \\}\\]\\}`).test(src),
-    'the bottom is overridden per render, not baked into the StyleSheet — a '
-    + 'StyleSheet is built once at module load, before any inset exists');
+  const PAD = '([A-Z][A-Z0-9_]*_(?:PADDING|OFFSET))';
+  const inline = code.match(new RegExp(`paddingBottom: insets\\.bottom \\+ ${PAD}`));
+  ok(!!inline,
+    "the bar's paddingBottom is overridden per render as insets.bottom + a "
+    + 'named constant — a StyleSheet is built once at module load, before any '
+    + 'inset exists');
+  ok(!!inline && /styles\.container/.test(
+      code.slice(Math.max(0, inline.index - 220), inline.index)),
+    'and that override is on the same element as styles.container, the bar');
 
-  // The offset in the INLINE expression is the real gap above the bar; the
-  // stylesheet value is only a fallback, because the inline style REPLACES
-  // bottom rather than adding to it. Asserting the stylesheet would be
-  // asserting something inert.
-  ok(new RegExp(`insets\\.bottom \\+ ${OFFSET}`).test(src),
-    'the gap above the bar is applied on top of the measured inset');
+  // The StyleSheet must not try to carry the inset: it cannot, and reading
+  // `insets` there would make the "per render" claim above a constant.
+  ok(!/\binsets\b/.test(sheet),
+    'the StyleSheet itself never references insets (no inset exists when it '
+    + 'is built)');
 
-  // AND IT IS STILL 24, whichever form it takes. A named constant that drifted
-  // to some other value would satisfy the shape checks above while moving the
-  // nav — and, for CpNav, moving every CP screen's clearance with it.
-  const named = src.match(/^export const ([A-Z][A-Z0-9_]*_OFFSET) = (\d+);$/m);
-  ok(named ? Number(named[2]) === 24 : /insets\.bottom \+ 24/.test(src),
-    'the gap above the bar is 24' + (named ? ` (via ${named[1]})` : ''));
+  // THE CONSTANT IS A SMALL NUMBER, NOT A FLOAT GAP. insets.bottom already
+  // carries the home indicator / nav bar, so the constant is only the
+  // breathing room under the labels. A value that drifted back to 24 would
+  // satisfy the shape checks above while pushing the labels up off the edge.
+  const name = inline && inline[1];
+  const decl = name && code.match(new RegExp(`^(?:export )?const ${name} = (.+?);$`, 'm'));
+  ok(!!decl && (decl[1] === 'spacing.sm' || decl[1] === '8'),
+    `the constant (${name}) is 8 — the small breathing room under the labels `
+    + `(got ${decl && decl[1]})`);
+
+  // The colour is a theme token resolved at render, not a baked-in constant.
+  ok(/\b(?:colors?|c)\.bar\b/.test(code),
+    'the bar fill comes from the theme `bar` token');
 }
 
 console.log('\n-- no screen both insets the bottom AND pads for it --');
@@ -116,7 +141,7 @@ console.log('\n-- no screen both insets the bottom AND pads for it --');
   // own position, which is what this file is actually about.
   ok(NAVS.every((n) => /useSafeAreaInsets/.test(
     fs.readFileSync(path.join(FRONTEND, 'src', 'components', `${n}.js`), 'utf8'))),
-    'both navs still read the inset themselves');
+    'every nav still reads the inset itself');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

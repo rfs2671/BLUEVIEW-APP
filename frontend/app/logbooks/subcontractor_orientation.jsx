@@ -33,6 +33,7 @@ import LogbookLockBar from '../../src/components/LogbookLockBar';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { readsLogbooksOnly } from '../../src/utils/pmLogbooks';
 import { collapseChains } from '../../src/utils/amendmentChain';
 import { logbooksAPI } from '../../src/utils/api';
 import { finalizeErrorCode, recordFinalizeError, clearFinalizeError } from '../../src/utils/draftSync';
@@ -214,6 +215,9 @@ export default function SubcontractorOrientation() {
   const consent = useEsraConsent();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
+  // A Site Manager / PM on "Assigned jobs only" reads these records; he does
+  // not add, sign or assign a trade on one (the server refuses all three).
+  const readOnly = readsLogbooksOnly(user);
   const toast = useToast();
   const { cpName: newCpName, setCpName: setNewCpName, cpSignature: newCpSignature, setCpSignature: setNewCpSignature, autoSave } = useCpProfile();
 
@@ -937,15 +941,17 @@ export default function SubcontractorOrientation() {
           )}
 
           {/* Add new button */}
-          <GlassButton
-            title="+ Add Manual Orientation"
-            icon={<Plus size={16} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={() => (showAddForm ? setShowAddForm(false) : openAddForm())}
-            style={styles.addBtn}
-          />
+          {!readOnly && (
+            <GlassButton
+              title="+ Add Manual Orientation"
+              icon={<Plus size={16} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={() => (showAddForm ? setShowAddForm(false) : openAddForm())}
+              style={styles.addBtn}
+            />
+          )}
 
           {/* Manual add form */}
-          {showAddForm && (
+          {!readOnly && showAddForm && (
             <GlassCard style={styles.addForm}>
               <Text style={styles.sectionTitle}>New Orientation Record</Text>
 
@@ -1192,12 +1198,12 @@ export default function SubcontractorOrientation() {
                             flexDirection: 'row', alignItems: 'center', gap: 4,
                             marginTop: spacing.xs, marginBottom: spacing.sm,
                             paddingHorizontal: spacing.sm, paddingVertical: 3,
-                            backgroundColor: 'rgba(59,130,246,0.1)',
+                            backgroundColor: withAlpha(colors.primary, 0.1),
                             borderRadius: borderRadius.full,
-                            borderWidth: 1, borderColor: 'rgba(59,130,246,0.2)',
+                            borderWidth: 1, borderColor: withAlpha(colors.primary, 0.2),
                             alignSelf: 'flex-start',
                           }}>
-                            <Text style={{ fontSize: 11, fontWeight: '600', color: '#60a5fa' }}>
+                            <Text style={{ fontSize: 11, fontWeight: '600', color: colors.primary }}>
                               🌐 Orientation in: {d.language_provided === 'es' ? 'Español' : 'English'}
                             </Text>
                           </View>
@@ -1242,7 +1248,7 @@ export default function SubcontractorOrientation() {
                             the fix beside it — a refusal the CP meets only
                             after signing, on a screen listing a dozen workers,
                             names nobody and offers nothing. */}
-                        {!isSigned && !isLocked && !String(d.worker_trade || '').trim() && (
+                        {!readOnly && !isSigned && !isLocked && !String(d.worker_trade || '').trim() && (
                           <View style={styles.tradeMissingBox}>
                             <Text style={styles.tradeMissingTitle}>No trade assigned</Text>
                             <Text style={styles.tradeMissingText}>
@@ -1258,7 +1264,7 @@ export default function SubcontractorOrientation() {
                           </View>
                         )}
 
-                        {!isSigned && !isLocked && (
+                        {!readOnly && !isSigned && !isLocked && (
                           <OrientationSignaturePanel
                           onSign={(sig, name) => handleSignExisting(orient, sig, name)}
                           />
@@ -1567,8 +1573,8 @@ function buildStyles(colors, isDark) {
   cancelBtn: { flex: 1 },
   saveBtn: {
     flex: 2,
-    backgroundColor: 'rgba(139,92,246,0.2)',
-    borderColor: 'rgba(139,92,246,0.4)',
+    backgroundColor: withAlpha(colors.primary, 0.2),
+    borderColor: withAlpha(colors.primary, 0.4),
   },
   emptyCard: {
     alignItems: 'center',
@@ -1625,9 +1631,9 @@ function buildStyles(colors, isDark) {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(139,92,246,0.15)',
+    backgroundColor: withAlpha(colors.primary, 0.15),
     borderWidth: 1,
-    borderColor: 'rgba(139,92,246,0.3)',
+    borderColor: withAlpha(colors.primary, 0.3),
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1677,7 +1683,7 @@ function buildStyles(colors, isDark) {
   },
   checklistBarFill: {
     height: '100%',
-    backgroundColor: '#8b5cf6',
+    backgroundColor: colors.primary,
     borderRadius: 2,
   },
   signPanel: { marginTop: spacing.md },
@@ -1687,8 +1693,8 @@ function buildStyles(colors, isDark) {
   },
   signBtn: {
     marginTop: spacing.md,
-    backgroundColor: 'rgba(139,92,246,0.2)',
-    borderColor: 'rgba(139,92,246,0.4)',
+    backgroundColor: withAlpha(colors.primary, 0.2),
+    borderColor: withAlpha(colors.primary, 0.4),
   },
   signedBanner: {
     flexDirection: 'row',

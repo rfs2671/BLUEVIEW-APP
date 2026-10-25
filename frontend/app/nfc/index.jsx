@@ -331,11 +331,11 @@ export default function NfcCheckInScreen() {
         <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.centerContent}>
             <Animated.View style={[s.checkingIcon, { transform: [{ scale: pulseAnim }] }]}>
-              <Nfc size={60} strokeWidth={1} color="#3b82f6" />
+              <Nfc size={60} strokeWidth={1} color={colors.primary} />
             </Animated.View>
             <Text style={s.checkingTitle}>Checking you in...</Text>
             <Text style={s.checkingName}>{workerProfile?.name || 'Worker'}</Text>
-            <ActivityIndicator size="large" color="#3b82f6" style={s.spinner} />
+            <ActivityIndicator size="large" color={colors.primary} style={s.spinner} />
           </View>
         </SafeAreaView>
       </AnimatedBackground>
@@ -398,8 +398,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.xl,
   },
   errorTitle: {
-    fontSize: 28,
-    fontWeight: '300',
+    fontSize: 24,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.status.error,
     marginBottom: spacing.sm,
   },
@@ -467,30 +467,30 @@ function buildStyles(colors, isDark) {
   },
   registerBtn: {
     marginTop: spacing.md,
-    backgroundColor: '#10b981',
-    borderColor: '#10b981',
+    backgroundColor: semantic.verified,
+    borderColor: semantic.verified,
   },
   // Checking in styles
   checkingIcon: {
     width: 120,
     height: 120,
     borderRadius: 60,
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    backgroundColor: withAlpha(colors.primary, 0.1),
     borderWidth: 2,
-    borderColor: 'rgba(59, 130, 246, 0.3)',
+    borderColor: withAlpha(colors.primary, 0.3),
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: spacing.xl,
   },
   checkingTitle: {
-    fontSize: 24,
-    fontWeight: '300',
+    fontSize: 20,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     marginBottom: spacing.xs,
   },
   checkingName: {
     fontSize: 18,
-    color: '#3b82f6',
+    color: colors.primary,
     fontWeight: '500',
     marginBottom: spacing.lg,
   },
@@ -502,8 +502,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.xl,
   },
   successTitle: {
-    fontSize: 42,
-    fontWeight: '200',
+    fontSize: 32,
+    fontFamily: typography.display, fontWeight: '800',
     color: semantic.verified,
     marginBottom: spacing.xs,
   },
@@ -530,7 +530,7 @@ function buildStyles(colors, isDark) {
   },
   resultTime: {
     fontSize: 48,
-    fontWeight: '200',
+    fontFamily: typography.num, fontWeight: '600',
     color: colors.text.primary,
   },
   autoCloseText: {

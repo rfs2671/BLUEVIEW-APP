@@ -932,6 +932,16 @@ export const dropboxAPI = {
     return response.data;
   },
 
+  // A 15-minute link to one stored file, signed for this account. The bearer
+  // token rides in the header of THIS request only; the link it returns
+  // carries no token. `{ url }` is absolute, joined to the API base the app
+  // already talks to.
+  signedUrl: async (fileId) => {
+    const response = await apiClient.get(`/api/files/${encodeURIComponent(fileId)}/signed-url`);
+    const data = response.data || {};
+    return { ...data, url: data.path ? `${API_BASE_URL}${data.path}` : data.url };
+  },
+
   uploadFile: async (projectId, formData) => {
     // Web:   axios auto-sets `multipart/form-data; boundary=...` when the body
     //        is a browser FormData, BUT only if the header is absent. Our default
@@ -1574,6 +1584,18 @@ export const dobAPI = {
     return response.data;
   },
 
+  // DOT holiday construction embargo (Nov 15 – Jan 2). Returns
+  // { in_window, show, season: {year, start, end},
+  //   missing_waiver: [{number, description, work_start, work_end}], unknown: [...] }.
+  // `show` is true only inside Nov 1 – Jan 2 when an exposed permit is KNOWN
+  // to lack the waiver (stipulation 410); unread stipulations never count.
+  getDotEmbargo: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/${encodeURIComponent(projectId)}/dot/embargo`
+    );
+    return response.data;
+  },
+
   // MR.14 commit 3 — mark a single dob_log as read for the calling user.
   markRead: async (projectId, logId) => {
     const response = await apiClient.post(
@@ -1906,6 +1928,82 @@ export const punchAPI = {
 };
 
 /**
+ * Project reports: Project → Reports (PDF of a period; lib/project_report.py).
+ */
+export const projectReportsAPI = {
+  // { reports: [{ id, title, start, end, period, kind_label, summary, source, source_label,
+  //   requested_by, created_at, link, has_pdf }], settings, presets }
+  list: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/project-reports`);
+    return response.data;
+  },
+  // what: a preset key ('last_7_days' … 'whole_project'), { start, end } (YYYY-MM-DD), or
+  // words the server reads ("last 2 weeks").
+  create: async (projectId, what) => {
+    const body = (what && typeof what === 'object') ? { start: what.start, end: what.end }
+      : (/^[a-z_0-9]+$/.test(String(what || '')) ? { preset: what } : { range: what });
+    const response = await apiClient.post(`/api/projects/${projectId}/project-reports`, body);
+    return response.data;
+  },
+  pdf: async (reportId) => {
+    const response = await apiClient.get(`/api/project-reports/${encodeURIComponent(reportId)}/pdf`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+  // { schedules, recipient_ids, delivery: {whatsapp, email}, people: [{ id, name, role, email,
+  //   whatsapp }], kinds, summary, daily: { send_time, email_list }, can_edit }
+  settings: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/project-report-settings`);
+    return response.data;
+  },
+  // Admins and full-access PMs: { schedules: [...], recipient_ids: [...], delivery }
+  saveSettings: async (projectId, body) => {
+    const response = await apiClient.put(`/api/projects/${projectId}/project-report-settings`, body);
+    return response.data;
+  },
+};
+
+/**
+ * Project schedule import: a draft is read from a file and only used by the
+ * progress report once an admin confirms it.
+ */
+export const projectScheduleAPI = {
+  // { confirmed, draft, candidates: [{ id, name }], can_edit, formats }
+  get: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/baseline-schedule`);
+    return response.data;
+  },
+  // formData: multipart with `file`. Same web / native header rule as dropboxAPI.uploadFile.
+  upload: async (projectId, formData) => {
+    const isWeb = typeof window !== 'undefined' && !!window.document;
+    const headers = isWeb ? { 'Content-Type': undefined } : { 'Content-Type': 'multipart/form-data' };
+    const response = await apiClient.post(`/api/projects/${projectId}/baseline-schedule/upload`, formData, {
+      timeout: 120000,
+      headers,
+      transformRequest: (data) => data,
+    });
+    return response.data;
+  },
+  fromFile: async (projectId, fileId) => {
+    const response = await apiClient.post(`/api/projects/${projectId}/baseline-schedule/from-file`,
+      { file_id: fileId }, { timeout: 120000 });
+    return response.data;
+  },
+  confirm: async (projectId, scheduleId, replaceConfirmed = false) => {
+    const response = await apiClient.post(
+      `/api/projects/${projectId}/baseline-schedule/${encodeURIComponent(scheduleId)}/confirm`,
+      { reviewed: true, replace_confirmed: !!replaceConfirmed });
+    return response.data;
+  },
+  discard: async (projectId, scheduleId) => {
+    const response = await apiClient.delete(
+      `/api/projects/${projectId}/baseline-schedule/${encodeURIComponent(scheduleId)}`);
+    return response.data;
+  },
+};
+
+/**
  * WhatsApp Integration APIs
  */
 export const whatsappAPI = {
@@ -1985,13 +2083,15 @@ export const whatsappAPI = {
     return response.data;
   },
 
-  // Voice log, admins: { notes, next_before, scanned, facets: {senders, langs} } -- every
-  // voice note of the job (its groups', and DM notes answered about it).
-  // Filters: sender, lang, status ('transcribed' | 'flagged' | 'not_processed').
+  // Voice & media log, admins: { notes, next_before, scanned, facets: {senders, langs} } --
+  // every voice note of the job (its groups', and DM notes answered about it) and every
+  // photo posted in its groups (kind: 'photo', photo_url good for 15 minutes).
+  // Filters: sender, lang, status ('transcribed' | 'flagged' | 'not_processed'),
+  // media ('voice' | 'photo').
   // `before`: the next_before of the previous page ("Load more").
   getVoiceLog: async (projectId, filters = {}, before = null) => {
     const params = {};
-    ['sender', 'lang', 'status'].forEach((k) => { if (filters[k]) params[k] = filters[k]; });
+    ['sender', 'lang', 'status', 'media'].forEach((k) => { if (filters[k]) params[k] = filters[k]; });
     if (before) params.before = before;
     const response = await apiClient.get(`/api/projects/${projectId}/whatsapp/voice-log`,
       { params });

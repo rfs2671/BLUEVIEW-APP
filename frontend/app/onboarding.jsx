@@ -69,6 +69,7 @@ import { useTheme } from '../src/context/ThemeContext';
 import { spacing, borderRadius, typography, touchTarget } from '../src/styles/theme';
 import apiClient, { onboardingAPI } from '../src/utils/api';
 import InfoTooltip from '../src/components/InfoTooltip';
+import SheenView from '../src/components/SheenView';
 import {
   PRESETS,
   PRESET_ORDER,
@@ -496,7 +497,7 @@ export default function OnboardingScreen() {
   const renderStep3 = () => (
     <View style={styles.form}>
       {filingReps.map((rep, idx) => (
-        <View key={idx} style={styles.repCard}>
+        <SheenView key={idx} style={styles.repCard}>
           <View style={styles.repCardHeader}>
             <Text style={styles.repCardTitle}>FILING REP #{idx + 1}</Text>
             {filingReps.length > 1 ? (
@@ -563,7 +564,7 @@ export default function OnboardingScreen() {
               keyboardType="email-address"
             />
           </View>
-        </View>
+        </SheenView>
       ))}
       <Pressable
         onPress={() =>
@@ -971,7 +972,7 @@ function buildStyles(colors, isDark) {
     presetBadgeText: {
       fontSize: 10,
       fontWeight: '700',
-      color: colors.text.inverse || '#fff',
+      color: colors.onPrimary,
       letterSpacing: 0.5,
     },
     presetCardSubtitle: {

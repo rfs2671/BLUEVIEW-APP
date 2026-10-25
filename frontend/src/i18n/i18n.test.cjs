@@ -97,6 +97,9 @@ ok(idxImports.every((m) => m === 'react' || m.startsWith('.')),
 // below (key-identical, no blanks, no untranslated copies). Adding a namespace
 // to this list is a deliberate legal decision, not a way to skip translating.
 const EN_ONLY_NAMESPACES = [
+  // app/projects/[id]/schedule.jsx -- project schedule import; the project
+  // reports screens carry no translations.
+  'projectSchedule',
   // app/logbooks/daily_jobsite.jsx — section headers, field labels,
   // placeholders, photo/permission errors, save+submit toasts, activity-chip
   // band labels. All CP-facing; the CP signs this log, no worker does.

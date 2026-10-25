@@ -6,9 +6,12 @@ import { finalizeErrorCode, readFinalizeError, clearFinalizeError } from '../uti
 import { discardFinalizedDraft } from '../utils/logbookDrafts';
 import { isImmediateLog } from '../utils/logbookTiming';
 import { useT } from '../i18n';
+import { useAuth } from '../context/AuthContext';
+import { readsLogbooksOnly } from '../utils/pmLogbooks';
 import { useToast, ToastHost } from './Toast';
 import { semantic, withAlpha } from '../styles/semanticColors';
 import { spacing, borderRadius } from '../styles/theme';
+import { useTheme } from '../context/ThemeContext';
 
 /**
  * Tier 1 (1)b — the lock / finalize / amend control shared by every logbook
@@ -33,8 +36,26 @@ import { spacing, borderRadius } from '../styles/theme';
  *   onFinalized  fn       — called after a successful finalize (editor sets locked)
  *   onAmended    fn       — called after a successful amend (editor re-loads; its
  *                           fetch prefers the non-locked child → becomes editable)
+ *   pinned       bool     — the host screen is drawn on the paper canvas whatever the theme (the stepper), so the
+ *                           bar uses the paper palette instead of following the theme
  */
-export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, onFinalized, onAmended, logType }) {
+// THE BAR'S COLOURS, CHOSEN WHEN IT RENDERS. They used to be read once at import, which froze them to whichever theme
+// was active at that moment (always the dark one), so on paper the banner and buttons wore dark-theme tones.
+const PAPER = {
+  critical: '#A83E12', criticalBg: 'rgba(168, 62, 18, 0.12)', criticalBorder: 'rgba(168, 62, 18, 0.4)',
+  attention: '#7A5300', attentionBg: 'rgba(122, 83, 0, 0.12)', attentionBorder: 'rgba(122, 83, 0, 0.3)',
+  neutral: '#4F5A61', onFill: '#FFFFFF',
+};
+const livePalette = (isDark) => ({
+  critical: semantic.critical, criticalBg: semantic.criticalBg, criticalBorder: withAlpha(semantic.critical, 0.4),
+  attention: semantic.attention, attentionBg: semantic.attentionBg, attentionBorder: semantic.attentionBorder,
+  neutral: semantic.neutral, onFill: isDark ? '#141A1F' : '#FFFFFF',
+});
+
+export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, onFinalized, onAmended, logType, pinned = false }) {
+  const { isDark } = useTheme();
+  const colors = pinned ? PAPER : livePalette(isDark);
+  const s = buildStyles(colors);
   // FREEZE MODEL: for an IMMEDIATE log the SIGNATURE is the freeze — submitting
   // finalizes it in one action, so a separate "Finalize" button must never
   // appear (offering it would imply the signed log is still open). The Amend
@@ -42,6 +63,10 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
   // Finalize as their explicit end-of-day Submit & Sign.
   const signFreezes = isImmediateLog(logType);
   const toast = useToast();
+  // A Site Manager / PM may not amend or finalize (the server's read-only
+  // ruling), so neither button is offered to him.
+  const { user } = useAuth();
+  const readOnly = readsLogbooksOnly(user);
   const t = useT('finalize');
   const [busy, setBusy] = useState(false);
   const [amendOpen, setAmendOpen] = useState(false);
@@ -140,7 +165,7 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
   // `undefined` = no refusal on record; `null` = refused with no recognised code.
   const notLockedBanner = refusedCode === undefined ? null : (
     <View style={s.warnBanner}>
-      <AlertTriangle size={16} strokeWidth={2} color={semantic.attention} />
+      <AlertTriangle size={16} strokeWidth={2} color={colors.attention} />
       <View style={s.warnTextWrap}>
         <Text style={s.warnTitle}>
           {localSaveFailed
@@ -241,13 +266,15 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
       <View style={s.wrap}>
         {notLockedBanner}
         <View style={s.banner}>
-          <Lock size={16} strokeWidth={2} color={semantic.critical} />
+          <Lock size={16} strokeWidth={2} color={colors.critical} />
           <Text style={s.bannerText}>FINALIZED — read-only. Corrections require an amendment.</Text>
         </View>
-        <Pressable style={[s.btn, s.amendBtn]} onPress={() => setAmendOpen(true)} disabled={busy}>
-          <FileEdit size={18} strokeWidth={2} color="#ffffff" />
-          <Text style={s.btnText}>Amend</Text>
-        </Pressable>
+        {!readOnly && (
+          <Pressable style={[s.btn, s.amendBtn]} onPress={() => setAmendOpen(true)} disabled={busy}>
+            <FileEdit size={18} strokeWidth={2} color={s.btnTextOnFill.color} />
+            <Text style={s.btnTextOnFill}>Amend</Text>
+          </Pressable>
+        )}
 
         <Modal visible={amendOpen} transparent animationType="fade" onRequestClose={() => setAmendOpen(false)}>
           <View style={s.modalOverlay}>
@@ -269,7 +296,7 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
               <View style={s.modalHeader}>
                 <Text style={s.modalTitle}>Reason for Amendment</Text>
                 <Pressable hitSlop={12} onPress={() => { setAmendOpen(false); setReason(''); }}>
-                  <X size={20} strokeWidth={2} color={semantic.neutral} />
+                  <X size={20} strokeWidth={2} color="#9DAAB6" />
                 </Pressable>
               </View>
               <Text style={s.modalSub}>
@@ -280,7 +307,7 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
                 value={reason}
                 onChangeText={setReason}
                 placeholder="e.g. Corrected worker count / fixed weather entry"
-                placeholderTextColor={semantic.neutral}
+                placeholderTextColor="#9DAAB6"
                 multiline
               />
               <View style={s.modalRow}>
@@ -288,7 +315,7 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
                   <Text style={s.btnText}>Cancel</Text>
                 </Pressable>
                 <Pressable style={[s.btn, s.amendBtn, (!reason.trim() || busy) && s.btnDisabled]} onPress={doAmend} disabled={busy || !reason.trim()}>
-                  {busy ? <ActivityIndicator size="small" color="#ffffff" /> : <Text style={s.btnText}>Create Amendment</Text>}
+                  {busy ? <ActivityIndicator size="small" color={s.btnTextOnFill.color} /> : <Text style={s.btnTextOnFill}>Create Amendment</Text>}
                 </Pressable>
               </View>
             </View>
@@ -298,13 +325,13 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
     );
   }
 
-  if (canFinalize && logId && !signFreezes) {
+  if (canFinalize && logId && !signFreezes && !readOnly) {
     return (
       <View style={s.wrap}>
         {notLockedBanner}
         <Pressable style={[s.btn, s.finalizeBtn, busy && s.btnDisabled]} onPress={doFinalize} disabled={busy}>
-          {busy ? <ActivityIndicator size="small" color="#ffffff" /> : <CheckCircle2 size={18} strokeWidth={2} color="#ffffff" />}
-          <Text style={s.btnText}>{busy ? 'Finalizing…' : 'Finalize (End of Day) — Lock'}</Text>
+          {busy ? <ActivityIndicator size="small" color={s.btnTextOnFill.color} /> : <CheckCircle2 size={18} strokeWidth={2} color={s.btnTextOnFill.color} />}
+          <Text style={s.btnTextOnFill}>{busy ? 'Finalizing…' : 'Finalize (End of Day) — Lock'}</Text>
         </Pressable>
       </View>
     );
@@ -318,49 +345,53 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
   return null;
 }
 
-const s = StyleSheet.create({
+function buildStyles(c) {
+  return StyleSheet.create({
   wrap: { gap: spacing.sm, marginTop: spacing.md },
   banner: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-    backgroundColor: semantic.criticalBg,
-    borderColor: withAlpha('#ef4444', 0.4), borderWidth: 1,
+    backgroundColor: c.criticalBg,
+    borderColor: c.criticalBorder, borderWidth: 1,
     borderRadius: borderRadius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
   },
-  bannerText: { color: semantic.critical, fontSize: 13, fontWeight: '700', flex: 1 },
+  bannerText: { color: c.critical, fontSize: 13, fontWeight: '700', flex: 1 },
   // Persistent, not a 4s toast: the drain that produced this had no screen, and
   // a vanishing notice on a compliance record is how it stayed invisible before.
   warnBanner: {
     flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm,
-    backgroundColor: semantic.attentionBg,
-    borderColor: semantic.attentionBorder, borderWidth: 1,
+    backgroundColor: c.attentionBg,
+    borderColor: c.attentionBorder, borderWidth: 1,
     borderRadius: borderRadius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
   },
   warnTextWrap: { flex: 1, gap: 2 },
-  warnTitle: { color: semantic.attention, fontSize: 13, fontWeight: '700' },
-  warnBody: { color: semantic.attention, fontSize: 12, lineHeight: 17 },
+  warnTitle: { color: c.attention, fontSize: 13, fontWeight: '700' },
+  warnBody: { color: c.attention, fontSize: 12, lineHeight: 17 },
   btn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
     paddingVertical: spacing.md, paddingHorizontal: spacing.lg, borderRadius: borderRadius.md,
   },
   btnText: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
+  // Label on the attention / critical fills: ink on the light dark-theme tones, white on the dark paper tones.
+  btnTextOnFill: { color: c.onFill, fontSize: 15, fontWeight: '700' },
   btnDisabled: { opacity: 0.6 },
-  finalizeBtn: { backgroundColor: semantic.attention },
-  amendBtn: { backgroundColor: semantic.critical },
+  finalizeBtn: { backgroundColor: c.attention },
+  amendBtn: { backgroundColor: c.critical },
   cancelBtn: { backgroundColor: withAlpha('#94a3b8', 0.35), flex: 1 },
   modalOverlay: {
     flex: 1, backgroundColor: withAlpha('#000000', 0.6),
     justifyContent: 'center', padding: spacing.lg,
   },
   modalCard: {
-    backgroundColor: '#111827', borderRadius: borderRadius.lg, padding: spacing.lg, gap: spacing.md,
+    backgroundColor: '#1C2B38', borderRadius: borderRadius.lg, padding: spacing.lg, gap: spacing.md,
     borderColor: withAlpha('#ffffff', 0.1), borderWidth: 1,
   },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   modalTitle: { color: '#ffffff', fontSize: 17, fontWeight: '700' },
-  modalSub: { color: semantic.neutral, fontSize: 13, lineHeight: 18 },
+  modalSub: { color: '#9DAAB6', fontSize: 13, lineHeight: 18 },
   input: {
     backgroundColor: withAlpha('#ffffff', 0.06), borderColor: withAlpha('#ffffff', 0.12), borderWidth: 1,
     borderRadius: borderRadius.md, padding: spacing.md, color: '#ffffff', minHeight: 72, textAlignVertical: 'top',
   },
   modalRow: { flexDirection: 'row', gap: spacing.sm },
 });
+}

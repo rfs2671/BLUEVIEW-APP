@@ -28,8 +28,9 @@
  *      the pdf.js copy staged on the device by pdfjsViewer.js. A token in a
  *      header cannot land in anyone else's log.
  *
- * iOS keeps the direct url: WKWebView renders application/pdf through PDFKit
- * itself, so the url goes to api.levelog.com and nowhere else.
+ * iOS does the same since the viewer gained search: Apple's PDFKit, which used
+ * to be handed the url, cannot be searched from the app, so both phones fetch
+ * the bytes with the token in a header and draw them with the staged pdf.js.
  *
  * Pure on purpose — no react-native import, no storage read — so the rules are
  * testable without a renderer. `platformOS` and `apiBase` are arguments for the
@@ -88,30 +89,82 @@ export function authorizedPdfUrl(rawUrl, { apiBase, token } = {}) {
   return `${abs}${abs.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 }
 
+
+// ── The Web viewer: a document the iframe can load WITHOUT a token in its url ─
+
+/**
+ * What a Web `<iframe src>` may be given for `rawUrl`.
+ *
+ *   our own proxy   — the bytes are fetched with `Authorization: Bearer` (the
+ *                     header an <iframe> cannot send) into a Blob, and the
+ *                     iframe is pointed at a `blob:` url that lives only in this
+ *                     tab. The JWT is never in a url, so it is never in an access
+ *                     log, a referrer, or the browser history.
+ *   anything else   — a presigned R2 / Dropbox url needs no token and is
+ *                     returned bare, exactly as before.
+ *
+ * Returns { src, revoke, kind } (`kind`: 'blob' | 'remote'), or null for an empty
+ * url. Throws a `PdfFetchError` (with `.status`) when the proxy refuses or fails,
+ * so the caller shows its error state; there is no query-token fallback.
+ *
+ * `deps` exist so this runs in a test: fetchImpl, createObjectURL, revokeObjectURL,
+ * BlobImpl. They default to the browser's.
+ */
+export class PdfFetchError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = 'PdfFetchError';
+    this.status = status || 0;
+  }
+}
+
+export async function resolvePdfForIframe(rawUrl, { apiBase, token, signal, ...deps } = {}) {
+  const abs = toAbsolutePdfUrl(rawUrl, apiBase);
+  if (!abs) return null;
+  if (!isFirstPartyProxyUrl(abs, apiBase)) {
+    return { src: abs, revoke: () => {}, kind: 'remote' };
+  }
+  const fetchImpl = deps.fetchImpl || (typeof fetch === 'function' ? fetch : null);
+  const create = deps.createObjectURL || (typeof URL !== 'undefined' ? (b) => URL.createObjectURL(b) : null);
+  const revokeFn = deps.revokeObjectURL || (typeof URL !== 'undefined' ? (u) => URL.revokeObjectURL(u) : null);
+  const BlobCtor = deps.BlobImpl || (typeof Blob !== 'undefined' ? Blob : null);
+  if (!fetchImpl || !create || !BlobCtor) throw new PdfFetchError('no fetch/Blob support', 0);
+  const res = await fetchImpl(abs, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    signal,
+  });
+  if (!res || !res.ok) throw new PdfFetchError(`document request failed (${res ? res.status : 'no response'})`, res && res.status);
+  let blob = await res.blob();
+  if (!blob || blob.type !== 'application/pdf') blob = new BlobCtor([blob], { type: 'application/pdf' });
+  const src = create(blob);
+  let revoked = false;
+  return {
+    src,
+    kind: 'blob',
+    revoke: () => { if (!revoked) { revoked = true; try { revokeFn && revokeFn(src); } catch (_e) { /* gone already */ } } },
+  };
+}
+
 // ── How a native platform gets its bytes ───────────────────────────────────
 export const PDF_SOURCE_NONE = 'none';
 export const PDF_SOURCE_LOCAL = 'local';
 export const PDF_SOURCE_DOWNLOAD = 'download';
-export const PDF_SOURCE_DIRECT = 'direct';
 
 /**
  * What the native viewer must do with `rawUrl` on this platform.
  *
  *   none     — nothing to show.
  *   local    — already a `file://`; hand it to the renderer as is.
- *   direct   — the platform renders a remote PDF itself. iOS ONLY.
  *   download — fetch the bytes to disk (token in the Authorization header),
  *              then render the local copy.
  *
- * iOS is named explicitly rather than Android being singled out: any platform
- * WITHOUT a native PDF renderer must download, and defaulting the unknown case
- * to `download` keeps a remote url out of a wrapped viewer no matter what
- * `Platform.OS` reports.
+ * Every platform downloads — iOS too, since the viewer gained search (the
+ * staged pdf.js can be searched; PDFKit cannot). A remote url is never handed
+ * to a viewer, whatever `Platform.OS` reports.
  */
 export function pdfSourcePlan(rawUrl, platformOS) {
   if (!rawUrl) return { kind: PDF_SOURCE_NONE };
   if (isLocalFileUri(rawUrl)) return { kind: PDF_SOURCE_LOCAL, uri: rawUrl };
-  if (platformOS === 'ios') return { kind: PDF_SOURCE_DIRECT };
   return { kind: PDF_SOURCE_DOWNLOAD };
 }
 

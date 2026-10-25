@@ -17,7 +17,8 @@ OATH Hearings Division Case Status — jz4z-kudi
 
 Street Construction Permits 2022–present — tqtj-sjs8 (daily)
   permitnumber, permittypedesc, permitteename, permitstatusshortdesc,
-  permitissuedate, issuedworkstartdate, issuedworkenddate (the expiry),
+  permitissuedate, issuedworkstartdate (stored as work_start),
+  issuedworkenddate (the expiry, stored as expiration_date),
   boroughname (full name, "STATEN ISLAND"), permithousenumber (~36%
   filled), onstreetname, fromstreetname, tostreetname. NO BIN, NO BBL.
   MATCH: borough + house number + street, all three, exact normalized.
@@ -28,6 +29,16 @@ Street Construction Permits 2022–present — tqtj-sjs8 (daily)
 
 Never fuzzy: "588 THOMAS S BOYLAND ST" does not match "586 …" or "THOMAS
 BOYLAND ST", and a different BBL is a different lot whatever the address.
+
+THE ONE EXCEPTION IS A STREET'S OTHER NAME, and it is exact too: a street
+renamed by the city is still written with its old name by inspectors and in
+the datasets. DOT wrote two OATH summonses (Sept 29, 2026) for "588 HOPKINSON
+AVENUE btwn Blake and Sutter Avenues" -- that is 588 Thomas S. Boyland Street
+(Hopkinson Avenue was renamed for Thomas S. Boyland) -- and the report showed
+no DOT violations, because "HOPKINSON AVE" is not "THOMAS S BOYLAND ST". A
+project's other street names are `RENAMED_STREETS` (a curated, documented
+table) plus the project's own `street_aliases`; the house number, borough (and
+BBL when the record has one) must still agree.
 """
 
 from __future__ import annotations
@@ -96,8 +107,30 @@ def norm_name(v: Any) -> str:
     return " ".join(re.sub(r"[^A-Z0-9 ]", " ", str(v or "").upper()).split())
 
 
-def project_keys(project: Dict[str, Any]) -> Dict[str, str]:
-    """BBL, borough and street address of a project, normalized."""
+#: Streets the city renamed, by their CURRENT normalized name -> the old names
+#: records may still carry. Add a street only with its source; a wrong entry
+#: would attach another street's summonses to a project.
+RENAMED_STREETS: Dict[str, List[str]] = {
+    # Hopkinson Avenue (Brooklyn) was renamed Thomas S. Boyland Street. Seen on
+    # real DOT summonses 0704345548 / 0704345557: "588 HOPKINSON AVENUE btwn
+    # BLAKE AVENUE and SUTTER AVENUE", for a job at 588 Thomas S Boyland Street.
+    "THOMAS S BOYLAND ST": ["HOPKINSON AVE"],
+}
+
+
+def street_names(street: str, aliases: Iterable[Any] = ()) -> List[str]:
+    """A street's normalized names: its own, the old names the city renamed it
+    from, and any a person added to the project -- never a fuzzy guess."""
+    out = [street] if street else []
+    for a in list(RENAMED_STREETS.get(street, [])) + [norm_street(x) for x in aliases or []]:
+        if a and a not in out:
+            out.append(a)
+    return out
+
+
+def project_keys(project: Dict[str, Any]) -> Dict[str, Any]:
+    """BBL, borough and street address of a project, normalized; `streets`
+    is every name the street goes by."""
     addr = str(project.get("address") or "").split(",")[0].strip()
     m = re.match(r"^\s*([0-9][0-9A-Za-z-]*)\s+(.+)$", addr)
     # The borough only when the address names one ("New York" does not: it
@@ -111,15 +144,35 @@ def project_keys(project: Dict[str, Any]) -> Dict[str, str]:
     bbl = norm_bbl(project.get("bbl") or project.get("nyc_bbl"))
     if not boro and bbl:
         boro = bbl[0]
+    street = norm_street(m.group(2)) if m else ""
     return {
         "bbl": bbl,
         "house": norm_house(m.group(1)) if m else "",
-        "street": norm_street(m.group(2)) if m else "",
+        "street": street,
+        "streets": street_names(street, project.get("street_aliases") or []),
         "boro": boro,
     }
 
 
 # ── Matching ────────────────────────────────────────────────────────────────
+
+_CROSS = re.compile(r"\s+(?:BTWN|BTW|BTWEEN|BETWEEN|BET|B/T|BT)\b.*$")
+
+
+def oath_street(raw: Any, house: Any = "") -> str:
+    """The street NAME of an OATH location. The field often holds the whole
+    location text -- "588 HOPKINSON AVENUE BTWN BLAKE", "MYRTLE AVE BET CLASSON
+    AVE T" -- so the house number in front and the cross streets behind are
+    removed. Real DOT summonses 0704345548 / 0704345557 were never matched while
+    the whole string was compared with the street name."""
+    s = re.sub(r"\s+", " ", str(raw or "").strip().upper())
+    h = norm_house(house)
+    if h:
+        m = re.match(r"^(\S+)\s+(.+)$", s)
+        if m and norm_house(m.group(1)) == h:
+            s = m.group(2)
+    return norm_street(_CROSS.sub("", s))
+
 
 def oath_keys(rec: Dict[str, Any]) -> Dict[str, str]:
     return {
@@ -127,7 +180,7 @@ def oath_keys(rec: Dict[str, Any]) -> Dict[str, str]:
                               _v(rec, "violation_location_block_no"),
                               _v(rec, "violation_location_lot_no")),
         "house": norm_house(_v(rec, "violation_location_house")),
-        "street": norm_street(_v(rec, "violation_location_street_name")),
+        "street": oath_street(_v(rec, "violation_location_street_name"), _v(rec, "violation_location_house")),
         "boro": boro_code(_v(rec, "violation_location_borough")),
     }
 
@@ -148,7 +201,7 @@ def match_oath(pk: Dict[str, str], rk: Dict[str, str]) -> Optional[str]:
     if pk.get("house") and pk.get("street") and rk.get("house") and rk.get("street"):
         if pk.get("boro") and rk.get("boro") and pk["boro"] != rk["boro"]:
             return None
-        if pk["house"] == rk["house"] and pk["street"] == rk["street"]:
+        if pk["house"] == rk["house"] and rk["street"] in (pk.get("streets") or [pk["street"]]):
             return "address"
     return None
 
@@ -159,7 +212,7 @@ def match_permit(pk: Dict[str, str], rk: Dict[str, str]) -> Optional[str]:
         return None
     if not (rk.get("boro") and rk.get("house") and rk.get("street")):
         return None
-    if (pk["boro"], pk["house"], pk["street"]) == (rk["boro"], rk["house"], rk["street"]):
+    if (pk["boro"], pk["house"]) == (rk["boro"], rk["house"]) and rk["street"] in (pk.get("streets") or [pk["street"]]):
         return "address"
     return None
 
@@ -206,13 +259,55 @@ def queries(pk: Dict[str, str]) -> List[Dict[str, Any]]:
             "$where": f"{_AGENCY_WHERE} AND violation_location_house = '{_q(pk['house'])}'",
             "$limit": "200", "$order": "violation_date DESC"}})
         if pk.get("boro"):
-            word = max(pk["street"].split(), key=len)
+            words = [max(name.split(), key=len) for name in (pk.get("streets") or [pk["street"]])]
+            like = " OR ".join(f"upper(onstreetname) like '%{_q(w)}%'" for w in dict.fromkeys(words))
             out.append({"dataset": PERMIT_DATASET, "kind": "dot_permit", "params": {
                 "$where": f"boroughname = '{BORO_NAME[pk['boro']]}' "
                           f"AND permithousenumber = '{_q(pk['house'])}' "
-                          f"AND upper(onstreetname) like '%{_q(word)}%'",
-                "$limit": "200"}})
+                          f"AND ({like})",
+                # DEFECT MEASURED (2026 audit): a $limit with NO $order returns
+                # an arbitrary 200 rows, so on a busy street the NEWEST permits
+                # could silently be the ones left out. permitissuedate is the
+                # field to_log() stores as issue_date; newest first.
+                "$limit": "200", "$order": "permitissuedate DESC"}})
     return out
+
+
+# ── Is the summons settled? ─────────────────────────────────────────────────
+
+def _money(v: Any) -> Optional[float]:
+    try:
+        return float(re.sub(r"[^0-9.\-]", "", str(v))) if str(v or "").strip() else None
+    except ValueError:
+        return None
+
+
+_NEGATED = re.compile(r"\b(?:NOT|NON|NEVER|WITHOUT|UN)\s*[- ]?\s*(?:PAID|IN\s+COMPLIANCE|COMPLIED|DISMISSED)\b")
+
+
+def closed_reason(rec: Dict[str, Any]) -> Optional[str]:
+    """Why an OATH summons is settled, from what the record SAYS -- or None.
+
+    The stored status is the hearing's (NEW, SCHEDULED, HEARING COMPLETED), and
+    a summons paid after its hearing is still "hearing completed": the payment
+    is in the penalty and balance fields. Without this a paid ticket would be
+    reported open for ever. Only positive evidence closes it:
+      * the record's own words (hearing result / compliance / status) say paid,
+        dismissed, not guilty, or in compliance;
+      * a penalty was imposed and nothing is owed (balance 0).
+    A summons with a balance still due, or no outcome yet, is open."""
+    words = " ".join(_v(rec, k).upper() for k in ("hearing_result", "compliance_status", "hearing_status"))
+    clean = _NEGATED.sub(" ", words)
+    if re.search(r"\bPAID\b", clean):
+        return "PAID IN FULL"
+    if re.search(r"\bDISMISS", clean) or "NOT GUILTY" in clean or re.search(r"\bNOT\s+IN\s+VIOLATION\b", clean):
+        return "DISMISSED"
+    if re.search(r"\bIN\s+COMPLIANCE\b", clean) or re.search(r"\bCOMPLIED\b", clean):
+        return "COMPLIED"
+    penalty, balance = _money(rec.get("penalty_imposed")), _money(rec.get("balance_due"))
+    if penalty is not None and penalty > 0 and balance is not None and balance <= 0:
+        return "PAID IN FULL"
+    return None
 
 
 # ── A stored record ─────────────────────────────────────────────────────────
@@ -229,7 +324,11 @@ def to_log(kind: str, rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         desc = _v(rec, "charge_1_code_description") or None
         return {"record_type": "dot_violation", "raw_id": f"oath:{num}",
                 "number": num, "issue_date": _v(rec, "violation_date") or None,
-                "status": _v(rec, "hearing_status") or None,
+                # The status is the hearing's UNLESS the summons is settled, then
+                # what settled it: a change of status is how the history (and
+                # "resolved this period") learns of a payment.
+                "status": closed_reason(rec) or _v(rec, "hearing_status") or None,
+                "hearing_status": _v(rec, "hearing_status") or None,
                 "hearing_result": _v(rec, "hearing_result") or None,
                 "hearing_date": _v(rec, "hearing_date") or None,
                 "compliance_status": _v(rec, "compliance_status") or None,
@@ -245,6 +344,9 @@ def to_log(kind: str, rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             return None
         return {"record_type": "dot_permit", "raw_id": f"dotpermit:{num}",
                 "number": num, "issue_date": _v(rec, "permitissuedate") or None,
+                # The work window: start and end. The holiday embargo check
+                # (lib/dot_embargo.py) asks whether it overlaps Nov 15 - Jan 2.
+                "work_start": _v(rec, "issuedworkstartdate") or None,
                 "expiration_date": _v(rec, "issuedworkenddate") or None,
                 "status": _v(rec, "permitstatusshortdesc") or None,
                 "description": _v(rec, "permittypedesc") or None,

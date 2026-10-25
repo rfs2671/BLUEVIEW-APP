@@ -139,8 +139,10 @@ const remotes = [`${API_BASE}${PROXY}`, PROXY, 'https://dl.dropboxusercontent.co
 for (const u of remotes) {
   ok(pdfSourcePlan(u, 'android').kind === 'download',
     `android must fetch the bytes itself: ${u.slice(0, 46)}`);
-  ok(pdfSourcePlan(u, 'ios').kind === 'direct',
-    `ios renders the remote url itself (PDFKit): ${u.slice(0, 46)}`);
+  // iOS too, since the viewer gained search: PDFKit cannot be searched, so
+  // both phones draw the downloaded copy with the staged pdf.js.
+  ok(pdfSourcePlan(u, 'ios').kind === 'download',
+    `ios fetches the bytes too (searchable pdf.js, not PDFKit): ${u.slice(0, 46)}`);
 }
 // An unknown platform must fail SAFE, not fall through to "hand it a url".
 ok(pdfSourcePlan(remotes[0], undefined).kind === 'download',

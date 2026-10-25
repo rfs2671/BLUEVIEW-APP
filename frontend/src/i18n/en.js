@@ -429,6 +429,8 @@ export default {
     chipsSuggested: 'Suggested from yesterday',
     chipsAlwaysAvailable: 'Always available',
     chipsCatalog: 'All activities',
+    chipsSearchPlaceholder: 'Search every activity…',
+    chipsSearchNone: 'Nothing matches — use Other and type it.',
     // Shown when a crew's four come from its TRADE rather than from the
     // sequence. Most trades' activities carry no edges in the graph, so a
     // crew with a real prior can still get no sequenced chips — and
@@ -438,6 +440,7 @@ export default {
     // what he inspected and the note IS the record.
     phInspectionOther: 'What else did you inspect?',
     chipsFromTrade: 'This trade’s work — not ranked off yesterday.',
+    chipsWhy: 'Ranked from where this crew left off:',
     chipsRemembered: 'Used on this project',
     chipOther: 'Other',
     chipOtherPrompt: 'What was the activity?',
@@ -2044,4 +2047,145 @@ export default {
     deniedBody: 'Owner, admin or CP access required',
   },
 
+  // ── Download button (Plans & Files) and the web viewer's open-in-browser ──
+  // Keys named by fileDownloadPlan.signedUrlErrorKey and fileDownload.js's
+  // error codes are looked up by those names; keep them in step.
+  fileDownload: {
+    downloading: 'Downloading',
+    progress: '{pct}% of {total} MB',
+    progressUnknown: '{done} MB so far',
+    cancel: 'Cancel',
+    failTitle: 'Download failed',
+    failBody: 'The file could not be downloaded. Try again.',
+    network: 'The connection dropped before the file finished. Try again with a better signal.',
+    noAccess: 'You do not have access to this file.',
+    notStored: 'This file is not available for download yet. It may still be syncing.',
+    cancelled: 'Download cancelled.',
+    popupBlocked: 'Your browser blocked the download tab. Allow pop-ups for Levelog and try again.',
+    shareUnavailable: 'This device has no share option for files.',
+    offlineTitle: 'Not available offline',
+    offlineBody: 'This file is not saved on this device. Reconnect and try again.',
+  },
+
+  // ── app/projects/[id]/schedule.jsx — import and confirm the project schedule ─
+  //
+  // ENGLISH ONLY, like the rest of the project reports screens (they carry no
+  // translations). The wording is deliberate: the schedule file's own numbers
+  // are reported as the file states them; Levelog never estimates or verifies.
+  projectSchedule: {
+    title: 'Project schedule',
+    back: 'Back',
+    intro: 'Import the schedule you already have, review what was read, and confirm it. The progress report shows schedule information only from a schedule an admin has confirmed.',
+    honesty: 'Completion shown here is as reported in the schedule file. Levelog does not independently verify physical progress, and a percent is shown only if the file itself contains one. Levelog never estimates completion.',
+    loadError: 'Could not load the schedule. Check your connection and try again.',
+    retry: 'Try again',
+    linkTitle: 'Project schedule',
+    linkBody: 'Import and confirm the schedule used in the progress report.',
+    noneTitle: 'No schedule on file',
+    noneBody: 'Once an admin imports and confirms a schedule, the progress report shows its dates and milestones as the file states them. Levelog will not estimate completion.',
+    noneReadOnly: 'No schedule is on file for this job. An admin can import one.',
+    readOnlyNote: 'Only an admin can import, confirm or remove the schedule.',
+    importTitle: 'Import a schedule file',
+    importFormats: 'Accepted: Primavera P6 (.xer), MS Project XML (.xml), Excel (.xlsx), CSV, or a text-based PDF.',
+    chooseFile: 'Choose a file',
+    uploading: 'Reading the file...',
+    syncedTitle: 'Found in this job\'s synced files',
+    syncedImport: 'Import',
+    syncedImportLabel: 'Import this synced file',
+    pickError: 'No file was selected.',
+    uploadFailed: 'That file could not be read.',
+    rateLimited: 'Too many imports just now. Wait a minute and try again.',
+    draftTitle: 'Review what was read',
+    draftNotConfirmed: 'Not used in reports yet. Check what was read below, then confirm.',
+    confirmedTitle: 'Confirmed schedule',
+    confirmedNote: 'The progress report uses this schedule.',
+    source: 'File',
+    format: 'Format',
+    dataDate: 'Data date',
+    activities: 'Activities',
+    milestones: 'Milestones',
+    confirmedBy: 'Confirmed by',
+    importedAt: 'Imported',
+    previewTitle: 'Completion as reported in the schedule file',
+    previewNote: 'These are the file\'s own figures. Levelog has not checked them against the work on site.',
+    complete: 'Complete',
+    inProgress: 'In progress',
+    notStarted: 'Not started',
+    originalFinish: 'Original finish',
+    forecastFinish: 'Finish forecast in the file',
+    varianceLate: 'days later than the original finish',
+    varianceEarly: 'days earlier than the original finish',
+    varianceNone: 'on the original finish date',
+    reportedPercent: 'Percent complete stated in the file',
+    limitations: 'Limits of this file',
+    warnings: 'Could not be read cleanly',
+    notUsable: 'No dated activities could be read from this file, so it cannot be confirmed.',
+    reviewedLabel: 'I reviewed what was read from this file',
+    confirm: 'Confirm schedule',
+    confirmReplace: 'Replace confirmed schedule',
+    confirming: 'Confirming...',
+    confirmedToast: 'Schedule confirmed',
+    confirmedToastBody: 'The progress report now uses it.',
+    confirmFailed: 'Could not confirm the schedule. Try again.',
+    replaceTitle: 'Replace the confirmed schedule?',
+    replaceBody: 'The progress report will use the new schedule instead. The current one is kept as superseded and no longer used.',
+    replaceCurrent: 'Currently confirmed',
+    replaceAction: 'Replace the confirmed schedule',
+    cancel: 'Cancel',
+    discard: 'Discard draft',
+    discardTitle: 'Discard this draft?',
+    discardBody: 'Nothing is lost from the confirmed schedule, if there is one.',
+    discarded: 'Draft discarded',
+    replace: 'Replace',
+    stopUsing: 'Stop using',
+    stopTitle: 'Stop using this schedule?',
+    stopBody: 'The progress report will say no schedule is on file until another is confirmed.',
+    stopAction: 'Stop using schedule',
+    stopped: 'Schedule no longer used',
+    actionFailed: 'That did not work. Try again.',
+  },
+
+  // ── The Compliance feature label, everywhere a user sees it ───────────────
+  //
+  // ONE NAMESPACE FOR ONE LABEL, not one per screen: the project tile
+  // (app/project/[id].jsx), the screen title (app/project/[id]/dob-logs.jsx),
+  // the delete confirmations (app/projects/index.jsx), the notification
+  // settings subtitle (app/settings.jsx) and two help sentences
+  // (app/help/troubleshooting.jsx) all name the same feature, and renaming it
+  // again should be one edit here. Read by owners, admins and CPs — NOT a
+  // logbook and not a filed record, so it carries Spanish like waGroups.
+  //
+  // `title` is rendered by the screen header through typography.label, which
+  // uppercases it — one key serves the tile ("Compliance") and the header
+  // ("COMPLIANCE"). The route stays /project/:id/dob-logs.
+  //
+  // {name} is the project name, substituted by the caller.
+  compliance: {
+    // After a penalty whose hearing has not happened (backend lib/dob_penalty).
+    penaltyHearingPending: '(hearing pending)',
+    title: 'Compliance',
+    loadError: 'Could not load compliance data',
+    deleteConfirmWeb: 'Delete "{name}"?\n\nThis will permanently remove the project and all its compliance data. This cannot be undone.',
+    deleteConfirmNative: 'This will permanently remove "{name}" and all its compliance data. This cannot be undone.',
+    notificationPrefsSubtitle: 'Tune which compliance signals reach you and how',
+    helpCheckTracking: 'Open the project\'s Compliance page (gear icon). Confirm "Enable DOB Tracking" is on. If it\'s off, no DOB data will pull for the project.',
+    helpEditBin: 'If the BIN was already auto-resolved to the wrong building, open the Compliance page (gear icon) and edit the BIN field directly.',
+  },
+
+  // ── app/project/[id]/dob-logs.jsx — DOT holiday construction embargo ─────
+  // Shown Nov 1 – Jan 2 when an active DOT permit whose work dates overlap
+  // Nov 15 – Jan 2 has no waiver (stipulation 410). `{n}` and `{list}` are
+  // substituted at the call site. Two keys rather than one with "(s)".
+  dotEmbargo: {
+    banner: 'Holiday embargo Nov 15 – Jan 2: {n} active DOT permits have no waiver.',
+    bannerOne: 'Holiday embargo Nov 15 – Jan 2: 1 active DOT permit has no waiver.',
+    permits: 'Permits: {list}',
+    action: 'Apply for a waiver or stop work Nov 15 – Jan 2.',
+    // Coverage limit. DOT Phase 1 B (segment permits) REMOVES this key;
+    // the email carries the same line (backend lib/dot_embargo.COVERAGE_NOTE_*).
+    coverageNote: 'Checks permits matched to your address. Permits filed by street segment arrive with the next update.',
+    // A permit whose DOT stipulations could not be read: shown, never emailed.
+    unverifiedTitle: 'Holiday embargo Nov 15 – Jan 2: check these permits',
+    unverified: 'Waiver not verified: {list}',
+  },
 };

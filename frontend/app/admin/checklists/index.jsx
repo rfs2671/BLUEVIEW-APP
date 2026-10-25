@@ -377,14 +377,14 @@ export default function AdminChecklistsScreen() {
               <IconPod size={48}>
                 <ClipboardList size={24} strokeWidth={1.5} color={semantic.neutral} />
               </IconPod>
-              <View>
+              <View style={{ flexShrink: 1 }}>
                 <Text style={s.headerLabel}>ADMIN</Text>
                 <Text style={s.headerTitle}>Checklists</Text>
               </View>
             </View>
             <GlassButton
               variant="primary"
-              icon={<Plus size={20} strokeWidth={1.5} color="#fff" />}
+              icon={<Plus size={20} strokeWidth={1.5} color={colors.onPrimary} />}
               title="Create"
               onPress={handleCreateChecklist}
             />
@@ -450,7 +450,7 @@ export default function AdminChecklistsScreen() {
                       onPress={() => handleEditChecklist(checklist)}
                       style={s.actionButton}
                     >
-                      <Edit2 size={18} strokeWidth={1.5} color="#60a5fa" />
+                      <Edit2 size={18} strokeWidth={1.5} color={colors.primary} />
                     </Pressable>
                     <Pressable
                       onPress={() => handleDeleteChecklist(checklist)}
@@ -778,7 +778,7 @@ function buildStyles(colors, isDark) {
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xl },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 },
   headerLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.xs },
-  headerTitle: { fontSize: 28, fontWeight: '200', color: colors.text.primary, letterSpacing: -0.5 },
+  headerTitle: { fontSize: 24, fontFamily: typography.display, fontWeight: '800', color: colors.text.primary, letterSpacing: -0.5 },
   mb16: { marginBottom: spacing.md },
   emptyCard: { alignItems: 'center', paddingVertical: spacing.xxl },
   emptyTitle: { fontSize: 18, fontWeight: '500', color: colors.text.primary, marginTop: spacing.md },
@@ -827,7 +827,7 @@ function buildStyles(colors, isDark) {
   deleteText: { fontSize: 14, color: colors.text.secondary, textAlign: 'center', marginBottom: spacing.xl },
   deleteActions: { flexDirection: 'row', gap: spacing.md, width: '100%' },
   deleteBtn: { flex: 1 },
-  deleteConfirmBtn: { flex: 1, backgroundColor: '#ef4444', borderRadius: borderRadius.lg, padding: spacing.md, alignItems: 'center', justifyContent: 'center' },
+  deleteConfirmBtn: { flex: 1, backgroundColor: semantic.criticalFill, borderRadius: borderRadius.lg, padding: spacing.md, alignItems: 'center', justifyContent: 'center' },
   deleteConfirmText: { fontSize: 16, fontWeight: '500', color: '#fff' },
 });
 }

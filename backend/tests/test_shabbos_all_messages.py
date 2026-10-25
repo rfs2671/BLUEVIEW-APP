@@ -24,7 +24,7 @@ os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 
 import server  # noqa: E402
-from lib import shabbos, wa_alerts  # noqa: E402
+from lib import datefmt, shabbos, wa_alerts  # noqa: E402
 from tests import test_upcoming_server as U  # noqa: E402
 from tests import test_whatsapp_gc_alerts as G  # noqa: E402
 from tests import test_whatsapp_morning_brief as B  # noqa: E402
@@ -56,7 +56,7 @@ class TheWindow(unittest.TestCase):
     def test_friday_before_and_after_candle_lighting(self):
         self.assertIsNone(shabbos.quiet_until(FRI_BEFORE))
         end = shabbos.quiet_until(FRI_AFTER)
-        self.assertEqual(end.astimezone(shabbos.NY).strftime("%a %-I:%M %p"), "Sat 8:07 PM")
+        self.assertEqual(datefmt.strftime(end.astimezone(shabbos.NY), "%a %-I:%M %p"), "Sat 8:07 PM")
         # December: candles 4:12 PM, so 3 PM still sends and 4 PM waits.
         self.assertIsNone(shabbos.quiet_until(_ny(2026, 12, 18, 15)))
         self.assertIsNotNone(shabbos.quiet_until(_ny(2026, 12, 18, 16)))
@@ -66,7 +66,7 @@ class TheWindow(unittest.TestCase):
         self.assertIsNone(shabbos.quiet_until(SAT_NIGHT))
 
     def test_a_yom_tov_weekday(self):
-        self.assertEqual(shabbos.quiet_until(YK_NOON).astimezone(shabbos.NY).strftime("%a %-I:%M %p"),
+        self.assertEqual(datefmt.strftime(shabbos.quiet_until(YK_NOON).astimezone(shabbos.NY), "%a %-I:%M %p"),
                          "Mon 8:39 PM")
         self.assertIsNone(shabbos.quiet_until(YK_TUE))
 
@@ -221,9 +221,9 @@ class TheGcAlerts(unittest.TestCase):
             G._confirm()
             G._run(server._gc_alerts_tick(G.NOON))                  # baseline (Wed)
             db.dob_logs.rows.extend([
-                G._violation("2"),
-                G._violation("S1", record_type="swo", status="ACTIVE"),
-                G._violation("9", violation_subtype="VACATE_FULL"),
+                G._violation("2", violation_date="2026-10-09"),
+                G._violation("S1", record_type="swo", status="ACTIVE", violation_date="2026-10-09"),
+                G._violation("9", violation_subtype="VACATE_FULL", violation_date="2026-10-09"),
             ])
             rep = G._run(server._gc_alerts_tick(FRI_AFTER))
             during = [p["message"] for p in G._group_sends(c)]
@@ -257,7 +257,7 @@ class TheGcAlerts(unittest.TestCase):
         with G._Ctx(db=db) as c, G._no_ai():
             G._confirm()
             G._run(server._gc_alerts_tick(G.NOON))
-            db.dob_logs.rows.append(G._violation("2"))
+            db.dob_logs.rows.append(G._violation("2", violation_date="2026-10-09"))
             G._run(server._gc_alerts_tick(FRI_BEFORE))
             self.assertEqual(len(G._group_sends(c)), 1)
 
@@ -356,7 +356,8 @@ class EverySender(unittest.TestCase):
 
     def test_wired(self):
         import inspect
-        for fn, needle in ((server._morning_brief_tick, "_shabbos_quiet("),
+        # The tick runs each person through _morning_brief_one.
+        for fn, needle in ((server._morning_brief_one, "_shabbos_quiet("),
                            (server._upcoming_notify_tick, "_shabbos_quiet("),
                            (server._gc_alerts_tick, "_shabbos_quiet("),
                            (server._gc_propose_tick, "_shabbos_quiet("),

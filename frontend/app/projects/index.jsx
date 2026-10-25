@@ -43,6 +43,7 @@ import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
 import ProjectsTable from '../../src/components/ProjectsTable';
 import { useTheme } from '../../src/context/ThemeContext';
+import { useT } from '../../src/i18n';
 // ── FIX #3: Import AddressAutocomplete ──
 import AddressAutocomplete from '../../src/components/AddressAutocomplete';
 import HeaderBrand from '../../src/components/HeaderBrand';
@@ -58,6 +59,7 @@ export default function ProjectsScreen() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
+  const tc = useT('compliance');
   // Desktop (RN-Web >=1024) swaps the card list for a sortable table.
   // Below the breakpoint, and on native, the card list below is unchanged.
   const isDesktop = useIsDesktop();
@@ -244,13 +246,13 @@ export default function ProjectsScreen() {
     };
 
     if (Platform.OS === 'web') {
-      if (window.confirm(`Delete "${projectName}"?\n\nThis will permanently remove the project and all its DOB compliance data. This cannot be undone.`)) {
+      if (window.confirm(tc('deleteConfirmWeb').replace('{name}', () => projectName))) {
         doDelete();
       }
     } else {
       Alert.alert(
         'Delete Project?',
-        `This will permanently remove "${projectName}" and all its DOB compliance data. This cannot be undone.`,
+        tc('deleteConfirmNative').replace('{name}', () => projectName),
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Delete', style: 'destructive', onPress: doDelete },
@@ -479,7 +481,7 @@ export default function ProjectsScreen() {
           onRequestClose={() => setShowAddModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={s.modalOverlay}
           >
             <Pressable style={s.modalBackdrop} onPress={() => setShowAddModal(false)} />
@@ -566,7 +568,7 @@ export default function ProjectsScreen() {
           onRequestClose={() => setEditTarget(null)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={s.modalOverlay}
           >
             <Pressable style={s.modalBackdrop} onPress={() => setEditTarget(null)} />
@@ -888,8 +890,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.sm,
   },
   titleText: {
-    fontSize: 48,
-    fontWeight: '200',
+    fontSize: 32,
+    fontFamily: typography.display, fontWeight: '800',
     letterSpacing: -1,
     color: colors.text.primary,
   },
@@ -1056,7 +1058,7 @@ function buildStyles(colors, isDark) {
     // GlassCard variant="modal" has no gradient layer — just blur — so
     // on mobile you can still read the page behind it. Add a solid
     // theme-aware fill so the card is fully opaque.
-    backgroundColor: isDark ? '#121826' : '#ffffff',
+    backgroundColor: isDark ? '#243746' : '#ffffff',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1149,7 +1151,7 @@ function buildStyles(colors, isDark) {
   },
   levelToggleOn: {
     backgroundColor: semantic.verifiedBg,
-    borderColor: '#4ade80',
+    borderColor: semantic.verified,
   },
   levelToggleText: {
     fontSize: 11,
@@ -1157,7 +1159,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   levelToggleTextOn: {
-    color: '#4ade80',
+    color: semantic.verified,
   },
   toggleRow: {
     flexDirection: 'row',
@@ -1177,7 +1179,7 @@ function buildStyles(colors, isDark) {
   },
   toggleBoxActive: {
     backgroundColor: semantic.verifiedBg,
-    borderColor: '#4ade80',
+    borderColor: semantic.verified,
   },
   toggleLabel: {
     fontSize: 14,
@@ -1187,7 +1189,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.full,
-    backgroundColor: 'rgba(59,130,246,0.15)',
+    backgroundColor: withAlpha(colors.primary, 0.15),
     flexShrink: 0,
   },
   classificationMajor: {
@@ -1196,7 +1198,7 @@ function buildStyles(colors, isDark) {
   classificationText: {
     fontSize: 10,
     fontWeight: '600',
-    color: '#60a5fa',
+    color: colors.primary,
   },
   classificationTextMajor: {
     color: semantic.neutralStrong,

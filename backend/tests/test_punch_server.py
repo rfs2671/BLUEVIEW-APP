@@ -26,6 +26,7 @@ from fastapi import HTTPException  # noqa: E402
 
 import server  # noqa: E402
 from tests import _punch_detailed  # noqa: E402
+from tests._pinned_clock import never_quiet  # noqa: E402
 from lib import punch  # noqa: E402
 from scripts import punch_dry_run as dry  # noqa: E402
 
@@ -88,7 +89,10 @@ class TheDraftStaysWithTheWalker(unittest.TestCase):
         res = _run(_upto(_sc(), LOCS))           # the locations, in the draft
         self.assertEqual(res["reacts"], ["👍"] * 12)       # the 12 photos; words are answered in words
         said_all = "\n".join(res["transcript"])
-        self.assertIn("— got it.", said_all)    # the voice after one (10:46 AM: never only 👍)
+        # The voice note after the wordless 12th photo: its words, for that
+        # photo only (the photos since the previous text with no own words).
+        self.assertIn("Got it — #12 (1 photo): 4th floor (kitchen) — Falta un enchufe", said_all)
+        self.assertIn("12. 📷 Falta un enchufe en la cocina", said_all)    # the voice after one (10:46 AM: never only 👍)
         self.assertEqual(len(res["uploads"]), 12)
         self.assertTrue(all(k.startswith("wa-photos/p588/") for k in res["uploads"]))
         # Every item has a floor at least: no location question at all (Tue
@@ -107,11 +111,15 @@ class TheDraftStaysWithTheWalker(unittest.TestCase):
         text = "\n".join(res["transcript"])
         self.assertIn("588 Thomas St · walkthrough · 12 items (draft)", text)
         self.assertIn("2 have no trade — fine to send as is.", text)
-        self.assertIn("📷🎤 Falta pintura (hallway)", text)   # "piso 6 … en el pasillo": its place
+        # "piso 6 … en el pasillo": its place -- a heading, floor then area.
+        self.assertIn("*Floor 6 · hallway*\n  _paint_\n  3. 📷🎤 Falta pintura — paint", text)
         self.assertLess(text.index("*Floor 4*"), text.index("*Floor 5*"))
 
 
 class Sending(unittest.TestCase):
+
+    def setUp(self):
+        never_quiet(self)          # live posts: see test_punch_walkthrough_2303._Live
 
     def test_live_posts_one_message_per_assignee_with_the_photos(self):
         sc = _sc()
@@ -209,6 +217,9 @@ class Closing(unittest.TestCase):
 
 class CodexRound1(unittest.TestCase):
     """Who may move an item, ids per project, live sends that fail."""
+
+    def setUp(self):
+        never_quiet(self)          # live posts: see test_punch_walkthrough_2303._Live
 
     def _sent(self):
         return Closing._sent(self)

@@ -67,6 +67,52 @@ def start_request(text: Any) -> Optional[Dict[str, Optional[str]]]:
     return {"job": job}
 
 
+# "I'm going to show you some pictures, I need to do a checklist, it's not
+# going to be sent to anyone, just for me" (Tue Oct 13, 11:47 AM) got "I can't
+# create a checklist from images here. Please use the app" -- photos sent here
+# ARE the punch list. Said in the first person, with a photo word and a list
+# word; "send me the punch list photos" asks for something, not this.
+_WALK_PHOTO = re.compile(r"\b(?:pictures?|pics?|photos?|fotos?|images?)\b", re.I)
+# A checklist / punch list / walk -- never a bare "list" ("a list of photos
+# in yesterday's daily log" is a question about the log; Codex on #822).
+_WALK_LIST = re.compile(r"\b(?:check\s*-?\s*lists?|punch(?:\s*lists?)?|walk\s*-?\s*through|"
+                        r"walk|lista|recorrido)\b", re.I)
+_WALK_ME = re.compile(r"\b(?:i'?m|i\s+am|i'?ll|i\s+will|im|gonna|going\s+to|let\s+me|"
+                      r"want\s+to|wanna|need\s+to|have\s+to|about\s+to|can\s+i|could\s+i|"
+                      r"voy\s+a|quiero|necesito)\b", re.I)
+# ...and about SENDING them: show / send / take / share / upload (not "get").
+_WALK_SEND = re.compile(r"\b(?:show|send|sending|take|taking|share|upload|snap|"
+                        r"mandar|mando|enviar|env[ií]o|tomar)\b", re.I)
+_WALK_DENIES = re.compile(
+    r"\b(?:can'?t|cannot|can\s?not|unable to|not able to|don'?t have a way to)\b[^.?!\n]{0,60}"
+    r"\b(?:check\s*-?\s*lists?|punch(?:\s*lists?)?)\b[^.?!\n]{0,40}"
+    r"\b(?:images?|photos?|pictures?|pics)\b", re.I)
+# "Use the app to upload the photos" -- a denial only beside a checklist /
+# punch list (to add photos to a daily log, the app IS the answer).
+_WALK_APP = re.compile(r"\buse the (?:levelog )?app to (?:upload|add|send) "
+                       r"(?:the |your )?(?:photos|pictures|images)", re.I)
+_WALK_LISTWORD = re.compile(r"\b(?:check\s*-?\s*lists?|punch(?:\s*lists?)?)\b", re.I)
+
+WALK_HELP = ("Send the photos here, each with a caption or a voice note: where and what. "
+             "I'll make it a punch list draft just for you; nothing goes to anyone until "
+             "you say \"send\". Say \"done\" when they're all in.")
+
+
+def walk_intent(text: Any) -> bool:
+    """They are about to send photos for a checklist / punch list."""
+    t = str(text or "")
+    return bool(_WALK_PHOTO.search(t) and _WALK_LIST.search(t) and _WALK_ME.search(t)
+                and _WALK_SEND.search(t) and not start_request(t))
+
+
+def denies_walk(reply: Any) -> bool:
+    """The reply claims a checklist / punch list can't be made from photos
+    here, or sends them to the app to upload photos (photos sent here are
+    the punch list)."""
+    r = str(reply or "")
+    return bool(_WALK_DENIES.search(r) or (_WALK_APP.search(r) and _WALK_LISTWORD.search(r)))
+
+
 def match_project(hint: Optional[str], projects: List[Dict[str, Any]]) -> Tuple[Optional[dict], str]:
     """The one project a hint names ("588" -> "588 Thomas St"), by its number,
     name or address. (project, "") or (None, why): "none" | "several"."""
@@ -239,7 +285,11 @@ def update_item(it: dict, words: str, *, note_at: Any = None) -> str:
         rest = re.sub(r"[\s,.;:-]+", " ", rest).strip()
         if read_location(rest)["area"] == loc.get("area"):
             rest = re.sub(r"(?i)\b" + re.escape(str(loc.get("area") or "")) + r"\b", " ", rest).strip()
-    if not it.get("text"):
+    own = clean_caption(w) if loc.get("floor") or loc.get("area") else w
+    if not it.get("text") or (it.get("text_auto") and own.strip()):
+        # No words yet, or only the vision model's guess: these are its words.
+        it.pop("text_auto", None)
+        it["text_src"] = "walker"
         it["text"] = clean_caption(w) if loc.get("floor") or loc.get("area") else w
         if (it.get("trade") or UNKNOWN) == UNKNOWN or it.get("trade_guess"):
             it["trade"], it["trade_guess"] = trade_for(w)
@@ -777,6 +827,21 @@ _ESCAPE = re.compile(
     r"|none|n/?a|without|leave (?:it|them) blank|blank|salta(?:r)?|sigue|siguiente|ninguno)\W*$|^\W*$")
 
 
+#: Go on and send, at the recap (3:37 PM: "go ahead" got the recap again).
+_GO = re.compile(
+    r"^(?:(?:ok(?:ay)?|yes|yeah|yep|yup|sure|alright|great|perfect|good)[,.! ]*)*"
+    r"(?:go\s+ahead|do\s+it|yes\s+send|send\s+it(?:\s+out)?|send(?:\s+(?:now|out|them|it\s+now))?"
+    r"|ship\s+it|go\s+for\s+it|let'?s\s+go|confirm(?:ed)?|approved?|that'?s\s+(?:fine|good|right|correct)"
+    r"|looks?\s+(?:good|right|fine)(?:\s+send)?|dale|env[ií]a(?:lo)?|m[aá]ndalo)?"
+    r"(?:[,.! ]*(?:please|pls|thanks?|thank\s+you))?[.!\s]*$", re.IGNORECASE)
+
+
+def is_go(text: Any) -> bool:
+    """'go ahead', 'do it', 'yes send', 'send it', 'ok go ahead'."""
+    t = " ".join(str(text or "").split())
+    return bool(t) and bool(re.search(r"[a-z]", t, re.IGNORECASE)) and bool(_GO.match(t))
+
+
 def is_escape(text: Any) -> bool:
     """'just finish', 'skip', 'ignore that', 'send as is', 'move on', '.'"""
     t = " ".join(str(text or "").lower().split())
@@ -959,6 +1024,10 @@ def _floor_key(f: str) -> Tuple[int, str]:
 
 NOT_GIVEN = "Location: not given"
 
+#: An item with no words yet (the vision model could not say): shown as
+#: this, never a made-up description -- "See photo" read as one.
+NO_WORDS = "(no description)"
+
 
 def floor_label(f: str) -> str:
     if f == UNKNOWN:
@@ -966,6 +1035,62 @@ def floor_label(f: str) -> str:
     if f.isdigit():
         return f"Floor {f}"
     return f.capitalize()
+
+
+def place_label(floor: Any, area: Any) -> str:
+    """The location as one label: "Floor 3 · interior", "Floor 1 · Back of
+    building", "Roof", "Cellar" -- floor, then area. "" when neither."""
+    f = str(floor or "").strip()
+    a = str(area or "").strip()
+    f = "" if f == UNKNOWN else f
+    a = "" if a == UNKNOWN or a.lower() == f.lower() else a
+    fl = f"Floor {f}" if f.isdigit() else (f[:1].upper() + f[1:] if f else "")
+    if fl and a:
+        return f"{fl} · {a}"
+    return fl or (a[:1].upper() + a[1:] if a else "")
+
+
+def heading_area(it: dict) -> str:
+    """The area a draft heading names: a named area ("interior", "back of
+    building"); never a unit -- "Apt 4F" stays on the item's line under its
+    floor (a heading per apartment is noise)."""
+    a = str(it.get("area") or "")
+    if a == UNKNOWN or a.lower() == str(it.get("floor") or "").lower() or a.startswith("Apt "):
+        return ""
+    return a
+
+
+#: Places that are a level of the building, however they were stored: a
+#: floor "Roof", a floor "roof" and an area "Roof" with no floor are ONE
+#: heading (two "Roof" headings in the 6a868363 dry run).
+_LEVEL_WORDS = ("cellar", "basement", "sub-cellar", "subcellar", "lobby", "ground", "roof",
+                "rooftop", "bulkhead", "penthouse", "mezzanine", "attic")
+
+
+def _level(it: dict) -> Tuple[str, str]:
+    """(floor, area) as the draft groups them: case-folded, an area that is
+    a level read as the floor."""
+    f = str(it.get("floor") or UNKNOWN).strip()
+    a = heading_area(it)
+    if f != UNKNOWN and not f.isdigit():
+        f = f.lower()
+    if f == UNKNOWN and a.lower() in _LEVEL_WORDS:
+        f, a = a.lower(), ""
+    if a.lower() == f.lower():
+        a = ""
+    if f != UNKNOWN and a and " " not in a:
+        a = a.lower()                       # "Floor 2 · interior", never "Floor 2 · Interior"
+    return f, a
+
+
+def heading_key(it: dict) -> Tuple[Tuple[int, str], str]:
+    """Draft order: by floor, then area ("" first) -- areas with no floor
+    ("Back of building") after the floors, "not given" last. One key per
+    place, whatever its case or which field it was stored in."""
+    f, a = _level(it)
+    if f == UNKNOWN:
+        return ((1500, a.lower()), "") if a else ((2000, ""), "")
+    return (_floor_key(f), a.lower())
 
 
 def place_key(it: dict) -> str:
@@ -979,12 +1104,12 @@ def place_key(it: dict) -> str:
 
 
 def ordered(items: Iterable[dict], simple: bool = False) -> List[dict]:
-    """The draft's order -- the numbers follow it: floor, then trade ("?"
-    last), then the order the photos came in. Simple: floor, then order."""
+    """The draft's order -- the numbers follow it: floor, then area, then
+    trade ("?" last), then the order the photos came in. Simple: floor,
+    area, then order."""
     def key(it):
         t = "" if simple else (it.get("trade") or UNKNOWN)
-        return (_floor_key(place_key(it)), t == UNKNOWN, t,
-                it.get("captured") or 0)
+        return (heading_key(it), t == UNKNOWN, t, it.get("captured") or 0)
     return sorted(items, key=key)
 
 
@@ -997,16 +1122,19 @@ def marker(it: dict) -> str:
     return "".join(m)
 
 
-def item_line(it: dict, simple: bool = False) -> str:
+def item_line(it: dict, simple: bool = False, area_shown: bool = False) -> str:
     """"3. 📷 Outlet cover missing — electrical" (area shown when known).
     No trade: no trade shown -- never a "?" or a "roofing?" (1:43 PM).
     Simple: the words only (the floor is the heading)."""
-    words = it.get("text") or "(no words)"
+    words = (it.get("text") or "").strip() or NO_WORDS
+    if it.get("text_auto") and (it.get("text") or "").strip():
+        words += " (auto)"                  # the vision model's words: a guess, editable
     if simple:
         return f"{it['n']}. {marker(it)} {words}".replace("  ", " ")
     trade = it.get("trade") or UNKNOWN
     area = it.get("area")
-    where = f" ({unit_label(it)})" if area and area != UNKNOWN and area != it.get("floor") else ""
+    where = (f" ({unit_label(it)})" if area and area != UNKNOWN and area != it.get("floor")
+             and not area_shown else "")
     tail = f" — {trade}" if trade != UNKNOWN else ""
     return f"{it['n']}. {marker(it)} {words}{where}{tail}".replace("  ", " ")
 
@@ -1032,8 +1160,13 @@ def no_trade_line(n: int) -> str:
     return f"{n} {'has' if n == 1 else 'have'} no trade — fine to send as is."
 
 
+#: The draft's list of texts that could not be put on photos.
+UNPLACED_HEADING = "Couldn't place — tell me which photos:"
+UNPLACED_FOOT = 'Reply with the photo numbers for the first one ("9 10" or "9-12"), or "skip".'
+
+
 def draft_text(job_name: str, items: List[dict], sent_mode: str = DEFAULT_SEND_MODE,
-               simple: bool = False) -> str:
+               simple: bool = False, unplaced: Optional[List[str]] = None) -> str:
     """The draft the walker sees: by floor, then trade, each with ITS number
     -- never renumbered once shown, so they may read #1, #4, #2. Simple: by
     floor, the words only."""
@@ -1041,24 +1174,34 @@ def draft_text(job_name: str, items: List[dict], sent_mode: str = DEFAULT_SEND_M
     need_trade = [it for it in live if (it.get("trade") or UNKNOWN) == UNKNOWN]
     head = f"{job_name} · walkthrough · {len(live)} item{'s' if len(live) != 1 else ''} (draft)"
     lines = [head]
-    by_floor: Dict[str, List[dict]] = {}
+    # By floor, then area: "Floor 3 · interior" (never a group named after
+    # an area read as a floor, "3rd interior").
+    groups: Dict[Tuple[Tuple[int, str], str], List[dict]] = {}
     for it in ordered(live, simple=simple):
-        by_floor.setdefault(place_key(it), []).append(it)
-    for f in sorted(by_floor, key=_floor_key):
+        groups.setdefault(heading_key(it), []).append(it)
+    for key in sorted(groups):
+        first = groups[key][0]
+        label = (place_label(*_level(first)) if key[0] != (2000, "") else NOT_GIVEN) or NOT_GIVEN
         lines.append("")
-        lines.append(f"*{floor_label(f)}*")
+        lines.append(f"*{label}*")
         if simple:
-            lines.extend(item_line(it, simple=True) for it in by_floor[f])
+            lines.extend(item_line(it, simple=True) for it in groups[key])
             continue
         by_trade: Dict[str, List[dict]] = {}
-        for it in by_floor[f]:
+        for it in groups[key]:
             by_trade.setdefault(it.get("trade") or UNKNOWN, []).append(it)
         for t in sorted(by_trade, key=lambda x: (x == UNKNOWN, x)):
             if t != UNKNOWN:
                 lines.append(f"_{t}_")
             elif len(by_trade) > 1:
                 lines.append("_no trade_")
-            lines.extend(item_line(it) for it in by_trade[t])
+            lines.extend(item_line(it, area_shown=bool(key[1])) for it in by_trade[t])
+    if unplaced:
+        lines.append("")
+        lines.append(f"*{UNPLACED_HEADING}*")
+        # A walk's saved entry is {"label", "copy"}; the dry run passes labels.
+        lines.extend(f"• {u.get('label') if isinstance(u, dict) else u}" for u in unplaced)
+        lines.append(UNPLACED_FOOT)
     lines.append("")
     if need_trade and not simple and len(need_trade) < len(live):
         lines.append(no_trade_line(len(need_trade)))
@@ -1166,9 +1309,23 @@ def trade_name(t: str) -> str:
     return "No trade" if (t or UNKNOWN) == UNKNOWN else t
 
 
-def assign_text(sugg: Dict[str, Optional[dict]], stuck: bool = False) -> str:
+def assign_text(sugg: Dict[str, Optional[dict]], stuck: bool = False, simple: bool = False) -> str:
     """"Who gets what?" -- one row per trade; the items with no trade are a
-    "No trade" row (never "? → ?", 1:43 PM). Examples only when stuck."""
+    "No trade" row (never "? → ?", 1:43 PM). Examples only when stuck.
+    Simple: no trade anywhere (Thu 9:03 AM) -- each person once, and the
+    rest of the list when nobody has it yet."""
+    if simple:
+        # By who they are: two people named alike stay two (Codex on #801).
+        people = list({_person_key(p): who_label(p) for p in sugg.values() if p}.values())
+        lines = ["Who gets it?"]
+        if len(people) == 1 and all(sugg.values()):
+            lines.append(f"• The whole list → {people[0]}")
+        else:
+            lines.extend(f"• {w}" for w in people)
+            if not all(sugg.values()):
+                lines.append("• The rest → who?")
+        lines.append(ASSIGN_STUCK if stuck else ASSIGN_HINT)
+        return "\n".join(lines)
     lines = ["Who gets what?"]
     for t, p in sorted(sugg.items(), key=lambda kv: (kv[0] == UNKNOWN, kv[0])):
         lines.append(f"• {trade_name(t)} → {who_label(p) if p else 'who?'}")
@@ -1189,8 +1346,12 @@ _ASSIGN = re.compile(r"^\s*([a-z /áéíóúñ]+?)\s*(?:→|->|=>|>|:|=|to)\s*(.
 ASSIGN_SHORT = "Sorry, who should get it? A name, \"me\", or \"the group\" works."
 #: Simple mode's one question: the whole list to whom.
 WHO_GETS_IT = "Who should get it — you, someone on the job, or the job group?"
-def open_trades_question(trades: List[str], stuck: bool = False) -> str:
-    """'ok' with trades nobody has yet: who, in one line."""
+def open_trades_question(trades: List[str], stuck: bool = False, simple: bool = False) -> str:
+    """'ok' with trades nobody has yet: who, in one line. Simple: never a
+    trade named -- the rest of the list."""
+    if simple:
+        return ("Who should get the rest of the list? A name, or \"me\"."
+                + (" Or \"the rest to me\"." if stuck else ""))
     names = [trade_name(t).lower() if t == UNKNOWN else t for t in sorted(trades)]
     what = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
     return (f"Who should get the {what} items? A name, or \"me\"."
@@ -1591,11 +1752,10 @@ def done_hint(items: List[dict]) -> str:
     return f"Reply \"done {pid}\" (a photo helps) when each one is finished."
 
 
-def _list_lines(items: List[dict], mentions: Optional[Dict[str, str]] = None,
-                simple: bool = False) -> List[str]:
-    """Items under their floor, then trade; a trade's owner @mentioned
-    beside it when `mentions` names one. No trade: no "_?_" heading. Simple:
-    the floor and the words only."""
+def _list_lines(items: List[dict], simple: bool = False) -> List[str]:
+    """Items under their floor, then trade. No trade: no "_?_" heading.
+    Simple: the floor and the words only. Never an @mention: those are at
+    the top, once each (mention_lines)."""
     lines: List[str] = []
     by_floor: Dict[str, Dict[str, List[dict]]] = {}
     for it in items:
@@ -1604,14 +1764,15 @@ def _list_lines(items: List[dict], mentions: Optional[Dict[str, str]] = None,
     for f in sorted(by_floor, key=_floor_key):
         lines.append(f"*{floor_label(f)}*")
         for t in sorted(by_floor[f], key=lambda x: (x == UNKNOWN, x)):
-            who = (mentions or {}).get(t)
             if t != UNKNOWN:
-                lines.append(f"_{t}_" + (f" {who}" if who else ""))
-            elif who:
-                lines.append(f"_no trade_ {who}")
+                lines.append(f"_{t}_")
             for it in by_floor[f][t]:
                 u = "" if simple else unit_label(it)
-                lines.append(f"• {it['pid']} {it.get('text') or ''}"
+                # Never a bullet with no words (3:37 PM: 33 blank ones).
+                words = (it.get("text") or "").strip() or NO_WORDS
+                if it.get("text_auto") and (it.get("text") or "").strip():
+                    words += " (auto)"
+                lines.append(f"• {it['pid']} {words}"
                              f"{(' (' + u + ')') if u and u != f else ''}")
     return lines
 
@@ -1629,7 +1790,10 @@ def group_text(name: str, items: List[dict], due_words: str,
         for it in items:
             where = (floor_label(place_key(it)) if place_key(it) != UNKNOWN else "") if simple \
                 else _where(it)
-            lines.append(f"• {it['pid']} {it.get('text') or ''}{(' (' + where + ')') if where else ''}")
+            words = (it.get("text") or "").strip() or NO_WORDS
+            if it.get("text_auto") and (it.get("text") or "").strip():
+                words += " (auto)"
+            lines.append(f"• {it['pid']} {words}{(' (' + where + ')') if where else ''}")
     lines.append(done_hint(items))
     return "\n".join(lines)
 
@@ -1640,20 +1804,42 @@ def dm_text(job_name: str, items: List[dict], due_words: str, simple: bool = Fal
                       *_list_lines(items, simple=simple), done_hint(items)])
 
 
+def mention_lines(mentions: Dict[str, str], trades: Optional[List[str]] = None,
+                  simple: bool = False) -> List[str]:
+    """Each person @mentioned ONCE, at the top (Thu 9:03 AM: "Meilich
+    Friedman (GC team)" 6 times, once per trade). `mentions`: trade ->
+    handle. Their trades beside them only when it says something: a detailed
+    list where they don't have every trade in it."""
+    who: Dict[str, List[str]] = {}
+    for t in sorted(mentions, key=lambda x: (x == UNKNOWN, x)):
+        if mentions[t]:
+            who.setdefault(mentions[t], []).append(t)
+    if not who:
+        return []
+    every = set(trades if trades is not None else mentions)
+    if simple or (len(who) == 1 and set(next(iter(who.values()))) >= every):
+        return [" ".join(who)]
+    return [f"{h} — {', '.join(trade_name(t).lower() if t == UNKNOWN else t for t in ts)}"
+            for h, ts in who.items()]
+
+
 def full_list_text(job_name: str, items: List[dict], due_words: str,
                    mentions: Dict[str, str], simple: bool = False) -> str:
-    """The whole list posted in the job's group, each trade's owner
-    @mentioned beside it where known."""
+    """The whole list posted in the job's group: each owner @mentioned once,
+    at the top; then the list."""
+    trades = sorted({it.get("trade") or UNKNOWN for it in items})
     return "\n".join([f"{job_name} punch list — {due_label(due_words)}:",
-                      *_list_lines(items, mentions, simple=simple), done_hint(items)])
+                      *mention_lines(mentions, trades, simple=simple),
+                      *_list_lines(items, simple=simple), done_hint(items)])
 
 
 def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[str, str],
                mode: str = DEFAULT_SEND_MODE, whole: Optional[dict] = None, *,
                target: Optional[str] = None, group_name: str = "",
-               default_due: str = ASAP) -> str:
+               default_due: str = ASAP, simple: bool = False) -> str:
     """The exact send, before it happens: where it goes, who gets which
-    numbers, and when. 'ok' sends."""
+    numbers, and when. 'ok' sends. Simple: never a trade -- each person
+    once, the due by person (Thu 9:03 AM: cleaning, concrete, drywall …)."""
     live = ordered([it for it in items if it.get("status", "draft") != "dropped"])
     shadow = " (shadow mode: nothing will be sent)" if mode != "live" else ""
     group = group_name or "the job group"
@@ -1665,11 +1851,18 @@ def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[s
             return f"{len(ns)} items"
         return ", ".join("#" + str(n) for n in ns)
     if target == "group":
-        owners = sorted({f"{who_label(assign.get(t))} ({trade_name(t)})"
-                         for t in {it.get("trade") or UNKNOWN for it in live} if assign.get(t)})
+        # Each person once, with their trades (Thu 9:03 AM: one name 6 times).
+        # By who they are, not their label: two people named alike stay two.
+        owners: Dict[tuple, Tuple[str, List[str]]] = {}
+        for t in sorted({it.get("trade") or UNKNOWN for it in live}, key=lambda x: (x == UNKNOWN, x)):
+            if assign.get(t):
+                owners.setdefault(_person_key(assign[t]), (who_label(assign[t]), []))[1].append(
+                    trade_name(t).lower() if t == UNKNOWN else t)
         head = [f"Ready to post the whole list in {group}{shadow}: {nums(it['n'] for it in live)}"]
-        if owners:
-            head.append("Mentioning " + "; ".join(owners))
+        if owners and simple:
+            head.append("Mentioning " + "; ".join(w for w, _ts in owners.values()))
+        elif owners:
+            head.append("Mentioning " + "; ".join(f"{w} — {', '.join(ts)}" for w, ts in owners.values()))
     elif whole:
         head = [f"Ready to DM the whole list to {who_label(whole)}{shadow}: "
                 f"{nums(it['n'] for it in live)}"]
@@ -1683,7 +1876,15 @@ def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[s
     for it in live:
         by_t[it.get("trade") or UNKNOWN] = due.get(it.get("trade") or UNKNOWN) or default_due
     days = sorted(set(by_t.values()))
-    if len(days) <= 1:
+    if simple and len(days) > 1:
+        # By person, never by trade: "due Meilich Friedman Friday, Dov Klein asap".
+        by_who: Dict[str, List[str]] = {}
+        for t, d in by_t.items():
+            by_who.setdefault(who_label(assign.get(t)) if assign.get(t) else "the rest", []).append(d)
+        short = lambda d: "no date" if d == NO_DUE else d        # noqa: E731
+        when = "due " + ", ".join(f"{w} {', '.join(short(d) for d in sorted(set(ds)))}"
+                                  for w, ds in by_who.items())
+    elif len(days) <= 1:
         when = due_label(days[0] if days else default_due)
     else:
         counts: Dict[str, int] = {}
@@ -1936,10 +2137,28 @@ def group_confirm(loc: Dict[str, Optional[str]], ns: List[int]) -> str:
 def group_targets(items: List[dict], since_captured: int) -> List[dict]:
     """The photos a group location is for: every live item captured after
     the previous location message, except one whose place the walker gave
-    for it (its own caption, a reply, "#n")."""
+    for it (its own caption, a reply, "#n"). A place a group message or the
+    "next photos" default gave is theirs to set again."""
     return [it for it in items if it.get("status", "draft") != "dropped"
             and (it.get("captured") or 0) > since_captured
-            and not (location_ok(it) and it.get("loc_src") != "group")]
+            and not (location_ok(it) and it.get("loc_src") not in ("group", "default"))]
+
+
+def apply_default_location(it: dict, loc: Optional[Dict[str, Optional[str]]]) -> bool:
+    """A new photo with no place of its own takes the walk's "next photos"
+    place ("moving up to 4th now"); a caption naming only a unit or room
+    keeps it and takes the floor. True when it set anything."""
+    if not loc or location_ok(it) or it.get("floor") not in (None, UNKNOWN):
+        return False
+    own = it.get("area") not in (None, UNKNOWN)
+    if own:
+        if not loc.get("floor"):
+            return False
+        it["floor"] = loc["floor"]
+        return True
+    merge_location(it, loc)
+    it["loc_src"] = "default"
+    return True
 
 
 def set_group_location(it: dict, loc: Dict[str, Optional[str]],

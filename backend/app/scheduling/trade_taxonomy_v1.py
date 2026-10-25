@@ -70,6 +70,7 @@ def _n(node_id: str, label: str) -> str:
 SHARED_DEBRIS = _n("debris_removal", "debris removal")
 SHARED_TEMP_PROTECTION = _n("temporary_protection", "temporary protection")
 SHARED_LAYOUT = _n("trade_layout", "layout")
+SHARED_STRUCTURAL_FRAMING = _n("framing_structural", "structural framing")
 SHARED_FURRING = _n("furring", "furring")
 SHARED_HYDRO = _n("hydrostatic_test", "hydrostatic test")
 SHARED_FRAMING_PENETRATIONS = _n("framing_floor_penetrations",
@@ -159,12 +160,17 @@ TRADES: Dict[str, List[str]] = {
         _n("steel_lintels_angles", "lintels and angles"),
     ],
     "CFS (cold-formed steel)": [
+        # STRUCTURAL FRAMING, as one activity a framing crew recognises (operator,
+        # 2026-10: framing is structural framing, interior framing and ceiling
+        # drops -- not a "layout" step, which is only marking track and studs).
+        SHARED_STRUCTURAL_FRAMING,
         "cfs_wall_panels", "floor_joists_decking", "subfloor_sheathing",
         "bracing",
         _n("cfs_bulkheads_parapets", "CFS bulkheads and parapets"),
         "cfs_roof_framing_deck", SHARED_FRAMING_PENETRATIONS,
     ],
     "Wood framing": [
+        SHARED_STRUCTURAL_FRAMING,
         _n("wood_sill_plates", "sill plates"),
         _n("wood_wall_framing", "wall framing"),
         _n("wood_floor_joists", "floor joists"),
@@ -327,7 +333,12 @@ TRADES: Dict[str, List[str]] = {
 
     # ── INTERIOR FIT-OUT ─────────────────────────────────────────────────
     "Interior framing": [
-        SHARED_LAYOUT, "interior_framing",
+        # NO "layout" HERE. Marking track and studs is part of framing, not an
+        # activity of its own (operator, 2026-10): the real 588 logs show crews
+        # logging "layout" and "framing (layout, track and studs)" as if they
+        # were different work. Trades that lay out something else keep SHARED_LAYOUT.
+        "interior_framing",
+        _n("iframe_ceiling_drops", "ceiling drops"),
         _n("iframe_door_bucks", "door bucks"),
         _n("iframe_soffits_bulkheads", "soffits and bulkheads"),
         "blocking",
@@ -487,10 +498,15 @@ NEW_NODE_IDS = frozenset(n.id for n in NEW_NODES)
 #   "HVAC / Mechanical" -> HVAC *and* Mechanical piping. The string spans both.
 #   "Carpentry"         -> Carpentry (rough) *and* (finish). Same.
 ROSTER_TRADE_MAP: Dict[str, List[str]] = {
-    "concrete": ["Foundation / Concrete"],
+    # A foundation crew does the whole foundation phase on a real job: site prep,
+    # excavation, shoring, piles, then the concrete (588 Thomas S Boyland: the
+    # concrete crew logged shoring, piles and site prep, which its card did not
+    # offer, so they were typed as free text). UNDER-SLAB MEP IS NOT HERE: it is
+    # the plumbers' and electricians' work, never foundation (operator, 2026-10).
+    "concrete": ["Foundation / Concrete", "Excavation", "Shoring / underpinning", "Piles / caissons"],
     "formwork": ["Foundation / Concrete"],
     "rebar": ["Foundation / Concrete"],
-    "foundation": ["Foundation / Concrete"],
+    "foundation": ["Foundation / Concrete", "Excavation", "Shoring / underpinning", "Piles / caissons"],
     "electrical": ["Electrical"],
     "electric": ["Electrical"],
     # THE MAN, NOT THE TRADE. A roster is written by whoever is standing at

@@ -116,6 +116,25 @@ VISION_PLAN_INDEX_OCR = "plan_index_ocr"
 # ~2,626 input tokens and 6 output tokens each.
 VISION_REFUSAL_CHECK = "plan_refusal_check"
 
+# ── A PUNCH PHOTO WITH NO WORDS ───────────────────────────────────────────
+#
+# A walkthrough photo that has no caption and no text about its batch gets a
+# short description of the visible issue (marked "(auto)"), one call per such
+# photo, at "done" (and before a send, for any added later).
+VISION_PUNCH_PHOTO = "punch_photo_describe"
+
+# ── A PROGRESS REPORT'S PHOTOS ────────────────────────────────────────────
+#
+# Which of a period's photos go in the report: one call per photo (at most 40
+# a report), cached by photo, so a photo is judged once ever.
+VISION_REPORT_PHOTO = "report_photo_pick"
+
+# ── A PHOTO POSTED IN A JOB GROUP ─────────────────────────────────────────
+#
+# Described once, at ingest (lib/wa_photos.py): the report, the memory search
+# and the app read the stored description, never asking again.
+VISION_GROUP_PHOTO = "group_photo_describe"
+
 VISION_ENDPOINTS = frozenset({
     VISION_UPLOAD_OSHA,
     VISION_PARSE_CARD,
@@ -123,6 +142,9 @@ VISION_ENDPOINTS = frozenset({
     VISION_PLAN_INDEX_OCR,
     VISION_WHATSAPP_VQA,
     VISION_REFUSAL_CHECK,
+    VISION_PUNCH_PHOTO,
+    VISION_REPORT_PHOTO,
+    VISION_GROUP_PHOTO,
 })
 
 COLLECTION = "vision_calls"
@@ -181,4 +203,5 @@ __all__ = [
     "record_vision_call", "eastern_day", "meter_key", "COLLECTION",
     "VISION_ENDPOINTS", "VISION_UPLOAD_OSHA", "VISION_PARSE_CARD",
     "VISION_PLAN_INDEX_PAGE", "VISION_PLAN_INDEX_OCR", "VISION_WHATSAPP_VQA",
+    "VISION_REFUSAL_CHECK", "VISION_PUNCH_PHOTO",
 ]

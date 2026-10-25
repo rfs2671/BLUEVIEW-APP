@@ -815,12 +815,12 @@ export default function AdminUsersScreen() {
   const getRoleBadgeStyle = (role) => {
     switch (role) {
       case 'admin': return { bg: semantic.neutralBg, color: semantic.neutralStrong };
-      case 'cp': return { bg: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa' };
+      case 'cp': return { bg: withAlpha(colors.primary, 0.2), color: colors.primary };
       // The two roles this screen can now create. Distinct colours, because a
       // list where three of four roles share one grey badge is a list where the
       // badge answers nothing.
-      case ROLE_SUPERINTENDENT: return { bg: 'rgba(168, 85, 247, 0.2)', color: '#c084fc' };
-      case 'pm': return { bg: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24' };
+      case ROLE_SUPERINTENDENT: return { bg: withAlpha(colors.primary, 0.2), color: colors.primary };
+      case 'pm': return { bg: withAlpha(semantic.attention, 0.2), color: semantic.attention };
       default: return { bg: withAlpha('#9ca3af', 0.2), color: '#9ca3af' };
     }
   };
@@ -1456,8 +1456,8 @@ function buildStyles(colors, isDark) {
     gap: spacing.md,
   },
   titleText: {
-    fontSize: 32,
-    fontWeight: '200',
+    fontSize: 28,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
   },
   countBadge: {
@@ -1493,14 +1493,14 @@ function buildStyles(colors, isDark) {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#3b82f6',
+    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
   userInitial: {
     fontSize: 20,
     fontWeight: '500',
-    color: '#fff',
+    color: colors.onPrimary,
   },
   userInfo: {
     flex: 1,
@@ -1707,15 +1707,15 @@ function buildStyles(colors, isDark) {
     borderColor: colors.glass.border,
   },
   roleOptionActive: {
-    backgroundColor: 'rgba(59, 130, 246, 0.2)',
-    borderColor: '#3b82f6',
+    backgroundColor: withAlpha(colors.primary, 0.2),
+    borderColor: colors.primary,
   },
   roleOptionText: {
     fontSize: 13,
     color: colors.text.muted,
   },
   roleOptionTextActive: {
-    color: '#60a5fa',
+    color: colors.primary,
     fontWeight: '500',
   },
   projectsList: {

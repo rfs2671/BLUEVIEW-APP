@@ -298,7 +298,7 @@ const s = StyleSheet.create({
   },
   headerTitle: {
     flex: 1, textAlign: 'center', color: outdoor.text,
-    fontSize: typography.sizes.lg, fontWeight: '700',
+    fontSize: typography.sizes.md, fontWeight: '700',
   },
   body: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   centre: { paddingTop: spacing.xxl, alignItems: 'center' },

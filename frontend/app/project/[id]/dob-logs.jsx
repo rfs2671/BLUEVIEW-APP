@@ -43,6 +43,7 @@ import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { semantic, chrome, border, surface, text, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import { useT } from '../../../src/i18n';
 import OfflineNotice from '../../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../../src/utils/offlineState';
 import InfoTooltip from '../../../src/components/InfoTooltip';
@@ -93,6 +94,8 @@ export default function DOBLogsScreen() {
   const { id: projectId } = useLocalSearchParams();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
+  const tc = useT('compliance');
+  const tEmbargo = useT('dotEmbargo');
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -104,6 +107,10 @@ export default function DOBLogsScreen() {
   // Standing OPEN exposure from GET /projects/dob-summary (status-based, no
   // detected_at window) — drives the tile numbers so they don't decay.
   const [summary, setSummary] = useState(null);
+  // DOT holiday embargo (GET /projects/{id}/dot/embargo). The server decides
+  // the window (Nov 1 – Jan 2, New York) and `show`; null = not loaded, and
+  // a failed read shows nothing rather than a claim either way.
+  const [embargo, setEmbargo] = useState(null);
   const [activeTab, setActiveTab] = useState('all');
   const [expandedLogId, setExpandedLogId] = useState(null);
   const [showConfigModal, setShowConfigModal] = useState(false);
@@ -136,10 +143,12 @@ export default function DOBLogsScreen() {
     // (default '30d' empties the list ~30 days after the sync stamp). Tile
     // numbers come from dob-summary; both are fetched together, each settling
     // independently so one failure can't blank the other.
-    const [logsRes, summaryRes] = await Promise.all([
+    const [logsRes, summaryRes, embargoRes] = await Promise.all([
       settleFetch(() => dobAPI.getLogs(projectId, { limit: 200, date_range: 'all' })),
       settleFetch(() => dobAPI.getSummary(projectId)),
+      settleFetch(() => dobAPI.getDotEmbargo(projectId)),
     ]);
+    setEmbargo(embargoRes.status === 'ok' ? (embargoRes.data || null) : null);
 
     setFetchState(logsRes.status);
     if (logsRes.status === 'ok') {
@@ -151,7 +160,7 @@ export default function DOBLogsScreen() {
     } else {
       console.error('Failed to fetch DOB logs:', logsRes.error);
       if (logsRes.status === 'error') {
-        toast.error('Error', 'Could not load DOB compliance data');
+        toast.error('Error', tc('loadError'));
       } else {
         toast.warning('Offline', 'DOB records are unavailable offline — this is not a clean record.');
       }
@@ -322,6 +331,17 @@ export default function DOBLogsScreen() {
     : activeTab === 'violation' ? allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo')
     : allLogs.filter(l => l.record_type === activeTab)
   );
+
+  // DOT permits exposed to the holiday embargo with no waiver. Empty unless
+  // the server says to show the banner (inside Nov 1 – Jan 2).
+  const embargoMissing = (embargo && embargo.show && Array.isArray(embargo.missing_waiver))
+    ? embargo.missing_waiver.filter((p) => p && p.number)
+    : [];
+  // Exposed permits whose stipulations could not be read: "Waiver not
+  // verified". Shown here so someone can check; never emailed.
+  const embargoUnverified = (embargo && embargo.show && Array.isArray(embargo.unknown))
+    ? embargo.unknown.filter((p) => p && p.number)
+    : [];
 
   // Permits needing renewal: expiring within 30 days OR expired within 60 days
   const renewablePermits = allLogs.filter(l => {
@@ -578,7 +598,10 @@ export default function DOBLogsScreen() {
           {log.penalty_amount && subtype === 'ECB' && (
             <View style={{ backgroundColor: semantic.criticalBg, borderRadius: 8, padding: 10, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Text style={{ fontSize: 18, fontWeight: '700', color: '#f97316' }}>${log.penalty_amount}</Text>
-              <Text style={{ fontSize: 12, color: '#f97316', opacity: 0.8 }}>Penalty Amount</Text>
+              <Text style={{ fontSize: 12, color: '#f97316', opacity: 0.8 }}>
+                {/* Not final before the hearing (backend lib/dob_penalty). */}
+                {log.penalty_hearing_pending ? `Penalty Amount ${tc('penaltyHearingPending')}` : 'Penalty Amount'}
+              </Text>
             </View>
           )}
           {isExpanded && (
@@ -609,7 +632,8 @@ export default function DOBLogsScreen() {
               {log.violation_type && <DetailRow label="Type" value={log.violation_type} colors={colors} />}
               {log.violation_category && <DetailRow label="Category" value={log.violation_category} colors={colors} />}
               {log.description && <DetailRow label="Description" value={log.description} colors={colors} />}
-              {log.penalty_amount && <DetailRow label="Penalty" value={`$${log.penalty_amount}`} colors={colors} />}
+              {log.penalty_amount && <DetailRow label="Penalty" value={log.penalty_hearing_pending
+                ? `$${log.penalty_amount} ${tc('penaltyHearingPending')}` : `$${log.penalty_amount}`} colors={colors} />}
               {log.respondent && <DetailRow label="Respondent" value={log.respondent} colors={colors} />}
               {log.disposition_date && <DetailRow label="Disposition" value={formatDate(log.disposition_date)} colors={colors} />}
               {log.status && <DetailRow label="Status" value={log.status} colors={colors} />}
@@ -655,7 +679,7 @@ export default function DOBLogsScreen() {
       MEDIUM: semantic.attention,
       LOW: semantic.verified,
       RESOLVED: '#6b7280',
-      PENDING: '#3b82f6',
+      PENDING: colors.primary,
     };
     const riskColor = riskColors[(log.risk_level || '').toUpperCase()] || '#3b82f6';
     const riskTextColor = (log.risk_level || '').toUpperCase() === 'CRITICAL' ? semantic.criticalText : riskColor;
@@ -782,10 +806,10 @@ export default function DOBLogsScreen() {
     const isExpanded = expandedLogId === log.id;
     const result = (log.inspection_result || '').toUpperCase();
     const resultConfig = result.includes('FAIL')
-      ? { color: semantic.critical, textColor: semantic.criticalText, label: 'Failed', bg: 'rgba(239,68,68,0.1)' }
+      ? { color: semantic.critical, textColor: semantic.criticalText, label: 'Failed', bg: withAlpha(semantic.critical, 0.1) }
       : result.includes('PARTIAL')
       ? { color: semantic.attention, label: 'Partial', bg: semantic.attentionBg }
-      : { color: semantic.verified, label: 'Passed', bg: 'rgba(34,197,94,0.1)' };
+      : { color: semantic.verified, label: 'Passed', bg: withAlpha(semantic.verified, 0.1) };
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
@@ -793,8 +817,8 @@ export default function DOBLogsScreen() {
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: resultConfig.color }]} />
-              <View style={[s.typeBadge, { borderColor: '#3b82f640' }]}>
-                <Text style={[s.typeText, { color: '#3b82f6' }]}>Inspection</Text>
+              <View style={[s.typeBadge, { borderColor: withAlpha(colors.primary, 0.25) }]}>
+                <Text style={[s.typeText, { color: colors.primary }]}>Inspection</Text>
               </View>
               <View style={[s.typeBadge, { borderColor: resultConfig.color + '40', backgroundColor: resultConfig.bg }]}>
                 <Text style={[s.typeText, { color: resultConfig.textColor || resultConfig.color }]}>{resultConfig.label}</Text>
@@ -832,7 +856,7 @@ export default function DOBLogsScreen() {
     const isExpanded = expandedLogId === log.id;
     const sevConfig = getSevConfig(log.severity);
     const typeLabel = log.record_type === 'job_status' ? 'Job Filing' : log.record_type;
-    const typeColor = '#3b82f6';
+    const typeColor = colors.primary;
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
@@ -927,7 +951,7 @@ export default function DOBLogsScreen() {
               overstating a fallback action. Sync is unchanged underneath. */}
           <View style={s.titleSection}>
             <View style={s.titleTopRow}>
-              <Text style={s.titleLabel}>DOB COMPLIANCE</Text>
+              <Text style={s.titleLabel}>{tc('title')}</Text>
               <Pressable
                 onPress={handleSync}
                 disabled={syncing}
@@ -1001,6 +1025,38 @@ export default function DOBLogsScreen() {
                 <Text style={s.filterClear}>Show All</Text>
               </View>
             </Pressable>
+          )}
+
+          {/* DOT holiday embargo: an active permit exposed to Nov 15 – Jan 2
+              with no waiver (stipulation 410), or whose stipulations could not be
+              read ("Waiver not verified" -- shown, never emailed). Only inside
+              Nov 1 – Jan 2. */}
+          {(embargoMissing.length > 0 || embargoUnverified.length > 0) && (
+            <GlassCard style={s.renewalBanner}>
+              <View style={s.renewalBannerHeader}>
+                <ShieldAlert size={16} strokeWidth={2} color={semantic.attention} />
+                <Text style={[s.renewalBannerTitle, s.embargoTitle]}>
+                  {embargoMissing.length === 0
+                    ? tEmbargo('unverifiedTitle')
+                    : embargoMissing.length === 1
+                      ? tEmbargo('bannerOne')
+                      : tEmbargo('banner').replace('{n}', String(embargoMissing.length))}
+                </Text>
+              </View>
+              {embargoMissing.length > 0 && (
+                <Text style={s.embargoLine}>
+                  {tEmbargo('permits').replace('{list}', embargoMissing.map((p) => p.number).join(', '))}
+                </Text>
+              )}
+              {embargoUnverified.length > 0 && (
+                <Text style={s.embargoLine}>
+                  {tEmbargo('unverified').replace('{list}', embargoUnverified.map((p) => p.number).join(', '))}
+                </Text>
+              )}
+              <Text style={s.embargoLine}>{tEmbargo('action')}</Text>
+              {/* Coverage limit until DOT Phase 1 B (segment permits); removed with it. */}
+              <Text style={s.embargoNote}>{tEmbargo('coverageNote')}</Text>
+            </GlassCard>
           )}
 
           {/* Renewal status banner */}
@@ -1120,7 +1176,7 @@ export default function DOBLogsScreen() {
                     }
                     style={{ marginTop: spacing.sm }}
                   >
-                    <Text style={{ color: '#3b82f6', fontSize: 13 }}>
+                    <Text style={{ color: colors.primary, fontSize: 13 }}>
                       Open BIN {nycBin} on NYC BIS ↗
                     </Text>
                   </Pressable>
@@ -1217,7 +1273,7 @@ function buildStyles(colors, isDark) {
     scrollContent: { padding: spacing.lg, paddingBottom: 120 },
     titleSection: { marginBottom: spacing.lg },
     titleLabel: { ...typography.label, color: colors.text.secondary, marginBottom: spacing.sm },
-    titleText: { fontSize: 28, fontWeight: '200', color: colors.text.primary, letterSpacing: -0.5, marginBottom: spacing.xs },
+    titleText: { fontSize: 24, fontFamily: typography.display, fontWeight: '800', color: colors.text.primary, letterSpacing: -0.5, marginBottom: spacing.xs },
     binBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
     binText: { fontSize: 13, color: colors.text.muted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
     noBinBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
@@ -1246,6 +1302,10 @@ function buildStyles(colors, isDark) {
     renewalBanner: { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder, marginBottom: spacing.lg },
     renewalBannerHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
     renewalBannerTitle: { fontSize: 14, fontWeight: '600', color: semantic.attention },
+    // DOT holiday embargo banner (shares the renewal banner's card).
+    embargoTitle: { flex: 1, flexShrink: 1 },
+    embargoLine: { fontSize: 13, color: colors.text.secondary, marginTop: spacing.xs },
+    embargoNote: { fontSize: 12, color: colors.text.muted, marginTop: spacing.xs },
     renewalStatsRow: { flexDirection: 'row', gap: spacing.lg, marginBottom: spacing.sm },
     renewalStat: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
     renewalStatNum: { fontSize: 18, fontWeight: '700' },
@@ -1257,8 +1317,8 @@ function buildStyles(colors, isDark) {
 
     // Renew bubble on permit cards
     renewBubble: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: semantic.verified, paddingHorizontal: 10, paddingVertical: 4, borderRadius: borderRadius.full },
-    renewBubbleUrgent: { backgroundColor: semantic.critical },
-    renewBubbleText: { fontSize: 11, fontWeight: '600', color: '#fff' },
+    renewBubbleUrgent: { backgroundColor: semantic.criticalFill },
+    renewBubbleText: { fontSize: 11, fontWeight: '600', color: colors.onPrimary },
 
     // BIS legacy banner
     bisLegacyBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, backgroundColor: semantic.attentionBg, borderRadius: borderRadius.lg, padding: spacing.md, marginTop: spacing.sm, borderWidth: 1, borderColor: semantic.attentionBorder },
@@ -1319,8 +1379,8 @@ function buildStyles(colors, isDark) {
     expirationText: { fontSize: 12, fontWeight: '600' },
     expandedSection: { gap: spacing.xs },
     divider: { height: 1, backgroundColor: colors.glass.border, marginVertical: spacing.sm },
-    nextActionBox: { backgroundColor: 'rgba(59,130,246,0.08)', borderRadius: borderRadius.lg, padding: spacing.md, marginTop: spacing.sm },
-    nextActionLabel: { fontSize: 10, fontWeight: '600', color: '#3b82f6', letterSpacing: 1, marginBottom: 4 },
+    nextActionBox: { backgroundColor: withAlpha(colors.primary, 0.08), borderRadius: borderRadius.lg, padding: spacing.md, marginTop: spacing.sm },
+    nextActionLabel: { fontSize: 10, fontWeight: '600', color: colors.primary, letterSpacing: 1, marginBottom: 4 },
     nextActionText: { fontSize: 13, color: colors.text.primary, lineHeight: 18 },
     dobLinkBtn: { marginTop: spacing.sm },
     detectedText: { fontSize: 11, color: colors.text.subtle, marginTop: spacing.sm },
@@ -1340,7 +1400,7 @@ function buildStyles(colors, isDark) {
     toggle: { width: 48, height: 28, borderRadius: 14, backgroundColor: withAlpha('#ffffff', 0.1), justifyContent: 'center', paddingHorizontal: 3 },
     toggleOn: { backgroundColor: semantic.verifiedBg },
     toggleDot: { width: 22, height: 22, borderRadius: 11, backgroundColor: colors.text.muted },
-    toggleDotOn: { backgroundColor: '#4ade80', alignSelf: 'flex-end' },
+    toggleDotOn: { backgroundColor: semantic.verified, alignSelf: 'flex-end' },
     saveBtn: { marginTop: spacing.sm },
   });
 }

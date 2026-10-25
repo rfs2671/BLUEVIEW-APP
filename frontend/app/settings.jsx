@@ -53,11 +53,13 @@ import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { useToast, ToastHost } from '../src/components/Toast';
 import { useAuth, isCompanyAdmin, isAccountAdmin, isPlatformOperator } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
+import { useT } from '../src/i18n';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../src/utils/retentionCopy';
 import apiClient, { authAPI, versionAPI } from '../src/utils/api';
 import { buildVerdict } from '../src/utils/buildVerdict';
 import { spacing, borderRadius, typography, touchTarget } from '../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
+import SectionLabel from '../src/components/SectionLabel';
 import {
   insuranceExpiryState,
   formatInsuranceExpiryLong,
@@ -81,9 +83,9 @@ const INSURANCE_LABELS = {
 // Grey is 'blank' AND 'unreadable'; the card also prints which, because those
 // need different fixes and colour cannot say.
 const INSURANCE_STATE_COLOR = {
-  expired: semantic.critical,
-  soon: semantic.attention,
-  ok: semantic.verified,
+  get expired() { return semantic.critical; },
+  get soon() { return semantic.attention; },
+  get ok() { return semantic.verified; },
   unreadable: '#6b7280',
   blank: '#6b7280',
 };
@@ -124,9 +126,10 @@ const formatDate = (dateStr) => {
 export default function SettingsScreen() {
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, updateUser } = useAuth();
-  const { isDark, toggleTheme, colors } = useTheme();
+  const { isDark, toggleTheme, themeForced, colors } = useTheme();
   const datePalette = { error: colors.status.error, hint: colors.text.muted };
   const toast = useToast();
+  const tc = useT('compliance');
 
   // ── BUILD IDENTITY ──────────────────────────────────────────────────
   // `jsCommit` is a slot EAS fills at build time (app.json extra.jsCommit).
@@ -651,7 +654,7 @@ export default function SettingsScreen() {
           showsVerticalScrollIndicator={false}
         >
           {/* ── APPEARANCE ─────────────────────────────────────────────── */}
-          <Text style={s.sectionLabel}>APPEARANCE</Text>
+          <SectionLabel label="APPEARANCE" />
           <GlassCard style={s.card}>
             <View style={s.settingRow}>
               <View style={s.settingLeft}>
@@ -668,6 +671,7 @@ export default function SettingsScreen() {
               <Switch
                 value={isDark}
                 onValueChange={toggleTheme}
+                disabled={themeForced}
                 trackColor={{ false: colors.glass.border, true: colors.primary }}
                 thumbColor={colors.white}
               />
@@ -679,7 +683,7 @@ export default function SettingsScreen() {
               server answers 404 on the portal's routes regardless. */}
           {isPlatformOperator(user) ? (
             <>
-              <Text style={s.sectionLabel}>PLATFORM</Text>
+              <SectionLabel label="PLATFORM" />
               <Pressable
                 onPress={() => router.push('/owner')}
                 accessibilityRole="button"
@@ -704,7 +708,7 @@ export default function SettingsScreen() {
           ) : null}
 
           {/* ── NOTIFICATIONS ─────────────────────────────────────────── */}
-          <Text style={s.sectionLabel}>NOTIFICATIONS</Text>
+          <SectionLabel label="NOTIFICATIONS" />
           <Pressable
             onPress={() => router.push('/settings/notifications')}
             style={({ pressed }) => [
@@ -713,12 +717,12 @@ export default function SettingsScreen() {
           >
             <GlassCard style={s.card}>
               <View style={s.settingRow}>
-                <View style={s.settingLeft}>
+                <View style={[s.settingLeft, { flex: 1, minWidth: 0 }]}>
                   <Bell size={20} strokeWidth={1.5} color={colors.text.secondary} />
-                  <View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={s.settingTitle}>Notification Preferences</Text>
                     <Text style={s.settingSubtitle}>
-                      Tune which DOB compliance signals reach you and how
+                      {tc('notificationPrefsSubtitle')}
                     </Text>
                   </View>
                 </View>
@@ -728,7 +732,7 @@ export default function SettingsScreen() {
           </Pressable>
 
           {/* ── PERSONAL DETAILS ───────────────────────────────────────── */}
-          <Text style={s.sectionLabel}>PERSONAL DETAILS</Text>
+          <SectionLabel label="PERSONAL DETAILS" />
           <GlassCard style={s.card}>
             <View style={s.fieldGroup}>
               <View style={s.fieldIconRow}>
@@ -812,7 +816,7 @@ export default function SettingsScreen() {
           */}
           {isAdmin && !user?.company_id && (
             <>
-              <Text style={s.sectionLabel}>COMPANY</Text>
+              <SectionLabel label="COMPANY" />
               <GlassCard
                 style={[s.card, {
                   backgroundColor: semantic.attentionBg,
@@ -840,7 +844,7 @@ export default function SettingsScreen() {
 
           {isAdmin && (
             <>
-              <Text style={s.sectionLabel}>INSURANCE & LICENSE</Text>
+              <SectionLabel label="INSURANCE & LICENSE" />
 
               {insLoading ? (
                 <GlassCard style={s.card}>
@@ -1054,7 +1058,7 @@ export default function SettingsScreen() {
               admin turns their own off (or back on) here. */}
           {isAccountAdmin(user) && (user?.id || user?._id) ? (
             <>
-              <Text style={s.sectionLabel}>CHASE</Text>
+              <SectionLabel label="CHASE" />
               <GlassCard style={s.card}>
                 <ChaseEscalationToggle userRow={user}
                   onSaved={(on) => updateUser({ chase_escalation_dms: on })} />
@@ -1066,7 +1070,7 @@ export default function SettingsScreen() {
           {/* The admin-seat password route: not a full-access PM's. */}
           {isAccountAdmin(user) && (
             <>
-              <Text style={s.sectionLabel}>SECURITY</Text>
+              <SectionLabel label="SECURITY" />
               <GlassCard style={s.card}>
                 <View style={s.fieldGroup}>
                   <View style={s.fieldIconRow}>
@@ -1109,7 +1113,7 @@ export default function SettingsScreen() {
           {/* ── DOB PERMIT RENEWAL (admin only) ────────────────────────── */}
           {isAdmin && (
             <>
-              <Text style={s.sectionLabel}>DOB PERMIT RENEWAL</Text>
+              <SectionLabel label="DOB PERMIT RENEWAL" />
               <GlassCard style={s.card}>
                 <View style={s.fieldGroup}>
                   <View style={s.fieldIconRow}>
@@ -1193,12 +1197,12 @@ export default function SettingsScreen() {
           )}
 
           {/* ── SIGN OUT (only place logout lives now) ─────────────────── */}
-          <Text style={s.sectionLabel}>ACCOUNT</Text>
+          <SectionLabel label="ACCOUNT" />
           <GlassCard style={s.card}>
             <GlassButton
               title="Sign Out"
               onPress={handleLogout}
-              icon={<LogOut size={16} strokeWidth={1.5} color="#f87171" />}
+              icon={<LogOut size={16} strokeWidth={1.5} color={semantic.criticalText} />}
               style={s.signOutBtn}
             />
           </GlassCard>
@@ -1234,7 +1238,7 @@ export default function SettingsScreen() {
               control is presentation; the refusal is the rule. */}
           {!siteMode && user?.registration_source === 'self_registered' && (
             <>
-              <Text style={s.sectionLabel}>DANGER ZONE</Text>
+              <SectionLabel label="DANGER ZONE" />
               <GlassCard style={s.card}>
                 {deletionRequestedAt ? (
                   <>
@@ -1262,7 +1266,7 @@ export default function SettingsScreen() {
                     accessibilityLabel="Request account deletion"
                     style={s.delRow}
                   >
-                    <Trash2 size={16} strokeWidth={1.5} color="#f87171" />
+                    <Trash2 size={16} strokeWidth={1.5} color={semantic.criticalText} />
                     <Text style={s.delRowText}>Request account deletion</Text>
                   </Pressable>
                 )}
@@ -1378,7 +1382,7 @@ export default function SettingsScreen() {
               shrinking the display is a different decision from shrinking the
               clipboard.
               Not on a CP-facing compliance screen — settings only. */}
-          <Text style={s.sectionLabel}>BUILD</Text>
+          <SectionLabel label="BUILD" />
           <GlassCard style={s.card}>
             <BuildInfoRow
               label="Backend"
@@ -1442,7 +1446,7 @@ function buildStyles(colors) {
       flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
       minHeight: 56, paddingHorizontal: spacing.xs,
     },
-    delRowText:        { fontSize: 15, color: '#f87171', fontWeight: '500' },
+    delRowText:        { fontSize: 15, color: semantic.criticalText, fontWeight: '500' },
     delRequestedTitle: { fontSize: 15, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.xs },
     delSheetTitle:     { fontSize: 18, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.md },
     // The app's warning-block treatment, not a variant of it. Identical to

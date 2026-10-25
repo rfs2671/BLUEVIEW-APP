@@ -368,7 +368,10 @@ class TheWhatsAppDm(unittest.TestCase):
     def test_dm_scoping_follows_the_level(self):
         self.assertTrue(server._dm_is_admin(self.as_pm("full")))
         self.assertFalse(server._dm_is_admin(self.as_pm("assigned")))
-        self.assertEqual(server._DM_PM_ACTIONS, ("add_person", "add_sub", "set_punch_contact"))
+        # set_trade (the DM brain's "Arkon is framer"): a PM who may put a sub on
+        # their job may also correct its trade there.
+        self.assertEqual(server._DM_PM_ACTIONS,
+                         ("add_person", "add_sub", "set_punch_contact", "set_trade"))
 
 
 if __name__ == "__main__":

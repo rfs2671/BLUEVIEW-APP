@@ -437,7 +437,7 @@ export default function WhatsAppGroupsScreen() {
                   accessibilityLabel="Open the voice log"
                   style={({ pressed }) => [s.quietLink, pressed && { opacity: 0.7 }]}
                 >
-                  <Text style={s.quietLinkText}>Voice log — every voice note, what it said and produced</Text>
+                  <Text style={s.quietLinkText}>Voice & media log — every voice note and photo</Text>
                 </Pressable>
               ) : null}
 
@@ -655,8 +655,8 @@ function buildStyles(colors, isDark) {
       marginBottom: spacing.sm,
     },
     titleText: {
-      fontSize: 36,
-      fontWeight: '200',
+      fontSize: 30,
+      fontFamily: typography.display, fontWeight: '800',
       color: colors.text.primary,
       letterSpacing: -0.5,
     },
@@ -829,7 +829,7 @@ function buildStyles(colors, isDark) {
     },
     countdownText: {
       fontSize: 28,
-      fontWeight: '300',
+      fontFamily: typography.num, fontWeight: '600',
       color: colors.text.primary,
       letterSpacing: 2,
     },

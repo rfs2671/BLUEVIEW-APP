@@ -43,7 +43,9 @@ import { semantic } from '../../../src/styles/semanticColors';
 import apiClient from '../../../src/utils/api';
 import ManualRenewalPanel from '../../../src/components/permit-renewal/ManualRenewalPanel';
 import FilingHistorySection from '../../../src/components/permit-renewal/FilingHistorySection';
+import { chrome, withAlpha } from '../../../src/styles/semanticColors';
 
+import SheenView from '../../../src/components/SheenView';
 // ══════════════════════════════════════════════════════════════════════════════
 // INLINE API (mirrors permitRenewalAPI.js)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -152,40 +154,40 @@ const formatDate = (dateStr) => {
 const STATUS_CONFIG = {
   eligible: {
     label: 'Renewal Ready',
-    color: semantic.verified,
-    bg: semantic.verifiedBg,
+    get color() { return semantic.verified; },
+    get bg() { return semantic.verifiedBg; },
     icon: ShieldCheck,
     description: 'This permit is eligible for automated renewal. Tap "Prepare Renewal" to create a draft on DOB NOW.',
   },
   needs_insurance: {
     label: 'Insurance Required',
-    color: semantic.attention,
-    bg: semantic.attentionBg,
+    get color() { return semantic.attention; },
+    get bg() { return semantic.attentionBg; },
     icon: ShieldAlert,
     description: 'Enter your certificate of insurance dates in Settings to enable renewal eligibility.',
   },
   ineligible_insurance: {
     label: 'Insurance Update Required',
-    color: semantic.attention,
-    bg: semantic.attentionBg,
+    get color() { return semantic.attention; },
+    get bg() { return semantic.attentionBg; },
     icon: ShieldAlert,
     description: 'Insurance must be updated before renewal can proceed. See details below.',
   },
   ineligible_license: {
     label: 'License Issue',
-    color: semantic.critical,
-    textColor: semantic.criticalText,
-    bg: semantic.criticalBg,
+    get color() { return semantic.critical; },
+    get textColor() { return semantic.criticalText; },
+    get bg() { return semantic.criticalBg; },
     icon: XCircle,
     description: 'GC License issue prevents automated renewal.',
   },
-  draft_ready: {
+  get draft_ready() { return {
     label: 'Draft Ready',
-    color: '#3b82f6',
-    bg: '#3b82f615',
+    get color() { return chrome.brand; },
+    get bg() { return withAlpha(chrome.brand, 0.08); },
     icon: FileCheck,
     description: 'Renewal draft prepared on DOB NOW. Tap below to sign & pay on the DOB portal.',
-  },
+  }; },
   awaiting_gc: {
     label: 'Awaiting GC',
     color: '#8b5cf6',
@@ -195,16 +197,16 @@ const STATUS_CONFIG = {
   },
   completed: {
     label: 'Completed',
-    color: semantic.verified,
-    bg: semantic.verifiedBg,
+    get color() { return semantic.verified; },
+    get bg() { return semantic.verifiedBg; },
     icon: BadgeCheck,
     description: 'Permit renewed successfully.',
   },
   failed: {
     label: 'Failed',
-    color: semantic.critical,
-    textColor: semantic.criticalText,
-    bg: semantic.criticalBg,
+    get color() { return semantic.critical; },
+    get textColor() { return semantic.criticalText; },
+    get bg() { return semantic.criticalBg; },
     icon: XCircle,
     description: 'Renewal failed. Manual action may be required on DOB NOW.',
   },
@@ -233,20 +235,20 @@ const getStatusConfig = (status) =>
 const ACTION_BADGE_OVERRIDES = {
   manual_renewal_dob_now: {
     label: 'Manual Renewal',
-    color: semantic.attention,
-    bg: semantic.attentionBg,
+    get color() { return semantic.attention; },
+    get bg() { return semantic.attentionBg; },
     icon: AlertTriangle,
   },
   manual_renewal_lapsed: {
     label: 'Permit Lapsed',
-    color: semantic.attention,
-    bg: semantic.attentionBg,
+    get color() { return semantic.attention; },
+    get bg() { return semantic.attentionBg; },
     icon: AlertTriangle,
   },
   shed_renewal: {
     label: 'Shed Renewal',
-    color: semantic.attention,
-    bg: semantic.attentionBg,
+    get color() { return semantic.attention; },
+    get bg() { return semantic.attentionBg; },
     icon: AlertTriangle,
   },
 };
@@ -311,7 +313,7 @@ export default function PermitRenewalScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   // permitId is the optional dob_log id passed by deep-links from the
-  // DOB compliance tab's Prepare Renewal handler. When present, the
+  // Compliance tab's Prepare Renewal handler. When present, the
   // list page auto-expands the matching renewal card on landing so
   // the operator drops directly onto the right permit (vs. hunting
   // through a list of all the project's renewals). MR.1 polish.
@@ -772,7 +774,7 @@ export default function PermitRenewalScreen() {
               {(renewal.insurance_gl_expiry ||
                 renewal.insurance_wc_expiry ||
                 renewal.insurance_db_expiry) && (
-                <View style={s.insuranceBlock}>
+                <SheenView style={s.insuranceBlock}>
                   <Text style={s.insuranceTitle}>
                     Insurance Coverage
                   </Text>
@@ -806,7 +808,7 @@ export default function PermitRenewalScreen() {
                       </Text>
                     </View>
                   )}
-                </View>
+                </SheenView>
               )}
 
               {/* needs_insurance: soft-prompt CTA sending the admin to Settings */}
@@ -902,8 +904,8 @@ export default function PermitRenewalScreen() {
                         onPress={() => Linking.openURL('https://a810-dobnow.nyc.gov/publish/')}
                         style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 }}
                       >
-                        <ExternalLink size={14} color="#3b82f6" />
-                        <Text style={{ fontFamily: typography.medium, fontSize: 13, color: '#3b82f6' }}>
+                        <ExternalLink size={14} color={colors.primary} />
+                        <Text style={{ fontFamily: typography.medium, fontSize: 13, color: colors.primary }}>
                           Open DOB NOW
                         </Text>
                       </Pressable>
@@ -1385,17 +1387,17 @@ function buildStyles(colors, isDark) {
       borderColor: semantic.attentionBorder,
     },
     actionBlock: {
-      backgroundColor: '#3b82f610',
+      backgroundColor: withAlpha(colors.primary, 0.06),
       borderRadius: borderRadius.lg,
       padding: spacing.md,
       marginBottom: spacing.md,
       borderWidth: 1,
-      borderColor: '#3b82f630',
+      borderColor: withAlpha(colors.primary, 0.19),
     },
     actionTitle: {
       fontFamily: typography.semibold,
       fontSize: 13,
-      color: '#3b82f6',
+      color: colors.primary,
       marginBottom: spacing.sm,
       letterSpacing: 0.3,
     },
@@ -1407,7 +1409,7 @@ function buildStyles(colors, isDark) {
     actionStepNum: {
       fontFamily: typography.semibold,
       fontSize: 13,
-      color: '#3b82f6',
+      color: colors.primary,
       minWidth: 18,
     },
     actionStepText: {

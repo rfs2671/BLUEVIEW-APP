@@ -138,10 +138,10 @@ class EachNewKindPostsOnce(unittest.TestCase):
                 detected_at=NOON + timedelta(minutes=5)))
             _run(server._gc_alerts_tick(NOON + timedelta(minutes=10)))
             _run(server._gc_alerts_tick(NOON + timedelta(minutes=20)))
-        sends = _group_sends(c)
-        self.assertEqual(len(sends), 1)
-        self.assertIn("🟠 Main St\nDOB rescinded the stop-work order.", sends[0]["message"])
-        self.assertIn("Stop-work order #SWO3 · Oct 6, 2026 · RESCINDED", sends[0]["message"])
+        # AMENDED 2026-10-22 (operator ruling, lib/dob_alert_gate): an UPDATE
+        # never posts unless it issued a SWO or vacate order. A rescinded SWO
+        # is an update that lifted one: stored and shown, not posted.
+        self.assertEqual(_group_sends(c), [])
 
     def test_violation_status_change_only_when_dob_marks_it_action(self):
         db = _world(dob_logs=[_violation("7")])
@@ -157,9 +157,10 @@ class EachNewKindPostsOnce(unittest.TestCase):
             ]
             _run(server._gc_alerts_tick(NOON + timedelta(minutes=5)))
         texts = [s["message"] for s in _group_sends(c)]
-        changes = [t for t in texts if "status changed" in t]
-        self.assertEqual(len(changes), 1)
-        self.assertIn("Violation status changed: ACTIVE → HEARING.", changes[0])
+        # AMENDED 2026-10-22: a status change is an update, and an update never
+        # posts (unless it issued a SWO / vacate order) -- neither the
+        # CERTIFIED change (never posted) nor the Action HEARING one.
+        self.assertFalse(any("status changed" in t for t in texts))
         self.assertFalse(any("CERTIFIED" in t for t in texts))
 
     def test_permit_status_change(self):
@@ -174,10 +175,9 @@ class EachNewKindPostsOnce(unittest.TestCase):
                 status_changed_at=NOON + timedelta(minutes=1)))
             _run(server._gc_alerts_tick(NOON + timedelta(minutes=5)))
             _run(server._gc_alerts_tick(NOON + timedelta(minutes=9)))
-        sends = _group_sends(c)
-        self.assertEqual(len(sends), 1)
-        self.assertIn("Plumbing permit status changed: ISSUED → REVOKED.", sends[0]["message"])
-        self.assertIn("Permit #J40", sends[0]["message"])
+        # AMENDED 2026-10-22: a permit status change is an update; it is
+        # stored and shown in the app, not posted to the group.
+        self.assertEqual(_group_sends(c), [])
 
     def test_dot_summons(self):
         self._posts_once([_dot("D1")], collection="dot_logs", expect=(
@@ -330,11 +330,11 @@ class DotWaitsForTheFirstSync(unittest.TestCase):
                                           ["sources"]["dot_oath"]["first_synced_at"]))
 
 
-def _raw_dob_violation(n):
+def _raw_dob_violation(n, issued="2026-09-15T00:00:00.000"):
     """A DOB NOW Safety violation as _query_dob_apis emits it."""
     return {"_id_field": "violation_number", "_record_type": "violation",
             "_dataset": "855j-jady", "violation_number": f"NV{n}",
-            "violation_issue_date": "2026-09-15T00:00:00.000",
+            "violation_issue_date": issued,
             "violation_status": "Active", "violation_type": "Failure to maintain",
             "bin": "3012345"}
 
@@ -376,7 +376,8 @@ class DobWaitsForTheFirstSync(unittest.TestCase):
             self.assertEqual(_group_sends(c), [])
             self.assertEqual(r["posted"], 0)
             # The gate opens: a violation found by a LATER sync posts.
-            self._sync(history + [_raw_dob_violation(99)])
+            # Issued the day it is found: the 2-day new-record rule (2026-10-22).
+            self._sync(history + [_raw_dob_violation(99, issued="2026-10-07T00:00:00.000")])
             _run(server._gc_alerts_tick(NOON + timedelta(minutes=45)))
         texts = [s["message"] for s in _group_sends(c)]
         self.assertEqual(len(texts), 1, texts)

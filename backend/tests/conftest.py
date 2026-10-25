@@ -90,7 +90,7 @@ def _reset_server_ip_limiters():
     if server is None:
         return
     for name in ("checkin_rate_limiter", "auth_rate_limiter",
-                 "gate_failure_rate_limiter"):
+                 "gate_failure_rate_limiter", "signed_download_refusal_limiter"):
         limiter = getattr(server, name, None)
         reset = getattr(limiter, "reset", None)
         if callable(reset):
@@ -108,4 +108,15 @@ def _reset_shared_state():
     rate_limits.reset_counter()
     _reset_server_ip_limiters()
     feature_flags.cache_invalidate(None)
+    # The morning brief's 3 s between one person's messages: no wall-clock
+    # waits in tests (a test that checks the pacing sets it back itself).
+    server = sys.modules.get("server")
+    gap = getattr(server, "BRIEF_SEND_GAP_SECONDS", None)
+    if gap is not None:
+        server.BRIEF_SEND_GAP_SECONDS = 0
+        # Per-person pacing state: each test (its own event loop) starts clean.
+        server._BRIEF_LAST_SEND.clear()
+        server._BRIEF_SEND_LOCKS.clear()
     yield
+    if gap is not None:
+        server.BRIEF_SEND_GAP_SECONDS = gap

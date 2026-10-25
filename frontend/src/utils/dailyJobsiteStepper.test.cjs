@@ -506,9 +506,9 @@ const cardShadow = stylesBody.match(/\n\s{4}cardShadow:\s*\{([\s\S]*?)\n\s{4}\},
 ok(cardShadow && /\.\.\.outdoorShadow/.test(cardShadow[1]),
   'the shadow sits on the OUTER view, away from the gradient\'s overflow clip');
 
-// 5. PADDING — generous, matching GlassCard's spacing.xl.
-ok(cardFill && /padding: spacing\.xl/.test(cardFill[1]),
-  'cards pad by spacing.xl (32), the same as GlassCard');
+// 5. PADDING - compact to the concept, matching GlassCard's spacing.md.
+ok(cardFill && /padding: spacing\.md/.test(cardFill[1]),
+  'cards pad by spacing.md (16), the same as GlassCard');
 
 // 6. CONTROLS — pills, and a circular back button.
 const headerBack = stylesBody.match(/\n\s{4}headerBack:\s*\{([\s\S]*?)\n\s{4}\},/);
