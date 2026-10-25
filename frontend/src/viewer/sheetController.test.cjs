@@ -66,9 +66,12 @@ function harness(over = {}) {
     ok(log.previews.length >= 1 && log.previews.includes(1), 'the page preview is fetched');
     ok(log.indexes.includes(1), 'the visible page index is fetched in the background');
     const f = c.frame();
-    ok(f.previews.length >= 1 && f.tiles.length === log.tiles.length, 'frame has the preview and every level 0 tile');
+    ok(f.tiles.length === log.tiles.length && f.complete === true && f.previews.length === 0, 'with every level 0 tile in, the frame is complete and the preview underneath is not painted');
     ok(changes > 0, 'listeners hear about arrivals');
     ok(!c.loading, 'nothing left loading');
+    c.zoomAt(8, 500, 350);
+    const g = c.frame();
+    ok(g.complete === false && g.previews.length >= 1, 'while deeper tiles are still on their way the preview stays underneath');
     c.destroy();
   }
   console.log('zoom, fallbacks');
@@ -227,6 +230,23 @@ function harness(over = {}) {
     ok(c.refreshManifest(manifest) === false, 'the same manifest again changes nothing');
     ok(c.refreshManifest({ ...manifest, build: 'OTHER' }) === false, 'a manifest of another build is ignored');
     ok(Math.abs(c.camera.zoom - camBefore.zoom) < 1e-9, 'the camera is not moved by a refresh');
+    c.destroy();
+  }
+  console.log('keepPortalFramed does not recurse');
+  {
+    const PF = load(path.join(__dirname, 'portalFrame.js'));
+    const { c } = harness();
+    c.setViewport(300, 200); await settle();
+    let frames = 0; const orig = c.frameBox.bind(c);
+    c.frameBox = (...a) => { frames += 1; if (frames > 50) throw new Error('runaway'); return orig(...a); };
+    const off = PF.keepPortalFramed(c, { page: 2, box: [0.4, 0.4, 0.7, 0.7] });
+    ok(frames === 1, 'framed once when attached');
+    c.setViewport(520, 380);
+    ok(frames === 2, `a resize frames once more, not hundreds of times (${frames})`);
+    c.setViewport(520, 380); c.panBy(5, 5);
+    ok(frames === 2, 'moving the camera does not reframe');
+    off(); c.setViewport(300, 200);
+    ok(frames === 2, 'detached: nothing more');
     c.destroy();
   }
   console.log('destroy');

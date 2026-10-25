@@ -21,9 +21,32 @@ function getSkia() {
   return skia;
 }
 
+let webview;                            // undefined = not tried, true/false after
+function hasWebView() {
+  if (webview !== undefined) return webview;
+  try {
+    // eslint-disable-next-line global-require
+    webview = Boolean(require('react-native-webview').WebView);
+  } catch (_e) {
+    webview = false;
+  }
+  return webview;
+}
+
 export const platform = {
   name: 'native',
-  available() { return getSkia() !== null; },
+  /**
+   * How tiles are drawn here: 'skia' (the native GPU renderer, in builds that include it) or
+   * 'webview' (the same engine hosted in a WebView page, which an OTA update can deliver to a
+   * build without Skia). null when neither works, and the PDF viewer is kept.
+   * EXPO_PUBLIC_SHEET_TILES_RENDERER=webview forces the WebView even where Skia exists.
+   */
+  mode() {
+    if (process.env.EXPO_PUBLIC_SHEET_TILES_RENDERER === 'webview') return hasWebView() ? 'webview' : null;
+    if (getSkia() !== null) return 'skia';
+    return hasWebView() ? 'webview' : null;
+  },
+  available() { return platform.mode() !== null; },
   async decode(bytes) {
     const sk = getSkia();
     if (!sk) throw new Error('Skia is not available');
