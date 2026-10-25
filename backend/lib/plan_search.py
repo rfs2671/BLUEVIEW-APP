@@ -1698,8 +1698,10 @@ def _continues(book: GlyphBook, k: str) -> Optional[Dict[str, List[str]]]:
 
 #: The link a stair writes between a duplex's two sheets
 #: (plan_glyph_pass.seed_from_stairs): the lower unit's stair "reaches" the
-#: upper plan, and the upper unit was "seeded from" the lower one.
-_LEVEL_LINK = re.compile(r"\b(?:reaches|seeded from) ([A-Z]-\d{3}\.\d{2})\b")
+#: upper plan, and the upper unit was "seeded from" the lower one - or, where
+#: the upper plan names its own units, was "linked from" it (ruling
+#: 2026-10-24, plan_glyph_pass.link_refusal).
+_LEVEL_LINK = re.compile(r"\b(?:reaches|seeded from|linked from) ([A-Z]-\d{3}\.\d{2})\b")
 
 
 def _apartment_floors(book: GlyphBook, u: str) -> Optional[List[str]]:
