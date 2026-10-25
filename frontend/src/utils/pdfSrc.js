@@ -89,6 +89,62 @@ export function authorizedPdfUrl(rawUrl, { apiBase, token } = {}) {
   return `${abs}${abs.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 }
 
+
+// ── The Web viewer: a document the iframe can load WITHOUT a token in its url ─
+
+/**
+ * What a Web `<iframe src>` may be given for `rawUrl`.
+ *
+ *   our own proxy   — the bytes are fetched with `Authorization: Bearer` (the
+ *                     header an <iframe> cannot send) into a Blob, and the
+ *                     iframe is pointed at a `blob:` url that lives only in this
+ *                     tab. The JWT is never in a url, so it is never in an access
+ *                     log, a referrer, or the browser history.
+ *   anything else   — a presigned R2 / Dropbox url needs no token and is
+ *                     returned bare, exactly as before.
+ *
+ * Returns { src, revoke, kind } (`kind`: 'blob' | 'remote'), or null for an empty
+ * url. Throws a `PdfFetchError` (with `.status`) when the proxy refuses or fails,
+ * so the caller shows its error state; there is no query-token fallback.
+ *
+ * `deps` exist so this runs in a test: fetchImpl, createObjectURL, revokeObjectURL,
+ * BlobImpl. They default to the browser's.
+ */
+export class PdfFetchError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = 'PdfFetchError';
+    this.status = status || 0;
+  }
+}
+
+export async function resolvePdfForIframe(rawUrl, { apiBase, token, signal, ...deps } = {}) {
+  const abs = toAbsolutePdfUrl(rawUrl, apiBase);
+  if (!abs) return null;
+  if (!isFirstPartyProxyUrl(abs, apiBase)) {
+    return { src: abs, revoke: () => {}, kind: 'remote' };
+  }
+  const fetchImpl = deps.fetchImpl || (typeof fetch === 'function' ? fetch : null);
+  const create = deps.createObjectURL || (typeof URL !== 'undefined' ? (b) => URL.createObjectURL(b) : null);
+  const revokeFn = deps.revokeObjectURL || (typeof URL !== 'undefined' ? (u) => URL.revokeObjectURL(u) : null);
+  const BlobCtor = deps.BlobImpl || (typeof Blob !== 'undefined' ? Blob : null);
+  if (!fetchImpl || !create || !BlobCtor) throw new PdfFetchError('no fetch/Blob support', 0);
+  const res = await fetchImpl(abs, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    signal,
+  });
+  if (!res || !res.ok) throw new PdfFetchError(`document request failed (${res ? res.status : 'no response'})`, res && res.status);
+  let blob = await res.blob();
+  if (!blob || blob.type !== 'application/pdf') blob = new BlobCtor([blob], { type: 'application/pdf' });
+  const src = create(blob);
+  let revoked = false;
+  return {
+    src,
+    kind: 'blob',
+    revoke: () => { if (!revoked) { revoked = true; try { revokeFn && revokeFn(src); } catch (_e) { /* gone already */ } } },
+  };
+}
+
 // ── How a native platform gets its bytes ───────────────────────────────────
 export const PDF_SOURCE_NONE = 'none';
 export const PDF_SOURCE_LOCAL = 'local';

@@ -73,6 +73,7 @@ from lib.report import view as report_view
 # WhatsApp tenant boundary + webhook authentication. The rules are in the
 # module; server.py only supplies the database reads they need.
 from lib import wa_security  # noqa: E402
+from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
@@ -29036,6 +29037,11 @@ async def upload_project_file(project_id: str, request: Request, file: UploadFil
         except Exception as q_err:
             # The upload has succeeded; a queue write must not fail it.
             logger.error(f"plan index enqueue failed for {filename}: {q_err!r}")
+    if filename.lower().endswith(".pdf"):
+        try:
+            await _enqueue_sheet_tiles(project_id, company_id, file_record, source="upload")
+        except Exception as q_err:
+            logger.error(f"sheet tiles enqueue failed for {filename}: {q_err!r}")
 
     proxy_url = f"/api/projects/{project_id}/files/{file_record['_id']}/content"
     await _log_upload_attempt({
@@ -29925,6 +29931,13 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
     pages_deleted += await _r2_delete_prefix(
         _r2_client, R2_BUCKET_NAME, f"plans/{project_id}/{file_id}/",
     )
+
+    try:
+        _SHEET_DECISIONS.forget_file(str(file_id))
+        pages_deleted += await sheet_pipeline.purge(db, _sheet_delete_keys, str(file_id))
+        await db[sheet_pipeline.JOBS].delete_one({"_id": str(file_id)})
+    except Exception as e:
+        logger.error(f"[file-delete] sheet tiles of file_id={file_id} not fully removed: {e!r}")
 
     delete_result = await db.project_files.delete_one({"_id": rec_oid})
 
@@ -64074,6 +64087,238 @@ async def _plan_index_worker() -> None:
             await asyncio.sleep(PLAN_INDEX_IDLE_SECONDS)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# SHEET TILES: the deep-zoom viewer's backend (lib/sheet_pipeline.py)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# A PDF is compiled once into a WebP tile pyramid and a per-page word/callout
+# index; the viewer then draws tiles and never parses a PDF. Nothing here touches
+# the plan-index pipeline: it has its own queue (`sheet_tile_jobs`) and worker.
+#
+# AUTH IS THE HEADER AND ONLY THE HEADER. These routes are for the viewer's
+# assets, which it fetches with `Authorization: Bearer`; a JWT in a URL ends up
+# in logs, history and referers. `get_current_user_header_only` refuses a
+# request that carries only `?token=`.
+
+SHEET_TILES_OFF = os.environ.get("SHEET_TILES_OFF", "").strip().lower() in ("1", "true", "yes")
+SHEET_TILE_IDLE_SECONDS = 5
+_SHEET_TILE_WORKER_TASK = None
+
+
+async def get_current_user_header_only(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    response: Response = None,
+):
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return await get_current_user(request, credentials, None, response)
+
+
+async def _sheet_put_object(key: str, data: bytes, content_type: str, content_encoding: Optional[str]) -> None:
+    if not _r2_client or not R2_BUCKET_NAME:
+        raise RuntimeError("R2 is not configured")
+    kwargs = {"Bucket": R2_BUCKET_NAME, "Key": key, "Body": data, "ContentType": content_type}
+    if content_encoding:
+        kwargs["ContentEncoding"] = content_encoding
+    await asyncio.to_thread(_r2_client.put_object, **kwargs)
+
+
+async def _sheet_fetch_pdf(file_rec: dict, dest: str) -> None:
+    """Download the source PDF to `dest` on disk (never held whole in memory)."""
+    if not _r2_client or not R2_BUCKET_NAME:
+        raise RuntimeError("R2 is not configured")
+    await asyncio.to_thread(_r2_client.download_file, R2_BUCKET_NAME, file_rec["r2_key"], dest)
+
+
+async def _sheet_fetch_object(key: str) -> Optional[bytes]:
+    data, _why = await asyncio.to_thread(_r2_fetch, key)
+    return data
+
+
+async def _sheet_delete_keys(keys: list) -> int:
+    return await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, keys)
+
+
+def _sheet_ctx() -> "sheet_pipeline.Ctx":
+    return sheet_pipeline.Ctx(db=db, put_object=_sheet_put_object, fetch_pdf=_sheet_fetch_pdf,
+                              delete_keys=_sheet_delete_keys, logger=logger)
+
+
+async def _enqueue_sheet_tiles(project_id: str, company_id: str, file_record: dict, *,
+                               source: str, force: bool = False) -> str:
+    if SHEET_TILES_OFF or not _r2_client:
+        return "off"
+    return await sheet_pipeline.enqueue(db, project_id, company_id, file_record, source=source,
+                                        to_query_id=to_query_id, skip=is_generated_report, force=force)
+
+
+async def _sheet_tile_worker() -> None:
+    import socket as _socket
+    import uuid as _uuid
+    worker = f"{_socket.gethostname()}:{os.getpid()}:{_uuid.uuid4().hex[:6]}"
+    logger.warning(f"Sheet tile worker started ({worker})")
+    while True:
+        try:
+            if SHEET_TILES_OFF or not _r2_client:
+                await asyncio.sleep(60)
+                continue
+            job = await sheet_pipeline.claim(db, worker)
+            if not job:
+                await asyncio.sleep(SHEET_TILE_IDLE_SECONDS)
+                continue
+            logger.info(f"Sheet tiles: claimed {job.get('file_name')} (attempt {job.get('attempts')})")
+            status = await sheet_pipeline.run_job(_sheet_ctx(), job, worker, to_query_id)
+            logger.info(f"Sheet tiles: {job.get('file_name')} -> {status}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Sheet tile worker error: {e!r}")
+            await asyncio.sleep(SHEET_TILE_IDLE_SECONDS)
+
+
+async def _sheet_tiles_sweep_job() -> None:
+    """Queue PDFs that have no tiles (uploaded before this existed, or whose
+    enqueue was lost). A few per run, so a backlog drains instead of flooding."""
+    if SHEET_TILES_OFF or not _r2_client:
+        return
+    try:
+        rows = await sheet_pipeline.files_needing_tiles(db, limit=40, skip=is_generated_report, to_query_id=to_query_id)
+        for r in rows:
+            await _enqueue_sheet_tiles(str(r["project_id"]), str(r.get("company_id") or ""), r, source="sweep")
+    except Exception as e:
+        logger.error(f"[sheet-tiles] sweep failed: {type(e).__name__}: {e}")
+
+
+_SHEET_DECISIONS = sheet_serve.DecisionCache()
+_SHEET_BYTES = sheet_serve.ByteLru()
+
+
+async def _sheet_file_or_403(project_id: str, file_id: str, current_user: dict, *, remember: bool = False) -> dict:
+    """The same gate as `stream_project_file`, with the header-only user.
+
+    `remember=True` (tile and preview reads only) reuses a passing decision for a few
+    seconds per (user, project, file): a deep zoom is dozens of requests and each would
+    otherwise cost three database reads. Nothing that writes, and not the manifest or
+    the index, ever uses it."""
+    key = (str(current_user.get("id") or current_user.get("_id") or ""), project_id, file_id)
+    if remember and key[0]:
+        hit = _SHEET_DECISIONS.get(key)
+        if hit is not None:
+            return hit
+    rec = await _sheet_file_checked(project_id, file_id, current_user)
+    if remember and key[0]:
+        _SHEET_DECISIONS.put(key, rec)
+    return rec
+
+
+async def _sheet_file_checked(project_id: str, file_id: str, current_user: dict) -> dict:
+    await _assert_project_access(project_id, current_user)
+    try:
+        rec = await db.project_files.find_one({"_id": ObjectId(file_id), "project_id": project_id})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    if not rec or rec.get("is_deleted"):
+        raise HTTPException(status_code=404, detail="File not found")
+    _same_company_or_403(rec, current_user)
+    if _is_site_device(current_user):
+        _project = await db.projects.find_one({"_id": to_query_id(project_id)})
+        if not _site_device_may_retrieve(_project or {}, current_user, rec.get("dropbox_path") or ""):
+            raise HTTPException(status_code=403, detail="Access denied to this file")
+    return rec
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets")
+async def get_sheet_manifest(project_id: str, file_id: str, current_user=Depends(get_current_user_header_only)):
+    """The viewer's manifest. A PDF with no tiles yet is queued here (so opening
+    a drawing starts its compile) and answers status "queued"; the client keeps
+    the PDF viewer until the status is "ready"."""
+    rec = await _sheet_file_or_403(project_id, file_id, current_user)
+    if SHEET_TILES_OFF:
+        return {"status": "off", "pages": []}
+    if (rec.get("tiles") or {}).get("status") in (None, "failed") or \
+            (rec.get("tiles") or {}).get("build") != sheet_pipeline.build_id(rec):
+        outcome = await _enqueue_sheet_tiles(project_id, str(rec.get("company_id") or ""), rec, source="open")
+        if outcome in ("queued", "already"):
+            rec = await db.project_files.find_one({"_id": rec["_id"]}) or rec
+        elif outcome == "skipped":
+            return {"status": "skipped", "pages": [], "build": None}
+    return await sheet_pipeline.manifest_for(db, project_id, rec)
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets/{page}/index")
+async def get_sheet_index(project_id: str, file_id: str, page: int, b: str,
+                          current_user=Depends(get_current_user_header_only)):
+    rec = await _sheet_file_or_403(project_id, file_id, current_user)
+    if (rec.get("tiles") or {}).get("build") != b:
+        raise HTTPException(status_code=404, detail="Stale build")
+    index = await sheet_pipeline.index_for(db, _sheet_fetch_object, project_id, rec, page)
+    if index is None:
+        raise HTTPException(status_code=404, detail="No index for this page")
+    return JSONResponse(index, headers={"Cache-Control": "private, max-age=300"})
+
+
+async def _sheet_image(request: Request, project_id: str, file_id: str, page: int, b: str, key_fn, etag_parts,
+                       current_user) -> Response:
+    """Serve one immutable tile or preview.
+
+    NOT A PROXY ON EVERY REQUEST. The object is named by its build, so it never
+    changes: the client keeps it for a year (immutable) and revalidates with
+    If-None-Match, which is answered 304 here, after the access check and before R2 is
+    touched. A miss is served from a byte-bounded in-process LRU before R2 is asked.
+    (A redirect to a presigned R2 URL was considered and not used: it needs R2 CORS for
+    the web viewer and sends the app off our auth for the one request that matters.)"""
+    rec = await _sheet_file_or_403(project_id, file_id, current_user, remember=True)
+    tiles = rec.get("tiles") or {}
+    if tiles.get("build") != b or tiles.get("status") not in ("ready", "complete"):
+        raise HTTPException(status_code=404, detail="Stale build")
+    headers = {"Cache-Control": sheet_serve.IMMUTABLE}
+    etag = sheet_serve.etag_for(b, file_id, *etag_parts)
+    headers["ETag"] = etag
+    if sheet_serve.matches_etag(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    key = key_fn(project_id, file_id, b)
+    data = _SHEET_BYTES.get(key)
+    if data is None:
+        data = await _sheet_fetch_object(key)
+        if not data:
+            raise HTTPException(status_code=404, detail="No such tile")
+        _SHEET_BYTES.put(key, data)
+    return Response(content=data, media_type="image/webp", headers=headers)
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets/{page}/tiles/{z}/{x}/{y}")
+async def get_sheet_tile(request: Request, project_id: str, file_id: str, page: int, z: int, x: int, y: int, b: str,
+                         current_user=Depends(get_current_user_header_only)):
+    if not (0 <= z <= sheet_tiles.MAX_Z and x >= 0 and y >= 0 and page >= 1):
+        raise HTTPException(status_code=404, detail="No such tile")
+    return await _sheet_image(request, project_id, file_id, page, b,
+                              lambda p, f, bb: sheet_pipeline.tile_key(p, f, bb, page, z, x, y),
+                              (page, z, x, y), current_user)
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/sheets/{page}/preview")
+async def get_sheet_preview(request: Request, project_id: str, file_id: str, page: int, b: str,
+                            current_user=Depends(get_current_user_header_only)):
+    if page < 1:
+        raise HTTPException(status_code=404, detail="No such page")
+    return await _sheet_image(request, project_id, file_id, page, b,
+                              lambda p, f, bb: sheet_pipeline.preview_key(p, f, bb, page),
+                              (page, "preview"), current_user)
+
+
+@api_router.post("/projects/{project_id}/files/{file_id}/sheets/compile")
+async def compile_sheet_tiles(project_id: str, file_id: str, force: bool = False,
+                              current_user=Depends(get_current_user_header_only)):
+    """Queue (or, with force, rebuild) a file's tiles. Owners and admins."""
+    if current_user.get("role") not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only company owners or admins can rebuild tiles")
+    await _assert_project_access(project_id, current_user)
+    rec = await _sheet_file_or_403(project_id, file_id, current_user)
+    outcome = await _enqueue_sheet_tiles(project_id, str(rec.get("company_id") or ""), rec, source="manual", force=force)
+    return {"outcome": outcome}
+
+
 async def _index_pdf_file(project_id: str, company_id: str, file_record: dict,
                           job: Optional[dict] = None) -> dict:
     """Download a PDF from R2 and index each page into document_page_index.
@@ -80705,6 +80950,9 @@ async def startup_event():
     global _PLAN_INDEX_WORKER_TASK
     _PLAN_INDEX_WORKER_TASK = asyncio.create_task(_plan_index_worker())
 
+    global _SHEET_TILE_WORKER_TASK
+    _SHEET_TILE_WORKER_TASK = asyncio.create_task(_sheet_tile_worker())
+
     # ── EVERY UNIQUE BUILD GOES THROUGH THE RESILIENT HELPER ───────────────
     #
     # These five were BARE AWAITS in an @app.on_event("startup") handler. A
@@ -82564,6 +82812,17 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
+    # Queue drawings that have no tiles yet (40 per run). Queued at the lowest priority: a drawing someone
+    # opens, or a fresh upload, is compiled first.
+    scheduler.add_job(
+        _sheet_tiles_sweep_job,
+        IntervalTrigger(minutes=10),
+        id='sheet_tiles_sweep',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=6),
     )
     # One log line per group for last week: items, filter pass %, tokens, cost.
     scheduler.add_job(
