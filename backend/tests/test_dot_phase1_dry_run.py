@@ -11,7 +11,10 @@ the embargo email + group post (Nov 1), a permit expiry DIGEST (Tuesday 07:00:
 two permits, 2 and 7 days left -- the true days), the 3-day reminder due Saturday
 Oct 31 HELD over Shabbos and delivered that night, a hearing reminder (7-day),
 the pending block-match email, a default email, and -- only with dot_phase1 on
--- the new-summons email. A test company's project gets
+-- the new-summons email. Production's 07:00 run has already gone on Monday
+(its system_config markers are in the copy), so the first sync's LATE check
+emails at once a permit and a hearing 1 day away (SYNTHETIC), each listed as
+"late item (<=1 day), sent at once", and neither is in Tuesday's digest. A test company's project gets
 nothing and is listed apart. SYNTHETIC dates are recorded records with their
 dates moved into the window.
 """
@@ -105,7 +108,17 @@ def seeded_source():
     # Saturday Oct 31 (held over Shabbos).
     saturday = {**expiring, "_id": "d5", "number": "B022026215B32", "raw_id": "dotpermit:B022026215B32",
                 "expiration_date": "2026-11-03T23:59:59.000", "work_end": "2026-11-03T23:59:59.000"}
-    db.dot_logs.docs += [embargo, expiring, saturday, hearing, to_default,
+    # SYNTHETIC: a permit ending tomorrow and a hearing tomorrow, after today's
+    # 07:00 digest run went in production (its markers, read with the copy).
+    late_permit = {**expiring, "_id": "d6", "number": "B022026215B33", "raw_id": "dotpermit:B022026215B33",
+                   "expiration_date": "2026-10-27T23:59:59.000", "work_end": "2026-10-27T23:59:59.000"}
+    late_hearing = {**dot_sync.to_log("dot_violation", summons("0704345548", ticket_number="0704399003",
+                                                               hearing_date=_iso(date(2026, 10, 27)))),
+                    "_id": "d7", "project_id": "p1", "company_id": "c1",
+                    "match": {"how": "address", "state": "confirmed"}, "detected_at": long_ago}
+    db.system_config.docs += [{"_id": f"m_{k}", "key": f"dot:-:{k}_run:-:-:2026-10-26", "value": True}
+                              for k in ("expiry", "hearing")]
+    db.dot_logs.docs += [embargo, expiring, saturday, late_permit, hearing, late_hearing, to_default,
                          {**embargo, "_id": "dt", "project_id": "pt", "company_id": "ct"}]
     db.notification_preferences.docs.append(
         {"_id": "np1", "user_id": None, "scope": "project", "project_id": "p1", "company_id": "c1",
@@ -209,6 +222,24 @@ class TheSeededDryRun(unittest.TestCase):
         at = [e["at"] for e in self.guard.blocked if e["method"] == "send_notification"
               and (e.get("kwargs") or {}).get("permit_renewal_id") == sat[0]["ledger_id"]]
         self.assertTrue(at and all(a.astimezone(D.ny_tz()).hour >= 18 for a in at), at)   # after havdalah
+
+    def test_a_late_item_is_a_row_sent_at_once(self):
+        late = sorted((r["kind"], r["record"], r["day"]) for r in self.rows
+                      if r["run"].startswith("flags") and r["why"].startswith(D.LATE_REASON))
+        self.assertEqual(late, [("hearing reminder", "0704399003", "2026-10-26"),
+                                ("permit expiry", "B022026215B33", "2026-10-26")], late)
+        r = next(r for r in self.rows if r["record"] == "B022026215B33" and r["run"].startswith("flags"))
+        self.assertEqual(r["why"], "late item (<=1 day), sent at once: B022026215B33 1 day(s) to work end 2026-10-27")
+        self.assertEqual(r["ledger_id"], "dot:p1:expiry_late:B022026215B33:-:2026-10-26")
+        again = [x for x in self.rows if "B022026215B33" in x["record"] and x["run"].startswith("flags")
+                 and x["channel"] == "email"]
+        self.assertEqual(len(again), 1, again)          # not in a later sync, not in Tuesday's digest
+
+    def test_the_sync_runs_every_two_hours(self):
+        at = [a for a, jobs in D.slots(START, 1, 2) if "sync" in jobs]
+        self.assertEqual(len(at), 12)
+        self.assertEqual(at[0], START + timedelta(hours=2))
+        self.assertTrue(any(n == "expiry_late" for n, _r in self.got["runs"][0]["reports"]))
 
     def test_the_window_is_printed(self):
         self.assertIn("window: Mon 2026-10-26 09:00 -> Mon 2026-11-02 08:00 New York (7 days)", self.got["text"])

@@ -42,9 +42,14 @@ HOW. The REAL code paths, not a re-implementation:
   4. The real `_dot_sync_tick` runs once, then the stipulation and NOV-link
      reads, then a clock steps through the window (America/New_York),
      running each job at its scheduled time: 07:00 embargo + permit expiry +
-     hearings, the summons record alerts after the sync and at 09:00, and the
-     GC group alerts (plus the Shabbos / Yom Tov queue) hourly 07:00-21:00 --
-     their own send windows and quiet hours still apply.
+     hearings; every DOT_SYNC_HOURS (2 h) from the window's start, the DOT sync
+     job as production runs it (_dot_sync_job: the sync, the summons record
+     alerts, then the LATE checks -- a permit or hearing <= 1 day away that
+     missed today's digest is emailed at once, listed as "late item (<=1 day),
+     sent at once"); and the GC group alerts (plus the Shabbos / Yom Tov queue)
+     hourly 07:00-21:00 -- their own send windows and quiet hours still apply.
+     A query a later sync repeats with only its date window moved is answered
+     from the first read: the run cannot see future DOT data.
   5. Twice: with feature_flags as they are in production, and with
      dot_phase1 forced ON for every company (what turning it on would add).
 
@@ -72,6 +77,7 @@ import copy
 import csv
 import json
 import os
+import re
 import sys
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -891,24 +897,32 @@ def ny_tz():
     return NY
 
 
-def slots(start: datetime, days: int = 7):
-    """(when, [jobs]) in (start, start + days], New York wall times."""
+def slots(start: datetime, days: int = 7, sync_hours: int = 2):
+    """(when, [jobs]) in (start, start + days], New York wall times: the GC
+    alerts hourly 07:00-21:00, the daily 07:00 run, and the DOT sync job every
+    `sync_hours` from `start` (an IntervalTrigger, as production's
+    DOT_SYNC_HOURS). At one instant: daily_07, then sync, then gc."""
     tz = ny_tz()
     first = start.astimezone(tz).date()
-    out = []
+    end = start + timedelta(days=days)
+    events: Dict[datetime, List[str]] = {}
     for i in range(days + 1):
         d = first + timedelta(days=i)
         for hh in range(7, 22):
             at = datetime.combine(d, time(hh, 0), tz).astimezone(timezone.utc)
-            if not (start < at <= start + timedelta(days=days)):
+            if not (start < at <= end):
                 continue
-            jobs = ["gc"]
-            if hh == 7:
-                jobs = ["daily_07"] + jobs
-            if hh == 9:
-                jobs = ["record"] + jobs
-            out.append((at, jobs))
-    return out
+            events[at] = (["daily_07"] if hh == 7 else []) + ["gc"]
+    k = 1
+    while start + timedelta(hours=k * sync_hours) <= end:
+        at = start + timedelta(hours=k * sync_hours)
+        jobs = events.setdefault(at, [])
+        jobs.insert(1 if "daily_07" in jobs else 0, "sync")
+        k += 1
+    return sorted(events.items())
+
+
+_DATE_LITERAL = re.compile(r"'\d{4}-\d{2}-\d{2}(?:T[0-9:.]+)?'")
 
 
 def cached(fetch):
@@ -916,7 +930,10 @@ def cached(fetch):
     stats = {"requests": 0, "failed": 0, "cached": 0}
 
     async def run(dataset, params):
-        key = dataset + json.dumps(params, sort_keys=True)
+        # The DOT queries carry a date window ("issued since <24 months ago>")
+        # that moves with the simulated day; the answer cannot (the run reads
+        # today's data), so the key leaves the dates out.
+        key = dataset + _DATE_LITERAL.sub("'<date>'", json.dumps(params, sort_keys=True))
         if key in cache:
             stats["cached"] += 1
             return copy.deepcopy(cache[key])
@@ -929,6 +946,9 @@ def cached(fetch):
     run.stats = stats
     return run
 
+
+#: The row reason for what the post-sync late check sent (_dot_sync_job).
+LATE_REASON = "late item (<=1 day), sent at once"
 
 EMAIL_KIND = {
     "dot_embargo_waiver_missing": "embargo (no waiver)",
@@ -977,6 +997,7 @@ async def simulate(server, source, *, label: str, force_flag: bool, start: datet
     items_by_text: Dict[str, dict] = {}       # the group post's text -> the alert item it says
     held: Dict[str, Any] = {}                 # text -> when a Shabbos / Yom Tov hold ends
     released: Dict[int, dict] = {}            # id(guard record entry) -> the held DOT reminder it delivers
+    late_sent: set = set()                    # id(guard record entry) of what a LATE check sent
     first_record = len(guard.blocked)
 
     async def text_and_capture(item, address, today):
@@ -1025,20 +1046,30 @@ async def simulate(server, source, *, label: str, force_flag: bool, start: datet
             raise SourceUnreadable("Could not read production; nothing is reported:\n  "
                                    + "\n  ".join(READ_ERRORS[n_err:]))
 
+        async def sync_job(at, first=False):
+            """_dot_sync_job: the sync, the record alerts, the late checks."""
+            reports.append(("sync", await server._dot_sync_tick(now=at, fetch=fetch)))
+            if first:
+                reports.append(("stipulations", await server._dot_stipulations_tick(now=at, fetch=fetch)))
+                reports.append(("nov_links", await server._dot_nov_links_tick(now=at, fetch=fetch)))
+            reports.append(("record", await server._dot_summons_record_alert_tick(now=at)))
+            for name, tick in (("expiry_late", server._dot_permit_expiry_tick),
+                               ("hearing_late", server._dot_hearing_tick)):
+                n = len(guard.blocked)
+                reports.append((name, await tick(now=at, late_only=True)))
+                late_sent.update(id(e) for e in guard.blocked[n:])
+
         guard.now = start
-        reports.append(("sync", await server._dot_sync_tick(now=start, fetch=fetch)))
-        reports.append(("stipulations", await server._dot_stipulations_tick(now=start, fetch=fetch)))
-        reports.append(("nov_links", await server._dot_nov_links_tick(now=start, fetch=fetch)))
-        reports.append(("record", await server._dot_summons_record_alert_tick(now=start)))
-        for at, jobs in slots(start, days):
+        await sync_job(start, first=True)
+        for at, jobs in slots(start, days, getattr(server, "DOT_SYNC_HOURS", 2)):
             guard.now = at
             feature_flags.cache_invalidate()
             if "daily_07" in jobs:
                 reports.append(("embargo", await server._dot_embargo_alert_tick(now=at)))
                 reports.append(("expiry", await server._dot_permit_expiry_tick(now=at)))
                 reports.append(("hearing", await server._dot_hearing_tick(now=at)))
-            if "record" in jobs:
-                reports.append(("record", await server._dot_summons_record_alert_tick(now=at)))
+            if "sync" in jobs:
+                await sync_job(at)
             if "gc" in jobs:
                 reports.append(("gc", await server._gc_alerts_tick(now=at)))
                 reports.append(("quiet_queue", await server._quiet_queue_tick(now=at)))
@@ -1088,9 +1119,10 @@ async def simulate(server, source, *, label: str, force_flag: bool, start: datet
                 dot_date = "; ".join(dict.fromkeys(_dot_date(r, trig) for r in found if r))
                 tier = ", ".join(sorted({_tier(r) for r in found}))
                 until = "work end" if trig == "dot_permit_expiring" else "hearing"
-                why = f"digest of {len(items)}: " + "; ".join(
+                detail = "; ".join(
                     f"{n} {i.get('days_left')} day(s) to {until} {i.get('work_end') or i.get('hearing_date')}"
                     for n, i in zip(nums, items))
+                why = detail if id(g["e"]) in late_sent else f"digest of {len(items)}: {detail}"
             else:
                 num = str(md.get("ticket") or md.get("permit") or "")
                 row = by_num.get((pid, num))
@@ -1099,6 +1131,8 @@ async def simulate(server, source, *, label: str, force_flag: bool, start: datet
                        "dot_summons_pending_hearing": f"pending block match, hearing {md.get('hearing_date')} within 14 days",
                        "dot_summons_new": "own match, new to Levelog, issued by DOT within 2 days (flag dot_phase1)",
                        "dot_summons_default": f"confirmed summons changed to {md.get('result')}"}.get(trig, str(trig))
+            if id(g["e"]) in late_sent:
+                why = f"{LATE_REASON}: {why}"
             if id(g["e"]) in released:
                 why += f" -- held for Shabbos/Yom Tov ({released[id(g['e'])].get('kind')}), delivered at its end"
             rows.append({"run": label, "project": (projects.get(pid) or {}).get("name") or pid, "project_id": pid,
