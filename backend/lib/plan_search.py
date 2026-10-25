@@ -2290,7 +2290,7 @@ def _apartment_text(book: GlyphBook, fam: GlyphFamily, k: str,
     elif counts:
         # A zero is never bound (glyph_values), so it is not printed as
         # a figure either.
-        out += "; per unit " + ", ".join(f"{u} {n}" for u, n in counts.items() if n)
+        out += ("; per unit " + ", ".join(f"{u} {n}" for u, n in counts.items() if n)) if any(counts.values()) else ""
         out += _whole_note(book, [u for u, n in counts.items() if n])
         if note:
             out += _track_note(book, fam, k, [u for u, n in counts.items() if n])
