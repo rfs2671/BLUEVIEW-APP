@@ -1514,10 +1514,10 @@ def create_permit_renewal_routes(
     # GET /api/permit-renewals/health-status
     @api_router.get("/permit-renewals/health-status")
     async def get_health_status(admin=Depends(require_operator_404)):
-        """Latest DOB NOW health check result - the platform's, one record
-        for every tenant, so the operator's (security audit P3, extended
-        2026-10-25; any company's admin could read it). No app screen calls it:
-        api.getHealthStatus is defined and unused."""
+        """Latest DOB NOW health check result (operator only)."""
+        # THE PLATFORM'S, one record for every tenant, so the operator's
+        # (security audit P3, extended 2026-10-25): any company's admin could
+        # read it. No app screen calls it - api.getHealthStatus is unused.
         result = await db.system_config.find_one(
             {"key": "dob_now_health_check"}
         )
