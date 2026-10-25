@@ -33,7 +33,7 @@ def build_space(page, unit_tags: Sequence[str],
         got = layers.build(page, sheet, unit_tags, widest_door_in)
         if "fallback" not in got:
             got["fallback_reason"] = None
-            return got
+            return no_silent_miss(got, unit_tags)
         reason = got["fallback"]
         validation = got.get("validation")
     else:
@@ -43,4 +43,34 @@ def build_space(page, unit_tags: Sequence[str],
     out = geometry.build(page, sheet, unit_tags)
     out["fallback_reason"] = reason
     out["validation"] = validation
-    return out
+    return no_silent_miss(out, unit_tags)
+
+
+def no_silent_miss(space: dict, unit_tags: Sequence[str]) -> dict:
+    """A TAG WITH NO REGION MARKS THE SHEET INCOMPLETE (ruling 2026-10-24).
+
+    The fail-safe already said so for a tag on a wall cell, a merged region
+    and an empty one. Two ways out of it were silent, measured 2026-10-24
+    on the filed mezzanine A-104.00 and the second set's A.1.5 (8 tags): a
+    tag whose label sat outdoors - an occupancy table outside the building -
+    joined no room group and simply was not in `units`; and a tag the plan
+    never prints is not in `tags` at all. Either way the floor's per-unit
+    split went ahead without it. Now every requested tag that ends with no
+    unit region, and is not already refused or incomplete, is incomplete,
+    with why."""
+    units = space.get("units") or {}
+    incomplete = space.setdefault("incomplete", {})
+    held = {t for r in space.get("refused") or []
+            if isinstance(r, (list, tuple)) and len(r) > 1 for t in r[1]}
+    found = space.get("tags") or {}
+    for t in unit_tags or []:
+        if t in units or t in incomplete or t in held:
+            continue
+        if t not in found:
+            incomplete[t] = "not printed on the plan - no label to seed its region"
+        else:
+            x, y = found[t]
+            incomplete[t] = (f"its label at ({round(x)}, {round(y)}) is in no room of the "
+                             "plan - outdoors (a table or schedule outside the building) "
+                             "or a region no unit owns")
+    return space
