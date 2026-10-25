@@ -112,13 +112,13 @@ def _gc(kind, pages, count, track, **kw):
     return c
 
 
-def _census(db_rows, track, short=0):
+def _census(db_rows, track, short=0, qty=None):
     """What count_documents says, per track - `short` rows the database
     holds beyond those in hand."""
     pages = sorted({r["page_id"] for r in db_rows})
     c = _gc("family", pages, 0, track, family=PT, tags=TAGS)
     fam = _gc("family", pages, short + sum(S.glyph_in_census(r, c) for r in db_rows), track,
-              family=PT, tags=TAGS)
+              family=PT, tags=TAGS, qty=qty)
     c = _gc("refusals", pages, 0, track)
     ref = _gc("refusals", pages, sum(S.glyph_in_census(r, c) for r in db_rows), track)
     return [fam, ref]
@@ -243,7 +243,7 @@ class TotalsCountEachSymbolOnce(unittest.TestCase):
         self.assertTrue(_ok("There are 3 PTAC-1.", recs))
         self.assertFalse(_ok("There are 6 PTAC-1.", recs))
 
-    def test_a_named_set_changes_no_total(self):
+    def test_a_named_sets_total_is_its_own_rows(self):
         _present()
         recs = _world()
         self.assertTrue(_ok("There are 3 PTAC-1 in the filed set.", recs))
@@ -332,6 +332,80 @@ class TheInvariant(unittest.TestCase):
             recs.append(S.glyph_census(kind, PID, pages, sum(S.glyph_in_census(r, c) for r in rows),
                                        family=fam, tags=TAGS if fam else ()))
         self.assertTrue(_ok("The first floor has 5 PTAC units.", recs))
+
+
+# ── a claim naming a set: only against rows carrying that track ──────────
+
+def _untracked(qty=None):
+    """Rows as production holds them before EMIT_VERSION 7: ONE mixed set,
+    no track - floor 1 placed against the filed set, floor 2 against the
+    owner's (on 588 Boyland: floor 1 and the roof filed, 2 to the mezzanine
+    owner's) - with the census the server builds for them, untracked."""
+    rows = _numbered(_rows("filed", "100", FILED_100, v7=False)
+                     + _rows("post_co", "101", OWNER_101, v7=False))
+    return rows + _census(rows, None, qty=qty)
+
+
+class ASetIsNamedOnlyAgainstItsOwnRows(unittest.TestCase):
+    """Ruling 2026-10-24: a claim naming a set binds only against rows
+    carrying that track; on rows with no track any claim naming a set
+    refuses. Untracked rows are a mixed set - read as either, they bind the
+    other's figures (1A: the filed 1 bound "per the owner's set", which
+    holds 2)."""
+
+    def test_untracked_rows_and_the_owners_set(self):
+        _present()
+        recs = _untracked()
+        for s in ("1A has 1 PTAC unit per the owner's set.",
+                  f"1A has 1 PTAC unit per {LABEL}.",
+                  "2C has 1 PTAC-1 per the owner's set.",
+                  "The second floor has 4 PTAC units per the owner's set."):
+            self.assertFalse(_ok(s, recs), s)
+
+    def test_untracked_rows_and_the_filed_set(self):
+        _present()
+        recs = _untracked()
+        for s in ("1A has 1 PTAC unit in the filed set.",
+                  "2C has 1 PTAC-1 in the filed set.",            # the owner's figure
+                  "The first floor has 5 PTAC units in the filed set."):
+            self.assertFalse(_ok(s, recs), s)
+
+    def test_untracked_rows_and_no_set_named_bind_as_today(self):
+        _present()
+        recs = _untracked()
+        for s in ("1A has 1 PTAC unit.", "2C has 1 PTAC-1.", "The first floor has 5 PTAC units.",
+                  "There are 3 PTAC-1."):
+            self.assertTrue(_ok(s, recs), s)
+
+    def test_a_printed_qty_is_no_sets_figure(self):
+        """NOTHING LOCATED, QTY PRINTED: the QTY stands (ruling (a),
+        2026-10-10) - DH-1's shape. It belongs to no track, so it lends
+        nothing to a claim naming one."""
+        _present()
+        rows = _numbered(_rows("filed", "100", [("PTAC-2", "1B"), ("PTAC-3", "1C")], v7=False))
+        recs = rows + _census(rows, None, qty={"PTAC-1": "4"})
+        self.assertTrue(_ok("There are 4 PTAC-1.", recs))
+        self.assertFalse(_ok("There are 4 PTAC-1 in the filed set.", recs))
+
+    def test_per_the_owners_set_is_not_a_per_unit_share(self):
+        """Today's gate read the "per" of "per the owner's set" as "per
+        apartment" and bound one apartment's 1 as the floor's figure."""
+        _present()
+        self.assertFalse(_ok("The first floor has 1 PTAC units per the owner's set.", _untracked()))
+        self.assertFalse(_ok("The first floor has 1 PTAC units per the owner's set.", _world()))
+        self.assertTrue(_ok("The first floor has 5 PTAC units per the owner's set.", _world()))
+
+    def test_tracked_rows_bind_the_named_sets_figure(self):
+        _present()
+        recs = _world()
+        self.assertTrue(_ok("1A has 1 PTAC unit in the filed set.", recs))
+        self.assertTrue(_ok(f"1A has 2 PTAC units per {LABEL}.", recs))
+        self.assertFalse(_ok("1A has 2 PTAC units in the filed set.", recs))
+        self.assertFalse(_ok("1A has 1 PTAC unit per the owner's set.", recs))
+
+    def test_two_sets_named_refuses(self):
+        _present()
+        self.assertFalse(_ok("1B has 1 PTAC unit in the filed set and per the owner's set.", _world()))
 
 
 # ── 4. per apartment ──────────────────────────────────────────────────────

@@ -2181,26 +2181,37 @@ def _clause_subjects(clause: str, book: GlyphBook
 
 def glyph_values(clause: str, book) -> set:
     """The located-symbol counts this one clause may state - from one book,
-    or from the two-track books (glyph_books):
+    or from the two-track books (glyph_books).
 
-      a floor or building figure  from the totals: each symbol once, and a
-                                  set named alongside changes nothing;
-      a per-apartment figure      per track. Named set: that set's figure
-                                  only. Otherwise the tracks must AGREE; if
-                                  they differ nothing binds; if one track
-                                  alone has a figure, it binds (label, don't
+    A CLAIM THAT NAMES A SET binds only against rows carrying that track -
+    at every scope, from that track's own book - and never against rows that
+    carry none (ruling 2026-10-24). Rows written before EMIT_VERSION 7 are
+    one MIXED set: on 588 Boyland floor 1 and the roof were placed against
+    the filed set and floors 2 to the mezzanine against the owner's. Read as
+    either set they bind the other's figures - "1A has 1 PTAC per the
+    owner's post-CO set" bound 1 where the owner's set holds 2. A clause
+    naming two sets refuses: a figure cannot be checked against both.
+
+    A claim naming no set:
+      a floor or building figure  from the totals: each symbol once;
+      a per-apartment figure      per track - the tracks must AGREE; if they
+                                  differ nothing binds; if one track alone
+                                  has a figure, it binds (label, don't
                                   refuse - the render names its set)."""
-    if isinstance(book, GlyphBook):
-        return _book_values(clause, book)
-    books: GlyphBooks = book
     named, bare = _track_claim(clause)
-    if len(books.tracks) <= 1 and not (named - set(books.tracks)) or None in books.tracks:
+    if isinstance(book, GlyphBook):
+        return set() if named else _book_values(clause, book)
+    books: GlyphBooks = book
+    if named:
+        if len(named) != 1:
+            return set()
+        (t,) = named
+        b = books.tracks.get(t)
+        return _book_values(bare, b) if b is not None else set()
+    if len(books.tracks) <= 1:
         return _book_values(bare, books.totals)
     if not _apartment_clause(bare, books):
         return _book_values(bare, books.totals)
-    if len(named) == 1:
-        (t,) = named
-        return _book_values(bare, books.tracks[t]) if t in books.tracks else set()
     # A ZERO IS AN ANSWER HERE, though never a bound figure: the filed 1A
     # holds no PTAC-1 and the owner's holds one - the sets DIFFER, and the
     # owner's 1 is not "one track only".
@@ -2469,9 +2480,16 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
         # A citation in the clause is removed as text before its numbers are
         # read (_citation_texts): '[M-200.00]' and 'issued 8/18/2026' say
         # where, and lend nothing to what is counted.
-        _named, bare = _track_claim(clause)
+        named, bare = _track_claim(clause)
         said = _values(_strip_citations(bare, citations))
         if not said:
+            continue
+        if named:
+            # A CLAIM NAMING A SET binds only against that track's rows
+            # (glyph_values) - never a printed QTY, which is no track's, and
+            # never on untracked rows.
+            allowed = glyph_values(clause, books)
+            unsupported.extend(v for v in said if v not in allowed)
             continue
         allowed: set = set()
         for ident in _idents_named_in(clause, by_ident.keys()):
