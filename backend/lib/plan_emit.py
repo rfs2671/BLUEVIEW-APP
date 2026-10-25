@@ -54,7 +54,13 @@ SOURCE = "plan_takeoff"
 #: 6 (2026-10-24): payload.arch carries the drawing track of the page the row
 #: was placed against (drawing_track "filed" | "post_co", and its label) -
 #: so an answer resting on the owner's post-CO set can name it.
-EMIT_VERSION = 6
+#: 7 (2026-10-24): TWO TRACKS, TWO PLACEMENTS. The pass runs once per drawing
+#: track (supersession within a track only); every row carries payload.track,
+#: and a located row payload.mech_count - how many labels of its family the
+#: mechanical sheet's sweep locates, before any architectural sheet is read.
+#: Each track's rows of a sheet must number exactly that (plan_search, the
+#: two-track invariant); totals count each mechanical symbol once.
+EMIT_VERSION = 7
 
 #: the citation fields a row carries from its page (as _write_page_records)
 CITE = ("project_id", "company_id", "file_id", "file_hash", "file_name",
@@ -110,8 +116,8 @@ def sheet_refusal(page: Dict[str, Any], reason: str, *, pass_key: str,
 
 def glyph_rows(result: Dict[str, Any], *, mech: Dict[str, Any],
                arch: Dict[str, Any], family: str, pass_key: str,
-               units: Dict[str, Any], widest_door: Dict[str, Any]
-               ) -> List[Dict[str, Any]]:
+               units: Dict[str, Any], widest_door: Dict[str, Any],
+               mech_count: Optional[int] = None) -> List[Dict[str, Any]]:
     """Every row one takeoff (one family, one floor pair) emits."""
     if result.get("refused"):
         return [sheet_refusal(mech, result["refused"], pass_key=pass_key,
@@ -132,6 +138,7 @@ def glyph_rows(result: Dict[str, Any], *, mech: Dict[str, Any],
         "units": {k: units.get(k) for k in ("tags", "method", "zero_units",
                                             "multi_level", "seeded") if k in units},
         "widest_door_in": widest_door.get("inches"),
+        "mech_count": mech_count,
     }
     rows: List[Dict[str, Any]] = []
     for r in result.get("records") or []:

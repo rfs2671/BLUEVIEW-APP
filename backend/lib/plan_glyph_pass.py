@@ -25,7 +25,7 @@ NOTHING IS GUESSED, in order:
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from lib import plan_derive as derive
 from lib import plan_emit as emit
@@ -69,15 +69,37 @@ SHEET_SCOPE_UNITS = {"tags": [], "method": "sheet_scope", "zero_units": False,
 
 def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any],
              schedules: Sequence[Dict[str, Any]],
-             door_pages: Sequence[Dict[str, Any]] = ()) -> Dict[str, Any]:
-    """Every glyph row for the project, and what was done and refused."""
+             door_pages: Sequence[Dict[str, Any]] = (), *, track: str = "filed",
+             sweeps: Optional[Dict[Any, Any]] = None) -> Dict[str, Any]:
+    """Every glyph row for the project's `track`, and what was done and
+    refused.
+
+    ONE PASS PER DRAWING TRACK (ruling 2026-10-24): the caller hands each
+    track's own current pages (server._glyph_track_pages), and every row this
+    pass writes says `track`. A mechanical sheet belongs to no track, so its
+    sweep is read once and shared through `sweeps` (page id -> reads); each
+    located row also carries `mech_count`, the labels that sweep locates for
+    its family before any architectural sheet is read."""
     from lib.plan_sheet import load_sheet
     from lib.plan_space import build_space
-    from lib.plan_takeoff import Units, run_takeoff, sweep
+    from lib.plan_takeoff import Units, located_labels, run_takeoff, sweep
 
     rows: List[Dict[str, Any]] = []
-    summary: Dict[str, Any] = {"pairs": [], "refused_sheets": [], "families": {},
-                               "skipped_families": [], "door": None, "floors": []}
+    summary: Dict[str, Any] = {"track": track, "pairs": [], "refused_sheets": [],
+                               "families": {}, "skipped_families": [], "door": None,
+                               "floors": [], "mech_counts": {}}
+    sweeps = {} if sweeps is None else sweeps
+
+    def reads_of(mech_p, mech_pg, segs):
+        k = mech_p.get("page_id") or (mech_p.get("file_id"), mech_p.get("page_number"))
+        if k not in sweeps:
+            sweeps[k] = sweep(mech_pg, segs)
+        return sweeps[k]
+
+    def mech_count(mech_p, reads, name, fam):
+        n = len(located_labels(reads, fam["tags"], fam["corroborations"]))
+        summary["mech_counts"][f"{mech_p.get('sheet_number')}|{name}"] = n
+        return n
 
     paired = derive.pair_plan_sheets(pages)
     for page, why, role in paired["refused"]:
@@ -113,7 +135,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                 pass_key=f"{a_sheet}|{m_sheet}", role=derive.ROLE_MECHANICAL))
             return
         mech_pg = open_page(mech_p)
-        reads = sweep(mech_pg, load_sheet(mech_pg)["segs"])
+        reads = reads_of(mech_p, mech_pg, load_sheet(mech_pg)["segs"])
         for name, fam in run_fams.items():
             key = f"{a_sheet}|{m_sheet}|{name}"
             try:
@@ -126,7 +148,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                 res = {"refused": f"takeoff failed: {type(e).__name__}"}
             got = emit.glyph_rows(res, mech=mech_p, arch=arch_p, family=name,
                                   pass_key=key, units=SHEET_SCOPE_UNITS,
-                                  widest_door=door)
+                                  widest_door=door,
+                                  mech_count=mech_count(mech_p, reads, name, fam))
             rows.extend(got)
             floor["families"][name] = {"rows": len(got), "total": res.get("total"),
                                        "refused": res.get("refused"),
@@ -191,7 +214,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
             floor["linked"] = units["linked"]
         summary["floors"].append(floor)
         mech_sheet = f.get("mech_data") or load_sheet(mech_pg)
-        reads = sweep(mech_pg, mech_sheet["segs"])
+        reads = reads_of(mech_p, mech_pg, mech_sheet["segs"])
         for name, fam in run_fams.items():
             key = f"{a_sheet}|{m_sheet}|{name}"
             try:
@@ -202,7 +225,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                 log.exception("glyph pass %s failed: %r", key, e)
                 res = {"refused": f"takeoff failed: {type(e).__name__}"}
             got = emit.glyph_rows(res, mech=mech_p, arch=arch_p, family=name,
-                                  pass_key=key, units=units, widest_door=door)
+                                  pass_key=key, units=units, widest_door=door,
+                                  mech_count=mech_count(mech_p, reads, name, fam))
             rows += got
             floor["families"][name] = {
                 "rows": len(got), "total": res.get("total"),
@@ -212,6 +236,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                 "labels_by_tag": res.get("labels_by_tag")}
     for i, r in enumerate(rows):
         r["ordinal"] = i
+        r.setdefault("payload", {})["track"] = track
     summary["rows"] = len(rows)
     return {"rows": rows, "summary": summary}
 
