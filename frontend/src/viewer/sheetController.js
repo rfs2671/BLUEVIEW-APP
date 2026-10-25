@@ -15,7 +15,7 @@
 import {
   PAGE_W, boxToWorld, clampCamera, easeOutCubic, fitRectCamera, fitWidthCamera, layoutPages, lerpCamera,
   pageAt, panBy as panCamera, parentOf, pageToWorld, rectsOverlap, screenToWorld, tileKey,
-  tilesFor, tileWorldRect, visibleWorldRect, worldToPage, worldToScreen, zoomAt as zoomCamera, zoomLimits,
+  tileExists, tilesFor, tileWorldRect, visibleWorldRect, worldToPage, worldToScreen, zoomAt as zoomCamera, zoomLimits,
 } from './tileMath';
 import { createTileCache } from './tileCache';
 import { hitCallout, searchIndexes, stepIndex } from './sheetIndex';
@@ -59,12 +59,42 @@ export function createSheetController({
     onUpdate: changed,
   });
 
+  /**
+   * COARSE FIRST. A screen at deep level z is dozens of tiles; fetched one by one they arrive
+   * as a patchwork of sharp squares on a blurry page. So the coarser tiles that cover the same
+   * ground (their parents, down to level 0: a handful) are asked for BEFORE the sharp ones. They
+   * come back in the first round trip, the picture is whole and nearly sharp almost at once, and
+   * the sharp tiles then refine it. The ancestors stay wanted, so they are never evicted from under
+   * a frame that is still falling back to them.
+   */
+  function withAncestors(list) {
+    const seen = new Set(list.map((t) => t.key));
+    const coarse = [];
+    for (const t of list) {
+      let a = parentOf(t);
+      while (a) {
+        const k = tileKey(a.page, a.z, a.x, a.y);
+        if (!seen.has(k)) {
+          seen.add(k);
+          const pg = layout.pages.find((p) => p.page === a.page);
+          const lv = pg && pg.levels.find((l) => l.z === a.z);
+          if (lv && tileExists(lv, a.x, a.y)) {
+            coarse.push({ key: k, page: a.page, z: a.z, x: a.x, y: a.y, rect: tileWorldRect(pg, lv, a.x, a.y), priority: 0 });
+          }
+        }
+        a = parentOf(a);
+      }
+    }
+    coarse.sort((p, q) => p.z - q.z);                  // the coarsest first
+    return coarse.concat(list);
+  }
+
   function updateNeeded() {
     needed = vp.width > 0 ? tilesFor(layout, cam, vp, dpr) : [];
     const sig = needed.map((t) => t.key).join('|');
     if (sig === neededSig) return;
     neededSig = sig;
-    tiles.want(needed);
+    tiles.want(withAncestors(needed));
     for (const pg of layout.pages) {
       if (rectsOverlap({ x: pg.x, y: pg.y, w: pg.w, h: pg.h }, visibleWorldRect(cam, vp))) {
         loadPreview(pg.page);

@@ -249,6 +249,31 @@ function harness(over = {}) {
     ok(frames === 2, 'detached: nothing more');
     c.destroy();
   }
+  console.log('coarse first');
+  {
+    const { c, log } = harness();
+    c.setViewport(1000, 700); await settle();
+    log.tiles.length = 0;
+    c.zoomAt(8, 500, 350);
+    await settle();
+    const zs = log.tiles.map((k) => Number(k.split('/')[1]));
+    const firstExact = zs.findIndex((z) => z >= 3);
+    ok(zs.length > 0 && firstExact > 0, 'the coarser tiles that cover the screen are asked for before the sharp ones');
+    ok(zs.slice(0, firstExact).every((z, i, a) => i === 0 || z >= a[i - 1]), 'and coarsest first');
+    ok(new Set(log.tiles).size === log.tiles.length, 'no tile is requested twice');
+    const f = c.frame();
+    ok(f.tiles.some((t) => t.z >= 3) && c.stats().ready > 0, 'the sharp tiles still arrive');
+    c.destroy();
+    const h2 = harness({ api: { tile: async (p, f2, b, d, signal) => { await new Promise((r) => setTimeout(r, d.z >= 3 ? 40 : 1)); return new Uint8Array([d.z]); } } });
+    h2.c.setViewport(1000, 700); await settle();
+    h2.c.zoomAt(8, 500, 350);
+    await new Promise((r) => setTimeout(r, 15));
+    const early = h2.c.frame();
+    ok(early.tiles.length > 0 && early.tiles.every((t) => t.z < 3), 'while the sharp tiles are in flight the screen already shows the coarser ones, not an empty page');
+    await new Promise((r) => setTimeout(r, 400));
+    ok(h2.c.frame().tiles.some((t) => t.z >= 3), 'then refines');
+    h2.c.destroy();
+  }
   console.log('destroy');
   {
     const { c, log } = harness();

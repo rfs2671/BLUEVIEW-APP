@@ -236,6 +236,36 @@ export function mountCanvasViewer(container, controller, {
     if (a.type === 'zoom') controller.zoomAt(a.factor, e.clientX - r.left, e.clientY - r.top);
     else controller.panBy(a.dx, a.dy);
   };
+  // KEYBOARD. A drawing you cannot arrow through is not a reader: arrows pan, Page Up/Down and Space
+  // page by a screenful, Home/End go to the first/last sheet, + and - zoom, 0 fits. The canvas takes
+  // focus when it is pressed (and on open, unless something else, like the search box, has it).
+  canvas.tabIndex = 0;
+  canvas.style.outline = 'none';
+  const key = (e) => {
+    if (!interactive || e.ctrlKey || e.metaKey || e.altKey) return;
+    const vp = controller.viewport;
+    const step = 80;
+    let handled = true;
+    switch (e.key) {
+      case 'ArrowDown': controller.panBy(0, -step); break;
+      case 'ArrowUp': controller.panBy(0, step); break;
+      case 'ArrowLeft': controller.panBy(step, 0); break;
+      case 'ArrowRight': controller.panBy(-step, 0); break;
+      case 'PageDown': controller.panBy(0, -vp.height * 0.9); break;
+      case 'PageUp': controller.panBy(0, vp.height * 0.9); break;
+      case ' ': controller.panBy(0, (e.shiftKey ? 1 : -1) * vp.height * 0.9); break;
+      case 'Home': controller.goToPage(1); break;
+      case 'End': controller.goToPage(controller.layout.pages.length); break;
+      case '+': case '=': controller.zoomBy(1.5, 120); break;
+      case '-': case '_': controller.zoomBy(1 / 1.5, 120); break;
+      case '0': controller.fit(); break;
+      default: handled = false;
+    }
+    if (handled) e.preventDefault();               // the page behind must not scroll as well
+  };
+  canvas.addEventListener('keydown', key);
+  canvas.addEventListener('pointerdown', () => { if (interactive) canvas.focus({ preventScroll: true }); });
+  if (interactive && (!doc.activeElement || doc.activeElement === doc.body)) canvas.focus({ preventScroll: true });
   canvas.addEventListener('pointerdown', down);
   canvas.addEventListener('pointermove', move);
   canvas.addEventListener('pointerup', up);
