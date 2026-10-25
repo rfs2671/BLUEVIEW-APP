@@ -9376,7 +9376,9 @@ def project_access_ok(project: dict, project_id: str, current_user: dict) -> boo
 
     There is no platform-operator branch, and this does not add one: the
     operator appears in user administration, project deletion and
-    assignable-project validation, and in no logbook flow.
+    assignable-project validation, and in no logbook flow. His admin actions
+    on a project go through require_project_admin_access, carried only by
+    the routes in OPERATOR_PROJECT_ADMIN_ROUTES and audited on every use.
     """
     if current_user.get("site_mode") or current_user.get("role") == "site_device":
         return str(current_user.get("project_id") or "") == str(project_id)
@@ -9479,6 +9481,88 @@ async def require_project_access(
     current_user = Depends(get_current_user),
 ) -> dict:
     return await _assert_project_access(project_id, current_user)
+
+
+#: The routes that admit the platform operator on a project's admin actions
+#: (operator ruling 2026-10-23, option 2). ONLY routes whose bodies take no
+#: company from the person acting: an operator has no company, so a route
+#: that stamps `get_user_company_id(actor)` on what it writes would write a
+#: record belonging to no tenant. Those eleven (NFC tags, site devices, CS
+#: registrations, checklist assignment, Dropbox scope, DOB config, re-index)
+#: follow in a separate change that takes the company from the project.
+#: tests/test_operator_project_admin_access.py holds this list against the
+#: app's own route table, in both directions.
+OPERATOR_PROJECT_ADMIN_ROUTES = (
+    ("PUT", "/api/projects/{project_id}"),
+    ("DELETE", "/api/projects/{project_id}/nfc-tags/{tag_id}"),
+    ("GET", "/api/projects/{project_id}/site-devices"),
+    ("POST", "/api/projects/{project_id}/safety-staff"),
+    ("GET", "/api/projects/{project_id}/whatsapp/people"),
+    ("PUT", "/api/projects/{project_id}/whatsapp/people/{key}"),
+    ("PUT", "/api/projects/{project_id}/whatsapp/people/{key}/language"),
+    ("DELETE", "/api/projects/{project_id}/whatsapp/people/{key}"),
+    ("POST", "/api/projects/{project_id}/plan-glyphs/run"),
+    ("POST", "/api/projects/{project_id}/plan-index/{file_id}/retry"),
+)
+
+
+async def require_project_admin_access(
+    project_id: str,
+    request: Request,
+    current_user = Depends(get_current_user),
+) -> dict:
+    """THE PROJECT GATE FOR ADMIN ACTIONS: the ordinary three-branch rule
+    (project_access_ok), OR the platform operator - and every operator use
+    is audited.
+
+    ── WHY THIS IS NOT A BRANCH IN project_access_ok ──────────────────────
+
+    project_access_ok decides ~117 routes and cannot tell an admin action
+    from a read of a filed logbook (measured 2026-10-23: 117 routes, 60 of
+    them GETs). An operator branch there would open all of them. This gate
+    is carried only by the admin routes in OPERATOR_PROJECT_ADMIN_ROUTES,
+    each of which also carries its rank gate (get_admin_user /
+    get_project_admin_user), which the operator already passes.
+
+    ── EVERY OPERATOR USE IS AUDITED, OR REFUSED ──────────────────────────
+
+    audit_log swallows a failed write, which is right for an audit of an
+    act that happened anyway. Here the act has not happened yet: an
+    operator reaching a tenant's project with no record of it is the thing
+    this gate exists to prevent, so a failed audit write refuses the
+    request (503) instead. The row says who, which project and company,
+    and the method and path.
+
+    THE OPERATOR IS AUDITED EVEN WHERE THE ORDINARY RULE WOULD ADMIT HIM.
+    The operator account carries no company, so in practice that never
+    happens; if it ever did, "every operator use" would still mean every.
+    """
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id), **ACTIVE_PROJECT_FILTER,
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if is_platform_operator(current_user):
+        row = {
+            "action": "operator_project_admin_access",
+            "user_id": actor_id(current_user) or UNATTRIBUTED_ACTOR,
+            "resource_type": "project",
+            "resource_id": str(project_id),
+            "details": {"company_id": project.get("company_id"),
+                        "method": request.method if request else None,
+                        "path": request.url.path if request else None},
+            "timestamp": datetime.now(timezone.utc),
+        }
+        try:
+            await db.audit_logs.insert_one(row)
+        except Exception as e:
+            logger.error("operator project access NOT recorded, refused: %r", e)
+            raise HTTPException(status_code=503,
+                                detail="Operator access could not be recorded")
+        return project
+    if not project_access_ok(project, project_id, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this project")
+    return project
 
 
 # --- Per-worker tenant isolation ---------------------------------------------
@@ -16985,7 +17069,7 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
 
     return ProjectResponse(**serialize_id(project))
 
-@api_router.put("/projects/{project_id}", response_model=ProjectResponse, dependencies=[Depends(require_approved), Depends(require_project_access)])
+@api_router.put("/projects/{project_id}", response_model=ProjectResponse, dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def update_project(project_id: str, project_data: ProjectUpdate,
                          admin = Depends(get_project_admin_user)):
     update_data = {k: v for k, v in project_data.model_dump().items() if v is not None}
@@ -18585,7 +18669,7 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
         "tag_id": tag_data.tag_id,
     }
 
-@api_router.delete("/projects/{project_id}/nfc-tags/{tag_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
+@api_router.delete("/projects/{project_id}/nfc-tags/{tag_id}", dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def remove_nfc_tag_from_project(project_id: str, tag_id: str, admin = Depends(get_admin_user)):
     now = datetime.now(timezone.utc)
     
@@ -24518,7 +24602,7 @@ async def delete_site_device(device_id: str, admin = Depends(get_admin_user)):
     return {"message": "Site device deleted successfully"}
 
 @api_router.get("/projects/{project_id}/site-devices")
-async def get_project_site_devices(project_id: str, admin = Depends(get_project_admin_user), _proj = Depends(require_project_access)):
+async def get_project_site_devices(project_id: str, admin = Depends(get_project_admin_user), _proj = Depends(require_project_admin_access)):
     """Get all site devices for a specific project"""
     devices = await db.site_devices.find(
         {"project_id": project_id, "is_deleted": {"$ne": True}},
@@ -35133,7 +35217,7 @@ async def get_project_safety_staff(project_id: str, current_user = Depends(get_c
     }).to_list(20)
     return serialize_list(staff)
 
-@api_router.post("/projects/{project_id}/safety-staff", dependencies=[Depends(require_approved), Depends(require_project_access)])
+@api_router.post("/projects/{project_id}/safety-staff", dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def create_safety_staff(project_id: str, data: SafetyStaffCreate, admin = Depends(get_admin_user)):
     """Register a Site Safety Coordinator (SSC) or Site Safety Manager (SSM) for a project."""
     project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
@@ -77827,9 +77911,9 @@ async def _sender_map_apply(company_id: str, jid: str, row: Optional[dict]) -> i
 
 
 @api_router.get("/projects/{project_id}/whatsapp/people",
-                dependencies=[Depends(require_approved), Depends(require_project_access)])
+                dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def get_whatsapp_people(project_id: str,
-                              project=Depends(require_project_access),
+                              project=Depends(require_project_admin_access),
                               current_user=Depends(get_project_admin_user)):
     """Admin / PM: this company's unknown group senders, and who they were
     said to be. Company choices are this project's subs and the GC team."""
@@ -77853,9 +77937,9 @@ async def get_whatsapp_people(project_id: str,
 
 
 @api_router.put("/projects/{project_id}/whatsapp/people/{key}",
-                dependencies=[Depends(require_approved), Depends(require_project_access)])
+                dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def set_whatsapp_person(project_id: str, key: str, body: SenderMapBody,
-                              project=Depends(require_project_access),
+                              project=Depends(require_project_admin_access),
                               current_user=Depends(get_project_admin_user)):
     """Say who a sender is. Applies to every group of this company, and
     re-points this company's OPEN attention items at them."""
@@ -77902,9 +77986,9 @@ class SenderLanguageBody(BaseModel):
 
 
 @api_router.put("/projects/{project_id}/whatsapp/people/{key}/language",
-                dependencies=[Depends(require_approved), Depends(require_project_access)])
+                dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def set_whatsapp_person_language(project_id: str, key: str, body: SenderLanguageBody,
-                                       project=Depends(require_project_access),
+                                       project=Depends(require_project_admin_access),
                                        current_user=Depends(get_project_admin_user)):
     """What a sender speaks: auto (Whisper detects it), en, es or yi. Their
     voice notes are then transcribed with it as Whisper's language hint.
@@ -77925,9 +78009,9 @@ async def set_whatsapp_person_language(project_id: str, key: str, body: SenderLa
 
 
 @api_router.delete("/projects/{project_id}/whatsapp/people/{key}",
-                   dependencies=[Depends(require_approved), Depends(require_project_access)])
+                   dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def clear_whatsapp_person(project_id: str, key: str,
-                                project=Depends(require_project_access),
+                                project=Depends(require_project_admin_access),
                                 current_user=Depends(get_project_admin_user)):
     """Forget who a sender is. Open items that named them through the map go
     back to unresolved."""
@@ -79038,7 +79122,7 @@ async def list_failed_plan_index_jobs(current_user=Depends(get_admin_seat_user))
 
 
 @api_router.post("/projects/{project_id}/plan-glyphs/run",
-                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+                 dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_user)):
     """Start the equipment-placement pass for a project (admin only).
 
@@ -79064,7 +79148,7 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
 
 
 @api_router.post("/projects/{project_id}/plan-index/{file_id}/retry",
-                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+                 dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def retry_plan_index_job(project_id: str, file_id: str,
                                current_user=Depends(get_admin_user)):
     """Put a given-up file back on the queue, keeping the pages it finished.
