@@ -269,7 +269,7 @@ class SourcePin(unittest.TestCase):
                     deps = ast.unparse(kw.value)
             if "require_approved" not in deps:
                 missing.append(f"{method.upper()} {path}: require_approved MISSING")
-            if "require_project_access" not in deps:
+            if not any(g in deps for g in PROJECT_GATES):
                 missing.append(f"{method.upper()} {path}: require_project_access MISSING")
         self.assertEqual(missing, [], "guards dropped:\n  " + "\n  ".join(missing))
 
@@ -279,6 +279,15 @@ class SourcePin(unittest.TestCase):
         self.assertEqual(len(TIER2_SETTINGS), 6)
         self.assertEqual(len(TIER3_ACTIONS), 14)
         self.assertEqual(len(CLEAN_ROUTES), 26)
+
+
+#: The project gates a clean route may carry. require_project_admin_access
+#: (2026-10-24) is require_project_access's rule for everyone but the platform
+#: operator, who passes it only with an audit row; it is carried by the routes
+#: in server.OPERATOR_PROJECT_ADMIN_ROUTES and nowhere else
+#: (tests/test_operator_project_admin_access.py, both directions, and the 403
+#: for another company's admin on every one).
+PROJECT_GATES = ("require_project_access", "require_project_admin_access")
 
 
 class WiringPin(unittest.TestCase):
@@ -324,7 +333,7 @@ class WiringPin(unittest.TestCase):
             names = self._dependant_callables(found.dependant)
             if "require_approved" not in names:
                 missing.append(f"{want_method} {path}: require_approved not wired")
-            if "require_project_access" not in names:
+            if not names & set(PROJECT_GATES):
                 missing.append(f"{want_method} {path}: require_project_access not wired")
         self.assertEqual(missing, [], "guards not wired:\n  " + "\n  ".join(missing))
 

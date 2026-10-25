@@ -249,14 +249,16 @@ def build(page, sheet: dict, unit_tags: Sequence[str],
         adj[a_].add(b_)
         adj[b_].add(a_)
 
-    tags = plan_unit_tags(corners, words, unit_tags)
+    outdoors = edge_regions(lab)
+    tags = plan_unit_tags(corners, words, unit_tags,
+                          inside=lambda x, y: lab_at(x, y) not in outdoors
+                          and lab_at(x, y) != 0)
     tag_room = {t: lab_at(x, y) for t, (x, y) in tags.items()}
     room_tags = defaultdict(list)
     for t, L in tag_room.items():
         if L:
             room_tags[L].append(t)
     rnames = room_names(lab, words, to_cell)
-    outdoors = edge_regions(lab)
     common = set()
     for L in range(1, n + 1):
         if L in room_tags or L in outdoors:

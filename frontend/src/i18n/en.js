@@ -2161,6 +2161,8 @@ export default {
   //
   // {name} is the project name, substituted by the caller.
   compliance: {
+    // After a penalty whose hearing has not happened (backend lib/dob_penalty).
+    penaltyHearingPending: '(hearing pending)',
     title: 'Compliance',
     loadError: 'Could not load compliance data',
     deleteConfirmWeb: 'Delete "{name}"?\n\nThis will permanently remove the project and all its compliance data. This cannot be undone.',
