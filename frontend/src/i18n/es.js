@@ -103,6 +103,7 @@ export default {
   // "Enable DOB Tracking" queda en inglés: es el nombre del interruptor tal como
   // aparece en pantalla, y ese interruptor no está traducido.
   compliance: {
+    penaltyHearingPending: '(audiencia pendiente)',
     title: 'Cumplimiento',
     loadError: 'No se pudieron cargar los datos de cumplimiento',
     deleteConfirmWeb: '¿Eliminar "{name}"?\n\nEsto eliminará permanentemente el proyecto y todos sus datos de cumplimiento. Esta acción no se puede deshacer.',

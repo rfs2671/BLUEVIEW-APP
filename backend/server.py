@@ -75,6 +75,7 @@ from lib.report import view as report_view
 from lib import wa_security  # noqa: E402
 from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
+from lib import dob_penalty  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
 from lib import datefmt  # noqa: E402
@@ -5833,6 +5834,9 @@ class DOBLogResponse(BaseModel):
     violation_category: Optional[str] = None
     violation_date: Optional[str] = None
     penalty_amount: Optional[str] = None
+    # The hearing has not happened: the screen shows "(hearing pending)" after
+    # the penalty (lib/dob_penalty; set by get_dob_logs).
+    penalty_hearing_pending: Optional[bool] = None
     respondent: Optional[str] = None
     disposition_date: Optional[str] = None
     disposition_comments: Optional[str] = None
@@ -43040,7 +43044,12 @@ def _extract_violation_fields(rec: dict) -> dict:
         or " — ".join(p for p in (rec.get("device_type"), rec.get("violation_remarks")) if p)
         or None
     )
-    fields["penalty_amount"] = rec.get("penalty_applied") or rec.get("penalty_balance_due") or rec.get("amount_paid") or None
+    # The penalty IMPOSED, never what was paid: the ECB dataset (6bgk-3dad)
+    # spells it `penality_imposed`; reading `amount_paid` stored "0" for an
+    # open $1,250 summons (39558662P). The refresh rewrites stored rows.
+    fields["penalty_amount"] = next(
+        (rec.get(k) for k in ("penality_imposed", "penalty_imposed", "penalty_applied",
+                              "penalty_balance_due") if rec.get(k) not in (None, "")), None)
     fields["respondent"] = rec.get("respondent_name") or rec.get("respondent") or None
     fields["disposition_date"] = rec.get("disposition_date") or rec.get("hearing_date_time") or None
     fields["disposition_comments"] = rec.get("disposition_comments") or rec.get("hearing_status") or None
@@ -43316,28 +43325,13 @@ def _generate_summary(rec: dict, record_type: str) -> str:
     if record_type == "complaint":
         comp_num = rec.get("complaint_number") or ""
         result = classify_complaint(rec)
-        CATEGORY_DESCRIPTIONS = {
-            "01": "illegal work or work without a permit",
-            "03": "failure to maintain building facade",
-            "05": "work contrary to approved plans",
-            "06": "unsafe construction condition",
-            "09": "illegal conversion or occupancy",
-            "12": "failure to maintain elevator",
-            "14": "demolition without permit",
-            "23": "working without a safety net",
-            "28": "illegal curb cut or sidewalk damage",
-            "30": "debris falling from building",
-            "45": "unsafe scaffolding or sidewalk shed",
-            "49": "construction noise outside allowed hours",
-            "59": "work without required DOB inspection",
-            "63": "illegal fence or retaining wall",
-            "71": "crane or derrick safety violation",
-            "83": "failure to safeguard persons or property",
-            "91": "building under construction in unsafe condition",
-        }
-        cat_code = rec.get("complaint_category", "")
-        desc = CATEGORY_DESCRIPTIONS.get(cat_code, result['category_label'])
-        summary = f"Complaint about {desc.lower()}. {result['disposition_label']}."
+        # DOB's own category label (classify_complaint's sourced table). A
+        # hand-written CATEGORY_DESCRIPTIONS dict used to override it here and
+        # was wrong for all 17 codes it listed -- 05 "Permit - None" read "work
+        # contrary to approved plans" -- and the alert emails and activity
+        # feed quote this summary. The in-place refresh rewrites it on the
+        # next sync (ai_summary is not in _IN_PLACE_KEEP).
+        summary = f"Complaint: {result['category_label']}. {result['disposition_label']}."
         if comp_num:
             summary = f"#{comp_num}: {summary}"
         return summary
@@ -45561,6 +45555,8 @@ async def get_dob_logs(
             log["body"] = rendered.get("body") or ""
             log["severity_kind"] = rendered.get("severity") or "info"
             log["action_text"] = rendered.get("action_text") or log.get("next_action") or ""
+            log["penalty_hearing_pending"] = (
+                dob_penalty.hearing_pending(log) if log.get("penalty_amount") else None)
 
             # Apply post-render filters before serializing.
             if severity_kind and log["severity_kind"] != severity_kind:

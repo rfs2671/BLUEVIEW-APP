@@ -221,8 +221,14 @@ VIOLATION_FACT_FIELDS = (
 
 
 def violation_facts(dob_log: Dict[str, Any]) -> Dict[str, str]:
-    return {k: str(dob_log.get(k)).strip() for k in VIOLATION_FACT_FIELDS
-            if dob_log.get(k) not in (None, "")}
+    out = {k: str(dob_log.get(k)).strip() for k in VIOLATION_FACT_FIELDS
+           if dob_log.get(k) not in (None, "")}
+    if out.get("penalty_amount"):
+        # Not final before the hearing: the value itself says so, so an
+        # answer built from these facts carries it (lib/dob_penalty).
+        from lib import dob_penalty
+        out["penalty_amount"] = dob_penalty.with_note(out["penalty_amount"], dob_log)
+    return out
 
 
 def _norm(s: str) -> str:

@@ -49,7 +49,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from lib import dot_sync, source_sync, wa_alerts, wa_gc
+from lib import dob_penalty, dot_sync, source_sync, wa_alerts, wa_gc
 
 try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
     from zoneinfo import ZoneInfo
@@ -393,7 +393,7 @@ def open_items(rows: Iterable[Dict[str, Any]], dot_rows: Iterable[Dict[str, Any]
         hearing = wa_gc.parse_dob_date(r.get("hearing_date"))
         parts = [f"Stop-work order {num}" if rt == "swo" else f"DOB {num}"]
         parts += [f"issued {_md(issued)}"] if issued else []
-        penalty = _amount(r.get("penalty_amount"))
+        penalty = dob_penalty.with_note(_amount(r.get("penalty_amount")), r, today)
         parts += [f"penalty {penalty}"] if penalty else []
         parts += [f"hearing {_md(hearing)}"] if hearing and hearing >= today else []
         found.append(((0 if rt == "swo" else 1, issued or date.max, num), " · ".join(parts)))
