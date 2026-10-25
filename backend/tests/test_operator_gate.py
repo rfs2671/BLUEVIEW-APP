@@ -67,6 +67,8 @@ OPERATOR_ROUTES = {
     ("POST", "/api/admin/risk-score/weights"),
     ("POST", "/api/admin/run-phase-inference"),
     ("GET", "/api/admin/_sentry_test"),
+    # extended 2026-10-25: the platform DOB NOW health check is no company's
+    ("GET", "/api/permit-renewals/health-status"),
 }
 
 #: Under an operator prefix but not an operator route: a company admin's

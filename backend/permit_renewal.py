@@ -1378,8 +1378,13 @@ def create_permit_renewal_routes(
     to_query_id,
     get_user_company_id,
     serialize_id,
+    require_operator_404,
 ):
-    """Register all permit renewal endpoints on the FastAPI router."""
+    """Register all permit renewal endpoints on the FastAPI router.
+
+    `require_operator_404` gates the one platform-wide route here (the DOB NOW
+    health check): it is no company's, so it is the operator's (security
+    audit P3). No default - a missing gate must fail at import, never open."""
 
     def _assert_renewal_access(renewal, current_user):
         """The caller's company must MATCH the renewal's. Six call sites.
@@ -1508,8 +1513,11 @@ def create_permit_renewal_routes(
 
     # GET /api/permit-renewals/health-status
     @api_router.get("/permit-renewals/health-status")
-    async def get_health_status(admin=Depends(get_admin_user)):
-        """Latest DOB NOW health check result (admin only)."""
+    async def get_health_status(admin=Depends(require_operator_404)):
+        """Latest DOB NOW health check result - the platform's, one record
+        for every tenant, so the operator's (security audit P3, extended
+        2026-10-25; any company's admin could read it). No app screen calls it:
+        api.getHealthStatus is defined and unused."""
         result = await db.system_config.find_one(
             {"key": "dob_now_health_check"}
         )

@@ -12104,7 +12104,12 @@ async def _with_licence_resolved(doc: dict) -> dict:
 @api_router.get("/admin/users/{user_id}", response_model=UserResponse)
 async def get_admin_user_by_id(user_id: str, current_user = Depends(get_user_admin), _approved=Depends(require_approved)):
     user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}}, {"password": 0})
-    if not user:
+    # THE SAME SCOPE AS ITS PUT AND DELETE (security audit P3, extended
+    # 2026-10-25): the operator, or an admin of the user's own company. This
+    # read was the one by-id route on the account table left unscoped - any
+    # company's admin could read any account (email, phone, role, company,
+    # licence) by id. 404, not 403, so the id is not confirmed to exist.
+    if not user or not (is_platform_operator(current_user) or _same_company(current_user, user)):
         raise HTTPException(status_code=404, detail="User not found")
     return UserResponse(**await _with_licence_resolved(serialize_id(user)))
 
@@ -46768,6 +46773,7 @@ create_permit_renewal_routes(
     to_query_id=to_query_id,
     get_user_company_id=get_user_company_id,
     serialize_id=serialize_id,
+    require_operator_404=require_operator_404,
 )
 
 # ==================== WHATSAPP INTEGRATION ====================
