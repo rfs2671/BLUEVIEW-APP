@@ -29811,6 +29811,60 @@ async def download_signed_file(file_id: str, request: Request,
                              media_type=content_type, headers=headers)
 
 
+#: Which architectural TRACK a drawing set belongs to (operator ruling
+#: 2026-10-24). On 588 Boyland the filed AR set governs; the Owner's set
+#: (6/9/26) is a separate track - the owner's post-CO additions, off the DOB
+#: record - not a revision of it, though the index treats it as one and reads
+#: floors 2 to the mezzanine from it. The glyph pass copies the track onto
+#: every row it places against the file, and the render names it: "per the
+#: owner's post-CO set". A file with no track set is the filed track.
+DRAWING_TRACKS = ("filed", "post_co")
+
+
+class DrawingTrackUpdate(BaseModel):
+    track: str
+    label: Optional[str] = None     # how an answer names it; a default is made
+
+
+@api_router.put("/projects/{project_id}/files/{file_id}/drawing-track",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def set_file_drawing_track(project_id: str, file_id: str, body: DrawingTrackUpdate,
+                                 admin=Depends(get_admin_user)):
+    """Set the drawing track of one project file (company admin), audited.
+
+    THE TRACK IS A FACT ABOUT THE SET, NOT ABOUT A PAGE, and only a person
+    who knows the job can state it: nothing printed on the Owner's set says
+    "post-CO". So it is set here, once per file, by an admin of the file's
+    company, and every change writes an audit row with the old and new value.
+    It takes effect on the next glyph pass (rebuild)."""
+    track = str(body.track or "").strip().lower()
+    if track not in DRAWING_TRACKS:
+        raise HTTPException(status_code=422,
+                            detail=f"track must be one of {list(DRAWING_TRACKS)}")
+    label = re.sub(r"\s+", " ", str(body.label or "")).strip()[:120] or None
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one({"_id": rec_oid, "project_id": project_id,
+                                           "is_deleted": {"$ne": True}})
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    _same_company_or_403(rec, admin)
+    if track == "post_co" and not label:
+        label = f"the owner's post-CO set ({rec.get('name') or 'unnamed file'})"
+    before = {"track": rec.get("drawing_track") or "filed",
+              "label": rec.get("drawing_track_label")}
+    await db.project_files.update_one(
+        {"_id": rec_oid},
+        {"$set": {"drawing_track": track, "drawing_track_label": label,
+                  "drawing_track_set_at": datetime.now(timezone.utc)}})
+    await audit_log("project_file_drawing_track", actor_id(admin), "project_file", file_id,
+                    {"project_id": project_id, "file_name": rec.get("name"),
+                     "from": before, "to": {"track": track, "label": label}})
+    return {"file_id": file_id, "track": track, "label": label, "previous": before}
+
+
 @api_router.delete("/projects/{project_id}/files/{file_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def delete_project_file(project_id: str, file_id: str, current_user = Depends(get_current_user)):
     """Hard-delete a project file: removes from R2 and Mongo. Admin/owner only.
@@ -62606,6 +62660,9 @@ async def _plan_glyph_pass(project_id: str) -> dict:
          "sheet_number": 1, "sheet_title": 1, "discipline": 1,
          "company_id": 1, "superseded_by": 1, "raw_text": 1},
     ).to_list(5000)
+    files = {str(f["_id"]): f for f in await db.project_files.find(
+        {"project_id": pid, "is_deleted": {"$ne": True}},
+        {"r2_key": 1, "name": 1, "drawing_track": 1, "drawing_track_label": 1}).to_list(2000)}
     pages, door_pages = [], []
     for p in raw:
         if p.get("file_id") not in live or p.get("superseded_by") in live:
@@ -62617,6 +62674,11 @@ async def _plan_glyph_pass(project_id: str) -> dict:
                "sheet_number": p.get("sheet_number"),
                "sheet_title": p.get("sheet_title"),
                "discipline": p.get("discipline")}
+        # THE FILE'S TRACK, ON EVERY PAGE (DRAWING_TRACKS): the rows placed
+        # against this page carry it, and the render names a post-CO set
+        frec = files.get(str(p.get("file_id"))) or {}
+        row["drawing_track"] = frec.get("drawing_track") or "filed"
+        row["drawing_track_label"] = frec.get("drawing_track_label")
         pages.append(row)
         if _DOOR_SCHEDULE_TEXT.search(p.get("raw_text") or ""):
             door_pages.append(row)
@@ -62633,9 +62695,6 @@ async def _plan_glyph_pass(project_id: str) -> dict:
                   "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
                  for s in sched]
 
-    files = {str(f["_id"]): f for f in await db.project_files.find(
-        {"project_id": pid, "is_deleted": {"$ne": True}},
-        {"r2_key": 1, "name": 1}).to_list(2000)}
     import tempfile as _tf
     with _tf.TemporaryDirectory(prefix="glyphpass-") as tmp:
         paths: Dict[str, str] = {}
