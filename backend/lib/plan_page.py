@@ -24,6 +24,8 @@ import ctypes
 import math
 from typing import List, Optional, Tuple
 
+from lib.pdfium_lock import PDFIUM_LOCK
+
 #: pdfium path segment types (fpdf_edit.h)
 _LINETO, _BEZIERTO, _MOVETO = 0, 1, 2
 
@@ -50,10 +52,11 @@ class PlanPage:
     def __init__(self, path: str, page_number: int):
         import pypdfium2 as pdfium
         self.path, self.page_number = str(path), int(page_number)
-        self._doc = pdfium.PdfDocument(self.path)
-        self._pg = self._doc[self.page_number - 1]
-        self.rotation = int(self._pg.get_rotation()) % 360
-        l, b, r, t = self._pg.get_cropbox()
+        with PDFIUM_LOCK:                # libpdfium is not thread-safe (lib/pdfium_lock.py)
+            self._doc = pdfium.PdfDocument(self.path)
+            self._pg = self._doc[self.page_number - 1]
+            self.rotation = int(self._pg.get_rotation()) % 360
+            l, b, r, t = self._pg.get_cropbox()
         self._box = (l, b, r, t)
         uw, uh = r - l, t - b
         self.width, self.height = ((uh, uw) if self.rotation in (90, 270)
@@ -79,7 +82,8 @@ class PlanPage:
     @property
     def drawings(self) -> List[dict]:
         if self._drawings is None:
-            self._drawings = self._read_drawings()
+            with PDFIUM_LOCK:
+                self._drawings = self._read_drawings()
         return self._drawings
 
     def _layer_of(self, obj) -> Optional[str]:
@@ -239,15 +243,20 @@ class PlanPage:
         s = dpi / 72.0
         crop = (max(x0, 0.0), max(self.height - y1, 0.0),
                 max(self.width - x1, 0.0), max(y0, 0.0))
-        bm = self._pg.render(scale=s, crop=crop, draw_annots=False,
-                             may_draw_forms=False)
-        return bm.to_pil().convert("RGB")
+        with PDFIUM_LOCK:
+            bm = self._pg.render(scale=s, crop=crop, draw_annots=False,
+                                 may_draw_forms=False)
+            try:
+                return bm.to_pil().convert("RGB")
+            finally:
+                bm.close()
 
     def close(self):
-        try:
-            self._pg.close()
-        finally:
-            self._doc.close()
+        with PDFIUM_LOCK:
+            try:
+                self._pg.close()
+            finally:
+                self._doc.close()
 
 
 #: reading direction -> (char_dir, line_dir) for pdfplumber
