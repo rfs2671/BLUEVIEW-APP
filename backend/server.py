@@ -76,6 +76,7 @@ from lib import wa_security  # noqa: E402
 from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import dob_penalty  # noqa: E402
+from lib import model_outage  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
 from lib import datefmt  # noqa: E402
@@ -52443,6 +52444,31 @@ async def _send_failed_alert(kind: str, key: str, *, company_id: Any, user_id: A
             logger.warning(f"[send-failed] email failed: {type(e).__name__}")
 
 
+async def _agent_model_down(kind: str, status_code: int, body: Any,
+                            now: Optional[datetime] = None) -> None:
+    """The agent's model refused for billing or auth (lib/model_outage): an
+    ERROR line ("[agent-model-down]") and one email to the platform
+    operators per kind per hour - the notification id is the hour, so the
+    existing alert path's idempotency is the dedupe."""
+    now = now or datetime.now(timezone.utc)
+    logger.error(f"[agent-model-down] {kind}: HTTP {status_code} "
+                 f"{send_retry.scrub(str(body), 300)}")
+    from lib.notifications import send_notification
+    text = model_outage.alert_text(kind, status_code, body, AGENT_MODEL)
+    for recipient in await _waapi_monitor_recipients():
+        try:
+            await send_notification(
+                db, permit_renewal_id=model_outage.alert_key(kind, now),
+                trigger_type="agent_model_unavailable", recipient=recipient,
+                subject=("WhatsApp assistant down: OpenAI credits exhausted"
+                         if kind == model_outage.BILLING
+                         else "WhatsApp assistant down: OpenAI key refused"),
+                html="<p>" + text.replace("\n\n", "</p><p>") + "</p>",
+                text=text, metadata={"kind": kind, "status": status_code})
+        except Exception as e:
+            logger.warning(f"[agent-model-down] email failed: {type(e).__name__}")
+
+
 def _fmt_ny(at: datetime) -> str:
     from lib.datefmt import strftime as _f
     return _f(_utc(at).astimezone(wa_facts.NY), "%a %b %-d, %-I:%M %p ET")
@@ -68767,6 +68793,24 @@ async def _run_group_agent(
                         "messages": messages,
                     },
                 )
+                # ── THE MODEL IS DOWN FOR A REASON A PERSON MUST FIX ─────
+                #
+                # No credits, or a key OpenAI will not take: this raised into
+                # the catch-all below and returned None - NOREPLY - so the
+                # person who asked heard nothing and nobody was told
+                # (2026-10-26, credit_balance_exhausted). Now the operators
+                # get one alert an hour, and whoever addressed the assistant
+                # is told it is unavailable. A rate limit or a server error is
+                # neither, and keeps the old path.
+                if int(getattr(resp, "status_code", 200) or 200) >= 400:
+                    try:
+                        err_body = resp.json()
+                    except Exception:
+                        err_body = None
+                    down = model_outage.classify(int(resp.status_code), err_body)
+                    if down:
+                        await _agent_model_down(down, int(resp.status_code), err_body)
+                        return model_outage.UNAVAILABLE_REPLY if (dm or explicit_mention) else None
                 resp.raise_for_status()
                 choice = resp.json()["choices"][0]["message"]
                 tool_calls = choice.get("tool_calls") or []
