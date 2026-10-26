@@ -860,6 +860,74 @@ def best_per_attribute(ranked: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]
     return out
 
 
+# ── A MENTION OUTRANKS THE MEASUREMENT ────────────────────────────────────
+#
+# Asked how high the sidewalk shed is, the eight results were SIDEWALK SHED,
+# TYPICAL SIDEWALK SHED ELEVATION, a permit note and the shed letter's
+# letterhead - mentions, every one printing both words of the subject - and
+# 8' HIGH SHED, which prints one of them and the answer, ranked ninth to
+# eleventh (2026-10-25).
+#
+# Ruling 2026-10-26: an attribute question whose results state fewer than two
+# values gets up to two more records - a ninth and a tenth - that state one
+# and print a word of the SUBJECT. Nothing already chosen is moved or
+# dropped: replacing the last two slots, as first ruled, pushed out S-102.00's
+# "(2) 800S162-54 BOX BEAM" and S-401.00's BOXED HEADER details, which answer
+# their questions without a number.
+#
+# The shared word may not be the attribute itself. "Height" is printed on
+# 50'-0" BUILDING & BASE HEIGHT, and lending a ceiling question that line
+# because both say HEIGHT is the mention problem over again. Which words are
+# the attribute comes from the question's attribute slot (search_plans
+# `attribute`), not from a list here.
+#
+# NO SLOT, NO APPEND (ruling 2026-10-26). Without an attribute the question
+# has not said it wants a measurement, and nothing here reads the question
+# text to guess: "what are the beams" is answered by a member size that is
+# not a measurement, and inferring otherwise is the attribute table again.
+VALUE_SLOTS = 2
+_UNIT_VALUE = re.compile(
+    r"(?<![A-Za-z0-9.])\d[\d,]*(?:\.\d+)?\s*"
+    r"(?:SF|SQ\.?\s*FT|GPM|CFM|PSI|PSF|LBS?|MPH|HRS?|%|°F?|KW|BTUH?|MBH|GA)(?![A-Za-z])",
+    re.I)
+
+
+def states_a_value(record: Dict[str, Any]) -> bool:
+    """Does the record print a measurement: a dimension (plan_dimensions) or
+    a number with a unit of measure?"""
+    quote = str(record.get("quote") or "")
+    return bool(_dims.find(_dims.unreverse(quote))) or bool(_UNIT_VALUE.search(quote))
+
+
+def subject_words(subject: str, attribute: str = "") -> List[str]:
+    """The subject's words, less the words of the attribute asked about (in
+    either number: 'heights' is 'height')."""
+    attr = {f for a in search_terms(attribute) for f in term_forms(a)}
+    return [t for t in search_terms(subject) if not attr & set(term_forms(t))]
+
+
+def value_records(shown: Sequence[Dict[str, Any]], rest: Sequence[Dict[str, Any]],
+                  subject: str, attribute: str = "") -> List[Dict[str, Any]]:
+    """Up to VALUE_SLOTS records from `rest`, in its order, to follow `shown`
+    when fewer than VALUE_SLOTS of `shown` state a value: each states one and
+    prints a subject word that is not the attribute's. Nothing at all when
+    the call named no attribute."""
+    if not (attribute or "").strip():
+        return []
+    if sum(states_a_value(r) for r in shown) >= VALUE_SLOTS:
+        return []
+    words = subject_words(subject, attribute)
+    if not words:
+        return []
+    out = []
+    for r in rest:
+        if states_a_value(r) and printed_score(r, words)[0] > 0:
+            out.append(r)
+            if len(out) == VALUE_SLOTS:
+                break
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Set-wide checks
 # ══════════════════════════════════════════════════════════════════════════
@@ -2837,6 +2905,7 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
 __all__ = ["search_terms", "normalise_quotes",
            "match_score", "rank", "best_per_attribute",
            "answer_is_grounded", "contains_label", "render_records", "cite", "rank_by_best",
+           "VALUE_SLOTS", "states_a_value", "subject_words", "value_records",
            "meets_the_floor", "floor_terms", "ASKING_WORDS",
            "subject_is_known", "abbreviation_forms", "CONVENTIONS",
            "NOT_FOUND", "not_found_text",

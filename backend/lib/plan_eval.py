@@ -209,6 +209,11 @@ def validate_suite(suite: Dict[str, Any]) -> None:
         if also is not None and (not isinstance(also, list) or not also or not all(
                 isinstance(a, str) and a.strip() and a != c["subject"] for a in also)):
             raise SuiteError(f"{cid}: also is a non-empty list of other names, or absent")
+        attr = c.get("attribute")
+        if attr is not None and (not isinstance(attr, str) or not attr.strip()
+                                 or c.get("intent") != "attribute"):
+            raise SuiteError(f"{cid}: attribute names the property an attribute "
+                             f"question asks about, or is absent")
         truth = c.get("truth") or {}
         if truth.get("how") not in TRUTH_KINDS or not truth.get("evidence"):
             raise SuiteError(f"{cid}: truth must say how it was established, "
