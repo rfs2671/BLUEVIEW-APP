@@ -76,6 +76,18 @@ class TheWholeDimensionMustBePrinted(unittest.TestCase):
         ok, bad = _gate("The shed is 9 feet high.", ["8' HIGH SHED"])
         self.assertEqual((ok, bad), (False, ["9 feet"]))
 
+    def test_another_notation_binds_only_by_exact_equality(self):
+        # Lengths are compared as exact fractions, never rounded: 25.5' IS
+        # 25'-6" (306 in); 25.4' is 304.8 in, which no rounding may carry to
+        # 25'-6", and 25'-5" (305 in) is not 25.4' either.
+        self.assertEqual(_gate("It is 25'-6\".", ["25.5'"]), (True, []))
+        self.assertEqual(_gate("It is 25'-6\".", ["25.4'"]), (False, ["25'-6\""]))
+        self.assertEqual(_gate("It is 25'-5\".", ["25.4'"]), (False, ["25'-5\""]))
+        self.assertEqual(_gate("It is 25.4'.", ["25'-6\""]), (False, ["25.4'"]))
+        self.assertEqual(_gate("It is 0'-0 3/4\".", ["3/4\""]), (True, []))
+        self.assertEqual(_gate("It is 0.75\".", ["3/4\""]), (True, []))
+        self.assertEqual(_gate("It is 0.7\".", ["3/4\""]), (False, ["0.7\""]))
+
     def test_a_size_printed_with_its_unit_after_binds(self):
         quote = "Use MAGZO Adjustable Window Screen, 48x99 Inch Durable Fiberglass Screen Mesh"
         self.assertEqual(_gate("It specifies a 48x99 Inch screen mesh.", [quote]), (True, []))
