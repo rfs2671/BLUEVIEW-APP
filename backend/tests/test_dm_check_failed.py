@@ -90,7 +90,7 @@ class TheLog(_Site, unittest.TestCase):
         with _Ctx(db=self.db) as c, patch.object(server, "_dm_llm", dm_llm), \
                 patch.object(server, "_react_to_message", react), \
                 patch.object(server, "_dm_scope", scope), \
-                patch.object(server, "OPENAI_API_KEY", "k"):
+                patch.object(server, "LLM_API_KEY", "k"):
             _run(server._process_whatsapp_message(_payload(CHAT, question, "m1")))
             sends = [p["message"] for p in c.wire.calls if "message" in p]
         return sends[-1], self.db[server.DM_ANSWERS].rows[-1]

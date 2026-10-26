@@ -24,12 +24,15 @@ import math
 import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from lib import llm_provider
 
 COLLECTION = "project_memory"
 STATE = "project_memory_state"
-EMBED_MODEL = "text-embedding-3-small"
-EMBED_DIMS = 1536
-ANSWER_MODEL = "gpt-4o"
+# DeepInfra (lib/llm_provider, 2026-10-26): bge-m3 at 1024 dimensions. Rows
+# embedded by another model are re-embedded by the index tick (embed_model).
+EMBED_MODEL = llm_provider.EMBED_MODEL
+EMBED_DIMS = llm_provider.EMBED_DIMS
+ANSWER_MODEL = llm_provider.CHAT_MODEL
 TEXT_INDEX = "project_memory_text"
 VECTOR_INDEX = "project_memory_vector"
 

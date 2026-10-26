@@ -76,6 +76,7 @@ from lib import wa_security  # noqa: E402
 from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import dob_penalty  # noqa: E402
+from lib import model_outage  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
 from lib import datefmt  # noqa: E402
@@ -1036,6 +1037,11 @@ WAAPI_TOKEN = os.environ.get("WAAPI_TOKEN", "")
 WHATSAPP_VENDOR = os.environ.get("WHATSAPP_VENDOR", "waapi")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+# OpenAI is retired (2026-10-26): every model call goes to DeepInfra
+# (lib/llm_provider). Nothing reads OPENAI_API_KEY; it stays in Railway until
+# the switch is confirmed in production.
+from lib import llm_provider  # noqa: E402
+LLM_API_KEY = llm_provider.API_KEY
 
 # Qwen-VL (OpenAI-compatible) — used for OSHA/SST card reading at the gate,
 # plan indexing, query-time sheet matching, the WhatsApp plan QA, the card
@@ -48070,22 +48076,22 @@ async def _handle_gc_confirm_reply(chat_id: str, answer: str) -> bool:
 async def _gc_ai_line(kind: str, facts: Dict[str, str]) -> Optional[str]:
     """One plain-language sentence from the record's facts alone, or None.
     The caller checks it against the same facts (wa_alerts.what_line)."""
-    if not OPENAI_API_KEY or not facts or kind not in wa_alerts.AI_KINDS:
+    if not LLM_API_KEY or not facts or kind not in wa_alerts.AI_KINDS:
         return None
     payload = {
-        "model": "gpt-4o-mini", "temperature": 0, "max_tokens": 80,
+        "model": llm_provider.CHAT_MODEL, "temperature": 0, "max_tokens": 80,
         "messages": [
             {"role": "system", "content": wa_alerts.AI_SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(
                 {"what": wa_alerts.LABEL.get(kind, kind), **facts}, sort_keys=True)},
         ],
     }
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}",
+    headers = {"Authorization": f"Bearer {LLM_API_KEY}",
                "Content-Type": "application/json"}
     try:
         async with ServerHttpClient(timeout=20) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
+                llm_provider.CHAT_URL,
                 json=payload, headers=headers)
         return str(resp.json()["choices"][0]["message"]["content"]).strip() or None
     except Exception as e:
@@ -49004,15 +49010,15 @@ def _attention_disabled() -> bool:
 async def _attention_llm(messages: list) -> Optional[dict]:
     """One gpt-4o-mini call: {content, prompt_tokens, completion_tokens}, or
     None on any failure."""
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
         async with ServerHttpClient(timeout=30) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={
-                    "model": "gpt-4o-mini",
+                    "model": llm_provider.CHAT_MODEL,
                     "temperature": 0,
                     "max_tokens": 500,
                     "messages": messages,
@@ -50204,7 +50210,7 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
               "completion_tokens": 0, "call_cap": False}
     if _attention_disabled():
         return report
-    if llm is None and not OPENAI_API_KEY:
+    if llm is None and not LLM_API_KEY:
         # No model: start no cursor and move none, rather than fail every
         # message three times and skip it.
         report["no_model"] = True
@@ -52443,6 +52449,60 @@ async def _send_failed_alert(kind: str, key: str, *, company_id: Any, user_id: A
             logger.warning(f"[send-failed] email failed: {type(e).__name__}")
 
 
+async def _agent_model_down(kind: str, status_code: int, body: Any,
+                            now: Optional[datetime] = None,
+                            where: str = "the WhatsApp assistant") -> None:
+    """An OpenAI call a person is waiting on was refused for billing or auth
+    (lib/model_outage): an ERROR line ("[agent-model-down]", naming where)
+    and one email to the platform operators per kind per hour - the
+    notification id is the hour, so the existing alert path's idempotency is
+    the dedupe, across every caller that reports here."""
+    now = now or datetime.now(timezone.utc)
+    logger.error(f"[agent-model-down] {kind}: HTTP {status_code} in {where} "
+                 f"{send_retry.scrub(str(body), 300)}")
+    from lib.notifications import send_notification
+    text = (model_outage.alert_text(kind, status_code, body, AGENT_MODEL)
+            + f"\n\nFirst seen this hour in: {where}.")
+    for recipient in await _waapi_monitor_recipients():
+        try:
+            await send_notification(
+                db, permit_renewal_id=model_outage.alert_key(kind, now),
+                trigger_type="agent_model_unavailable", recipient=recipient,
+                subject=("WhatsApp assistant down: DeepInfra balance exhausted"
+                         if kind == model_outage.BILLING
+                         else "WhatsApp assistant down: DeepInfra key refused"),
+                html="<p>" + text.replace("\n\n", "</p><p>") + "</p>",
+                text=text, metadata={"kind": kind, "status": status_code})
+        except Exception as e:
+            logger.warning(f"[agent-model-down] email failed: {type(e).__name__}")
+
+
+async def _alert_if_model_refused(resp: Any, where: str) -> None:
+    """A user-facing OpenAI call's response: when it is a billing or auth
+    refusal, the same alert as the assistant's (_agent_model_down). Changes
+    nothing about what the caller then does with `resp`, and never raises."""
+    try:
+        status = int(getattr(resp, "status_code", 200) or 200)
+        if status < 400:
+            return
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        kind = model_outage.classify(status, body)
+        if kind:
+            await _agent_model_down(kind, status, body, where=where)
+    except Exception as e:
+        logger.warning(f"[agent-model-down] check failed in {where}: {type(e).__name__}")
+
+
+async def _voice_model_refused(status: int, body: Any) -> None:
+    """lib/voice_ingest's hook: a voice note's Whisper call was refused."""
+    kind = model_outage.classify(int(status or 0), body)
+    if kind:
+        await _agent_model_down(kind, int(status), body, where="voice note transcription")
+
+
 def _fmt_ny(at: datetime) -> str:
     from lib.datefmt import strftime as _f
     return _f(_utc(at).astimezone(wa_facts.NY), "%a %b %-d, %-I:%M %p ET")
@@ -54529,7 +54589,7 @@ async def _upcoming_chat_tick(now: Optional[datetime] = None, llm=None,
     if _upcoming_disabled():
         report["disabled"] = True
         return report
-    if llm is None and not OPENAI_API_KEY:
+    if llm is None and not LLM_API_KEY:
         report["no_model"] = True
         return report
     try:
@@ -55080,18 +55140,19 @@ async def _dm_scope(body: str) -> str:
     rule = wa_assistant.question_scope(body)
     if rule:
         return rule
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return wa_assistant.SCOPE_PROJECT
     try:
         async with ServerHttpClient(timeout=10) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
-                json={"model": "gpt-4o-mini", "temperature": 0, "max_tokens": 3,
+                llm_provider.CHAT_URL,
+                json={"model": llm_provider.CHAT_MODEL, "temperature": 0, "max_tokens": 3,
                       "messages": [
                           {"role": "system", "content": wa_assistant.SCOPE_CLASSIFIER_PROMPT},
                           {"role": "user", "content": body}]},
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}",
                          "Content-Type": "application/json"})
+            await _alert_if_model_refused(resp, "DM question routing")
         word = str(resp.json()["choices"][0]["message"]["content"]).strip().lower()
     except Exception:
         return wa_assistant.SCOPE_PROJECT
@@ -55100,17 +55161,18 @@ async def _dm_scope(body: str) -> str:
 
 
 async def _dm_llm(system: str, user_text: str) -> Optional[str]:
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
         async with ServerHttpClient(timeout=30) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
+                llm_provider.CHAT_URL,
                 json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 400,
                       "messages": [{"role": "system", "content": system},
                                    {"role": "user", "content": user_text}]},
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}",
                          "Content-Type": "application/json"})
+            await _alert_if_model_refused(resp, "DM answer")
         return str(resp.json()["choices"][0]["message"]["content"]).strip() or None
     except Exception as e:
         logger.warning(f"[wa-assistant] model call failed: {type(e).__name__}")
@@ -55304,17 +55366,18 @@ async def _dm_subs_fallback(ident: dict, question: str, projects: Optional[list]
 
 async def _dm_subs_model(messages: list, tool_choice: Any) -> Optional[dict]:
     """One chat-completions turn with the subs tools; the message, or None."""
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
         async with ServerHttpClient(timeout=30) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
+                llm_provider.CHAT_URL,
                 json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 400,
                       "tools": wa_subs.TOOLS, "tool_choice": tool_choice,
                       "messages": messages},
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}",
                          "Content-Type": "application/json"})
+            await _alert_if_model_refused(resp, "DM subs question")
             resp.raise_for_status()
         return resp.json()["choices"][0]["message"]
     except Exception as e:
@@ -55523,13 +55586,13 @@ def _memory_ny(dt: Any) -> Optional[datetime]:
 async def _memory_embed_many(texts: List[str]) -> Optional[List[list]]:
     """One embeddings call for a batch. None on any failure (retried next
     run)."""
-    if not OPENAI_API_KEY or not texts:
+    if not LLM_API_KEY or not texts:
         return None
     try:
         async with ServerHttpClient(timeout=60.0) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/embeddings",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                llm_provider.EMBED_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}",
                          "Content-Type": "application/json"},
                 json={"model": project_memory.EMBED_MODEL,
                       "input": [t[:8000] for t in texts]})
@@ -55791,8 +55854,13 @@ async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
     # 3. Embeddings, in batches, bounded per run.
     left = MEMORY_EMBED_PER_RUN
     while left > 0:
+        # A row embedded by another model is not comparable (OpenAI's
+        # 1536-dimension vectors against bge-m3's 1024, 2026-10-26): it is
+        # embedded again, in the same bounded batches, until none is left.
         todo = await db.project_memory.find(
-            {"embedded": False}, {"_id": 1, "text": 1}).limit(
+            {"$or": [{"embedded": False},
+                     {"embed_model": {"$ne": project_memory.EMBED_MODEL}}]},
+            {"_id": 1, "text": 1}).limit(
             min(MEMORY_EMBED_BATCH, left)).to_list(None)
         if not todo:
             break
@@ -55803,6 +55871,7 @@ async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
         for t, v in zip(todo, vecs):
             await db.project_memory.update_one(
                 {"_id": t["_id"]}, {"$set": {"embedding": v, "embedded": True,
+                                             "embed_model": project_memory.EMBED_MODEL,
                                              "embedded_at": now}})
         report["embedded"] += len(todo)
         left -= len(todo)
@@ -55910,6 +55979,16 @@ _MEMORY_SEARCH_INDEXES = (
 )
 
 
+def _vector_dims(ix: dict) -> Optional[int]:
+    """The dimensions a listed vector search index was defined with, or None
+    when its definition does not say."""
+    fields = ((ix or {}).get("latestDefinition") or (ix or {}).get("definition") or {}).get("fields") or []
+    for f in fields:
+        if isinstance(f, dict) and f.get("type") == "vector" and f.get("numDimensions"):
+            return int(f["numDimensions"])
+    return None
+
+
 def _memory_err(e: Exception) -> str:
     """A short, log-safe reason: the error class, Mongo's code name, and the
     start of its message."""
@@ -55946,6 +56025,26 @@ async def _memory_atlas_check(create: bool = False, log: bool = False) -> dict:
                     reasons.append(f"{d['name']} created")
                 except Exception as e:
                     reasons.append(f"{d['name']} not created ({_memory_err(e)})")
+            try:
+                have = await listed()
+            except Exception as e:
+                reasons.append(f"cannot list search indexes ({_memory_err(e)})")
+                have = {}
+        # AN INDEX BUILT FOR ANOTHER MODEL'S VECTORS IS REDEFINED. The vector
+        # index was built at 1536 dimensions (OpenAI); bge-m3's are 1024
+        # (2026-10-26). Created-if-missing never changed it, so a query
+        # vector of the new size would be refused by the old index forever.
+        stale = [d for d in _MEMORY_SEARCH_INDEXES
+                 if d["type"] == "vectorSearch" and d["name"] in have
+                 and _vector_dims(have[d["name"]]) not in (None, project_memory.EMBED_DIMS)]
+        if create and stale:
+            for d in stale:
+                try:
+                    await db.command({"updateSearchIndex": project_memory.COLLECTION,
+                                      "name": d["name"], "definition": d["definition"]})
+                    reasons.append(f"{d['name']} redefined at {project_memory.EMBED_DIMS} dimensions")
+                except Exception as e:
+                    reasons.append(f"{d['name']} not redefined ({_memory_err(e)})")
             try:
                 have = await listed()
             except Exception as e:
@@ -56199,17 +56298,18 @@ def _memory_when_key(r: dict) -> datetime:
 
 
 async def _memory_llm(messages: list) -> Optional[str]:
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
         async with ServerHttpClient(timeout=60.0) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}",
                          "Content-Type": "application/json"},
                 json={"model": project_memory.ANSWER_MODEL, "temperature": 0,
                       "max_tokens": 1200, "messages": messages,
                       "response_format": {"type": "json_object"}})
+            await _alert_if_model_refused(resp, "DM project-history answer")
             if resp.status_code != 200:
                 logger.warning(f"[memory] answer model {resp.status_code}")
                 return None
@@ -56451,7 +56551,7 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
     reply, used = fixed, "fixed_by_design" if kind == wa_headcount.SUBS else "fixed"
     rejected = {}
     phrased = await _dm_llm(wa_headcount.PHRASE_PROMPT, fixed) \
-        if OPENAI_API_KEY and kind != wa_headcount.SUBS else None
+        if LLM_API_KEY and kind != wa_headcount.SUBS else None
     if phrased:
         why = wa_headcount.check(phrased, data, f"{short_job} {job['label']}", since_label)
         if why is None and len(phrased) > max(len(fixed), wa_style.MAX_CHARS):
@@ -56531,18 +56631,19 @@ async def _dm_action_model(text: str, jobs: List[str]) -> Optional[dict]:
     """The model's reading of a request (lib/dm_actions.MODEL_PROMPT), as it
     answered -- dm_actions.clean() checks it. None without a key, on any
     error, or when the answer is not one JSON object."""
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     system = dm_actions.MODEL_PROMPT + "\n\nTheir jobs: " + ("; ".join(jobs[:40]) or "none yet")
     try:
         async with ServerHttpClient(timeout=20.0) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 300,
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": system},
                                    {"role": "user", "content": str(text)[:1000]}]})
+            await _alert_if_model_refused(resp, "DM action reading")
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
         got = json.loads(content)
@@ -60496,18 +60597,18 @@ async def transcribe_audio(audio_bytes: bytes) -> str:
     construction vocabulary + the handful of languages our crews
     actually speak.
     """
-    if not OPENAI_API_KEY:
-        logger.warning("Transcription skipped — OPENAI_API_KEY not set")
+    if not LLM_API_KEY:
+        logger.warning("Transcription skipped — LLM_API_KEY not set")
         return ""
     if not audio_bytes or len(audio_bytes) < 200:
         logger.warning(f"Transcription skipped — audio too small ({len(audio_bytes) if audio_bytes else 0} bytes)")
         return ""
     try:
-        url = "https://api.openai.com/v1/audio/transcriptions"
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        url = llm_provider.TRANSCRIBE_URL
+        headers = {"Authorization": f"Bearer {LLM_API_KEY}"}
         files_payload = {
             "file": ("audio.ogg", io.BytesIO(audio_bytes), "audio/ogg"),
-            "model": (None, "whisper-1"),
+            "model": (None, llm_provider.WHISPER_MODEL),
             # Biasing vocabulary, NOT a language lock.
             "prompt": (
                 None,
@@ -61152,16 +61253,16 @@ async def _detect_material_request(message_body: str, project_id: str, company_i
     """Use GPT-4o-mini to detect if a message contains a material request."""
     if not message_body or len(message_body.strip()) < 15:
         return None
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
 
     try:
         async with ServerHttpClient(timeout=15) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={
-                    "model": "gpt-4o-mini",
+                    "model": llm_provider.CHAT_MODEL,
                     "temperature": 0,
                     "messages": [
                         {"role": "system", "content": """You analyze construction site WhatsApp messages to detect material requests.
@@ -62415,19 +62516,19 @@ async def _generate_embedding(text: str) -> Optional[list]:
 
     Returns None on any failure — callers must tolerate missing embeddings.
     """
-    if not OPENAI_API_KEY or not text:
+    if not LLM_API_KEY or not text:
         return None
     # OpenAI caps at 8192 tokens per input; truncate aggressively at char level.
     text = text.strip()[:20000]
     try:
         async with ServerHttpClient(timeout=30.0) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/embeddings",
+                llm_provider.EMBED_URL,
                 headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Authorization": f"Bearer {LLM_API_KEY}",
                     "Content-Type": "application/json",
                 },
-                json={"model": "text-embedding-3-small", "input": text},
+                json={"model": llm_provider.EMBED_MODEL, "input": text},
             )
             if resp.status_code != 200:
                 logger.warning(f"embedding API {resp.status_code}: {resp.text[:200]}")
@@ -62821,6 +62922,33 @@ async def _glyph_page_ids(pid: str) -> List[str]:
     return sorted(ids)
 
 
+async def _reindex_in_flight(project_id: str, since: Optional[datetime] = None) -> List[dict]:
+    """Re-index jobs that make the project's pages unsafe to read: any queued
+    or running, and - with `since` - any enqueued or started after it, even
+    one already finished (the pages it rewrote changed under a pass that
+    began earlier).
+
+    ── WHY THE PASS WAITS (2026-10-26) ──────────────────────────────────────
+    #
+    # A re-index deletes the file's page rows first and writes them back one
+    # page at a time. The glyph pass was started a minute after a re-index of
+    # AR 3.28.25 - whose pages include the filed track's architectural plans -
+    # and paired the mechanical sheets against a set with that file missing:
+    # 221 rows against 181, 48 count answers bound to a wrong figure (EF-2 in
+    # 1C, PTAC-1 in every fourth-floor unit), and 46 set-health items for
+    # sheets that were only being rewritten."""
+    q: Dict[str, Any] = {"project_id": str(project_id)}
+    if since is None:
+        q["status"] = {"$in": list(PLAN_INDEX_ACTIVE)}
+    else:
+        q["$or"] = [{"status": {"$in": list(PLAN_INDEX_ACTIVE)}},
+                    {"enqueued_at": {"$gte": since}}, {"started_at": {"$gte": since}}]
+    rows = await db[PLAN_INDEX_JOBS].find(
+        q, {"file_name": 1, "status": 1, "enqueued_at": 1, "started_at": 1}).to_list(100)
+    return [{"job_id": str(r["_id"]), "file_name": r.get("file_name"),
+             "status": r.get("status")} for r in rows]
+
+
 async def _plan_glyph_pass(project_id: str) -> dict:
     """Run the equipment-placement pass over the project's current sheets
     and write its rows (lib.plan_glyph_pass, lib.plan_emit) - once per
@@ -62834,6 +62962,7 @@ async def _plan_glyph_pass(project_id: str) -> dict:
     from lib.plan_page import PlanPage
 
     pid = str(project_id)
+    began = datetime.now(timezone.utc)
     tracks, files = await _glyph_pages(pid)
     by_track: List[Tuple[str, List[dict]]] = []
     door_pages, seen_doors, current_ids = [], set(), set()
@@ -62915,6 +63044,16 @@ async def _plan_glyph_pass(project_id: str) -> dict:
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
         r["ordinal"] = i
+    # A RE-INDEX DURING THE PASS: the pages it read may not be the set's.
+    # Nothing is written - the rows and set health from the last good pass
+    # stay - and the operator runs it again when the re-index is done.
+    late = await _reindex_in_flight(pid, since=began)
+    if late:
+        summary["aborted"] = "a re-index ran during the pass; nothing written"
+        summary["reindex"] = late
+        logger.warning("plan glyph pass %s aborted, nothing written: re-index during the pass %s",
+                       pid, late)
+        return summary
     summary["written"] = await _write_glyph_records(pid, rows)
     summary["set_health"] = await _write_set_health(pid, health)
     logger.info("plan glyph pass %s: %s", pid, summary)
@@ -65222,18 +65361,18 @@ async def _parse_plan_query(query: str) -> dict:
     Returns dict with keys: sheet_number, discipline, floor, sheet_type,
     keywords (list), question (str|None), dob_route (bool).
     """
-    if not OPENAI_API_KEY or not query:
+    if not LLM_API_KEY or not query:
         return {}
     try:
         async with ServerHttpClient(timeout=20.0) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
+                llm_provider.CHAT_URL,
                 headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Authorization": f"Bearer {LLM_API_KEY}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "gpt-4o-mini",
+                    "model": llm_provider.CHAT_MODEL,
                     "temperature": 0,
                     "max_tokens": 250,
                     "response_format": {"type": "json_object"},
@@ -68567,7 +68706,7 @@ async def _agent_context_block(
 # 800 tokens, up from 500. A reply that leads with the answer and cites its
 # source is longer than a reply that does neither, and a truncated answer is
 # worse than a slightly slower one.
-AGENT_MODEL = "gpt-4o"
+AGENT_MODEL = llm_provider.CHAT_MODEL
 # Never offered in a DM:
 #   start_permit_renewal, start_checklist  change something / start a flow;
 #   list_workers  reads the WHOLE company's roster, which a PM may not see
@@ -68605,7 +68744,7 @@ async def _run_group_agent(
     # can route on the sentence rather than on the agent's rebuilt keywords.
     """Run the tool-use agent over a bot-addressed message. Returns the reply
     text to send (or None for NOREPLY / silence)."""
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
 
     # The caller resolved the binding; this asks again, because a function
@@ -68793,9 +68932,9 @@ async def _run_group_agent(
                                     for t in enabled_tools) else None)
             for _turn in range(4):  # max 4 tool rounds
                 resp = await client_http.post(
-                    "https://api.openai.com/v1/chat/completions",
+                    llm_provider.CHAT_URL,
                     headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Authorization": f"Bearer {LLM_API_KEY}",
                         "Content-Type": "application/json",
                     },
                     json={
@@ -68808,6 +68947,24 @@ async def _run_group_agent(
                         "messages": messages,
                     },
                 )
+                # ── THE MODEL IS DOWN FOR A REASON A PERSON MUST FIX ─────
+                #
+                # No credits, or a key OpenAI will not take: this raised into
+                # the catch-all below and returned None - NOREPLY - so the
+                # person who asked heard nothing and nobody was told
+                # (2026-10-26, credit_balance_exhausted). Now the operators
+                # get one alert an hour, and whoever addressed the assistant
+                # is told it is unavailable. A rate limit or a server error is
+                # neither, and keeps the old path.
+                if int(getattr(resp, "status_code", 200) or 200) >= 400:
+                    try:
+                        err_body = resp.json()
+                    except Exception:
+                        err_body = None
+                    down = model_outage.classify(int(resp.status_code), err_body)
+                    if down:
+                        await _agent_model_down(down, int(resp.status_code), err_body)
+                        return model_outage.UNAVAILABLE_REPLY if (dm or explicit_mention) else None
                 resp.raise_for_status()
                 choice = resp.json()["choices"][0]["message"]
                 tool_calls = choice.get("tool_calls") or []
@@ -70897,17 +71054,18 @@ async def _punch_brain_model(state: dict, said: str, dm_chat: Optional[str] = No
     the brain's model reads it with the chat's last turns."""
     if _WALK_BRAIN.get():
         return await _walk_brain_json(punch_brain.PROMPT, punch_brain.user_message(state, said), dm_chat)
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
         async with ServerHttpClient(timeout=20.0) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 500,
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": punch_brain.PROMPT},
                                    {"role": "user", "content": punch_brain.user_message(state, said)}]})
+            await _alert_if_model_refused(resp, "punch walkthrough")
             resp.raise_for_status()
             got = json.loads(resp.json()["choices"][0]["message"]["content"])
         return got if isinstance(got, dict) else None
@@ -71416,17 +71574,18 @@ async def _punch_batch_model(text: str, prompt: Optional[str] = None) -> Optiona
     if _WALK_BRAIN.get():
         return await _walk_brain_json(prompt or punch_batch.BATCH_PROMPT, str(text)[:4000],
                                        max_tokens=600)
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
         async with ServerHttpClient(timeout=15.0) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 200,
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": prompt or punch_batch.BATCH_PROMPT},
                                    {"role": "user", "content": str(text)[:4000]}]})
+            await _alert_if_model_refused(resp, "punch walkthrough (batch)")
             resp.raise_for_status()
             got = json.loads(resp.json()["choices"][0]["message"]["content"])
         return got if isinstance(got, dict) else None
@@ -71902,17 +72061,18 @@ async def _punch_describe_blanks(sess: dict, dm_chat: Optional[str] = None,
 async def _punch_loc_model(text: str) -> Optional[dict]:
     """The model's reading of a message between photos (LOC_MODEL_PROMPT);
     None without a key, on any error, or when it is not one JSON object."""
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
         async with ServerHttpClient(timeout=15.0) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 150,
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": punch.LOC_MODEL_PROMPT},
                                    {"role": "user", "content": str(text)[:500]}]})
+            await _alert_if_model_refused(resp, "punch walkthrough (location)")
             resp.raise_for_status()
             got = json.loads(resp.json()["choices"][0]["message"]["content"])
         return got if isinstance(got, dict) else None
@@ -74230,9 +74390,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 try:
                     vresult = await _vi.process_voice_note(
                         audio_bytes,
-                        openai_api_key=OPENAI_API_KEY,
+                        openai_api_key=LLM_API_KEY,
                         prompt=await _voice_prompt(msg_company_id, project_id),
                         language=whisper_hint,
+                        model_refused=_voice_model_refused,
                         sentry_capture=(
                             (lambda m, level="warning":
                                 sentry_sdk.capture_message(m, level=level))
@@ -74278,7 +74439,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 if direct or unreliable or yi_group:
                     try:
                         english_direct = await _vi.translate_whisper(
-                            audio_bytes, openai_api_key=OPENAI_API_KEY) or None
+                            audio_bytes, openai_api_key=LLM_API_KEY) or None
                     except Exception as _e:
                         logger.warning(f"[voice] direct translation failed: "
                                        f"{type(_e).__name__}")
@@ -74887,13 +75048,14 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 from lib.voice_ingest import process_voice_note as _process_voice
                 vresult = await _process_voice(
                     audio_bytes,
-                    openai_api_key=OPENAI_API_KEY,
+                    openai_api_key=LLM_API_KEY,
                     # A DM names no job yet: the glossary only.
                     prompt=await _voice_prompt(None, None),
                     language=await _sender_whisper_language(
                         ident.get("company_id"), _dm_chat_ids(dm_chat) + [
                             j for j in [wa_voice.phone_sender_jid(
                                 (ident.get("user") or {}).get("phone"))] if j]),
+                    model_refused=_voice_model_refused,
                     sentry_capture=(
                         (lambda msg, level="warning":
                             sentry_sdk.capture_message(msg, level=level))
@@ -78368,6 +78530,7 @@ async def reindex_project_document(
                               dict(file_rec), source="reindex_document", resume=resume)
     return {
         "status": "queued",
+        "job_id": str(file_rec["_id"]),
         "file_name": file_rec.get("name"),
         "total_pages": total_pages,
     }
@@ -78403,7 +78566,7 @@ async def reindex_all_project_files(
     if not files:
         return {"queued": 0, "files": []}
 
-    queued = []
+    queued, jobs = [], []
     for fr in files:
         # Wipe existing index entries so stale v1 pages don't linger — unless
         # resuming an interrupted run.
@@ -78415,7 +78578,8 @@ async def reindex_all_project_files(
         await _enqueue_plan_index(project_id, fr.get("company_id") or company_id or "",
                                   dict(fr), source="reindex_all", resume=resume)
         queued.append(fr.get("name"))
-    return {"queued": len(queued), "files": queued}
+        jobs.append({"job_id": str(fr["_id"]), "file_name": fr.get("name")})
+    return {"queued": len(queued), "files": queued, "jobs": jobs}
 
 
 # ==================== TEMP-MEDIA PROXY (for WaAPI preflight) ====================
@@ -79317,6 +79481,13 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
     pid = str(project_id)
     if pid in _GLYPH_PASS_RUNNING:
         return {"started": False, "reason": "a pass is already running"}
+    busy = await _reindex_in_flight(pid)
+    if busy:
+        raise HTTPException(status_code=409, detail={
+            "started": False,
+            "reason": "a re-index is in progress for this project; run the pass when it is "
+                      "done (GET .../plan-index/jobs/{job_id})",
+            "jobs": busy})
     _GLYPH_PASS_RUNNING.add(pid)
 
     async def _go():
@@ -79329,6 +79500,39 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
 
     asyncio.create_task(_go())
     return {"started": True}
+
+
+@api_router.get("/projects/{project_id}/plan-glyphs/status",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def plan_glyph_pass_status(project_id: str, current_user=Depends(get_admin_user)):
+    """Read-only: is a pass running here, when did the last one write, and is
+    a re-index in flight that would make a new one refuse to start.
+
+    `running` is this server process's own flag - the pass runs in the
+    process that started it."""
+    from lib.plan_set_health import COLLECTION as SET_HEALTH
+    pid = str(project_id)
+    newest = await db[PLAN_RECORDS].find_one(
+        {"project_id": pid, "record_type": "glyph"}, {"created_at": 1},
+        sort=[("created_at", -1)])
+    return {"running": pid in _GLYPH_PASS_RUNNING,
+            "last_written_at": (newest or {}).get("created_at"),
+            "rows": await db[PLAN_RECORDS].count_documents({"project_id": pid, "record_type": "glyph"}),
+            "set_health_items": await db[SET_HEALTH].count_documents({"project_id": pid}),
+            "reindex_in_flight": await _reindex_in_flight(pid)}
+
+
+@api_router.get("/projects/{project_id}/plan-index/jobs/{job_id}",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def plan_index_job_status(project_id: str, job_id: str, current_user=Depends(get_admin_user)):
+    """Read-only: one re-index job - queued, running, done, failed or
+    cancelled - with its page progress. The job id is what the re-index
+    routes return (the file's id)."""
+    j = await db[PLAN_INDEX_JOBS].find_one({"_id": str(job_id), "project_id": str(project_id)})
+    if not j:
+        raise HTTPException(status_code=404, detail="No such job on this project")
+    return {k: j.get(k) for k in ("status", "file_name", "pages_done", "pages_total", "enqueued_at",
+                                  "started_at", "finished_at", "error", "attempts")} | {"job_id": str(j["_id"])}
 
 
 @api_router.post("/projects/{project_id}/plan-index/{file_id}/retry",
@@ -79814,15 +80018,15 @@ async def _summarize_and_send_for_group(group_doc: dict) -> None:
     # Named by its address in the group, like every other bot message.
     project_name = wa_groups.project_label(project)
 
-    if not OPENAI_API_KEY:
-        logger.info(f"Daily summary skipped for {project_name}: no OPENAI_API_KEY")
+    if not LLM_API_KEY:
+        logger.info(f"Daily summary skipped for {project_name}: no LLM_API_KEY")
         return
 
     try:
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        url = llm_provider.CHAT_URL
+        headers = {"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"}
         gpt_payload = {
-            "model": "gpt-4o",
+            "model": llm_provider.CHAT_MODEL,
             "temperature": 0.3,
             "max_tokens": 500,
             "messages": [
@@ -80187,19 +80391,19 @@ async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversati
                         wa_group_id=group_id, company_id=company_id,
                         project_id=project_id)
         return None
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         logger.info(
-            f"checklist extraction skipped (no OPENAI_API_KEY) "
+            f"checklist extraction skipped (no LLM_API_KEY) "
             f"project={project_id} group={group_id}"
         )
         return None
 
     # Call GPT-4o-mini — structured extraction, forced JSON
     try:
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        url = llm_provider.CHAT_URL
+        headers = {"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"}
         payload = {
-            "model": "gpt-4o-mini",
+            "model": llm_provider.CHAT_MODEL,
             "temperature": 0.2,
             "max_tokens": 900,
             "response_format": {"type": "json_object"},
@@ -80210,6 +80414,7 @@ async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversati
         }
         async with ServerHttpClient(timeout=40.0) as client_http:
             resp = await client_http.post(url, json=payload, headers=headers)
+            await _alert_if_model_refused(resp, "checklist from a group conversation")
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
     except Exception as e:

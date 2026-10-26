@@ -702,13 +702,13 @@ class Chat(unittest.TestCase):
             async def post(self, url, headers=None, json=None):
                 sent.update(json)
                 return _Resp()
-        with patch.object(server, "ServerHttpClient", _Client), patch.object(server, "OPENAI_API_KEY", "k"):
+        with patch.object(server, "ServerHttpClient", _Client), patch.object(server, "LLM_API_KEY", "k"):
             got = asyncio.run(server._dm_action_model("add 9 menahan", ["588 Thomas St"]))
         self.assertEqual(got, {"action": "add_job", "address": "9 menahan"})
         self.assertEqual(sent["response_format"], {"type": "json_object"})
         self.assertEqual(sent["temperature"], 0)
         self.assertIn("588 Thomas St", sent["messages"][0]["content"])
-        with patch.object(server, "OPENAI_API_KEY", ""):
+        with patch.object(server, "LLM_API_KEY", ""):
             self.assertIsNone(asyncio.run(server._dm_action_model("x", [])))
 
 

@@ -52,8 +52,9 @@ class TheTranslationsEndpoint(unittest.TestCase):
         got = asyncio.run(voice_ingest.translate_whisper(
             b"OggS" + b"\0" * 40, openai_api_key="k", http_client=http))
         self.assertEqual(got, ENGLISH)
-        self.assertEqual(http.urls, [("https://api.openai.com/v1/audio/translations",
-                                      "whisper-1", "voice.ogg")])
+        from lib import llm_provider   # DeepInfra's Whisper since 2026-10-26
+        self.assertEqual(http.urls, [(llm_provider.TRANSLATE_URL,
+                                      llm_provider.WHISPER_MODEL, "voice.ogg")])
 
     def test_one_retry(self):
         http = self._Http(fail=1)
