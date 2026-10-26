@@ -137,7 +137,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   // Behind `sheet_tiles_viewer`. A drawing whose tiles are ready opens in the
   // GPU tile viewer (viewer/): no PDF is downloaded or parsed. Anything else —
   // flag off, tiles still compiling, a failed compile, an old backend, a runtime
-  // without Skia, a render error — keeps the pdf.js path below exactly as it was.
+  // a phone without react-native-webview, a render error — keeps the pdf.js path below exactly as it was.
   // The decision is made once per open (useSheetSession), so a reader's viewer
   // never swaps renderers underneath them.
   const tilesFlag = useFeatureFlag('sheet_tiles_viewer');

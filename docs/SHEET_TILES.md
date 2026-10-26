@@ -12,8 +12,7 @@ its words and callouts. The viewer draws tiles; it never parses a PDF.
 | `backend/lib/sheet_pipeline.py` | queue (`sheet_tile_jobs`), resumable two-pass compile (levels 0-2 + index → `ready`, 3-4 → `complete`), manifest, purge by known key |
 | `backend/server.py` (SHEET TILES) | header-only routes under `/projects/{p}/files/{f}/sheets`, worker, 10-minute sweep (lowest priority), upload and delete hooks |
 | `backend/scripts/backfill_sheet_tiles.py` | queue existing PDFs (dry run by default) |
-| `frontend/src/viewer/` | geometry, tile cache, controller, search, portal, Canvas2D (web) and Skia (native) renderers |
-| `frontend/src/utils/sheetTileStore.js` | progressive offline tile store (native) |
+| `frontend/src/viewer/` | geometry, tile cache, controller, search, portal, Canvas2D web renderer and the phone WebView page |
 
 R2 layout: `projects/{pid}/files/{fid}/sheets/{build}/p{page}/z{z}/{x}_{y}.webp`, `preview.webp`, `index.json.gz`.
 `build` changes with the file's bytes (`cache_version`, `size`) and with the tile/index schema.
@@ -33,18 +32,14 @@ Same tenancy checks as `/content`.
 - **Tiles are not re-proxied.** Immutable `Cache-Control`, `ETag` + 304 before R2, an in-process
   byte LRU, and a 20 s memory of the tenancy decision for tile/preview reads. A presigned-URL
   redirect was not used (needs R2 CORS; leaves our auth).
-- **Offline quota.** The native tile store keeps a usage index and holds the device to 500 MB,
-  evicting whole least-recently-used drawings, never the open one.
-- **Native images** are freed 500 ms after eviction so a frame never draws a freed texture.
-- **Skia 2.2.12** is the version Expo SDK 54 vets; it ships old-architecture sources and its peer
-  ranges accept RN 0.81.5 and Reanimated 3.19.5 (`src/viewer/skiaCompat.test.cjs`).
 
-## Phones: Skia or a WebView page
+## Phones: a WebView page
 
-`sheetPlatform.native.js` picks how tiles are drawn: `skia` (native GPU renderer; needs a build that
-includes Skia) or `webview` (the same engine and canvas viewer as the web app, hosted in the app's
-existing `react-native-webview`, so an OTA update can deliver it to builds without Skia). A phone
-without Skia uses the WebView automatically; `EXPO_PUBLIC_SHEET_TILES_RENDERER=webview` forces it.
+A phone draws tiles in a WebView page: the same engine and canvas viewer as the web app, hosted in the
+app's existing `react-native-webview`, so it ships with an ordinary OTA update (no native module, no new
+build). `sheetPlatform.native.js` reports `webview` when the app has react-native-webview, and null
+otherwise (the PDF viewer is kept). A native Skia renderer was built and removed: the WebView is as fast in
+practice and needs nothing compiled into the app.
 
 - The page is generated: `node scripts/build-sheet-webview.cjs` bundles `src/viewer/webview/main.js`
   into `webview/sheetWebViewHtml.js` (a test fails if it is out of date).
@@ -52,8 +47,9 @@ without Skia uses the WebView automatically; `EXPO_PUBLIC_SHEET_TILES_RENDERER=w
   same canvas as the tiles. Only taps and a throttled status message cross to the app. The token is
   passed in a message, never in a URL. The page runs at `https://app.levelog.com` so the API's CORS
   allows it. A killed WebView falls back to the PDF viewer.
-- Limits: the offline tile cache (Cache Storage) is not used in the page, so tiles are re-fetched
-  after the app restarts (the API's immutable headers still apply inside a session).
+- Limits: tiles are not cached on the phone's disk (the page has no store), so a drawing viewed offline
+  opens in the PDF viewer if its file was saved there; the API's immutable cache headers still apply
+  inside a session.
 
 ## Rollout
 
@@ -61,9 +57,7 @@ without Skia uses the WebView automatically; `EXPO_PUBLIC_SHEET_TILES_RENDERER=w
    (upload hook, opening a drawing, the sweep). `SHEET_TILES_OFF=1` stops all of it.
 2. Optional: `railway run python scripts/backfill_sheet_tiles.py` (dry run), then `--apply`.
 3. Web: turn on the `sheet_tiles_viewer` feature flag for one user and open a compiled drawing.
-4. Native: needs a build that includes `@shopify/react-native-skia` (see `package.json`).
-   A binary without it reports the tile viewer unavailable and keeps pdf.js. Smoke-test on a
-   development client (old architecture, `newArchEnabled: false`) before widening the flag.
+4. Phones: nothing to build. The viewer arrives with the OTA update that follows the merge to `main`.
 5. Keep the legacy viewer files until the flag has been on in production for a while.
 
 ## Behaviour to know

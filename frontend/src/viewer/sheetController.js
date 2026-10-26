@@ -1,6 +1,6 @@
 /**
  * One open drawing: its layout, camera, tile cache, page indexes, search and
- * overlays. Platform-free; the Canvas2D (web) and Skia (native) renderers only
+ * overlays. Platform-free; the Canvas2D renderer (web, and the phone WebView page) only
  * paint what `frame()` returns and feed gestures back through `setCamera`.
  *
  *   const c = createSheetController({ api, projectId, fileId, manifest, decode, ... });
