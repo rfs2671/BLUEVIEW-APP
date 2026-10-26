@@ -45,6 +45,7 @@ import re
 from typing import (Any, Collection, Dict, Iterable, List, NamedTuple,
                     Optional, Sequence, Tuple)
 
+from lib import plan_dimensions as _dims
 from lib.plan_records import TIER_ORDER, column_role, tier_rank
 from lib.plan_text import SHEET_ID_RE
 
@@ -1005,6 +1006,12 @@ def _values(text: str) -> List[str]:
     flat = _SPLIT_RE.sub(" ", _UNIT_RE.sub(" ", text or ""))
     out = [m.group(0).replace(",", "").rstrip(".") for m in _VALUE_RE.finditer(flat)]
     return [v for v in out if v]
+
+
+def _vouches_for_nothing(r: Dict[str, Any]) -> bool:
+    """A contested cell, or a located symbol outside its scoped count - the
+    records `_supported_values` reads nothing from."""
+    return bool((r.get("payload") or {}).get("count_contested")) or is_glyph_evidence(r)
 
 
 def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
@@ -2641,9 +2648,29 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     A CHECK ON THE OUTPUT, not an instruction in a prompt. The model composes;
     this decides whether what it composed may be sent. A number with nothing
     behind it is the worst failure this product has — it looks verified."""
-    said = _values(text)
+    # ── A DIMENSION IS ONE VALUE, NOT ITS DIGITS ───────────────────────────
+    #
+    # "The doors are 3'-5" X 7'-0"." passed with only 3'-0" X 7'-0" printed:
+    # a 3, a 5, a 7 and a 0 were each somewhere (2026-10-25). A dimension in
+    # the claim now binds only if the whole of it, normalized, is printed in
+    # what was returned (plan_dimensions); its digits are not checked again
+    # as loose numbers. A count keeps its own rule untouched.
+    masked = _dims.mask_quotation_marks(text or "")
+    found = _dims.find(masked)
+    bad_dims: List[str] = []
+    if found:
+        ev = _dims.evidence(_dims.record_texts(records, _vouches_for_nothing))
+        bad_dims = [f.text.strip() for f in found if not _dims.supported(f, ev)]
+    if (intent or "").strip().lower() == "count":
+        ok, bad = _count_answer_is_bound(text, records)
+        bad = bad_dims + bad
+        return (not bad), bad
+    rest = list(masked)
+    for f in found:
+        rest[f.span[0]:f.span[1]] = " " * (f.span[1] - f.span[0])
+    said = _values("".join(rest))
     if not said:
-        return True, []
+        return (not bad_dims), bad_dims
     # A COUNT IS BOUND TO ITS SUBJECT; EVERYTHING ELSE KEEPS THE UNION.
     #
     # The failure measured was a quantity — "9 PTAC-2 units" — and the bound
@@ -2652,11 +2679,9 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     # cases stating a number, eight bind to a mark or a schedule and the two
     # that do not (a 42" parapet, a 1,970 sf recreation area) are both
     # attribute cases. Applying the bound rule to them would refuse two true
-    # answers to catch nothing.
-    if (intent or "").strip().lower() == "count":
-        return _count_answer_is_bound(text, records)
+    # answers to catch nothing. (The count branch is taken above.)
     ok = _supported_values(records)
-    unsupported = [v for v in said if v not in ok]
+    unsupported = bad_dims + [v for v in said if v not in ok]
     return (not unsupported), unsupported
 
 
