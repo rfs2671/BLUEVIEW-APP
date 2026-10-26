@@ -159,8 +159,15 @@ class EveryOtherIntentKeepsTheUnion(unittest.TestCase):
         for intent in ("attribute", "existence", "location", "identify",
                        "geometry", ""):
             ok, _bad = ps.answer_is_grounded(
-                "The parapet is 9 inches.", BOYLAND, intent=intent)
+                "The sheet list shows 9.", BOYLAND, intent=intent)
             self.assertTrue(ok, f"intent {intent!r} was bound like a count")
+            # A DIMENSION IS NOT A LOOSE NUMBER (ruling 2026-10-25). This case
+            # read "The parapet is 9 inches." and passed on the sheet list's
+            # index number 9; nothing here prints 9", so it now refuses under
+            # every intent - the hole the dimension rule closes.
+            ok, bad = ps.answer_is_grounded(
+                "The parapet is 9 inches.", BOYLAND, intent=intent)
+            self.assertEqual((ok, bad), (False, ["9 inches"]), intent)
 
     def test_only_the_exact_word_switches_the_rule(self):
         for spelling in ("count", "COUNT", " Count "):
