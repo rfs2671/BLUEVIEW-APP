@@ -66331,7 +66331,8 @@ async def _ranked_for_subject(project_id: str, page_ids: list, subject: str,
 async def search_plans(project_id: str, subject: str, *, intent: str = "",
                        discipline: str = "", floor: str = "",
                        sheet_number: str = "", limit: int = 8,
-                       also: Optional[List[str]] = None) -> List[dict]:
+                       also: Optional[List[str]] = None,
+                       attribute: str = "") -> List[dict]:
     """The records on this project's current sheets that speak to `subject`.
 
     Returns RECORDS, not prose. The agent composes; `answer_is_grounded` then
@@ -66381,7 +66382,15 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     # every row of the families the subject names follows it, with a census
     # the gate checks them against.
     ranked = [r for r in ranked if not plan_search.is_glyph_evidence(r)]
-    out = plan_search.best_per_attribute(ranked)[:max(1, min(limit, SEARCH_PLANS_MAX))]
+    chosen = plan_search.best_per_attribute(ranked)
+    n = max(1, min(limit, SEARCH_PLANS_MAX))
+    out = chosen[:n]
+    # A MENTION MAY NOT CROWD OUT THE MEASUREMENT (plan_search.value_records):
+    # an attribute question whose results state fewer than two values gets up
+    # to two more that do, as a ninth and tenth - appended, never replacing -
+    # and only when the call named the attribute it asks about.
+    if (intent or "").strip().lower() == "attribute":
+        out += plan_search.value_records(out, chosen[n:], subject, attribute)
     if (intent or "").strip().lower() == "count":
         try:
             out += await _glyph_evidence(project_id, subject)
@@ -67428,6 +67437,13 @@ _AGENT_TOOLS = [
                     "subject": {"type": "string", "description":
                                 "The thing to look for, in the user's own words — "
                                 "'ptac units', 'roof drain', 'pile schedule'"},
+                    "attribute": {"type": "string", "description":
+                                  "With intent attribute: the PROPERTY asked "
+                                  "about, in one or two words - 'how high is "
+                                  "the shed' -> subject 'sidewalk shed', "
+                                  "attribute 'height'; 'what size are the "
+                                  "doors' -> 'size'. Leave it out when the "
+                                  "question asks for no property."},
                     "also": {"type": "array", "items": {"type": "string"},
                              "description":
                              "Other names the drawings may print for the SAME "
@@ -69124,8 +69140,9 @@ async def _dispatch_agent_tool(
         if name == "search_plans":
             subject = (args.get("subject") or user_body or "").strip()
             also = [str(a) for a in (args.get("also") or []) if isinstance(a, str)][:4]
+            attribute = args.get("attribute") if isinstance(args.get("attribute"), str) else ""
             found = await search_plans(
-                project_id, subject, also=also,
+                project_id, subject, also=also, attribute=attribute,
                 intent=args.get("intent") or "",
                 discipline=args.get("discipline") or "",
                 floor=args.get("floor") or "",

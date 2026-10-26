@@ -85,6 +85,22 @@ class NothingIsPushedOut(unittest.TestCase):
         self.assertEqual([r["quote"] for r in got], ["BEAM (2-IEADEFE)1@ 8'-0\" O.C FOR SEE TABLE 1"])
         self.assertIn("800S162-54", BEAM_SHOWN[-1]["quote"])
 
+    def test_the_header_details_stay(self):
+        # S-401.00's header types, seventh and eighth, state no value: asked
+        # the header TYPE, the two value records go after them, not over them.
+        ps = _ps()
+        shown = [_r("S-401.00", t) for t in ("HEADER MEMBERS", "HEADER TRACKS", "HEADER ATTACHMENT",
+                                              "HEADER TRACK")] + [
+            _r("SSP-013.00", "BEAM (HEADER) W10X26"), _r("SSP-013.00", "BEAM (HEADER) W12X30"),
+            _r("S-401.00", "5 SCALE: N.T.S. TYPICAL BOXED HEADER DETAIL CONNECTION"),
+            _r("S-401.00", "4 SCALE: N.T.S. WINDOW - LOAD BEARING BACK TO BACK SINGLE HEADER SINGLE JAM")]
+        rest = [_r("S-101.00", "PROVIDE A DISTRIBUTION HEADER CONSISTING OF (2) 12J12 @ 16\" O.C.", "dimension")]
+        got = ps.value_records(shown, rest, "header", "type")
+        self.assertEqual(len(got), 1)
+        out = shown + got
+        self.assertEqual(out[6:8], shown[6:8])
+        self.assertIn("BOXED HEADER", out[6]["quote"])
+
     def test_the_search_appends_and_never_replaces(self):
         import inspect
         import server
@@ -147,3 +163,38 @@ class WhatStatesAValue(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheSearchItself(unittest.TestCase):
+    """search_plans over a fake database: the shed records as production
+    holds them. Only an attribute call that names its attribute gets the
+    ninth and tenth."""
+
+    def _search(self, **kw):
+        import asyncio
+        from unittest.mock import patch
+        import server
+        from tests.async_fake_mongo import AsyncFakeDB
+        _ps()
+        db = AsyncFakeDB()
+        for i, r in enumerate(SHED_SHOWN + SHED_REST):
+            db[server.PLAN_RECORDS].docs.append(dict(r, project_id="p", page_id=f"pg{i}", ordinal=i,
+                                                     label="", subject_terms=[]))
+
+        async def _ids(project_id, **_kw):
+            return [f"pg{i}" for i in range(len(SHED_SHOWN + SHED_REST))]
+
+        with patch.object(server, "db", db), patch.object(server, "_current_record_page_ids", _ids):
+            return asyncio.run(server.search_plans("p", "sidewalk shed", **kw))
+
+    def test_an_attribute_call_gets_the_ninth_and_tenth(self):
+        got = self._search(intent="attribute", attribute="height")
+        self.assertEqual(len(got), 10)
+        self.assertEqual([r["quote"] for r in got[8:]], ["8' HIGH SHED", "8' HIGH SHED"])
+
+    def test_no_attribute_or_another_intent_gets_nothing_appended(self):
+        for kw in ({"intent": "attribute"}, {"intent": "attribute", "attribute": ""},
+                   {"intent": "identify", "attribute": "height"}, {"intent": "count", "attribute": "height"}):
+            got = self._search(**kw)
+            self.assertFalse(any("HIGH SHED" in r["quote"] for r in got[8:]), kw)
+            self.assertLessEqual(len([r for r in got if not r.get("tier") == "registered_glyph"]), 8, kw)

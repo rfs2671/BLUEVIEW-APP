@@ -127,7 +127,7 @@ async def run(args) -> int:
     for case in cases:
         returned = await server.search_plans(
             pid, case["subject"], intent=case.get("intent") or "",
-            also=case.get("also") or [])
+            also=case.get("also") or [], attribute=case.get("attribute") or "")
         r = pe.score_case(case, returned, stale)
         r["known_failure"] = known.get(case["id"])
         results.append(r)
