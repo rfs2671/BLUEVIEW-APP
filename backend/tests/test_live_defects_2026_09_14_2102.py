@@ -210,7 +210,7 @@ class ASheetIsSentOnlyWhenItMentionsTheThing(unittest.TestCase):
         """An OR over the terms matches a page that mentions "roof" and knows
         nothing about drains. The records that contain EVERY term are fetched
         in full before any record that contains only some."""
-        code = _code_only(server.search_plans)
+        code = _code_only(server._ranked_for_subject)
         i = code.index('"$and": [{"$or": ors} for ors in per_term]')
         j = code.index('"$or": [c for ors in per_term for c in ors]')
         self.assertLess(i, j, "the any-term query runs before the all-term one")
@@ -233,8 +233,10 @@ class ASheetIsSentOnlyWhenItMentionsTheThing(unittest.TestCase):
         """A query that reduces to no terms must not turn into an unfiltered
         scan that matches every record in the project."""
         self.assertEqual(ps.search_terms("the a of"), [])
-        code = _code_only(server.search_plans)
-        self.assertIn("if not (project_id and terms):", code)
+        # Each name with no words is dropped (`also`, 2026-10-25), and a
+        # search with no name left returns nothing.
+        self.assertIn("if not terms:\n        return None", _code_only(server._ranked_for_subject))
+        self.assertIn("if not found:\n        return []", _code_only(server.search_plans))
 
     def test_a_plural_finds_the_singular(self):
         """MEASURED, not assumed. Against a stubbed index, "show me the roof

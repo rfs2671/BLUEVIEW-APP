@@ -261,7 +261,8 @@ class TheGateIsWiredToWhatGetsSent(unittest.TestCase):
                 f"{name} reads the plan index but is not behind plan_queries")
 
     def test_the_search_returns_records_rather_than_prose(self):
-        src = inspect.getsource(self.server.search_plans)
+        src = (inspect.getsource(self.server._ranked_for_subject)
+               + inspect.getsource(self.server.search_plans))
         self.assertIn("plan_search.rank(", src)
         self.assertIn("best_per_attribute", src)
         self.assertIn("-> List[dict]", inspect.getsource(self.server.search_plans)[:400])
