@@ -285,7 +285,9 @@ class ThePermitRenewalRoutesAreReachable(unittest.TestCase):
         get_renewal -- that is the next PR, reported before building."""
         src = (BACKEND / "permit_renewal.py").read_text(encoding="utf-8")
         self.assertIn('if company_id and renewal.get("company_id") != company_id:', src)
-        self.assertIn('"""Latest DOB NOW health check result (admin only)."""', src)
+        # (admin only) -> (operator only): the one deliberate edit, security
+        # audit P3 (2026-10-25) moved this route to require_operator_404
+        self.assertIn('"""Latest DOB NOW health check result (operator only)."""', src)
         self.assertIn('"""Active renewal alerts for the dashboard."""', src)
 
 

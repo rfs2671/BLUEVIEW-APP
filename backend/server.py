@@ -10773,7 +10773,7 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
 # ==================== ADMIN — SENTRY HEALTH CHECK ====================
 
 @api_router.get("/admin/_sentry_test")
-async def admin_sentry_test(current_user = Depends(get_admin_seat_user)):
+async def admin_sentry_test(current_user = Depends(require_operator_404)):
     """Phase C1 — intentionally raises so an operator can verify
     Sentry capture end-to-end after a deploy. Admin-only.
 
@@ -10890,7 +10890,7 @@ async def get_my_feature_flags(current_user = Depends(get_current_user)):
 
 
 @api_router.get("/admin/feature-flags")
-async def admin_list_feature_flags(_admin = Depends(get_admin_seat_user)):
+async def admin_list_feature_flags(_admin = Depends(require_operator_404)):
     """List all feature flags with full rollout config. Admin/owner only."""
     docs = await db.feature_flags.find({}).sort("flag", 1).to_list(500)
     return {"flags": [serialize_id(d) for d in docs]}
@@ -10899,7 +10899,7 @@ async def admin_list_feature_flags(_admin = Depends(get_admin_seat_user)):
 @api_router.post("/admin/feature-flags")
 async def admin_create_feature_flag(
     body: FeatureFlagCreate,
-    admin = Depends(get_admin_seat_user),
+    admin = Depends(require_operator_404),
 ):
     """Create a new feature flag. Defaults to disabled (no
     accidental rollout from a typo'd POST). The unique index on
@@ -10942,7 +10942,7 @@ async def admin_create_feature_flag(
 async def admin_update_feature_flag(
     flag: str,
     body: FeatureFlagUpdate,
-    admin = Depends(get_admin_seat_user),
+    admin = Depends(require_operator_404),
 ):
     """Update rollout config. PATCH semantics — only fields
     present in the body are touched. Cache is invalidated on
@@ -10993,7 +10993,7 @@ async def admin_update_feature_flag(
 @api_router.delete("/admin/feature-flags/{flag}")
 async def admin_delete_feature_flag(
     flag: str,
-    admin = Depends(get_admin_seat_user),
+    admin = Depends(require_operator_404),
 ):
     """Hard delete. Audit row records the prior shape so the
     deletion can be reversed by re-creating the flag from the
@@ -11666,7 +11666,7 @@ async def get_project_prediction(
 @api_router.get("/admin/risk-score/calibration")
 async def get_admin_risk_score_calibration(
     model_version: Optional[str] = None,
-    current_user = Depends(get_admin_seat_user),
+    current_user = Depends(require_operator_404),
 ):
     """Per-trigger calibration stats. Counts of hit / miss /
     expired_no_data, accuracy, false_positive_rate. Computed on
@@ -11686,7 +11686,7 @@ class V22WeightTuneRequest(BaseModel):
 @api_router.post("/admin/risk-score/weights")
 async def post_admin_risk_score_weights(
     body: V22WeightTuneRequest,
-    current_user = Depends(get_admin_seat_user),
+    current_user = Depends(require_operator_404),
 ):
     """Manual per-trigger prior tuning. Operator reads
     calibration stats, decides, edits. NO auto-update — the
@@ -12104,7 +12104,12 @@ async def _with_licence_resolved(doc: dict) -> dict:
 @api_router.get("/admin/users/{user_id}", response_model=UserResponse)
 async def get_admin_user_by_id(user_id: str, current_user = Depends(get_user_admin), _approved=Depends(require_approved)):
     user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}}, {"password": 0})
-    if not user:
+    # THE SAME SCOPE AS ITS PUT AND DELETE (security audit P3, extended
+    # 2026-10-25): the operator, or an admin of the user's own company. This
+    # read was the one by-id route on the account table left unscoped - any
+    # company's admin could read any account (email, phone, role, company,
+    # licence) by id. 404, not 403, so the id is not confirmed to exist.
+    if not user or not (is_platform_operator(current_user) or _same_company(current_user, user)):
         raise HTTPException(status_code=404, detail="User not found")
     return UserResponse(**await _with_licence_resolved(serialize_id(user)))
 
@@ -24212,9 +24217,9 @@ async def get_causal_lift(
 # returns the summary so operators can validate the job without waiting
 # for Sunday 4am ET. No-op (n_phase_updated=0) when GEMINI_API_KEY is
 # unset — each per-project infer call returns None.
-@api_router.post("/admin/run-phase-inference", dependencies=[Depends(require_approved)])
+@api_router.post("/admin/run-phase-inference", dependencies=[Depends(require_operator_404), Depends(require_approved)])
 async def admin_run_phase_inference(
-    current_user = Depends(get_admin_seat_user),
+    current_user = Depends(require_operator_404),
 ):
     from lib.ai.phase_inference import run_weekly_phase_inference
     result = await run_weekly_phase_inference(db)
@@ -25662,8 +25667,12 @@ async def list_cs_registrations(
 @api_router.get("/admin/cs-registrations/{registration_id}")
 async def get_cs_registration(registration_id: str, admin=Depends(get_admin_seat_user), _approved=Depends(require_approved)):
     """Get a specific CS registration."""
-    reg = await db.cs_registrations.find_one({"_id": to_query_id(registration_id), "is_deleted": {"$ne": True}})
-    if not reg:
+    # THE SAME GATE AS ITS PUT AND DELETE (security audit P3, 2026-10-13).
+    # This read was the one route on the collection left unscoped: any
+    # company's admin could read any tenant's superintendent licence number,
+    # phone and NYC ID email by id. A soft-deleted row stays 404 here, as before.
+    reg = await _cs_registration_under_admin(registration_id, admin)
+    if reg.get("is_deleted"):
         raise HTTPException(status_code=404, detail="CS registration not found")
     return serialize_id(reg)
  
@@ -26080,11 +26089,25 @@ async def get_compliance_alerts(
 @api_router.put("/admin/compliance-alerts/{alert_id}/resolve")
 async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_seat_user), _approved=Depends(require_approved)):
     """Mark a compliance alert as resolved."""
+    # THE SAME VISIBILITY AS THE LIST (security audit P3, 2026-10-13): the
+    # operator, or an admin of the alert's own company. It used to resolve any
+    # tenant's alert by id. A platform alert (company_id None) is the
+    # operator's. The scope is IN the update's filter -- one atomic write, and
+    # no separate read for test_alert_dedupe_honours_resolved to mistake for a
+    # dedupe. 404, not 403, so the id is not confirmed to exist.
+    flt = {"_id": to_query_id(alert_id)}
+    if not is_platform_operator(admin):
+        company_id = get_user_company_id(admin)  # as the list route filters
+        if not company_id:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        flt["company_id"] = company_id
     now = datetime.now(timezone.utc)
-    await db.compliance_alerts.update_one(
-        {"_id": to_query_id(alert_id)},
+    res = await db.compliance_alerts.update_one(
+        flt,
         {"$set": {"resolved": True, "resolved_at": now, "resolved_by": admin.get("id")}}
     )
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Alert not found")
     return {"message": "Alert resolved"}
  
  
@@ -46750,6 +46773,7 @@ create_permit_renewal_routes(
     to_query_id=to_query_id,
     get_user_company_id=get_user_company_id,
     serialize_id=serialize_id,
+    require_operator_404=require_operator_404,
 )
 
 # ==================== WHATSAPP INTEGRATION ====================
