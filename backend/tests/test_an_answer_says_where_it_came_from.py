@@ -148,7 +148,7 @@ class TheRecordCarriesWhatTheCitationNeeds(unittest.TestCase):
     def test_the_query_drops_no_field_it_does_not_name(self):
         # A field the writer stores and the query drops is the same bug one
         # step later, so the projection excludes rather than includes.
-        src = inspect.getsource(server.search_plans)
+        src = (inspect.getsource(server._ranked_for_subject) + inspect.getsource(server.search_plans))
         self.assertIn('proj = {"_id": 0, "embedding": 0}', src)
 
 

@@ -385,6 +385,9 @@
       "id": "ac-type",
       "question": "what type of AC units are in the building",
       "subject": "AC units",
+      "also": [
+        "PTAC"
+      ],
       "intent": "identify",
       "kind": "answer",
       "expect": {
@@ -400,12 +403,17 @@
         ],
         "forbid_text": [
           "PACKAGE TERMINAL AIR CONDITIONER"
+        ],
+        "forbid_returned": [
+          "MINI-CONDENSATE PUMP",
+          "REFRIGERANT PIPES UP TO ROOF",
+          "REFRIGERANT HOT GAS PIPING"
         ]
       },
       "truth": {
         "how": "text_layer",
         "source": "PyMuPDF text of the current pages; M-200.00 and EN-001.00 by eye",
-        "evidence": "PTAC is printed on GN-001.00, A-100.01, A-201.01, scheduled on M-200.00, and listed on EN-001.00 under 'ELECTRICALLY OPERATED PACKAGED TERMINAL AIR CONDITIONERS'. The vision label 'PACKAGE TERMINAL AIR CONDITIONER' (no D, singular) is printed nowhere and must not be said. Confirmed by the project team 2026-09-17: PTACs only, no split systems. The 'each AC unit ... refrigerant pipes to roof' notes on M-100.00-M-105.00 are unstripped boilerplate, not a second system."
+        "evidence": "PTAC is printed on GN-001.00, A-100.01, A-201.01, scheduled on M-200.00, and listed on EN-001.00 under 'ELECTRICALLY OPERATED PACKAGED TERMINAL AIR CONDITIONERS'. The vision label 'PACKAGE TERMINAL AIR CONDITIONER' (no D, singular) is printed nowhere and must not be said. Confirmed by the project team 2026-09-17: PTACs only, no split systems. The 'each AC unit ... refrigerant pipes to roof' notes on M-100.00-M-105.00 are unstripped boilerplate, not a second system. RULING 2026-10-25: the set never prints AC beside PTAC, so the agent names PTAC as another name for what was asked (`also`); the case requires PTAC and FAILS if any returned record is that split-system boilerplate, since an answer may cite anything returned."
       }
     },
     {
@@ -835,7 +843,7 @@
       "cases": [
         "ac-type"
       ],
-      "status": "partly addressed, not closed",
+      "status": "ac-type answered by `also` (ruling 2026-10-25); the ranking half stays open for a question asked without the other name",
       "what": "Generic prose that repeats more of the question's words outranks the specific record that answers it. 'AC units' is led by the note 'EACH AC UNIT SHALL HAVE A MINI-CONDENSATE PUMP', which matches both words, while the PTAC schedule matches one. HALF OF IT WAS THE SLOTS, NOT THE RANKING: asked about the AC units, five of the eight records returned were two notes repeated, and the PTAC schedule sat at positions six to eight. A note is now one record across the sheets it is stamped on (dedupe_quotes), and the schedule reaches the lead.",
       "why_it_is_not_tuned_away": "Ranking is similarity-first by design (#589). Special-casing this question would teach the ranker the suite rather than fix the class.",
       "evidence": "The note is printed identically on M-100.00 through M-105.00 and is vision-read (the M-sheet notes are outlined). The project team confirmed on 2026-09-17 that 588 Boyland has PTACs only and no split systems: it is engineer boilerplate that was not stripped. After the collapse, 2026-09-17: ac-type's lead is M-100.00, M-101.00 and two M-200.00 schedule cells, so the case is no longer scored as a failure — it is STALE, because the schedule cells that answer it are the three known-stale PTAC elements. Whether it PASSES is not known until the re-index clears them.",

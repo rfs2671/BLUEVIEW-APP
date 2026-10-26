@@ -205,6 +205,10 @@ def validate_suite(suite: Dict[str, Any]) -> None:
             raise SuiteError(f"{cid}: kind {c.get('kind')!r}")
         if not (c.get("subject") or "").strip():
             raise SuiteError(f"{cid}: no subject")
+        also = c.get("also")
+        if also is not None and (not isinstance(also, list) or not also or not all(
+                isinstance(a, str) and a.strip() and a != c["subject"] for a in also)):
+            raise SuiteError(f"{cid}: also is a non-empty list of other names, or absent")
         truth = c.get("truth") or {}
         if truth.get("how") not in TRUTH_KINDS or not truth.get("evidence"):
             raise SuiteError(f"{cid}: truth must say how it was established, "
@@ -427,6 +431,13 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
         if _norm(bad) in _norm(body):
             checks[f"forbid:{bad}"] = False
             reasons.append(f"the render's records say {bad!r}")
+    # AN ANSWER MAY CITE ANY RECORD RETURNED, not only the three the render
+    # prints, so text that must never be cited is checked against them all.
+    for bad in exp.get("forbid_returned") or []:
+        hits = [r.get("sheet_number") for r in returned if _norm(bad) in _norm(r.get("quote"))]
+        checks[f"forbid_returned:{bad}"] = not hits
+        if hits:
+            reasons.append(f"a returned record says {bad!r} ({hits[:3]})")
 
     # THE LABEL NEVER PRINTS AND STILL SPEAKS. Measured on the first run:
     # 'kicker' returned two legend entries whose quotes are 'KE 1' and 'KE 2'
@@ -434,7 +445,11 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
     # render printed no label — and still read 'Kicker — on the drawings:
     # M-104.00 KE 1', which asserts the invented meaning outright.
     if lead:
-        via_label = [r for r in lead if not _matches_without_label(r, terms)]
+        # Under ANY name the case searched (`also`): a record found by its
+        # other name prints that name, and that is not a label match.
+        names = [ps.search_terms(n) for n in [subject] + list(case.get("also") or [])]
+        via_label = [r for r in lead
+                     if not any(_matches_without_label(r, t) for t in names if t)]
         checks["lead_matched_only_through_labels"] = len(via_label)
         if len(via_label) == len(lead):
             reasons.append(

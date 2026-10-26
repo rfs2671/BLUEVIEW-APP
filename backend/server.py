@@ -66209,20 +66209,14 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
 GLYPH_EVIDENCE_MAX = 5000
 
 
-async def search_plans(project_id: str, subject: str, *, intent: str = "",
-                       discipline: str = "", floor: str = "",
-                       sheet_number: str = "", limit: int = 8) -> List[dict]:
-    """The records on this project's current sheets that speak to `subject`.
-
-    Returns RECORDS, not prose. The agent composes; `answer_is_grounded` then
-    decides whether what it composed may be sent."""
+async def _ranked_for_subject(project_id: str, page_ids: list, subject: str,
+                              intent: str) -> Optional[Tuple[List[dict], List[str]]]:
+    """(ranked records, terms) for ONE name of what is being looked for, or
+    None when the drawings never use a word of it (the floor) or it has no
+    words. Labels may find a record here and never keep one."""
     terms = plan_search.search_terms(subject)
-    if not (project_id and terms):
-        return []
-    page_ids = await _current_record_page_ids(
-        project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
-    if not page_ids:
-        return []
+    if not terms:
+        return None
     # ── MATCHED IN THE DATABASE, RANKED IN PYTHON ──────────────────────────
     #
     # Mongo narrows to the rows that contain ANY term — a cheap OR over the
@@ -66277,7 +66271,7 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
                     f"for {subject!r}; records matching only some terms were cut")
     except Exception as e:
         logger.warning(f"search_plans lookup failed for {subject!r}: {e}")
-        return []
+        return None
     ranked = plan_search.rank(rows, terms, intent)
     # ── A LABEL MAY FIND A RECORD; IT MAY NOT MAKE ONE AN ANSWER ───────────
     #
@@ -66329,9 +66323,47 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
         logger.info(
             f"search_plans floor: the drawings never use {unknown} "
             f"- returning no records")
+        return None
+    return ([r for r in ranked
+             if not plan_search.matched_only_through_label(r, terms)], terms)
+
+
+async def search_plans(project_id: str, subject: str, *, intent: str = "",
+                       discipline: str = "", floor: str = "",
+                       sheet_number: str = "", limit: int = 8,
+                       also: Optional[List[str]] = None) -> List[dict]:
+    """The records on this project's current sheets that speak to `subject`.
+
+    Returns RECORDS, not prose. The agent composes; `answer_is_grounded` then
+    decides whether what it composed may be sent.
+
+    ── ANOTHER NAME FOR THE SAME THING (`also`) ────────────────────────────
+    #
+    # Asked what type of AC units the building has, the only lines printing
+    # both AC and UNITS are split-system boilerplate the project team says is
+    # wrong; the PTAC schedule prints PTAC and never AC, so it matched one
+    # word of two and ranked eleventh (2026-10-25). The set never says PTAC
+    # is an AC, and no word list here will say it for the set.
+    #
+    # The agent knows it, so the agent may name it (ruling 2026-10-25):
+    # `also` carries other names for the same thing. Each name is matched and
+    # floor-checked on its own printed words, exactly as `subject` is, and a
+    # record ranks by the best it does under any of them - so ranking still
+    # counts only what the sheet prints, and the gate is unchanged.
+    """
+    if not project_id:
         return []
-    ranked = [r for r in ranked
-              if not plan_search.matched_only_through_label(r, terms)]
+    names = [subject] + [a for a in (also or []) if (a or "").strip() and a != subject]
+    page_ids = await _current_record_page_ids(
+        project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
+    if not page_ids:
+        return []
+    found = [x for x in [await _ranked_for_subject(project_id, page_ids, n, intent)
+                         for n in names] if x is not None]
+    if not found:
+        return []
+    ranked = (found[0][0] if len(found) == 1
+              else plan_search.rank_by_best(found, intent))
     # An index of the set matches many subjects and answers none of them.
     # Dropped AFTER the floor, so a question whose only match is the drawing
     # list still counts as found — and kept when it is all there is, so the
@@ -67396,6 +67428,13 @@ _AGENT_TOOLS = [
                     "subject": {"type": "string", "description":
                                 "The thing to look for, in the user's own words — "
                                 "'ptac units', 'roof drain', 'pile schedule'"},
+                    "also": {"type": "array", "items": {"type": "string"},
+                             "description":
+                             "Other names the drawings may print for the SAME "
+                             "thing, when you know one: 'AC units' -> "
+                             "['PTAC']. Each is searched on its own; a line "
+                             "counts only for words it prints. Never a "
+                             "different thing."},
                     "intent": {"type": "string", "description":
                                "count|attribute|existence|location|identify|geometry"},
                     "discipline": {"type": "string", "description": "AR|ME|EL|PL|SP|ST|GN"},
@@ -69084,8 +69123,9 @@ async def _dispatch_agent_tool(
             return "\n".join(lines)
         if name == "search_plans":
             subject = (args.get("subject") or user_body or "").strip()
+            also = [str(a) for a in (args.get("also") or []) if isinstance(a, str)][:4]
             found = await search_plans(
-                project_id, subject,
+                project_id, subject, also=also,
                 intent=args.get("intent") or "",
                 discipline=args.get("discipline") or "",
                 floor=args.get("floor") or "",
