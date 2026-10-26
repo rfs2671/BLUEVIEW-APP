@@ -772,23 +772,46 @@ def rank(records: Iterable[Dict[str, Any]], terms: Sequence[str],
     # it still does it.
     """
     prior = _INTENT_PRIOR.get(intent or "", ())
-    scored = []
-    for r in dedupe_quotes(records):
-        if match_score(r, terms) <= 0:
-            continue
-        coverage, density = printed_score(r, terms)
-        rt = r.get("record_type")
-        scored.append(((
-            -round(coverage, 4),
-            tier_rank(r.get("tier")),
-            -round(density, 4),
-            prior.index(rt) if rt in prior else len(prior),
-            r.get("sheet_number") or "~",
-            _page_of(r),
-            r.get("ordinal") or 0,
-        ), r))
+    scored = [(_rank_key(r, terms, prior), r) for r in dedupe_quotes(records)
+              if match_score(r, terms) > 0]
     scored.sort(key=lambda kr: kr[0])
     return [r for _k, r in scored]
+
+
+def _rank_key(r: Dict[str, Any], terms: Sequence[str], prior: Sequence[str]) -> tuple:
+    coverage, density = printed_score(r, terms)
+    rt = r.get("record_type")
+    return (
+        -round(coverage, 4),
+        tier_rank(r.get("tier")),
+        -round(density, 4),
+        prior.index(rt) if rt in prior else len(prior),
+        r.get("sheet_number") or "~",
+        _page_of(r),
+        r.get("ordinal") or 0,
+    )
+
+
+def rank_by_best(found: Sequence[Tuple[Sequence[Dict[str, Any]], Sequence[str]]],
+                 intent: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Several names for one thing, ranked as one list (search_plans `also`).
+
+    `found` is each name's ranked records with that name's terms. A record
+    ranks by the best key it earns under ANY name - coverage of that name's
+    words in what the sheet prints, then tier, density and the rest exactly
+    as `rank` orders them - so no name lends a record words it does not
+    print. A record found under two names is one record: each name's list is
+    already collapsed by `dedupe_quotes` from the same rows, so a note's
+    copies come back as the same survivor carrying the same sheets."""
+    prior = _INTENT_PRIOR.get(intent or "", ())
+    best: Dict[Tuple[str, str], Tuple[tuple, Dict[str, Any]]] = {}
+    for records, terms in found:
+        for r in records:
+            k = (_page_of(r), re.sub(r"\s+", " ", (r.get("quote") or "")).strip().upper())
+            key = _rank_key(r, terms, prior)
+            if k not in best or key < best[k][0]:
+                best[k] = (key, r)
+    return [r for _k, r in sorted(best.values(), key=lambda kr: kr[0])]
 
 
 def _attribute_key(record: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
@@ -2813,7 +2836,7 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
 
 __all__ = ["search_terms", "normalise_quotes",
            "match_score", "rank", "best_per_attribute",
-           "answer_is_grounded", "contains_label", "render_records", "cite",
+           "answer_is_grounded", "contains_label", "render_records", "cite", "rank_by_best",
            "meets_the_floor", "floor_terms", "ASKING_WORDS",
            "subject_is_known", "abbreviation_forms", "CONVENTIONS",
            "NOT_FOUND", "not_found_text",

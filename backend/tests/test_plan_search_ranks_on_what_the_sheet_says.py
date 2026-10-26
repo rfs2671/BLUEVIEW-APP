@@ -86,7 +86,7 @@ class ATermIsAWord(unittest.TestCase):
 
     def test_the_database_uses_the_same_pattern(self):
         import server
-        src = inspect.getsource(server.search_plans)
+        src = (inspect.getsource(server._ranked_for_subject) + inspect.getsource(server.search_plans))
         self.assertIn("plan_search.term_pattern(t)", src)
         self.assertNotIn('re.escape(t), "$options"', src)
 
@@ -229,7 +229,7 @@ class TheCapDoesNotDecideWhatIsRanked(unittest.TestCase):
     def setUp(self):
         import server
         self.server = server
-        self.src = inspect.getsource(server.search_plans)
+        self.src = (inspect.getsource(server._ranked_for_subject) + inspect.getsource(server.search_plans))
 
     def test_records_with_every_term_are_fetched_before_the_rest(self):
         i_all = self.src.index('"$and": [{"$or": ors} for ors in per_term]')

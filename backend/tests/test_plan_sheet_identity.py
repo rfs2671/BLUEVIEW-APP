@@ -359,7 +359,7 @@ class ADocumentIsNotADrawing(unittest.TestCase):
         self.assertNotIn('"is_document"', inspect.getsource(server._current_page_filter))
         self.assertNotIn('"is_document"',
                          inspect.getsource(server._current_record_page_ids))
-        self.assertNotIn('"is_document"', inspect.getsource(server.search_plans))
+        self.assertNotIn('"is_document"', (inspect.getsource(server._ranked_for_subject) + inspect.getsource(server.search_plans)))
 
 
 if __name__ == "__main__":
