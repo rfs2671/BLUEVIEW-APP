@@ -1364,6 +1364,57 @@ def glyph_families_for(subject: str, families: Dict[str, Sequence[str]]
     return out
 
 
+def _mark_sources(records: Sequence[Dict[str, Any]]) -> Dict[str, set]:
+    """mark -> the schedules whose rows print it (by schedule name, as
+    plan_glyph_pass.families keys them). A mark printed only by a schedule
+    with no identifier column lends that schedule's numbers to nothing."""
+    out: Dict[str, set] = {}
+    for r in records or []:
+        if r.get("record_type") != "schedule":
+            continue
+        payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+        name = str(payload.get("name") or "").strip().upper()
+        for row in payload.get("rows") or []:
+            if isinstance(row, list) and row:
+                mark = re.sub(r"\s+", " ", str(row[0] or "")).strip().upper()
+                if any(ch.isalpha() for ch in mark):
+                    out.setdefault(mark, set()).add(name)
+    return out
+
+
+def unreconciled_families_for(subject: str, names: Iterable[str]) -> List[str]:
+    """The schedules with no identifier column (lib.plan_set_health,
+    FAMILY_NOT_RECONCILED) the subject names by one of their words."""
+    words = {_stem(w) for w in re.findall(r"[A-Za-z]{2,}", subject or "")}
+    return sorted(n for n in names or [] if family_words(n) & words)
+
+
+def _set_health(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [r for r in records or [] if r.get("record_type") == "set_health"]
+
+
+def render_set_health(records: Sequence[Dict[str, Any]]) -> str:
+    """What the agent is shown of the set's health (lib.plan_set_health):
+    the families it cannot count, tags it found that no schedule lists, tags
+    it never located, mentions in notes, and the sheets the set refers to
+    but does not hold."""
+    items = _set_health(records)
+    if not items:
+        return ""
+    lines = ["Drawing-set health (what the set says about its own completeness):"]
+    for h in sorted(items, key=lambda h: (str(h.get("kind")), str(h.get("subject")), str(h.get("sheet")))):
+        kind, detail = h.get("kind"), h.get("detail") or ""
+        if kind == "family_not_reconciled":
+            lines.append(f"- {detail} - state no count of these.")
+        elif kind == "plan_tag_not_in_schedule":
+            lines.append(f"- {detail} - state no count of {h.get('subject')}.")
+        elif kind == "missing_referenced_sheet":
+            lines.append(f"- warning: {detail}.")
+        else:
+            lines.append(f"- {detail}.")
+    return "\n".join(lines)
+
+
 def glyph_family_filter(project_id: str, page_ids: Sequence[str],
                         family: str, tags: Sequence[str],
                         track: Optional[str] = None) -> Dict[str, Any]:
@@ -2471,6 +2522,9 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     by_ident = _values_by_ident(records)
     books = glyph_books(records)
     book = books.totals
+    unreconciled = [h.get("subject") for h in _set_health(records)
+                    if h.get("kind") == "family_not_reconciled"]
+    mark_sources = _mark_sources(records)
     # A DRAWING SET'S NAME IS A CITATION: "per the owner's post-CO set,
     # 6/9/26" says where a figure comes from - its date lends nothing.
     citations = sorted(set(_citation_texts(records)) | {
@@ -2483,6 +2537,20 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
         named, bare = _track_claim(clause)
         said = _values(_strip_citations(bare, citations))
         if not said:
+            continue
+        # A FAMILY WITH NO IDENTIFIER COLUMN IS NOT COUNTED (PR 5, ruling
+        # 2026-10-26): its schedule's rows are no closed tag set, so nothing
+        # was checked against the plans. A clause about one - and about no
+        # family or tag that WAS reconciled - binds nothing; the reason is in
+        # render_set_health. ("PTAC units" stays the PTAC schedule's even
+        # though an OCR table is named "PTAC-1".)
+        named_marks = _idents_named_in(bare, by_ident.keys())
+        sources = set().union(*(mark_sources.get(m, set()) for m in named_marks)) if named_marks else set()
+        about_unreconciled = (bool(unreconciled_families_for(bare, unreconciled))
+                              or bool(sources and sources <= set(unreconciled)))
+        about_reconciled = _clause_subjects(bare, book) != [] or bool(sources - set(unreconciled))
+        if about_unreconciled and not about_reconciled:
+            unsupported.extend(said)
             continue
         if named:
             # A CLAIM NAMING A SET binds only against that track's rows

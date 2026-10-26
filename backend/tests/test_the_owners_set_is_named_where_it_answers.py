@@ -145,7 +145,8 @@ class ThePassCarriesItOntoEveryRow(unittest.TestCase):
             return 0
         with patch.object(server, "db", db), patch.object(server, "_live_plan_file_ids", live), \
                 patch("lib.plan_glyph_pass.run_pass", fake_pass), \
-                patch.object(server, "_write_glyph_records", write):
+                patch.object(server, "_write_glyph_records", write), \
+                patch.object(server, "_write_set_health", write):
             asyncio.run(server._plan_glyph_pass(str(PROJ)))
         got = {p["file_id"]: (p["drawing_track"], p["drawing_track_label"]) for p in seen["pages"]}
         self.assertEqual(got, {str(FILE): ("post_co", LABEL), str(other): ("filed", None)})

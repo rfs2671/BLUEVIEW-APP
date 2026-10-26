@@ -62896,13 +62896,69 @@ async def _plan_glyph_pass(project_id: str) -> dict:
                                           door_pages, track=track, sweeps=sweeps)
             rows += out["rows"]
             summary["tracks"][track] = out["summary"]
+        # SET HEALTH (PR 5), while the PDFs are still here - a callout bubble
+        # is read from the page's geometry. A failure is logged, never sinks
+        # the pass: its rows stand on their own.
+        try:
+            health = await asyncio.to_thread(_glyph_set_health, tracks, rows, schedules,
+                                             sweeps, open_page)
+        except Exception as e:
+            logger.exception("plan set health %s failed: %r", pid, e)
+            health = None
     # one numbering across the tracks: a row is (page_id, ordinal), and every
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
         r["ordinal"] = i
     summary["written"] = await _write_glyph_records(pid, rows)
+    if health is not None:
+        summary["set_health"] = await _write_set_health(pid, health)
     logger.info("plan glyph pass %s: %s", pid, summary)
     return summary
+
+
+def _glyph_set_health(tracks: List[Tuple[str, List[dict]]], rows: List[dict],
+                      schedules: List[dict], sweeps: Dict[Any, Any],
+                      open_page=None) -> List[dict]:
+    """Every set-health item of one pass (lib.plan_set_health): the tags the
+    mechanical sweeps read (unlisted tags, prose mentions), the schedule tags
+    never located, the schedules with no identifier column, and per track the
+    duplicate sheet numbers and mechanical plans with no partner; then the
+    sheets referenced in reference context that the current set lacks."""
+    from lib import plan_derive as _derive, plan_set_health as H
+    from lib.plan_glyph_pass import families as _families
+
+    fams = _families(schedules)
+    items: List[dict] = H.unreconciled(fams)
+    reconciled = {n: f for n, f in fams.items() if f["tags"]}
+    sheet_of = {str(p["_id"]): p.get("sheet_number") for _t, ps in tracks for p in ps}
+    for page_id, reads in sorted(sweeps.items(), key=lambda kv: str(sheet_of.get(str(kv[0])))):
+        items += H.tag_reads(str(sheet_of.get(str(page_id)) or page_id), reads, reconciled)
+    located = {r.get("label") for r in rows if r.get("label") and r.get("glyph_status") == "resolved"}
+    items += H.not_located(reconciled, located)
+    current: Dict[str, dict] = {}
+    for track, pages in tracks:
+        items += H.duplicates(track, pages)
+        items += H.unpaired_mechanical(track, _derive.pair_plan_sheets(pages).get("unpaired_mech") or [])
+        for p in pages:
+            current.setdefault(str(p["_id"]), p)
+    present = {H.sheet_stem(p.get("sheet_number")) for p in current.values()} - {None}
+    items += H.missing_references(list(current.values()), present, open_page)
+    return H.dedupe(items)
+
+
+async def _write_set_health(project_id: str, items: List[dict]) -> int:
+    """Replace the project's set-health items with one pass's (own collection:
+    they are no plan record, so search never returns them and the eval's
+    record baseline does not move with them)."""
+    from lib.plan_set_health import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not items:
+        return 0
+    now = datetime.now(timezone.utc)
+    docs = [dict(it, project_id=pid, record_type="set_health", created_at=now) for it in items]
+    await db[COLLECTION].insert_many(docs)
+    return len(docs)
 
 
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
@@ -66087,8 +66143,22 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                       for s in sched])
     want = plan_search.glyph_families_for(
         subject, {n: f.get("tags") or [] for n, f in fams.items()})
+    # SET HEALTH (PR 5): what the pass recorded about the set, and - read
+    # live, from the same schedules - every family with no identifier column,
+    # so a claim about one refuses with the reason and none is skipped silently.
+    from lib import plan_set_health as _health
+    health = [dict(h, record_type="set_health") for h in _health.unreconciled(fams)]
+    try:
+        health += [dict(h, record_type="set_health") for h in await db[_health.COLLECTION].find(
+            {"project_id": pid, "kind": {"$ne": _health.FAMILY_NOT_RECONCILED}},
+            {"_id": 0}).to_list(2000)]
+    except Exception as e:
+        logger.warning("plan set health read failed for %s: %r", pid, e)
     if not want:
-        return []
+        unrec = plan_search.unreconciled_families_for(
+            subject, [h["subject"] for h in health if h["kind"] == _health.FAMILY_NOT_RECONCILED])
+        return [h for h in health if h["kind"] == _health.FAMILY_NOT_RECONCILED
+                and h["subject"] in unrec]
     proj = {"_id": 0, "embedding": 0}
     # A CENSUS PER DRAWING TRACK (ruling 2026-10-24): each track's rows are
     # checked against the database on their own. Rows written before
@@ -66122,7 +66192,7 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
                                                family=name, tags=tags, qty=qty,
                                                track=track))
-    return rows + census
+    return rows + census + health
 
 
 #: Rows fetched per filter. NOT a silent cap: a family with more rows than
@@ -66350,6 +66420,9 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     located = plan_search.render_glyph_evidence(records)
     if located:
         lines.append(located)
+    health = plan_search.render_set_health(records)
+    if health:
+        lines.append(health)
     return "\n".join(lines)
 
 
