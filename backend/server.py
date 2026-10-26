@@ -62881,6 +62881,33 @@ async def _glyph_page_ids(pid: str) -> List[str]:
     return sorted(ids)
 
 
+async def _reindex_in_flight(project_id: str, since: Optional[datetime] = None) -> List[dict]:
+    """Re-index jobs that make the project's pages unsafe to read: any queued
+    or running, and - with `since` - any enqueued or started after it, even
+    one already finished (the pages it rewrote changed under a pass that
+    began earlier).
+
+    ── WHY THE PASS WAITS (2026-10-26) ──────────────────────────────────────
+    #
+    # A re-index deletes the file's page rows first and writes them back one
+    # page at a time. The glyph pass was started a minute after a re-index of
+    # AR 3.28.25 - whose pages include the filed track's architectural plans -
+    # and paired the mechanical sheets against a set with that file missing:
+    # 221 rows against 181, 48 count answers bound to a wrong figure (EF-2 in
+    # 1C, PTAC-1 in every fourth-floor unit), and 46 set-health items for
+    # sheets that were only being rewritten."""
+    q: Dict[str, Any] = {"project_id": str(project_id)}
+    if since is None:
+        q["status"] = {"$in": list(PLAN_INDEX_ACTIVE)}
+    else:
+        q["$or"] = [{"status": {"$in": list(PLAN_INDEX_ACTIVE)}},
+                    {"enqueued_at": {"$gte": since}}, {"started_at": {"$gte": since}}]
+    rows = await db[PLAN_INDEX_JOBS].find(
+        q, {"file_name": 1, "status": 1, "enqueued_at": 1, "started_at": 1}).to_list(100)
+    return [{"job_id": str(r["_id"]), "file_name": r.get("file_name"),
+             "status": r.get("status")} for r in rows]
+
+
 async def _plan_glyph_pass(project_id: str) -> dict:
     """Run the equipment-placement pass over the project's current sheets
     and write its rows (lib.plan_glyph_pass, lib.plan_emit) - once per
@@ -62894,6 +62921,7 @@ async def _plan_glyph_pass(project_id: str) -> dict:
     from lib.plan_page import PlanPage
 
     pid = str(project_id)
+    began = datetime.now(timezone.utc)
     tracks, files = await _glyph_pages(pid)
     by_track: List[Tuple[str, List[dict]]] = []
     door_pages, seen_doors, current_ids = [], set(), set()
@@ -62975,6 +63003,16 @@ async def _plan_glyph_pass(project_id: str) -> dict:
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
         r["ordinal"] = i
+    # A RE-INDEX DURING THE PASS: the pages it read may not be the set's.
+    # Nothing is written - the rows and set health from the last good pass
+    # stay - and the operator runs it again when the re-index is done.
+    late = await _reindex_in_flight(pid, since=began)
+    if late:
+        summary["aborted"] = "a re-index ran during the pass; nothing written"
+        summary["reindex"] = late
+        logger.warning("plan glyph pass %s aborted, nothing written: re-index during the pass %s",
+                       pid, late)
+        return summary
     summary["written"] = await _write_glyph_records(pid, rows)
     summary["set_health"] = await _write_set_health(pid, health)
     logger.info("plan glyph pass %s: %s", pid, summary)
@@ -78409,6 +78447,7 @@ async def reindex_project_document(
                               dict(file_rec), source="reindex_document", resume=resume)
     return {
         "status": "queued",
+        "job_id": str(file_rec["_id"]),
         "file_name": file_rec.get("name"),
         "total_pages": total_pages,
     }
@@ -78444,7 +78483,7 @@ async def reindex_all_project_files(
     if not files:
         return {"queued": 0, "files": []}
 
-    queued = []
+    queued, jobs = [], []
     for fr in files:
         # Wipe existing index entries so stale v1 pages don't linger — unless
         # resuming an interrupted run.
@@ -78456,7 +78495,8 @@ async def reindex_all_project_files(
         await _enqueue_plan_index(project_id, fr.get("company_id") or company_id or "",
                                   dict(fr), source="reindex_all", resume=resume)
         queued.append(fr.get("name"))
-    return {"queued": len(queued), "files": queued}
+        jobs.append({"job_id": str(fr["_id"]), "file_name": fr.get("name")})
+    return {"queued": len(queued), "files": queued, "jobs": jobs}
 
 
 # ==================== TEMP-MEDIA PROXY (for WaAPI preflight) ====================
@@ -79358,6 +79398,13 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
     pid = str(project_id)
     if pid in _GLYPH_PASS_RUNNING:
         return {"started": False, "reason": "a pass is already running"}
+    busy = await _reindex_in_flight(pid)
+    if busy:
+        raise HTTPException(status_code=409, detail={
+            "started": False,
+            "reason": "a re-index is in progress for this project; run the pass when it is "
+                      "done (GET .../plan-index/jobs/{job_id})",
+            "jobs": busy})
     _GLYPH_PASS_RUNNING.add(pid)
 
     async def _go():
@@ -79370,6 +79417,39 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
 
     asyncio.create_task(_go())
     return {"started": True}
+
+
+@api_router.get("/projects/{project_id}/plan-glyphs/status",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def plan_glyph_pass_status(project_id: str, current_user=Depends(get_admin_user)):
+    """Read-only: is a pass running here, when did the last one write, and is
+    a re-index in flight that would make a new one refuse to start.
+
+    `running` is this server process's own flag - the pass runs in the
+    process that started it."""
+    from lib.plan_set_health import COLLECTION as SET_HEALTH
+    pid = str(project_id)
+    newest = await db[PLAN_RECORDS].find_one(
+        {"project_id": pid, "record_type": "glyph"}, {"created_at": 1},
+        sort=[("created_at", -1)])
+    return {"running": pid in _GLYPH_PASS_RUNNING,
+            "last_written_at": (newest or {}).get("created_at"),
+            "rows": await db[PLAN_RECORDS].count_documents({"project_id": pid, "record_type": "glyph"}),
+            "set_health_items": await db[SET_HEALTH].count_documents({"project_id": pid}),
+            "reindex_in_flight": await _reindex_in_flight(pid)}
+
+
+@api_router.get("/projects/{project_id}/plan-index/jobs/{job_id}",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def plan_index_job_status(project_id: str, job_id: str, current_user=Depends(get_admin_user)):
+    """Read-only: one re-index job - queued, running, done, failed or
+    cancelled - with its page progress. The job id is what the re-index
+    routes return (the file's id)."""
+    j = await db[PLAN_INDEX_JOBS].find_one({"_id": str(job_id), "project_id": str(project_id)})
+    if not j:
+        raise HTTPException(status_code=404, detail="No such job on this project")
+    return {k: j.get(k) for k in ("status", "file_name", "pages_done", "pages_total", "enqueued_at",
+                                  "started_at", "finished_at", "error", "attempts")} | {"job_id": str(j["_id"])}
 
 
 @api_router.post("/projects/{project_id}/plan-index/{file_id}/retry",
