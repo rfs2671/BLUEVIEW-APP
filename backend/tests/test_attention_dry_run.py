@@ -164,7 +164,7 @@ class TheHarness(unittest.TestCase):
 
     def test_the_real_model_needs_a_key(self):
         from unittest.mock import patch
-        with patch.object(server, "OPENAI_API_KEY", None):
+        with patch.object(server, "LLM_API_KEY", None):
             with self.assertRaises(dry.ScenarioError):
                 asyncio.run(dry.run(self.sc, scripted=False))
 

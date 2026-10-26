@@ -115,7 +115,7 @@ class TheExportQuestions(_Site, unittest.TestCase):
                 patch.object(server, "_dm_scope", scope), \
                 patch.object(server, "_recent_voice_notes", notes), \
                 patch.object(server, "_dm_action_model", action_model), \
-                patch.object(server, "OPENAI_API_KEY", "k"):
+                patch.object(server, "LLM_API_KEY", "k"):
             _run(server._process_whatsapp_message(_payload(body, f"m{self.n}", quoted_photo)))
         sends = [p["message"] for p in c.wire.calls if "message" in p]
         self.assertGreater(len(sends), before, f"nothing sent for {body!r}")
