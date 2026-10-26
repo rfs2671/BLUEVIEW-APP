@@ -906,6 +906,57 @@ def subject_words(subject: str, attribute: str = "") -> List[str]:
     return [t for t in search_terms(subject) if not attr & set(term_forms(t))]
 
 
+def _one_edit_apart(a: str, b: str) -> bool:
+    """One letter inserted, dropped or changed - 'hight' and 'height'."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return a == b
+    if len(a) > len(b):
+        a, b = b, a
+    i = 0
+    while i < len(a) and a[i] == b[i]:
+        i += 1
+    return a[i + (len(a) == len(b)):] == b[i + 1:]
+
+
+# ── THE PROPERTY GOES IN THE ATTRIBUTE, IN CODE AS WELL AS IN THE PROMPT ───
+#
+# Ruling 2026-10-26. The tool tells the agent property words go only in
+# `attribute`, and on the benchmark it mostly obeyed; when it does not, the
+# word reaches the floor and the ranker as part of the thing being looked
+# for. So the arguments are normalized here, deterministically, before
+# anything is ranked: a subject word that IS the attribute's word - in
+# either number, or the user's misspelling the agent corrected in the
+# attribute ('sidewalk shed hight' with attribute 'height') - leaves the
+# subject. Only the attribute's own words move; nothing is inferred from a
+# list, and a subject that would be left empty is left as it was.
+def normalize_arguments(subject: str, attribute: str = "", intent: str = "",
+                        floor: str = "") -> Tuple[str, str, str]:
+    """(subject, attribute, floor) as search_plans should use them.
+
+    ALSO: A COUNT IS NOT NARROWED BY FLOOR. Asked how many exhaust fans each
+    apartment on the fourth floor has, the agent passed floor '4' and the
+    floor filter emptied the pages before the located-symbol evidence - read
+    for the whole project - was ever gathered: 0 records (benchmark,
+    2026-10-26). A count's floor is the scope the answer states and the gate
+    checks (glyph_values), not a filter on what is read."""
+    attr_words = [w for w in search_terms(attribute or "")]
+    forms = {f for w in attr_words for f in term_forms(w)}
+    raw = (subject or "").split()
+    kept = []
+    for word in raw:
+        t = re.sub(r"[^a-z0-9]", "", word.lower())
+        same = bool(t) and (forms & set(term_forms(t)) or any(
+            len(t) >= 4 and t[0] == w[0] and _one_edit_apart(t, w) for w in attr_words))
+        if not same:
+            kept.append(word)
+    new_subject = " ".join(kept).strip() if kept else ""
+    if not search_terms(new_subject):
+        new_subject = subject or ""
+    if (intent or "").strip().lower() == "count":
+        floor = ""
+    return new_subject, attribute or "", floor or ""
+
+
 def value_records(shown: Sequence[Dict[str, Any]], rest: Sequence[Dict[str, Any]],
                   subject: str, attribute: str = "") -> List[Dict[str, Any]]:
     """Up to VALUE_SLOTS records from `rest`, in its order, to follow `shown`
@@ -2905,7 +2956,7 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
 __all__ = ["search_terms", "normalise_quotes",
            "match_score", "rank", "best_per_attribute",
            "answer_is_grounded", "contains_label", "render_records", "cite", "rank_by_best",
-           "VALUE_SLOTS", "states_a_value", "subject_words", "value_records",
+           "VALUE_SLOTS", "states_a_value", "subject_words", "value_records", "normalize_arguments",
            "meets_the_floor", "floor_terms", "ASKING_WORDS",
            "subject_is_known", "abbreviation_forms", "CONVENTIONS",
            "NOT_FOUND", "not_found_text",
