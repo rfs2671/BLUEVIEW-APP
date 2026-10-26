@@ -264,7 +264,8 @@ class TestTranscribeWhisper(unittest.TestCase):
         # files dict shape is (None, "verbose_json") — multipart form
         # field tuples that httpx accepts.
         self.assertEqual(files["response_format"][1], "verbose_json")
-        self.assertEqual(files["model"][1], "whisper-1")
+        from lib import llm_provider   # DeepInfra's Whisper since 2026-10-26
+        self.assertEqual(files["model"][1], llm_provider.WHISPER_MODEL)
 
     def test_retries_once_on_transient_failure(self):
         # First call fails; second returns ok. Per spec: "Whisper

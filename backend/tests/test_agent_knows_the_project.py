@@ -307,20 +307,25 @@ class TheStanceIsVerbatimAndFirst(unittest.TestCase):
 
 class TheAgentRunsOnTheBiggerModel(unittest.TestCase):
 
-    def test_the_group_agent_is_gpt_4o(self):
-        self.assertEqual(server.AGENT_MODEL, "gpt-4o")
+    def test_the_group_agent_runs_on_the_chosen_model(self):
+        # OpenAI is retired (2026-10-26): the operator chose Qwen/Qwen3.8-Flash
+        # on DeepInfra for the agent and every user-facing caller.
+        from lib import llm_provider
+        self.assertEqual(server.AGENT_MODEL, llm_provider.CHAT_MODEL)
+        self.assertEqual(llm_provider.CHAT_MODEL, "Qwen/Qwen3.8-Flash")
         self.assertIn('"model": AGENT_MODEL', _code_only(server._run_group_agent))
 
     def test_the_token_budget_fits_an_answer_with_a_citation(self):
         self.assertEqual(server.AGENT_MAX_TOKENS, 800)
 
-    def test_the_classifiers_stay_on_mini(self):
-        """They emit one label from a fixed set or fill a fixed schema. None
-        of them reasons, and they run on traffic the agent never sees."""
+    def test_the_classifiers_read_the_model_from_the_provider(self):
+        """They emit one label from a fixed set or fill a fixed schema. They
+        were on gpt-4o-mini; since 2026-10-26 every caller reads the one
+        model the operator chose (lib/llm_provider), not a name of its own."""
         for fn in (server._detect_material_request,
                    server._parse_plan_query):
             with self.subTest(fn=fn.__name__):
-                self.assertIn('"model": "gpt-4o-mini"', inspect.getsource(fn))
+                self.assertIn('"model": llm_provider.CHAT_MODEL', inspect.getsource(fn))
 
     def test_the_agent_names_its_model_once_in_a_constant(self):
         """NOT "the only gpt-4o call in the file" — that was the first draft
@@ -328,7 +333,7 @@ class TheAgentRunsOnTheBiggerModel(unittest.TestCase):
         gpt-4o before this change and is outside this PR's scope. What matters here is that the agent's model is named
         once, in a constant, so it cannot drift between the two places the
         agent is configured."""
-        self.assertEqual(SRC.count('AGENT_MODEL = "gpt-4o"'), 1)
+        self.assertEqual(SRC.count("AGENT_MODEL = llm_provider.CHAT_MODEL"), 1)
         self.assertIn(
             '"model": AGENT_MODEL', SRC,
             "the agent call no longer reads the model from the constant, so "
