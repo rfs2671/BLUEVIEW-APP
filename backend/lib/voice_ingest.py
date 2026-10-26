@@ -368,6 +368,7 @@ async def transcribe_whisper(
     audio_mime: Optional[str] = None,
     prompt: Optional[str] = None,
     language: Optional[str] = None,
+    model_refused: Optional[Callable[[int, Any], Any]] = None,
 ) -> WhisperResult:
     """Call OpenAI Whisper in verbose_json mode so we get
     no_speech_prob per segment. Auto-detects language. Retries
@@ -452,6 +453,18 @@ async def transcribe_whisper(
             )
         except Exception as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
+            # A refusal someone must fix (no credits, a bad key) is told to
+            # the caller's hook, which decides whether it is one (server:
+            # lib/model_outage) - the note still fails as it always did.
+            if model_refused is not None and status and int(status) >= 401:
+                try:
+                    try:
+                        refused_body = e.response.json()
+                    except Exception:
+                        refused_body = None
+                    await model_refused(int(status), refused_body)
+                except Exception:
+                    pass
             if status == 400 and "language" in files:
                 # A language Whisper refuses (the API's list is narrower than
                 # the model's): the note is heard without the hint rather than
@@ -647,6 +660,7 @@ async def process_voice_note(
     translate_fn: Optional[Callable[..., Any]] = None,
     prompt: Optional[str] = None,
     language: Optional[str] = None,
+    model_refused: Optional[Callable[[int, Any], Any]] = None,
 ) -> VoiceIngestResult:
     """Full pipeline: Whisper → freshness check → translate.
 
@@ -697,6 +711,7 @@ async def process_voice_note(
             audio_bytes,
             openai_api_key=openai_api_key,
             http_client=http_client,
+            **({"model_refused": model_refused} if model_refused else {}),
             **({"prompt": prompt} if prompt else {}),
             **({"language": language} if language else {}),
         )

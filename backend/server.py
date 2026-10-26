@@ -76,6 +76,7 @@ from lib import wa_security  # noqa: E402
 from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import dob_penalty  # noqa: E402
+from lib import model_outage  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
 from lib import datefmt  # noqa: E402
@@ -52443,6 +52444,60 @@ async def _send_failed_alert(kind: str, key: str, *, company_id: Any, user_id: A
             logger.warning(f"[send-failed] email failed: {type(e).__name__}")
 
 
+async def _agent_model_down(kind: str, status_code: int, body: Any,
+                            now: Optional[datetime] = None,
+                            where: str = "the WhatsApp assistant") -> None:
+    """An OpenAI call a person is waiting on was refused for billing or auth
+    (lib/model_outage): an ERROR line ("[agent-model-down]", naming where)
+    and one email to the platform operators per kind per hour - the
+    notification id is the hour, so the existing alert path's idempotency is
+    the dedupe, across every caller that reports here."""
+    now = now or datetime.now(timezone.utc)
+    logger.error(f"[agent-model-down] {kind}: HTTP {status_code} in {where} "
+                 f"{send_retry.scrub(str(body), 300)}")
+    from lib.notifications import send_notification
+    text = (model_outage.alert_text(kind, status_code, body, AGENT_MODEL)
+            + f"\n\nFirst seen this hour in: {where}.")
+    for recipient in await _waapi_monitor_recipients():
+        try:
+            await send_notification(
+                db, permit_renewal_id=model_outage.alert_key(kind, now),
+                trigger_type="agent_model_unavailable", recipient=recipient,
+                subject=("WhatsApp assistant down: OpenAI credits exhausted"
+                         if kind == model_outage.BILLING
+                         else "WhatsApp assistant down: OpenAI key refused"),
+                html="<p>" + text.replace("\n\n", "</p><p>") + "</p>",
+                text=text, metadata={"kind": kind, "status": status_code})
+        except Exception as e:
+            logger.warning(f"[agent-model-down] email failed: {type(e).__name__}")
+
+
+async def _alert_if_model_refused(resp: Any, where: str) -> None:
+    """A user-facing OpenAI call's response: when it is a billing or auth
+    refusal, the same alert as the assistant's (_agent_model_down). Changes
+    nothing about what the caller then does with `resp`, and never raises."""
+    try:
+        status = int(getattr(resp, "status_code", 200) or 200)
+        if status < 400:
+            return
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        kind = model_outage.classify(status, body)
+        if kind:
+            await _agent_model_down(kind, status, body, where=where)
+    except Exception as e:
+        logger.warning(f"[agent-model-down] check failed in {where}: {type(e).__name__}")
+
+
+async def _voice_model_refused(status: int, body: Any) -> None:
+    """lib/voice_ingest's hook: a voice note's Whisper call was refused."""
+    kind = model_outage.classify(int(status or 0), body)
+    if kind:
+        await _agent_model_down(kind, int(status), body, where="voice note transcription")
+
+
 def _fmt_ny(at: datetime) -> str:
     from lib.datefmt import strftime as _f
     return _f(_utc(at).astimezone(wa_facts.NY), "%a %b %-d, %-I:%M %p ET")
@@ -55092,6 +55147,7 @@ async def _dm_scope(body: str) -> str:
                           {"role": "user", "content": body}]},
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
                          "Content-Type": "application/json"})
+            await _alert_if_model_refused(resp, "DM question routing")
         word = str(resp.json()["choices"][0]["message"]["content"]).strip().lower()
     except Exception:
         return wa_assistant.SCOPE_PROJECT
@@ -55111,6 +55167,7 @@ async def _dm_llm(system: str, user_text: str) -> Optional[str]:
                                    {"role": "user", "content": user_text}]},
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
                          "Content-Type": "application/json"})
+            await _alert_if_model_refused(resp, "DM answer")
         return str(resp.json()["choices"][0]["message"]["content"]).strip() or None
     except Exception as e:
         logger.warning(f"[wa-assistant] model call failed: {type(e).__name__}")
@@ -55315,6 +55372,7 @@ async def _dm_subs_model(messages: list, tool_choice: Any) -> Optional[dict]:
                       "messages": messages},
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
                          "Content-Type": "application/json"})
+            await _alert_if_model_refused(resp, "DM subs question")
             resp.raise_for_status()
         return resp.json()["choices"][0]["message"]
     except Exception as e:
@@ -56210,6 +56268,7 @@ async def _memory_llm(messages: list) -> Optional[str]:
                 json={"model": project_memory.ANSWER_MODEL, "temperature": 0,
                       "max_tokens": 1200, "messages": messages,
                       "response_format": {"type": "json_object"}})
+            await _alert_if_model_refused(resp, "DM project-history answer")
             if resp.status_code != 200:
                 logger.warning(f"[memory] answer model {resp.status_code}")
                 return None
@@ -56543,6 +56602,7 @@ async def _dm_action_model(text: str, jobs: List[str]) -> Optional[dict]:
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": system},
                                    {"role": "user", "content": str(text)[:1000]}]})
+            await _alert_if_model_refused(resp, "DM action reading")
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
         got = json.loads(content)
@@ -68805,6 +68865,24 @@ async def _run_group_agent(
                         "messages": messages,
                     },
                 )
+                # ── THE MODEL IS DOWN FOR A REASON A PERSON MUST FIX ─────
+                #
+                # No credits, or a key OpenAI will not take: this raised into
+                # the catch-all below and returned None - NOREPLY - so the
+                # person who asked heard nothing and nobody was told
+                # (2026-10-26, credit_balance_exhausted). Now the operators
+                # get one alert an hour, and whoever addressed the assistant
+                # is told it is unavailable. A rate limit or a server error is
+                # neither, and keeps the old path.
+                if int(getattr(resp, "status_code", 200) or 200) >= 400:
+                    try:
+                        err_body = resp.json()
+                    except Exception:
+                        err_body = None
+                    down = model_outage.classify(int(resp.status_code), err_body)
+                    if down:
+                        await _agent_model_down(down, int(resp.status_code), err_body)
+                        return model_outage.UNAVAILABLE_REPLY if (dm or explicit_mention) else None
                 resp.raise_for_status()
                 choice = resp.json()["choices"][0]["message"]
                 tool_calls = choice.get("tool_calls") or []
@@ -70904,6 +70982,7 @@ async def _punch_brain_model(state: dict, said: str, dm_chat: Optional[str] = No
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": punch_brain.PROMPT},
                                    {"role": "user", "content": punch_brain.user_message(state, said)}]})
+            await _alert_if_model_refused(resp, "punch walkthrough")
             resp.raise_for_status()
             got = json.loads(resp.json()["choices"][0]["message"]["content"])
         return got if isinstance(got, dict) else None
@@ -71423,6 +71502,7 @@ async def _punch_batch_model(text: str, prompt: Optional[str] = None) -> Optiona
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": prompt or punch_batch.BATCH_PROMPT},
                                    {"role": "user", "content": str(text)[:4000]}]})
+            await _alert_if_model_refused(resp, "punch walkthrough (batch)")
             resp.raise_for_status()
             got = json.loads(resp.json()["choices"][0]["message"]["content"])
         return got if isinstance(got, dict) else None
@@ -71909,6 +71989,7 @@ async def _punch_loc_model(text: str) -> Optional[dict]:
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": punch.LOC_MODEL_PROMPT},
                                    {"role": "user", "content": str(text)[:500]}]})
+            await _alert_if_model_refused(resp, "punch walkthrough (location)")
             resp.raise_for_status()
             got = json.loads(resp.json()["choices"][0]["message"]["content"])
         return got if isinstance(got, dict) else None
@@ -74229,6 +74310,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         openai_api_key=OPENAI_API_KEY,
                         prompt=await _voice_prompt(msg_company_id, project_id),
                         language=whisper_hint,
+                        model_refused=_voice_model_refused,
                         sentry_capture=(
                             (lambda m, level="warning":
                                 sentry_sdk.capture_message(m, level=level))
@@ -74890,6 +74972,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         ident.get("company_id"), _dm_chat_ids(dm_chat) + [
                             j for j in [wa_voice.phone_sender_jid(
                                 (ident.get("user") or {}).get("phone"))] if j]),
+                    model_refused=_voice_model_refused,
                     sentry_capture=(
                         (lambda msg, level="warning":
                             sentry_sdk.capture_message(msg, level=level))
@@ -80248,6 +80331,7 @@ async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversati
         }
         async with ServerHttpClient(timeout=40.0) as client_http:
             resp = await client_http.post(url, json=payload, headers=headers)
+            await _alert_if_model_refused(resp, "checklist from a group conversation")
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
