@@ -280,5 +280,75 @@ class TheServer(unittest.TestCase):
         self.assertFalse(_ok("There are 12 diffusers.", got))
 
 
+class NeverSilent(unittest.TestCase):
+    """Ruling 2026-10-26: a failure writes one marker, rendered to the model;
+    absence of items is never indistinguishable from a clean set."""
+
+    def _pass(self, set_health):
+        from tests.test_two_drawing_tracks import _raw
+        from bson import ObjectId
+        db = AsyncFakeDB()
+        proj = ObjectId()
+        raw, files = _raw()
+        for k, f in files.items():
+            db.project_files.docs.append(dict(f, _id=k, project_id=str(proj), is_deleted=False))
+        for p in raw:
+            db.document_page_index.docs.append(dict(p, project_id=str(proj)))
+        written = {}
+
+        def fake_pass(pages, open_page, schedules, door_pages, track="filed", sweeps=None):
+            return {"rows": [], "summary": {}}
+
+        async def live(_pid):
+            return list(files)
+
+        async def write(_pid, rows):
+            return len(rows)
+
+        async def write_health(_pid, items):
+            written["health"] = items
+            return len(items)
+        with patch.object(server, "db", db), patch.object(server, "_live_plan_file_ids", live), \
+                patch("lib.plan_glyph_pass.run_pass", fake_pass), \
+                patch.object(server, "_glyph_set_health", set_health), \
+                patch.object(server, "_write_glyph_records", write), \
+                patch.object(server, "_write_set_health", write_health):
+            asyncio.run(server._plan_glyph_pass(str(proj)))
+        return written["health"]
+
+    def test_a_failed_assembly_writes_one_marker_the_model_is_shown(self):
+        H = _H()
+
+        def boom(*_a, **_k):
+            raise RuntimeError("geometry read failed")
+        (item,) = self._pass(boom)
+        self.assertEqual(item["kind"], H.SET_HEALTH_UNAVAILABLE)
+        self.assertRegex(item["detail"], r"^set health unavailable: RuntimeError, as of \d{4}-\d\d-\d\d \d\d:\d\d UTC$")
+        self.assertIn("set health unavailable: RuntimeError", S.render_set_health([dict(item, record_type="set_health")]))
+
+    def test_a_clean_set_says_so(self):
+        H = _H()
+        (item,) = self._pass(lambda *_a, **_k: [])
+        self.assertEqual(item["kind"], H.SET_HEALTH_CLEAN)
+        self.assertIn("nothing to report", item["detail"])
+
+    def test_no_items_at_all_is_not_assessed_never_clean(self):
+        H = _H()
+        db = AsyncFakeDB()
+        db.plan_records.docs.append({"project_id": "p1", "record_type": "schedule", "page_id": "pg-s",
+                                     "sheet_number": "M-200.00", "tier": "ocr_grid_cell",
+                                     "payload": {"name": "EXHAUST FAN SCHEDULE",
+                                                 "columns": [{"header": "TAG", "role": "identifier"}],
+                                                 "rows": [["EF-1"]]}})
+
+        async def pages(_pid):
+            return ["pg-s"]
+        with patch.object(server, "db", db), patch.object(server, "_glyph_page_ids", pages):
+            got = asyncio.run(server._glyph_evidence("p1", "exhaust fans"))
+        health = [g for g in got if g.get("record_type") == "set_health"]
+        self.assertEqual([h["kind"] for h in health], [H.SET_HEALTH_NOT_ASSESSED])
+        self.assertIn("not yet assessed", S.render_set_health(got))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -55,6 +55,29 @@ MECHANICAL_WITHOUT_ARCHITECTURAL = "mechanical_without_architectural"
 
 NOT_RECONCILED = "schedule present, no identifier column, not reconciled"
 
+# ── ABSENCE IS NEVER A CLEAN SET (ruling 2026-10-26) ──────────────────────
+# A pass always writes at least one item: what it found, "nothing to report"
+# when it found nothing, or "unavailable" when assembling it failed. No item
+# at all means no pass has assessed the set - said so, never read as clean.
+SET_HEALTH_UNAVAILABLE = "set_health_unavailable"
+SET_HEALTH_CLEAN = "set_health_clean"
+SET_HEALTH_NOT_ASSESSED = "set_health_not_assessed"
+
+
+def unavailable(error: BaseException, when) -> dict:
+    return {"kind": SET_HEALTH_UNAVAILABLE, "sheet": None, "subject": type(error).__name__,
+            "detail": f"set health unavailable: {type(error).__name__}, as of {when:%Y-%m-%d %H:%M} UTC"}
+
+
+def clean(when) -> dict:
+    return {"kind": SET_HEALTH_CLEAN, "sheet": None, "subject": None,
+            "detail": f"set health read: nothing to report, as of {when:%Y-%m-%d %H:%M} UTC"}
+
+
+def not_assessed() -> dict:
+    return {"kind": SET_HEALTH_NOT_ASSESSED, "sheet": None, "subject": None,
+            "detail": "set health not yet assessed for this project (no glyph pass has written it)"}
+
 # ── references in reference context ───────────────────────────────────────
 
 _X = r"([A-Z]{1,3})-(\d{3})(?:\.(\d{2}))?(?![0-9])"

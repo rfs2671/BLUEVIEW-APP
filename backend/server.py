@@ -62899,19 +62899,24 @@ async def _plan_glyph_pass(project_id: str) -> dict:
         # SET HEALTH (PR 5), while the PDFs are still here - a callout bubble
         # is read from the page's geometry. A failure is logged, never sinks
         # the pass: its rows stand on their own.
+        # NEVER SILENT (ruling 2026-10-26): a failure writes one marker the
+        # model is shown, and a set with nothing to report says so - an empty
+        # collection only ever means "not yet assessed".
+        from lib import plan_set_health as _health
         try:
             health = await asyncio.to_thread(_glyph_set_health, tracks, rows, schedules,
                                              sweeps, open_page)
+            if not health:
+                health = [_health.clean(datetime.now(timezone.utc))]
         except Exception as e:
             logger.exception("plan set health %s failed: %r", pid, e)
-            health = None
+            health = [_health.unavailable(e, datetime.now(timezone.utc))]
     # one numbering across the tracks: a row is (page_id, ordinal), and every
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
         r["ordinal"] = i
     summary["written"] = await _write_glyph_records(pid, rows)
-    if health is not None:
-        summary["set_health"] = await _write_set_health(pid, health)
+    summary["set_health"] = await _write_set_health(pid, health)
     logger.info("plan glyph pass %s: %s", pid, summary)
     return summary
 
@@ -66149,11 +66154,15 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
     from lib import plan_set_health as _health
     health = [dict(h, record_type="set_health") for h in _health.unreconciled(fams)]
     try:
-        health += [dict(h, record_type="set_health") for h in await db[_health.COLLECTION].find(
-            {"project_id": pid, "kind": {"$ne": _health.FAMILY_NOT_RECONCILED}},
-            {"_id": 0}).to_list(2000)]
+        stored = await db[_health.COLLECTION].find({"project_id": pid}, {"_id": 0}).to_list(2000)
+        # no item at all: no pass has assessed the set - said, never read as clean
+        health += [dict(h, record_type="set_health") for h in
+                   ([s for s in stored if s.get("kind") != _health.FAMILY_NOT_RECONCILED]
+                    if stored else [_health.not_assessed()])]
     except Exception as e:
         logger.warning("plan set health read failed for %s: %r", pid, e)
+        health.append(dict(_health.unavailable(e, datetime.now(timezone.utc)),
+                           record_type="set_health"))
     if not want:
         unrec = plan_search.unreconciled_families_for(
             subject, [h["subject"] for h in health if h["kind"] == _health.FAMILY_NOT_RECONCILED])
