@@ -66354,6 +66354,9 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     """
     if not project_id:
         return []
+    # The property out of the subject, and no floor filter on a count
+    # (plan_search.normalize_arguments) - before anything reads them.
+    subject, attribute, floor = plan_search.normalize_arguments(subject, attribute, intent, floor)
     names = [subject] + [a for a in (also or []) if (a or "").strip() and a != subject]
     page_ids = await _current_record_page_ids(
         project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
@@ -67452,8 +67455,11 @@ _AGENT_TOOLS = [
                                   "subject 'sidewalk shed', attribute "
                                   "'height'; 'what size are the doors' -> "
                                   "'size'. Property words go ONLY here, never "
-                                  "in subject. Leave it out when the question "
-                                  "asks for no property."},
+                                  "in subject. It is never the thing asked "
+                                  "about, and never a place (a roof, a floor, "
+                                  "a room): the thing is the subject. Leave "
+                                  "it out when the question asks for no "
+                                  "property."},
                     "also": {"type": "array", "items": {"type": "string"},
                              "description":
                              "Other names the drawings may print for the SAME "
@@ -67464,7 +67470,10 @@ _AGENT_TOOLS = [
                     "intent": {"type": "string", "description":
                                "count|attribute|existence|location|identify|geometry"},
                     "discipline": {"type": "string", "description": "AR|ME|EL|PL|SP|ST|GN"},
-                    "floor": {"type": "string"},
+                    "floor": {"type": "string", "description":
+                              "Narrows a lookup to one floor's sheets. Not "
+                              "for a count: a count reads the whole set and "
+                              "the floor is said in the answer."},
                     "sheet_number": {"type": "string", "description": "e.g. M-200.00"},
                 },
                 "required": ["subject"],
@@ -67710,6 +67719,12 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "  • A QUESTION about the drawings — 'how many PTAC units', 'what type of "
     "    AC', 'stucco thickness', 'what is KE 1', 'are there chase walls' → "
     "    search_plans FIRST, then answer from the lines it returns.\n"
+    "  • 'what is a <term>', 'what does <mark> mean', 'what's a kicker' — a "
+    "    word, mark or abbreviation someone on this job used → search_plans "
+    "    FIRST: the drawings may print it, define it, or mean something "
+    "    else by it. NEVER answer a definition from general knowledge before "
+    "    searching; if nothing is found, say that, then you may add what the "
+    "    word usually means, marked as general.\n"
     "  • 'show me', 'pull up', 'send the', 'plan', 'drawing', 'sheet', "
     "    elevation/section/detail/schedule, 'show me A-101/ME-401' — the user "
     "    wants to SEE the sheet → query_plan. ONLY for visual drawings. It "
