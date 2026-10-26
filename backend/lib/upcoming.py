@@ -46,6 +46,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from lib import multilang
 from lib.wa_attention import verify_quote
+from lib import llm_provider
 
 try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
     from zoneinfo import ZoneInfo
@@ -54,7 +55,7 @@ except Exception:  # pragma: no cover
     _ET = None
 
 PROMPT_VERSION = "upc-v1.2"
-MODEL = "gpt-4o-mini"
+MODEL = llm_provider.CHAT_MODEL
 
 KINDS = ("inspection", "delivery", "crane_pick", "pour", "utility", "hearing")
 CITY_KINDS = ("hearing", "permit_expiration")

@@ -76,7 +76,7 @@ def _agent(status_body, *, dm=True, explicit=True, calls=1):
     db = _db()
     db.users.rows.append({"_id": "op1", "email": "ops@example.com", "is_platform_operator": True})
     replies = []
-    with patch.object(server, "db", db), patch.object(server, "OPENAI_API_KEY", "k"), \
+    with patch.object(server, "db", db), patch.object(server, "LLM_API_KEY", "k"), \
             patch.object(server, "ServerHttpClient", _Client), \
             patch("lib.notifications.send_notification", _notify), \
             TestCaseLogs() as logs:
@@ -117,7 +117,7 @@ class TheCreditsRunOut(unittest.TestCase):
         _replies, alerts, logs = _agent(QUOTA)
         self.assertEqual([a["recipient"] for a in alerts], ["ops@example.com"])
         self.assertEqual(alerts[0]["trigger_type"], "agent_model_unavailable")
-        self.assertIn("credits", alerts[0]["subject"])
+        self.assertIn("balance exhausted", alerts[0]["subject"])
         self.assertIn("credit_balance_exhausted", alerts[0]["text"])
         self.assertTrue(any("[agent-model-down]" in line and "billing" in line for line in logs), logs)
 
@@ -220,7 +220,7 @@ class EveryUserFacingCallerAlerts(unittest.TestCase):
         async def _scope(*a, **k):
             return True
 
-        with patch.object(server, "db", db), patch.object(server, "OPENAI_API_KEY", "k"), \
+        with patch.object(server, "db", db), patch.object(server, "LLM_API_KEY", "k"), \
                 patch.object(server, "ServerHttpClient", _Client), \
                 patch.object(server, "_bot_project_scope", _scope), \
                 patch.object(server.punch_brain, "user_message", lambda state, said: "x"), \

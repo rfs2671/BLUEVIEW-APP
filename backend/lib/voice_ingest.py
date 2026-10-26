@@ -77,6 +77,8 @@ import math
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Dict, Optional
 
+from lib import llm_provider
+
 from lib.server_http import ServerHttpClient
 
 logger = logging.getLogger(__name__)
@@ -391,7 +393,7 @@ async def transcribe_whisper(
     if not audio_bytes:
         raise RuntimeError("empty audio_bytes — caller should short-circuit")
 
-    url = "https://api.openai.com/v1/audio/transcriptions"
+    url = llm_provider.TRANSCRIBE_URL
     headers = {"Authorization": f"Bearer {openai_api_key}"}
     # Named for what the bytes ARE: Whisper reads the format from the file
     # name, and a forwarded MP3/M4A sent as "voice.ogg" is refused.
@@ -403,7 +405,7 @@ async def transcribe_whisper(
     # verbose_json so segments[].no_speech_prob is in the response.
     files = {
         "file": (audio_filename, audio_bytes, audio_mime),
-        "model": (None, "whisper-1"),
+        "model": (None, llm_provider.WHISPER_MODEL),
         "response_format": (None, "verbose_json"),
         "temperature": (None, "0"),
     }
@@ -514,10 +516,10 @@ async def translate_whisper(
         raise RuntimeError("openai_api_key required for Whisper")
     if not audio_bytes:
         raise RuntimeError("empty audio_bytes")
-    url = "https://api.openai.com/v1/audio/translations"
+    url = llm_provider.TRANSLATE_URL
     headers = {"Authorization": f"Bearer {openai_api_key}"}
     name, mime = audio_name(audio_bytes)
-    files = {"file": (name, audio_bytes, mime), "model": (None, "whisper-1"),
+    files = {"file": (name, audio_bytes, mime), "model": (None, llm_provider.WHISPER_MODEL),
              "response_format": (None, "json"), "temperature": (None, "0")}
     attempt = 0
     while True:
@@ -570,13 +572,13 @@ async def translate_to_english(
             english=text, tokens_in=0, tokens_out=0, cost_usd=0.0,
         )
 
-    url = "https://api.openai.com/v1/chat/completions"
+    url = llm_provider.CHAT_URL
     headers = {
         "Authorization": f"Bearer {openai_api_key}",
         "Content-Type": "application/json",
     }
     body = {
-        "model": "gpt-4o-mini",
+        "model": llm_provider.CHAT_MODEL,
         "temperature": 0,
         "messages": [
             {"role": "system", "content": TRANSLATE_SYSTEM_PROMPT},

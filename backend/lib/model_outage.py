@@ -22,11 +22,21 @@ from typing import Any, Optional
 BILLING = "billing"
 AUTH = "auth"
 
-#: OpenAI's codes for "the account cannot pay" (error.type / error.code).
+#: Codes for "the account cannot pay" (error.type / error.code). The models
+#: are DeepInfra's since 2026-10-26 (lib/llm_provider); OpenAI's codes are
+#: kept because DeepInfra speaks the same API.
 _BILLING_CODES = frozenset({"insufficient_quota", "credit_balance_exhausted",
-                            "billing_hard_limit_reached", "billing_not_active"})
-#: ... and for "this key is not accepted".
+                            "billing_hard_limit_reached", "billing_not_active",
+                            "insufficient_balance", "payment_required"})
+#: ... and for "this key is not accepted". DeepInfra, measured 2026-10-26
+#: with a bad key: 401 {"error": {"type": "invalid_request_error",
+#: "code": "invalid_api_key"}}.
 _AUTH_CODES = frozenset({"invalid_api_key", "account_deactivated", "invalid_organization"})
+#: DeepInfra answers an account it will not charge with HTTP 402 Payment
+#: Required; its body is not documented, so the status alone is billing, and
+#: so is a message that says so under any status but a rate limit's.
+_BILLING_WORDS = ("insufficient balance", "out of credits", "no credits",
+                  "spending limit", "payment required", "add credits", "billing")
 
 UNAVAILABLE_REPLY = ("The Levelog assistant is temporarily unavailable, so I can't "
                      "answer that right now. The team has been told.")
@@ -39,9 +49,12 @@ def classify(status_code: int, body: Any) -> Optional[str]:
     codes = set()
     if isinstance(err, dict):
         codes = {str(err.get(k) or "").strip().lower() for k in ("type", "code")} - {""}
-    if codes & _BILLING_CODES:
+    message = str((err or {}).get("message") or "").lower() if isinstance(err, dict) else ""
+    if (codes & _BILLING_CODES or status_code == 402
+            or (status_code >= 400 and any(w in message for w in _BILLING_WORDS)
+                and "rate limit" not in message)):
         return BILLING
-    if status_code == 401 or codes & _AUTH_CODES:
+    if status_code in (401, 403) or codes & _AUTH_CODES:
         return AUTH
     return None
 
@@ -56,12 +69,13 @@ def alert_key(kind: str, now: Optional[datetime] = None) -> str:
 def alert_text(kind: str, status_code: int, body: Any, model: str) -> str:
     err = (body or {}).get("error") if isinstance(body, dict) else None
     code = (err or {}).get("code") or (err or {}).get("type") or "?"
-    what = ("The OpenAI account has no credits or has hit its billing limit"
-            if kind == BILLING else "OpenAI did not accept the API key")
+    what = ("The DeepInfra account has no balance or has hit its spending limit"
+            if kind == BILLING else "DeepInfra did not accept the API key")
+    fix = ("add funds or raise the limit at deepinfra.com > Dashboard > Billing"
+           if kind == BILLING else "check QWEN_API_KEY (or LLM_API_KEY) on Railway")
     return (f"{what} (HTTP {status_code}, {code}). The WhatsApp assistant ({model}) "
             f"cannot answer: people who ask are told it is temporarily unavailable.\n\n"
-            f"Fix: {'add credits at platform.openai.com > Billing' if kind == BILLING else 'check OPENAI_API_KEY on Railway'}. "
-            f"This alert repeats at most once an hour while it lasts.")
+            f"Fix: {fix}. This alert repeats at most once an hour while it lasts.")
 
 
 __all__ = ["BILLING", "AUTH", "UNAVAILABLE_REPLY", "classify", "alert_key", "alert_text"]

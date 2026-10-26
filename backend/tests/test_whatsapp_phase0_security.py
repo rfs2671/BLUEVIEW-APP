@@ -531,7 +531,7 @@ class EveryReaderRefusesBsProjectForAsGroup(unittest.TestCase):
         self._assert_refused(out)
 
     def test_the_agent_does_not_run(self):
-        with patch.object(server, "OPENAI_API_KEY", "sk-test"):
+        with patch.object(server, "LLM_API_KEY", "sk-test"):
             out = _run(server._run_group_agent(
                 project_id="proj_b", group_id=GROUP, company_id=CO_A,
                 sender=HUMAN, body="levelog who is on site", features={}))
@@ -539,7 +539,7 @@ class EveryReaderRefusesBsProjectForAsGroup(unittest.TestCase):
         self._assert_refused(out)
 
     def test_checklist_extraction_posts_nothing(self):
-        with patch.object(server, "OPENAI_API_KEY", "sk-test"):
+        with patch.object(server, "LLM_API_KEY", "sk-test"):
             out = _run(server._extract_whatsapp_checklist(
                 "proj_b", GROUP, "someone: order drywall", company_id=CO_A))
         self.assertIsNone(out)
@@ -656,7 +656,7 @@ class ADuplicateOwnedGroupIsRefused(unittest.TestCase, _ProcessHarness):
                 patch.object(server, "send_whatsapp_message",
                              _recording_send(sent)), \
                 patch.object(server, "ServerHttpClient", _NoNetwork), \
-                patch.object(server, "OPENAI_API_KEY", "sk-test"), \
+                patch.object(server, "LLM_API_KEY", "sk-test"), \
                 patch.object(server, "_current_est_time_and_date",
                              lambda: ("17:05", 1, "2026-10-05")):
             _run(server._send_whatsapp_daily_summaries())

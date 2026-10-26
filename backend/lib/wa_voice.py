@@ -488,7 +488,9 @@ def translates_every_note(langs: Optional[List[str]]) -> bool:
 
 
 #: Under this, Whisper's English transcript and its direct English of the same
-#: audio are not the same words (text-embedding-3-small cosine).
+#: audio are not the same words. Set on text-embedding-3-small cosine; kept on
+#: bge-m3 (2026-10-26), where three same-meaning paraphrases measured 0.90 to
+#: 0.99 and three unrelated job sentences 0.31 to 0.56.
 DIVERGE_MIN = 0.75
 DIVERGED = "transcript and direct translation disagree"
 
