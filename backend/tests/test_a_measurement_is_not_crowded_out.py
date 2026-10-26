@@ -19,6 +19,7 @@ The records are 588 Boyland's as production returns them (2026-10-25).
 from __future__ import annotations
 
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -161,8 +162,42 @@ class WhatStatesAValue(unittest.TestCase):
             self.assertFalse(ps.states_a_value({"quote": q}), q)
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+class TheToolSaysWhereThePropertyGoes(unittest.TestCase):
+    """Ruling 2026-10-26 on misspellings: property words go only in
+    `attribute`, and the agent corrects the spelling of `subject` and
+    `also`. A misspelled word in `subject` empties the search - the floor
+    reads 'hight' as a word the drawings never use ("sidewalk shed hight",
+    "ceiling hight", "door hight": 0 records each, measured on production).
+    Ranking stays exact-match; the fix is in what the agent is told."""
+
+    def _props(self):
+        _ps()
+        import server
+        (tool,) = [t for t in server._AGENT_TOOLS if t["function"]["name"] == "search_plans"]
+        return tool["function"]["parameters"]["properties"]
+
+    def test_subject_is_spelled_right_and_never_a_property(self):
+        d = self._props()["subject"]["description"]
+        self.assertIn("SPELLED CORRECTLY", d)
+        self.assertIn("NEVER a property word", d)
+        self.assertIn("goes in `attribute`", d)
+        self.assertIn("'what's the hight of the shed' -> subject 'sidewalk shed', attribute 'height'", d)
+
+    def test_the_property_goes_only_in_attribute_spelled_right(self):
+        d = self._props()["attribute"]["description"]
+        self.assertIn("spelled", d)
+        self.assertIn("ONLY here, never in subject", d)
+
+    def test_also_is_spelled_right_and_never_a_property(self):
+        d = self._props()["also"]["description"]
+        self.assertIn("spelled correctly", d)
+        self.assertIn("never a property word", d)
+
+    def test_ranking_stays_exact_match(self):
+        from lib import plan_search as ps
+        self.assertEqual(ps.search_terms("sidewalk shed hight"), ["sidewalk", "shed", "hight"])
+        self.assertIsNone(re.search(ps.term_pattern("hight"), "8' HIGH SHED HEIGHT", re.I))
 
 
 class TheSearchItself(unittest.TestCase):
@@ -198,3 +233,7 @@ class TheSearchItself(unittest.TestCase):
             got = self._search(**kw)
             self.assertFalse(any("HIGH SHED" in r["quote"] for r in got[8:]), kw)
             self.assertLessEqual(len([r for r in got if not r.get("tier") == "registered_glyph"]), 8, kw)
+
+
+if __name__ == "__main__":
+    unittest.main()

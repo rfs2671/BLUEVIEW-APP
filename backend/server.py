@@ -67435,22 +67435,32 @@ _AGENT_TOOLS = [
                 "type": "object",
                 "properties": {
                     "subject": {"type": "string", "description":
-                                "The thing to look for, in the user's own words — "
-                                "'ptac units', 'roof drain', 'pile schedule'"},
+                                "The THING to look for, in the user's words "
+                                "but SPELLED CORRECTLY (fix their typos: a "
+                                "drawing prints the word right, and a "
+                                "misspelled word finds nothing) — 'ptac "
+                                "units', 'roof drain', 'pile schedule'. NEVER "
+                                "a property word (height, size, width, "
+                                "length, depth, thickness, area, gauge, "
+                                "capacity...): that goes in `attribute`. "
+                                "'what's the hight of the shed' -> subject "
+                                "'sidewalk shed', attribute 'height'."},
                     "attribute": {"type": "string", "description":
                                   "With intent attribute: the PROPERTY asked "
-                                  "about, in one or two words - 'how high is "
-                                  "the shed' -> subject 'sidewalk shed', "
-                                  "attribute 'height'; 'what size are the "
-                                  "doors' -> 'size'. Leave it out when the "
-                                  "question asks for no property."},
+                                  "about, in one or two words, spelled "
+                                  "correctly - 'how high is the shed' -> "
+                                  "subject 'sidewalk shed', attribute "
+                                  "'height'; 'what size are the doors' -> "
+                                  "'size'. Property words go ONLY here, never "
+                                  "in subject. Leave it out when the question "
+                                  "asks for no property."},
                     "also": {"type": "array", "items": {"type": "string"},
                              "description":
                              "Other names the drawings may print for the SAME "
-                             "thing, when you know one: 'AC units' -> "
-                             "['PTAC']. Each is searched on its own; a line "
-                             "counts only for words it prints. Never a "
-                             "different thing."},
+                             "thing, when you know one, spelled correctly: "
+                             "'AC units' -> ['PTAC']. Each is searched on its "
+                             "own; a line counts only for words it prints. "
+                             "Never a different thing, never a property word."},
                     "intent": {"type": "string", "description":
                                "count|attribute|existence|location|identify|geometry"},
                     "discipline": {"type": "string", "description": "AR|ME|EL|PL|SP|ST|GN"},
