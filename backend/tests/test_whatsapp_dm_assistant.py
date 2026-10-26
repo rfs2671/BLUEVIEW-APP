@@ -399,7 +399,7 @@ class TheDmAgentRequest(unittest.TestCase):
              "sender": "15550001111", "body": "GROUP SECRET", "created_at":
              datetime.now(timezone.utc)})
         with patch.object(server, "db", db), \
-                patch.object(server, "OPENAI_API_KEY", "k"), \
+                patch.object(server, "LLM_API_KEY", "k"), \
                 patch.object(server, "ServerHttpClient", _Client):
             out = _run(server._run_group_agent(
                 project_id=WALWORTH, group_id=f"{ADMIN_PHONE}@c.us", company_id=CO_A,

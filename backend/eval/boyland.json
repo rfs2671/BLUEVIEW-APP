@@ -125,6 +125,7 @@
       "question": "what is the capacity of the duct electric heater",
       "subject": "duct electric heater",
       "intent": "attribute",
+      "attribute": "capacity",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -219,6 +220,7 @@
       "question": "how high is the parapet",
       "subject": "parapet",
       "intent": "attribute",
+      "attribute": "height",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -296,6 +298,7 @@
       "question": "how big is the passive recreation area",
       "subject": "passive recreation",
       "intent": "attribute",
+      "attribute": "area",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -444,6 +447,7 @@
       "question": "what gauge are the metal studs",
       "subject": "metal stud gauge",
       "intent": "attribute",
+      "attribute": "gauge",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -467,6 +471,7 @@
       "question": "how high is the sidewalk shed",
       "subject": "sidewalk shed",
       "intent": "attribute",
+      "attribute": "height",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -643,6 +648,7 @@
       "question": "what size are the doors",
       "subject": "door schedule",
       "intent": "attribute",
+      "attribute": "size",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -663,6 +669,7 @@
       "question": "what is the ceiling height in the apartments",
       "subject": "ceiling height",
       "intent": "attribute",
+      "attribute": "height",
       "kind": "answer",
       "expect": {
         "sheets": [

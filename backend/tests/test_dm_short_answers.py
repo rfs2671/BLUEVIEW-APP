@@ -121,7 +121,7 @@ class _Site(_Chat):
         with patch.object(server, "_dm_llm", dm_llm), \
                 patch.object(server, "_react_to_message", react), \
                 patch.object(server, "_dm_scope", scope), \
-                patch.object(server, "OPENAI_API_KEY", key):
+                patch.object(server, "LLM_API_KEY", key):
             _run(server._process_whatsapp_message(
                 _payload(CHAT, body, f"m{self.n}", quoted, from_bot)))
         sends = [p["message"] for p in c.wire.calls if "message" in p]

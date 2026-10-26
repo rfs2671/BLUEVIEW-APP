@@ -111,7 +111,7 @@ class _Brain(unittest.TestCase):
         with patch.object(server, "_dm_brain_on", on), \
                 patch.object(server, "_dm_brain_client", lambda: llm), \
                 patch.object(server, "_react_to_message", react), \
-                patch.object(server, "OPENAI_API_KEY", None):
+                patch.object(server, "LLM_API_KEY", None):
             _run(server._process_whatsapp_message(_payload(CHAT, body, f"b{self.n}", quoted)))
         sends = [p["message"] for p in c.wire.calls if "message" in p]
         return sends[before:]

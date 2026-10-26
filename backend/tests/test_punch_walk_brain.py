@@ -596,7 +596,7 @@ class The588WalkReplayed(_Brain):
                 "actions": [{"do": "simple"}], "reply": "Got it."},
         }
         self.plans.update(plans)
-        answers = self._replay(patch.object(server, "OPENAI_API_KEY", "k"))
+        answers = self._replay(patch.object(server, "LLM_API_KEY", "k"))
         self._check(answers)
         said = dict(answers)
         self.assertIn("(draft)", said["1st floor"][-1])                 # the asked one set; the list

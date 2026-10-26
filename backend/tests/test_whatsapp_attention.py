@@ -326,7 +326,9 @@ class TheWeeklyLine(unittest.TestCase):
         self.assertIn("pass_rate=25%", line)
         self.assertIn("items=8", line)
         self.assertIn("tokens_in=75000", line)
-        self.assertIn("cost_usd=0.0158", line)
+        # Qwen3.8-Flash's price (lib/llm_provider): 75,000 in and 7,500 out
+        # is $0.0113; at gpt-4o-mini's it was $0.0158.
+        self.assertIn("cost_usd=0.0113", line)
         self.assertNotIn("120363000000000301", line)
 
 
@@ -405,7 +407,7 @@ class ShadowModeAndCursor(unittest.TestCase):
     def test_no_model_key_does_nothing(self):
         db = _world()
         with patch.object(server, "db", db), \
-                patch.object(server, "OPENAI_API_KEY", ""), \
+                patch.object(server, "LLM_API_KEY", ""), \
                 patch.dict(os.environ, {"WA_ATTENTION_DISABLED": ""}):
             report = _run(server._attention_tick(now=T0, probe=False))
         self.assertTrue(report["no_model"])
