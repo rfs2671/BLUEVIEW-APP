@@ -7,12 +7,14 @@ map, never random:
     DONE     👍  instruction understood and done (generic)
     COMPLETE ✅  item marked complete / task done / checklist item closed
     SAVED    📌  saved for later: logged, reminder set, added to a list
-    WORKING  👀  working on it — a reply is still coming (long task)
     THANKS   🙏  someone thanks the bot
     PRAISE   ❤️  someone praises the bot (at most once per person per day)
 
 Rules (enforced by the callers in server.py):
-  * A question gets a text answer; 👀 first only if it takes over 5 seconds.
+  * A question gets a text answer, with "typing…" in the chat while it is
+    worked out (server._dm_typing_while). NO "working" reaction: the 👀
+    that went on a slow question (5 s) was removed Oct 27, 2026 -- on a
+    7-minute answer it read as "seen, and not answering".
   * A failure or missing information gets a short text reply, no reaction.
   * Never a reaction AND filler text for the same action: if the reaction
     cannot be sent, the old text goes instead.
@@ -28,15 +30,11 @@ from typing import Optional
 DONE = "👍"
 COMPLETE = "✅"
 SAVED = "📌"
-WORKING = "👀"
 THANKS = "🙏"
 PRAISE = "❤️"
 
 REACTIONS = {"done": DONE, "complete": COMPLETE, "saved": SAVED,
-             "working": WORKING, "thanks": THANKS, "praise": PRAISE}
-
-# Seconds an answer may take before 👀 goes on the question.
-WORKING_AFTER_SECONDS = 5.0
+             "thanks": THANKS, "praise": PRAISE}
 
 # Words that may sit around a thank-you or a compliment without making it a
 # request: the bot's name, fillers, punctuation.

@@ -56,7 +56,8 @@ class QueryPlanSendsSheetsAndDoesNotAnswer(unittest.TestCase):
     def test_a_question_is_answered_from_records(self):
         branch = _query_plan_branch()
         self.assertIn("await search_plans(", branch)
-        self.assertIn("_render_records_for_model(found, question)", branch)
+        # The third argument is each record's file and set (rendering only).
+        self.assertIn("_render_records_for_model(found, question, sources)", branch)
 
     def test_those_records_reach_the_gate_as_evidence(self):
         # Same sink search_plans uses, so gate_plan_answer checks this answer

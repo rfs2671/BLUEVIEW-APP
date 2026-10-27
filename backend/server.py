@@ -3869,7 +3869,10 @@ from lib import plan_ocr  # noqa: E402
 from lib import plan_records  # noqa: E402
 from lib import plan_search  # noqa: E402
 from lib import plan_areas  # noqa: E402
+from lib import plan_levels  # noqa: E402
+from lib import plan_term_senses  # noqa: E402
 from lib import plan_crop  # noqa: E402
+from lib import plan_sources  # noqa: E402
 
 
 
@@ -47256,18 +47259,27 @@ async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict,
 
     A retry after a timeout can deliver a message twice if the first attempt
     reached WhatsApp; the alternative — never retrying — drops it. WaAPI
-    exposes no idempotency key to do better."""
+    exposes no idempotency key to do better.
+
+    A DM turn that set _DM_SENDS gets one entry per send: when it finished,
+    the action, ok, how long it waited for the lock and the pacing, tries."""
     loop = asyncio.get_running_loop()
+    sends = _DM_SENDS.get()
+    t_in = _time.monotonic()
+    ok, tried, waited = False, 0, 0
     async with _DM_SEND_LOCK:
         wait = _DM_LAST_SENT[0] + wa_dm.DM_MIN_INTERVAL_SECONDS - loop.time()
         if wait > 0:
             await asyncio.sleep(wait)
+        waited = int((_time.monotonic() - t_in) * 1000)
         err = None
         try:
             tries = attempts or wa_dm.DM_SEND_ATTEMPTS
             for attempt in range(tries):
+                tried += 1
                 code, body, exc = await _waapi_post_raw(url, payload, headers)
                 if exc is None and code is not None and code < 400:
+                    ok = True
                     return True, body, None
                 # Which call, its status and what WaAPI said (no numbers).
                 err = send_retry.waapi_error(url.rsplit("/", 1)[-1], code, body, exc)
@@ -47278,6 +47290,9 @@ async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict,
             return False, None, err
         finally:
             _DM_LAST_SENT[0] = loop.time()
+            if sends is not None:
+                sends.append({"at": _time.monotonic(), "action": url.rsplit("/", 1)[-1],
+                              "ok": ok, "wait_ms": waited, "tries": tried})
 
 
 async def send_whatsapp_dm(user_id: Any, message: str, *, kind: str,
@@ -52467,21 +52482,36 @@ async def _agent_model_down(kind: str, status_code: int, body: Any,
     now = now or datetime.now(timezone.utc)
     logger.error(f"[agent-model-down] {kind}: HTTP {status_code} in {where} "
                  f"{send_retry.scrub(str(body), 300)}")
-    from lib.notifications import send_notification
     text = (model_outage.alert_text(kind, status_code, body, AGENT_MODEL)
             + f"\n\nFirst seen this hour in: {where}.")
-    for recipient in await _waapi_monitor_recipients():
+    await _operator_alert(
+        model_outage.alert_key(kind, now), "agent_model_unavailable",
+        ("WhatsApp assistant down: DeepInfra balance exhausted"
+         if kind == model_outage.BILLING
+         else "WhatsApp assistant down: DeepInfra key refused"),
+        text, {"kind": kind, "status": status_code}, tag="agent-model-down")
+
+
+async def _operator_alert(key: str, trigger_type: str, subject: str, text: str,
+                          metadata: dict, tag: str = "operator-alert") -> None:
+    """One email to each platform operator through the existing alert path
+    (lib/notifications): `key` is the notification id it dedupes on. The
+    assistant's alerts (_agent_model_down, _dm_turn_gave_up) go out here.
+    Never raises."""
+    from lib.notifications import send_notification
+    try:
+        recipients = await _waapi_monitor_recipients()
+    except Exception as e:
+        logger.warning(f"[{tag}] no recipients: {type(e).__name__}")
+        return
+    for recipient in recipients:
         try:
             await send_notification(
-                db, permit_renewal_id=model_outage.alert_key(kind, now),
-                trigger_type="agent_model_unavailable", recipient=recipient,
-                subject=("WhatsApp assistant down: DeepInfra balance exhausted"
-                         if kind == model_outage.BILLING
-                         else "WhatsApp assistant down: DeepInfra key refused"),
-                html="<p>" + text.replace("\n\n", "</p><p>") + "</p>",
-                text=text, metadata={"kind": kind, "status": status_code})
+                db, permit_renewal_id=key, trigger_type=trigger_type, recipient=recipient,
+                subject=subject, html="<p>" + text.replace("\n\n", "</p><p>") + "</p>",
+                text=text, metadata=metadata)
         except Exception as e:
-            logger.warning(f"[agent-model-down] email failed: {type(e).__name__}")
+            logger.warning(f"[{tag}] email failed: {type(e).__name__}")
 
 
 async def _alert_if_model_refused(resp: Any, where: str) -> None:
@@ -55150,7 +55180,7 @@ async def _dm_scope(body: str) -> str:
     if not LLM_API_KEY:
         return wa_assistant.SCOPE_PROJECT
     try:
-        async with ServerHttpClient(timeout=10) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(10)) as client_http:
             resp = await client_http.post(
                 llm_provider.CHAT_URL,
                 json={"model": llm_provider.CHAT_MODEL, "temperature": 0, "max_tokens": 3,
@@ -55171,7 +55201,7 @@ async def _dm_llm(system: str, user_text: str) -> Optional[str]:
     if not LLM_API_KEY:
         return None
     try:
-        async with ServerHttpClient(timeout=30) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(30)) as client_http:
             resp = await client_http.post(
                 llm_provider.CHAT_URL,
                 json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 400,
@@ -55376,7 +55406,7 @@ async def _dm_subs_model(messages: list, tool_choice: Any) -> Optional[dict]:
     if not LLM_API_KEY:
         return None
     try:
-        async with ServerHttpClient(timeout=30) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(30)) as client_http:
             resp = await client_http.post(
                 llm_provider.CHAT_URL,
                 json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 400,
@@ -56308,7 +56338,7 @@ async def _memory_llm(messages: list) -> Optional[str]:
     if not LLM_API_KEY:
         return None
     try:
-        async with ServerHttpClient(timeout=60.0) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(60.0)) as client_http:
             resp = await client_http.post(
                 llm_provider.CHAT_URL,
                 headers={"Authorization": f"Bearer {LLM_API_KEY}",
@@ -58207,8 +58237,8 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
                           project_id: Optional[str] = None, question: Optional[str] = None,
                           labels: Any = (), styled: bool = False,
                           job_label: Optional[str] = None) -> None:
-    """Send the answer; 👀 on the question first if it takes over 5 s, and
-    taken back if no answer comes. A voice note's answer opens with
+    """Send the answer; "typing…" in their chat while it is worked out (no
+    reaction: Oct 27, 👀 read as "seen, not answering"). A voice note's answer opens with
     `Heard: "…"`. Every answer goes through the style post-check
     (lib/wa_style.py): short job names, no preamble, ~300 characters unless
     a list was asked for -- the rest offered ("Want the names?").
@@ -58216,15 +58246,49 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
     NEVER "CHECK WITH X" (Oct 21: "How many framers in 588" got "check with
     the site manager" -- they ARE the site manager / PM): the sentences that
     send them elsewhere are dropped (dm_brain.no_referral); with nothing
-    left, "I couldn't find that in Levelog for <job>." -- never made up."""
+    left, "I couldn't find that in Levelog for <job>." -- never made up.
+
+    THE ANSWER BUDGET (_dm_await_budget), as the brain's: "Still checking
+    the drawings." at DM_SLOW_NOTICE_SECONDS with nothing sent, the turn
+    given up at DM_GIVE_UP_SECONDS; its model calls take no longer than
+    what is left (_dm_call_timeout)."""
+    inbound = _WA_INBOUND.get() or {}
+    received = float(inbound.get("received") or _time.time())
+    t_start = _time.monotonic()
+    t0 = t_start - max(0.0, _time.time() - received)
+    sends = _DM_SENDS.get()
+    if sends is None:
+        sends = []
+        _DM_SENDS.set(sends)
+    _DM_DEADLINE.set(t0 + DM_GIVE_UP_SECONDS)
     task = asyncio.ensure_future(answer_coro)
-    eyes = False
+    thinking = asyncio.Event()
+    typing = asyncio.ensure_future(_dm_typing_while(dm_chat, thinking))
     try:
-        reply = await asyncio.wait_for(asyncio.shield(task),
-                                       wa_react.WORKING_AFTER_SECONDS)
-    except asyncio.TimeoutError:
-        eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
-        reply = await task
+        budget, reply = await _dm_await_budget(task, dm_chat, t_start - t0, sends)
+    finally:
+        thinking.set()
+        try:
+            await asyncio.wait_for(typing, 10)
+        except Exception:
+            pass
+    answered = _time.monotonic()
+
+    def timing() -> dict:
+        return _dm_turn_timing(inbound, received, t0, t_start, answered, {}, sends, budget=budget)
+    if budget == "gave_up":
+        try:
+            await send_whatsapp_message(dm_chat, DM_GAVE_UP_TEXT)
+        finally:
+            clock = timing()
+            path = log[3] if log else "headcount"
+            trace = (log[4] if log and len(log) > 4 else None) or []
+            if log:
+                await _dm_log_answer(log[0], log[1], log[2], DM_GAVE_UP_TEXT, log[3],
+                                     tool_data=trace or None, stop="gave_up", timing=clock)
+            await _dm_turn_gave_up(log[0] if log else None, dm_chat, path, clock,
+                                   [t for t in trace if isinstance(t, dict)], message_id)
+        return
     if reply:
         reply = _dm_old_no_referral(reply, job_label, ident=log[0] if log else None,
                                     path=log[3] if log else "headcount")
@@ -58259,7 +58323,7 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         # (ident, project_id, question, path[, tool trace]); a blocked repeat
         # keeps the answer it would have sent, for the next dm_eval.
         await _dm_log_answer(log[0], log[1], log[2], reply, log[3],
-                             tool_data=log[4] if len(log) > 4 else None,
+                             tool_data=log[4] if len(log) > 4 else None, timing=timing(),
                              **({"repeated": _dm_redact(repeated)} if reply and repeated else {}))
     job_id = (log[1] if log else None) or project_id
     if heard and message_id and job_id:
@@ -58275,8 +58339,6 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         if heard:
             reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
         await send_whatsapp_message(dm_chat, reply)
-    elif eyes:
-        await _react_to_message(dm_chat, message_id, "")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -58312,6 +58374,212 @@ _DM_MODEL: contextvars.ContextVar = contextvars.ContextVar("dm_model", default=N
 _DM_ASKER: contextvars.ContextVar = contextvars.ContextVar("dm_asker", default=None)
 #: How often the "typing…" indicator is sent again while the brain works.
 DM_TYPING_EVERY_SECONDS = 8.0
+#: This inbound message's clock (_process_whatsapp_message): {"received":
+#: wall seconds the webhook got it, "started": when its task began, "wa_ts":
+#: WhatsApp's own send time, epoch seconds or 0}. The DM answer log's timing.
+_WA_INBOUND: contextvars.ContextVar = contextvars.ContextVar("wa_inbound", default=None)
+#: This DM turn's message sends (_waapi_send_dm_paced, refusals in
+#: send_whatsapp_message): a list the turn sets before the brain task starts,
+#: so the task's own sends (a tool that sends a sheet) land in it too.
+_DM_SENDS: contextvars.ContextVar = contextvars.ContextVar("dm_sends", default=None)
+#: This DM turn's deadline on the monotonic clock: the receipt plus
+#: DM_GIVE_UP_SECONDS. Model calls made for the turn take no longer than
+#: what is left of it (_dm_call_timeout, _dm_brain_create). None outside a
+#: DM turn: every other caller keeps its own timeout.
+_DM_DEADLINE: contextvars.ContextVar = contextvars.ContextVar("dm_deadline", default=None)
+
+# ── THE ANSWER BUDGET (owner's decision, Oct 27) ──────────────────────────
+#
+# "typing…" until the whole answer is ready -- never a partial answer. From
+# the DM's receipt: nothing sent by DM_SLOW_NOTICE_SECONDS -> one line,
+# DM_SLOW_NOTICE_TEXT, once a turn (typing goes on); at DM_GIVE_UP_SECONDS
+# the turn is cancelled, DM_GAVE_UP_TEXT goes, and the operators get the
+# turn's timeline (_dm_turn_gave_up). An answer that finishes after the
+# notice is sent as usual; an answer that races the give-up wins, and the
+# give-up line is not sent -- never both. The answer row's timing.budget
+# says which: "ok" | "slow_notice" | "gave_up".
+DM_SLOW_NOTICE_SECONDS = 45.0
+DM_GIVE_UP_SECONDS = 120.0
+DM_SLOW_NOTICE_TEXT = "Still checking the drawings."
+DM_GAVE_UP_TEXT = "Couldn't finish that one, try again"
+#: The DM brain client's own per-call timeout (_dm_brain_client) and how
+#: many times a transient failure is tried again -- both inside the deadline.
+DM_MODEL_CALL_SECONDS = 60.0
+DM_MODEL_RETRIES = 2
+
+
+class _DmBudgetSpent(Exception):
+    """A DM turn's model call found its deadline already passed."""
+
+
+def _dm_budget_clock() -> float:
+    """The budget's clock (patched in tests)."""
+    return _time.monotonic()
+
+
+async def _dm_budget_wait(task: "asyncio.Future", seconds: float) -> None:
+    """Wait for `task`, at most `seconds` (patched in tests)."""
+    await asyncio.wait({task}, timeout=max(0.0, seconds))
+
+
+def _dm_call_timeout(default: float) -> float:
+    """A model call's timeout: its own, or what is left of this DM turn's
+    budget when that is less (a floor of half a second: the turn is about to
+    be given up, and the call should fail fast rather than not be made)."""
+    deadline = _DM_DEADLINE.get()
+    if deadline is None:
+        return default
+    return max(0.5, min(float(default), deadline - _time.monotonic()))
+
+
+async def _dm_await_budget(task: "asyncio.Future", dm_chat: str, waited: float,
+                           sends: Optional[list]) -> Tuple[str, Any]:
+    """(budget, the task's result) for one DM turn's answer task. `waited`:
+    seconds already gone since the DM's receipt. budget "gave_up" -> the
+    task was cancelled and the result is None; the caller sends the give-up
+    line. A task that raised re-raises here, as `await task` did."""
+    start = _dm_budget_clock() - max(0.0, waited)
+    budget, noticed = "ok", False
+    # The notice goes out on its own task: a send queued behind other DMs
+    # (_DM_SEND_LOCK) never stops this answer/deadline race. When the race
+    # resolves, a notice still waiting to go is dropped.
+    notice: Optional[asyncio.Future] = None
+    try:
+        while not task.done():
+            elapsed = _dm_budget_clock() - start
+            if elapsed >= DM_GIVE_UP_SECONDS:
+                # An answer finishing in this same tick wins: let it.
+                for _ in range(5):
+                    if task.done():
+                        break
+                    await asyncio.sleep(0)
+                if task.done():
+                    break
+                task.cancel()
+                try:
+                    result = await task
+                except (asyncio.CancelledError, _DmBudgetSpent):
+                    return "gave_up", None
+                return budget, result                    # it finished regardless
+            if not noticed and elapsed >= DM_SLOW_NOTICE_SECONDS:
+                noticed = True
+                if not any(x.get("ok") for x in sends or []):
+                    budget = "slow_notice"
+                    notice = asyncio.ensure_future(_dm_slow_notice(dm_chat))
+                    await asyncio.sleep(0)               # let it start
+                continue
+            await _dm_budget_wait(task, (DM_GIVE_UP_SECONDS if noticed else DM_SLOW_NOTICE_SECONDS)
+                                  - elapsed)
+        if not task.cancelled() and isinstance(task.exception(), _DmBudgetSpent):
+            return "gave_up", None
+        return budget, task.result()
+    finally:
+        if notice is not None and not notice.done():
+            notice.cancel()
+
+
+async def _dm_slow_notice(dm_chat: str) -> None:
+    """The one "Still checking the drawings." line, then typing again."""
+    try:
+        await send_whatsapp_message(dm_chat, DM_SLOW_NOTICE_TEXT)
+        await _wa_typing(dm_chat, True)                  # and still typing
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"[dm-budget] slow notice failed: {type(e).__name__}")
+
+
+def _dm_timeline_text(timing: dict, trace: Any = None) -> str:
+    """A turn's timing block as lines for a person: every offset from the
+    DM's receipt. No phone, no words -- tool names and clocks only."""
+    def sec(ms: Any) -> str:
+        return "?" if ms is None else f"{int(ms) / 1000:.1f} s"
+    at = timing.get("received_at")
+    lines = [f"Received: {at.isoformat() if isinstance(at, datetime) else at or '?'}",
+             f"Queue: {sec(timing.get('queue_ms'))}",
+             f"Answer started: {sec(timing.get('brain_start_ms'))}",
+             f"First send: {sec(timing.get('first_send_ms'))}",
+             f"Budget: {timing.get('budget') or '?'}"]
+    for r in timing.get("rounds") or []:
+        lines.append(f"Model round {r.get('round')}: at {sec(r.get('t_ms'))}, took {sec(r.get('ms'))}, "
+                     + (f"error {r['error']}" if r.get("error")
+                        else f"{r.get('finish') or '?'}, {r.get('tools') or 0} tool(s)")
+                     + (f", then {r['then']}" if r.get("then") else ""))
+    for t in trace or []:
+        lines.append(f"Tool {t.get('tool')} (round {t.get('round')}): at {sec(t.get('t_ms'))}, "
+                     f"took {sec(t.get('ms'))}" + (", cancelled at the deadline" if t.get("cancelled")
+                                                  else ", failed" if t.get("error") else ""))
+    for x in timing.get("sends") or []:
+        lines.append(f"Send {x.get('action')}: at {sec(x.get('t_ms'))}, "
+                     + ("ok" if x.get("ok") else f"not sent ({x.get('refused') or 'failed'})"))
+    return "\n".join(lines)
+
+
+async def _dm_turn_gave_up(ident: Optional[dict], dm_chat: str, path: str, timing: dict,
+                           trace: Any = None, message_id: str = "") -> None:
+    """The DM turn ran out of its DM_GIVE_UP_SECONDS: an ERROR line and the
+    operators' alert (_operator_alert, as the model-down alert) with the
+    turn's timeline. The chat as its last 4 digits only; nobody's words."""
+    company = str((ident or {}).get("company_id") or "?")
+    chat = _log_chat(dm_chat)
+    logger.error(f"[dm-gave-up] company={company} chat={chat} path={path} "
+                 f"rounds={len(timing.get('rounds') or [])} tools={len(trace or [])}")
+    text = (f"A WhatsApp DM got no answer within {int(DM_GIVE_UP_SECONDS)} s, so the turn was "
+            f"cancelled and they were told \"{DM_GAVE_UP_TEXT}\".\n\n"
+            f"Company: {company}\nChat: {chat}\nPath: {path}\n\n"
+            + _dm_timeline_text(timing, trace)
+            + "\n\nscripts/dm_thread_timeline.py prints the thread.")
+    safe = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in timing.items()}
+    tools = [{k: t.get(k) for k in ("tool", "round", "t_ms", "ms", "error", "cancelled") if k in t}
+             for t in trace or []]
+    await _operator_alert(
+        f"dm_turn_gave_up:{message_id or uuid.uuid4().hex}", "dm_turn_gave_up",
+        f"WhatsApp DM not answered in {int(DM_GIVE_UP_SECONDS)} s", text,
+        {"company_id": company, "chat": chat, "path": path, "timing": safe, "tools": tools},
+        tag="dm-gave-up")
+
+
+async def _dm_brain_create(client: Any, **kw) -> Any:
+    """One DM brain model call. Inside a DM turn (_DM_DEADLINE set): the
+    call's timeout is what is left of the turn (at most
+    DM_MODEL_CALL_SECONDS), the client's own retries are off, and a
+    transient failure (connection, timeout, 408/409/429/5xx -- what the SDK
+    retried) is tried again here only while the deadline allows. Past the
+    deadline: _DmBudgetSpent. Outside a turn (the eval): as before."""
+    deadline = _DM_DEADLINE.get()
+    if deadline is None:
+        return await client.chat.completions.create(**kw)
+    tries = 0
+    while True:
+        left = deadline - _time.monotonic()
+        if left <= 0:
+            raise _DmBudgetSpent("the DM turn's budget is spent")
+        c = client.with_options(max_retries=0) if hasattr(client, "with_options") else client
+        try:
+            return await c.chat.completions.create(timeout=min(DM_MODEL_CALL_SECONDS, left), **kw)
+        except Exception as e:
+            left = deadline - _time.monotonic()
+            if left <= 0.5:
+                raise _DmBudgetSpent("the DM turn's budget is spent") from e
+            pause = min(8.0, 0.5 * 2 ** tries)
+            if tries >= DM_MODEL_RETRIES or not _dm_model_retryable(e) or left <= pause + 1.0:
+                raise
+            tries += 1
+            await asyncio.sleep(pause)
+
+
+def _dm_model_retryable(e: BaseException) -> bool:
+    """What the OpenAI client retries on its own: a connection error or a
+    timeout, and 408 / 409 / 429 / 5xx."""
+    try:
+        import openai
+    except Exception:  # pragma: no cover - the brain needs it
+        return False
+    if isinstance(e, openai.APIConnectionError):
+        return True
+    code = getattr(e, "status_code", None)
+    return isinstance(e, openai.APIStatusError) and isinstance(code, int) and (
+        code in (408, 409, 429) or code >= 500)
 
 
 def _dm_is_asker(jid: str, person: Optional[dict]) -> bool:
@@ -58360,12 +58628,14 @@ async def _wa_seen(chat_id: str) -> bool:
     return await _wa_chat_action(chat_id, "send-seen")
 
 
-async def _dm_typing_while(chat_id: str, done: asyncio.Event) -> None:
+async def _dm_typing_while(chat_id: str, done: asyncio.Event, seen: bool = True) -> None:
     """What a person does: open the chat (read ticks), then "typing…" until
     `done`, sent again every DM_TYPING_EVERY_SECONDS (WhatsApp drops it
-    after a while)."""
+    after a while). The ONLY "working on it" signal -- no 👀 reaction (Oct
+    27). A group passes seen=False: typing only, nothing marked read."""
     try:
-        await _wa_seen(chat_id)
+        if seen:
+            await _wa_seen(chat_id)
         while not done.is_set():
             await _wa_typing(chat_id, True)
             try:
@@ -58429,6 +58699,23 @@ _DM_BRAIN_EXTRA_TOOLS = [
         "and they say 'show me'."),
      "input_schema": {"type": "object", "properties": {
          "job": _JOB_PROP, "sheet": {"type": "string", "description": "The sheet number, e.g. 'SSP-011.00'."}},
+         "required": ["sheet"]}},
+    {"name": "send_plan_file", "description": (
+        "Send a drawing's PDF here (to them) as a document: the file a sheet is on, a file by "
+        "name, or only some pages of it. With a sheet and no pages: the page that sheet is on; "
+        "whole_file true: the whole file it is in. Over the size limit it says so."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "sheet": {"type": "string", "description": "A sheet number, e.g. 'EN-001'."},
+         "file": {"type": "string", "description": "The file's name, or part of it, when they name a file."},
+         "pages": {"type": "string", "description": "PDF page numbers of the file, e.g. '3-5' or '2, 7'."},
+         "whole_file": {"type": "boolean", "description": "The whole file the sheet is in."}},
+         "required": []}},
+    {"name": "sheet_info", "description": (
+        "Which file and drawing set a sheet is on (its page), its title, and what the drawing "
+        "list says about it and its series (listed but not uploaded). For 'what file is it on'."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP, "sheet": {"type": "string", "description": "The sheet number, e.g. 'EN-001'."}},
          "required": ["sheet"]}},
     {"name": "send_report", "description": (
         "Build a project report PDF and send it here (to them)."),
@@ -58814,7 +59101,8 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
     args = dict(args or {})
     dry = bool(ctx.get("dry_run"))
     now = datetime.now(timezone.utc)
-    if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet"):
+    if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
+                                               "send_plan_file", "sheet_info"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
             return why
@@ -58831,7 +59119,9 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             page = rows[0] if rows else None
             if not page:
                 return f"{str(args.get('sheet') or '').upper()} isn't in the indexed drawings for {job['label']}."
-            label = page.get("sheet_number") or str(args.get("sheet")).upper()
+            src = (await _plan_file_sources(pid, [page.get("file_id")])).get(str(page.get("file_id")))
+            label = plan_sources.cite_with_set(
+                page.get("sheet_number") or str(args.get("sheet")).upper(), src)
             title = page.get("sheet_title") or page.get("title") or ""
             if not page.get("page_jpeg_r2_key"):
                 return f"{label} is indexed but has no image yet (notes sheet or still rendering)."
@@ -58845,8 +59135,13 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             shot = await _dm_plan_sheet_shot(ctx, page)
             if await _dm_send_sheet(dm_chat, page, **shot):
                 ctx["sent"].append(f"[sheet {label}]")
-                return f"Sent the image of {label} {title} to them."
+                where = plan_sources.sheet_source_text(label, src, page.get("page_number"))
+                return f"Sent the image of {label} {title} to them." + (f" {where}" if where else "")
             return f"Found {label} but the image couldn't be sent (may still be rendering)."
+        if name == "sheet_info":
+            return await _dm_sheet_info(str(job["id"]), str(args.get("sheet") or ""))
+        if name == "send_plan_file":
+            return await _dm_send_plan_file(ctx, job, args)
         if name == "search_project_history" and _memory_disabled():
             return "Project history search is off."
         sink: list = []
@@ -58854,6 +59149,8 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             name, args, project_id=str(job["id"]), group_id=dm_chat,
             company_id=str(ident["company_id"]), sender=wa_dm.phone_digits(dm_chat),
             reply_to=None, user_body=ctx["text"], record_sink=sink)
+        if sink:
+            ctx["_records"] = sink                   # the trace keeps where they are
         if sink and await _dm_plan_evidence(ctx, sink):
             out += ("\n(A picture of the sheet, with where this is marked, goes to them right "
                     "after your answer. No need to call send_sheet for it.)")
@@ -58976,7 +59273,7 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
 
 
 #: Tools that send something: one of each (same arguments) per turn.
-_DM_BRAIN_SENDS = ("send_sheet", "send_report", "resend_my_brief")
+_DM_BRAIN_SENDS = ("send_sheet", "send_plan_file", "send_report", "resend_my_brief")
 
 
 def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
@@ -59006,19 +59303,51 @@ def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
             pass
 
 
+def _dm_trace_records(sink: Any, limit: int = 6) -> list:
+    """The plan records one tool call returned, as the answer log keeps them:
+    sheet, file, page, set and the quote (160 chars). [] for none."""
+    out: list = []
+    for hit in sink or []:
+        for r in (hit or {}).get("records") or []:
+            if len(out) >= limit:
+                return out
+            row = {"sheet": r.get("sheet_number") or None, "file": r.get("file_name") or None,
+                   "page": r.get("page_number"),
+                   "set": r.get("set_name") or r.get("drawing_set") or r.get("revision") or None,
+                   "quote": str(r.get("quote") or r.get("text") or "")[:160]}
+            out.append({k: v for k, v in row.items() if v not in (None, "")})
+    return out
+
+
 async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[str] = None) -> dict:
     """The model, its tool calls (one after another, at most
     dm_brain.MAX_TOOL_CALLS a turn), and the number check, until an answer.
     Every retry (cut, evidence, claims, "you", deflect) is on the same model.
-    {reply, trace, rounds, retries, unverified, stop, usage}."""
+    {reply, trace, rounds, retries, unverified, stop, usage, timing_rounds}.
+
+    TIMED (Oct 27: a 588 answer took 7 minutes and nothing said where): each
+    model round is {round, t_ms, ms, finish, tools[, then][, error]} in
+    timing_rounds and each tool call carries round / t_ms / ms in the trace;
+    t_ms counts from ctx["t0"] (the message's receipt), else from here. The
+    same lists sit on ctx (_trace, _rounds) so a turn that raises still
+    leaves what it did."""
     client = _dm_brain_client()
     tools = _dm_brain_tools()
     use = model or _DM_MODEL.get() or dm_brain.MODEL
     msgs = [{"role": "system", "content": system}] + [dict(m) for m in messages]
     trace: List[dict] = []
+    rounds_log: List[dict] = []
+    ctx["_trace"], ctx["_rounds"] = trace, rounds_log
+    t_zero = ctx.get("t0") or _time.monotonic()
+
+    def at_ms(t: float) -> int:
+        return int((t - t_zero) * 1000)
+
+    def took_ms(t: float) -> int:
+        return int((_time.monotonic() - t) * 1000)
     sources = [system] + [m["content"] for m in messages if isinstance(m.get("content"), str)]
     retries, deflects, calls, last_text, missing = 0, 0, 0, "", []
-    cuts, claimed, yous = 0, 0, 0
+    cuts, claimed, yous, file_denied = 0, 0, 0, 0
     done_sends: set = set()
     budget = dm_brain.MAX_TOKENS
     usage: Dict[str, Any] = {"input": 0, "output": 0, "calls": 0, "seconds": 0.0, "models": []}
@@ -59028,30 +59357,50 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
         # so "here's the sheet" is true of it -- but only of the picture: a
         # "sent the report" with no send this turn is still caught.
         picture = ctx.get("plan_image_due") and dm_brain.sends_only_a_picture(last_text)
-        return set(ctx.get("acted") or set()) | (
-            {"sent"} if ctx.get("sent") or picture else set())
+        sent = bool(ctx.get("sent") or picture)
+        if sent and dm_brain.claims_file_sent(last_text) and not any(
+                str(x).startswith(("[file", "[report", "[brief")) for x in ctx.get("sent") or []):
+            # "Sent you the PDF" only when a file went: the drawing's PDF
+            # (send_plan_file), or the report's / brief's own. A sheet
+            # picture is not a PDF.
+            sent = False
+        return set(ctx.get("acted") or set()) | ({"sent"} if sent else set())
 
-    def fix(note: str) -> None:
+    def fix(note: str, why: str) -> None:
         msgs.append({"role": "assistant", "content": last_text or "(nothing)"})
         msgs.append({"role": "user", "content": "[Levelog check, not from them] " + note})
+        if rounds_log:
+            rounds_log[-1]["then"] = why
 
     def done(**kw):
         return {"trace": trace, "retries": retries, "deflect_retries": deflects, "usage": usage,
+                "timing_rounds": rounds_log,
                 "model": use, "tools_tried": [
                     f"{t['tool']}({json.dumps(t.get('args') or {}, ensure_ascii=False)})" for t in trace],
                 **kw}
     for rounds in range(1, dm_brain.MAX_ROUNDS + 1):
         can_call = calls < dm_brain.MAX_TOOL_CALLS
         t0 = _time.monotonic()
-        resp = await client.chat.completions.create(
-            model=use, messages=msgs, tools=tools, tool_choice="auto" if can_call else "none",
-            temperature=dm_brain.TEMPERATURE, max_tokens=budget,
-            **({"extra_body": {"reasoning_effort": dm_brain.REASONING_EFFORT}}
-               if dm_brain.REASONING_EFFORT else {}))
+        try:
+            # Inside a DM turn: no longer than what is left of its budget.
+            resp = await _dm_brain_create(
+                client, model=use, messages=msgs, tools=tools, tool_choice="auto" if can_call else "none",
+                temperature=dm_brain.TEMPERATURE, max_tokens=budget,
+                **({"extra_body": {"reasoning_effort": dm_brain.REASONING_EFFORT}}
+                   if dm_brain.REASONING_EFFORT else {}))
+        except BaseException as e:
+            # The SDK's own retries are inside this one call: its ms says so.
+            # A call the budget cancelled is logged too: it is where the turn stalled.
+            rounds_log.append({"round": rounds, "t_ms": at_ms(t0), "ms": took_ms(t0),
+                               "error": type(e).__name__,
+                               **({"cancelled": True} if isinstance(e, asyncio.CancelledError) else {})})
+            raise
         _dm_usage(usage, resp, use, t0)
         choice = resp.choices[0]
         m = choice.message
         asked = list(getattr(m, "tool_calls", None) or []) if can_call else []
+        rounds_log.append({"round": rounds, "t_ms": at_ms(t0), "ms": took_ms(t0),
+                           "finish": str(choice.finish_reason or ""), "tools": len(asked)})
         if asked:
             # SEQUENTIAL: each call runs after the one before it; past the cap
             # the rest are not run (and not shown as asked).
@@ -59063,12 +59412,14 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             for tc in asked:
                 calls += 1
                 name = tc.function.name
+                t_tool = _time.monotonic()
                 if name in _DM_BRAIN_SENDS:
                     # The same send twice in one turn goes out once.
                     key = (name, " ".join(str(tc.function.arguments or "").lower().split()))
                     if key in done_sends:
                         out = "Already done in this turn -- not sent again."
-                        trace.append({"tool": name, "args": {}, "result": out, "duplicate": True})
+                        trace.append({"tool": name, "args": {}, "result": out, "duplicate": True,
+                                      "round": rounds, "t_ms": at_ms(t_tool), "ms": 0})
                         msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out})
                         continue
                     done_sends.add(key)
@@ -59081,11 +59432,21 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
                 else:
                     try:
                         out, err = await _dm_brain_exec(ctx, name, dict(args)), False
+                    except asyncio.CancelledError:
+                        # Cancelled by the answer budget: the tool it stalled on.
+                        trace.append({"tool": name, "args": args, "result": "", "round": rounds,
+                                      "t_ms": at_ms(t_tool), "ms": took_ms(t_tool),
+                                      "error": True, "cancelled": True})
+                        raise
                     except Exception as e:
                         logger.warning(f"[dm-brain] tool {name} failed: {type(e).__name__}: {e}")
                         out, err = f"The tool failed ({type(e).__name__}). Say so plainly if it matters.", True
                 out = str(out)[:DM_BRAIN_TOOL_CHARS]
-                trace.append({"tool": name, "args": args, "result": out[:3000], **({"error": True} if err else {})})
+                found = _dm_trace_records(ctx.pop("_records", None))
+                trace.append({"tool": name, "args": args, "result": out[:3000],
+                              "round": rounds, "t_ms": at_ms(t_tool), "ms": took_ms(t_tool),
+                              **({"records": found} if found else {}),
+                              **({"error": True} if err else {})})
                 sources.append(out)
                 msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out})
             continue
@@ -59098,7 +59459,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
                 cuts += 1
                 budget = dm_brain.RETRY_MAX_TOKENS
                 logger.info(f"[dm-brain] cut answer ({choice.finish_reason}, {len(last_text)} chars): retried")
-                fix(dm_brain.cut_note())
+                fix(dm_brain.cut_note(), "cut")
                 continue
             if last_text and choice.finish_reason != "length" and not dm_brain._bold_unbalanced(last_text):
                 pass                                     # short, but whole: it goes
@@ -59110,7 +59471,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             # The one retry, on the same model.
             retries += 1
             logger.info(f"[dm-brain] re-asked: unverified {missing[:6]}")
-            fix(dm_brain.verify_note(missing))
+            fix(dm_brain.verify_note(missing), "verify")
             continue
         if missing:
             return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=missing,
@@ -59121,7 +59482,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             if claimed < 1:
                 claimed += 1
                 logger.info(f"[dm-brain] re-asked: claimed {unsupported} with no tool doing it")
-                fix(dm_brain.claim_note(unsupported, [t["tool"] for t in trace]))
+                fix(dm_brain.claim_note(unsupported, [t["tool"] for t in trace]), "claim")
                 continue
             return done(reply=dm_brain.ACTION_UNVERIFIED_TEXT, rounds=rounds, unverified=[],
                         stop="unsupported_claim", draft=last_text)
@@ -59130,16 +59491,24 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             if yous < 1:
                 yous += 1
                 logger.info("[dm-brain] re-asked: said 'from you' with no record marked theirs")
-                fix(dm_brain.you_note())
+                fix(dm_brain.you_note(), "you")
                 continue
             return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=["from you"],
                         stop="unverified_sender", draft=last_text)
+        if (dm_brain.denies_file_send(last_text) and file_denied < dm_brain.FILE_DENY_RETRIES
+                and not any(t.get("tool") == "send_plan_file" for t in trace)):
+            # Never "I can't send PDFs" (Oct 27): send_plan_file sends them.
+            # After it ran, its result (e.g. over the size limit) is the truth.
+            file_denied += 1
+            logger.info("[dm-brain] re-asked: said it can't send a file")
+            fix(dm_brain.file_send_note(), "file_deny")
+            continue
         if dm_brain.cant_answer(last_text) and deflects < dm_brain.DEFLECT_RETRIES:
             # Never "check with the site manager" / "not sure" before the
             # tools (Tue 12:28 PM): asked again, with what it tried.
             deflects += 1
             logger.info(f"[dm-brain] re-asked: deflected after {[t['tool'] for t in trace]}")
-            fix(dm_brain.deflect_note([t["tool"] for t in trace]))
+            fix(dm_brain.deflect_note([t["tool"] for t in trace]), "deflect")
             continue
         return done(reply=last_text, rounds=rounds, unverified=[], stop=choice.finish_reason,
                     cant_answer=dm_brain.cant_answer(last_text), cut_retries=cuts,
@@ -59151,9 +59520,14 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
 async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: list,
                            now: datetime, dry_run: bool = False,
                            flows: Optional[List[str]] = None,
-                           active: Optional[str] = None) -> dict:
+                           active: Optional[str] = None,
+                           t0: Optional[float] = None,
+                           live: Optional[dict] = None) -> dict:
     """Build the context and run the brain for one message (the live path
-    and the eval). {reply, trace, ...} plus `sent` (what tools sent)."""
+    and the eval). {reply, trace, ...} plus `sent` (what tools sent).
+    `t0`: the monotonic clock at the message's receipt (timing offsets).
+    `live`: given, live["ctx"] is the turn's context -- what a turn that is
+    given up (_dm_await_budget) had done, and when."""
     jobs = await _dm_jobs(ident) if ident.get("projects") else []
     by_id = {j["id"]: j for j in jobs}
     if active is None and not dry_run:
@@ -59179,16 +59553,22 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
     messages = dm_brain.turn_messages(dm_brain.history_messages(history, now), text)
     ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
            "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
-           "used_job": None}
+           "used_job": None, "t0": t0}
+    if live is not None:
+        live["ctx"] = ctx
     _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phones": [
         p for p in ("" if str(dm_chat).endswith("@lid") else wa_dm.phone_digits(dm_chat),
                     wa_dm.phone_digits(str((ident.get("user") or {}).get("phone") or ""))) if p]})
     try:
         out = await _dm_brain_run(ctx, messages, system)
+    except _DmBudgetSpent:
+        raise                                    # the turn is given up (_dm_await_budget)
     except Exception as e:
         logger.error(f"[dm-brain] model failed: {type(e).__name__}: {e}")
-        out = {"reply": dm_brain.FAILED_TEXT, "trace": [], "rounds": 0, "retries": 0,
-               "unverified": [], "stop": f"error:{type(e).__name__}"}
+        # What it did before it failed (and how long each step took) is kept.
+        out = {"reply": dm_brain.FAILED_TEXT, "trace": ctx.get("_trace") or [],
+               "timing_rounds": ctx.get("_rounds") or [], "rounds": len(ctx.get("_rounds") or []),
+               "retries": 0, "unverified": [], "stop": f"error:{type(e).__name__}"}
     if out.get("reply"):
         out["reply"] = dm_brain.redact_phones(out["reply"])
     # Where on the sheets the answer came from: sent after the words
@@ -59256,23 +59636,39 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
         question = f"[voice note] {question}"
 
     t_start = _time.monotonic()
-    task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history, now=now))
-    # "typing…" in their chat while the brain works, sent again every 8 s.
+    # The clock starts at the webhook's receipt, not here: a turn that began
+    # late (a queued task, a walkthrough lease, a voice note) shows it.
+    inbound = _WA_INBOUND.get() or {}
+    received = float(inbound.get("received") or _time.time())
+    t0 = t_start - max(0.0, _time.time() - received)
+    sends: list = []
+    _DM_SENDS.set(sends)                     # before the task: its sends land here too
+    _DM_DEADLINE.set(t0 + DM_GIVE_UP_SECONDS)
+    live: dict = {}
+    task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history,
+                                                  now=now, t0=t0, live=live))
+    # "typing…" in their chat while the brain works, sent again every 8 s --
+    # the only "working on it" signal (no 👀 reaction: Oct 27). Until the
+    # whole answer is ready, or the budget is spent (_dm_await_budget).
     thinking = asyncio.Event()
     typing = asyncio.ensure_future(_dm_typing_while(dm_chat, thinking))
-    eyes = False
     try:
-        try:
-            out = await asyncio.wait_for(asyncio.shield(task), wa_react.WORKING_AFTER_SECONDS)
-        except asyncio.TimeoutError:
-            eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
-            out = await task
+        budget, out = await _dm_await_budget(task, dm_chat, t_start - t0, sends)
     finally:
         thinking.set()
         try:
             await asyncio.wait_for(typing, 10)
         except Exception:
             pass
+    brain_done = _time.monotonic()
+    if budget == "gave_up":
+        # What the turn had done when it was cancelled, and when.
+        c = live.get("ctx") or {}
+        out = {"reply": None, "trace": c.get("_trace") or [],
+               "timing_rounds": c.get("_rounds") or [], "rounds": len(c.get("_rounds") or []),
+               "retries": 0, "unverified": [], "stop": "gave_up",
+               "sent": c.get("sent") or [], "used_job": c.get("used_job"),
+               "tools_tried": [t.get("tool") for t in c.get("_trace") or []]}
     reply = out.get("reply")
     # Which path answered, provably: one line per brain answer (no phone, no words).
     logger.info(f"[dm-brain] answered company={ident.get('company_id') or '?'} "
@@ -59281,14 +59677,6 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
     if out.get("used_job"):
         await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
                             project_id=out["used_job"])
-    await _dm_log_answer(
-        ident, out.get("used_job"), question, reply or " | ".join(out.get("sent") or []), "brain",
-        tool_data=out.get("trace"), model=out.get("model") or dm_brain.MODEL, rounds=out.get("rounds"),
-        usage=out.get("usage"),
-        verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
-        stop=out.get("stop"), deflect_retries=out.get("deflect_retries") or None,
-        tools_tried=_dm_redact(out.get("tools_tried") or []),
-        **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
     if out.get("cant_answer"):
         # Every "can't answer" is logged with the tools it tried (rule 3).
         logger.info(f"[dm-brain] cant_answer tools={_dm_redact(out.get('tools_tried') or [])}")
@@ -59299,14 +59687,59 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
                 {"$set": {"project_id": str(out["used_job"])}})
         except Exception as e:
             logger.warning(f"[voice] dm job stamp failed: {type(e).__name__}")
-    if reply:
-        if heard:
-            reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
-        await send_whatsapp_message(dm_chat, reply)
-        # The words first; then where on the sheet they came from.
-        await _dm_send_plan_shots(dm_chat, out.get("plan_shots") or [])
-    elif eyes:
-        await _react_to_message(dm_chat, message_id, "")
+    timing: dict = {}
+    try:
+        if budget == "gave_up":
+            await send_whatsapp_message(dm_chat, DM_GAVE_UP_TEXT)
+        elif reply:
+            if heard:
+                reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
+            await send_whatsapp_message(dm_chat, reply)
+            # The words first; then where on the sheet they came from.
+            await _dm_send_plan_shots(dm_chat, out.get("plan_shots") or [])
+    finally:
+        # Logged AFTER the sends, so the row says when the first one went.
+        timing = _dm_turn_timing(inbound, received, t0, t_start, brain_done, out, sends,
+                                 budget=budget)
+        await _dm_log_answer(
+            ident, out.get("used_job"), question,
+            DM_GAVE_UP_TEXT if budget == "gave_up"
+            else out.get("reply") or " | ".join(out.get("sent") or []),
+            "brain", tool_data=out.get("trace"), model=out.get("model") or dm_brain.MODEL,
+            rounds=out.get("rounds"), usage=out.get("usage"),
+            verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
+            stop=out.get("stop"), deflect_retries=out.get("deflect_retries") or None,
+            tools_tried=_dm_redact(out.get("tools_tried") or []),
+            timing=timing,
+            **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
+        if budget == "gave_up":
+            await _dm_turn_gave_up(ident, dm_chat, "brain", timing, out.get("trace"), message_id)
+
+
+def _dm_turn_timing(inbound: dict, received: float, t0: float, t_start: float,
+                    brain_done: float, out: dict, sends: list, budget: str = "ok") -> dict:
+    """One DM turn's clock for the answer log, every offset in ms from the
+    webhook's receipt: received_at; queue_ms (webhook -> its task began);
+    wa_lag_ms (WhatsApp's send time -> webhook); brain_start_ms / brain_ms;
+    rounds (each model call); sends (each message out: t_ms, action, ok,
+    wait_ms for the DM send lock, tries, or `refused`); first_send_ms (the
+    first send that went); budget ("ok" | "slow_notice" | "gave_up", see
+    _dm_await_budget). No phone, no words."""
+    def off(t: float) -> int:
+        return int((t - t0) * 1000)
+    wa_ts = int(inbound.get("wa_ts") or 0)
+    rows = [{"t_ms": off(x["at"]), **{k: v for k, v in x.items() if k != "at"}}
+            for x in sends or []]
+    went = [r["t_ms"] for r in rows if r.get("ok")]
+    return {
+        "received_at": datetime.fromtimestamp(received, timezone.utc),
+        "queue_ms": int((float(inbound["started"]) - received) * 1000) if inbound.get("started") else None,
+        "wa_lag_ms": int((received - wa_ts) * 1000) if wa_ts else None,
+        "brain_start_ms": off(t_start), "brain_ms": int((brain_done - t_start) * 1000),
+        "rounds": out.get("timing_rounds") or [],
+        "sends": rows, "first_send_ms": min(went) if went else None,
+        "budget": budget,
+    }
 
 
 def _iso_utc(v: Any) -> Any:
@@ -59391,6 +59824,10 @@ async def send_whatsapp_message(
         if not verdict["allowed"]:
             logger.info(f"WhatsApp DM refused ({verdict['reason']}) "
                         f"to ...{wa_dm.phone_digits(chat_id)[-4:]}")
+            sends = _DM_SENDS.get()
+            if sends is not None:
+                sends.append({"at": _time.monotonic(), "action": "send-message", "ok": False,
+                              "refused": str(verdict.get("reason") or "?")})
             return None
         ledger_id = verdict.get("ledger_id")
 
@@ -65980,6 +66417,244 @@ async def _dm_send_sheet(dm_chat: str, page: dict, *, jpeg: Optional[bytes] = No
     return True
 
 
+# ── WHAT FILE, WHICH SET, AND THE PDF ITSELF (lib/plan_sources) ─────────────
+#
+# Oct 27, the owner: EN-001 / EN-002, then "what file is it on", then "send me
+# the PDF". The evidence named sheets only, and nothing could send a PDF. A
+# record and a sheet now say their file and set (project_files.drawing_track,
+# DRAWING_TRACKS), sheet_info answers "what file", and send_plan_file sends the
+# drawing's PDF -- the whole file or some of its pages -- through the DM gate.
+# Data and rendering only: nothing here binds, withholds or ranks a record.
+
+
+async def _plan_file_sources(project_id: str, file_ids: Any) -> Dict[str, dict]:
+    """{file_id: plan_sources.source_of(row)} for this project's files.
+    {} when it could not look: a citation then goes out as it did before."""
+    ids = sorted({str(f) for f in file_ids or [] if f})
+    if not ids:
+        return {}
+    try:
+        rows = await db.project_files.find(
+            {"_id": {"$in": [to_query_id(i) for i in ids]}, "project_id": str(project_id),
+             "is_deleted": {"$ne": True}},
+            {"name": 1, "drawing_track": 1, "drawing_track_label": 1}).to_list(len(ids))
+    except Exception as e:
+        logger.warning(f"plan file sources lookup failed for {project_id}: {type(e).__name__}")
+        return {}
+    out = {}
+    for r in rows:
+        src = plan_sources.source_of(r)
+        if src:
+            out[str(r["_id"])] = src
+    return out
+
+
+async def _drawing_list_and_sheets(project_id: str) -> Tuple[Dict[str, dict], List[str]]:
+    """(the drawing list -- {sheet key: {sheet, title, on}} from the index
+    schedules on the current pages, plan_sources.drawing_list -- and the
+    sheet numbers actually uploaded). ({}, []) when it could not look."""
+    pid = str(project_id)
+    live = await _live_plan_file_ids(pid)
+    try:
+        pages = await db.document_page_index.find(
+            {"project_id": pid, **_current_page_filter(live)}, {"sheet_number": 1}).to_list(5000)
+        recs = await db[PLAN_RECORDS].find(
+            {"project_id": pid, "record_type": "schedule",
+             "page_id": {"$in": [str(p["_id"]) for p in pages]}},
+            {"payload.name": 1, "payload.rows": 1, "quote": 1, "sheet_number": 1}).to_list(2000)
+    except Exception as e:
+        logger.warning(f"drawing list lookup failed for {pid}: {type(e).__name__}")
+        return {}, []
+    listed = plan_sources.drawing_list([r for r in recs if plan_search.is_index_record(r)])
+    return listed, [p.get("sheet_number") for p in pages if p.get("sheet_number")]
+
+
+async def _dm_sheet_info(project_id: str, sheet_q: str) -> str:
+    """sheet_info: the file and set a sheet is on, its own title, and what
+    the drawing list says (another title for it; its series' sheets listed
+    but not uploaded)."""
+    pid = str(project_id)
+    rows = await _find_named_sheet(pid, sheet_q)
+    page = rows[0] if rows else None
+    listed, uploaded = await _drawing_list_and_sheets(pid)
+    asked = (page or {}).get("sheet_number") or str(sheet_q or "").strip().upper()
+    lines = []
+    if page:
+        src = (await _plan_file_sources(pid, [page.get("file_id")])).get(str(page.get("file_id")))
+        label = plan_sources.cite_with_set(asked, src)
+        title = page.get("sheet_title") or ""
+        lines.append(label + (f" — {title}" if title else "") + " (its title block).")
+        where = plan_sources.sheet_source_text(label, src, page.get("page_number"))
+        if not where and page.get("file_name"):
+            where = f"{label} is page {page.get('page_number')} of {page['file_name']}."
+        if where:
+            lines.append(where)
+        lines.append("send_plan_file sends its PDF (that page, or whole_file for the whole file).")
+    else:
+        lines.append(f"{asked} isn't among the uploaded, indexed sheets.")
+    lines += plan_sources.list_notes(asked, (page or {}).get("sheet_title") or "", listed, uploaded)
+    return "\n".join(lines)
+
+
+async def _dm_plan_file_named(project_id: str, company_id: Any, said: str
+                              ) -> Tuple[Optional[str], str]:
+    """(file id, "") for the live file of this project whose name is `said`
+    (or contains it, when only one does); (None, why) otherwise."""
+    live = await _live_plan_file_ids(project_id)
+    q: Dict[str, Any] = {"project_id": project_id, "is_deleted": {"$ne": True},
+                         "name": {"$regex": "(?i)" + re.escape(said)}}
+    if live is not None:
+        q["_id"] = {"$in": [to_query_id(i) for i in live]}
+    rows = await db.project_files.find(q, {"name": 1, "company_id": 1}).to_list(20)
+    rows = [r for r in rows if str(r.get("company_id") or company_id) == str(company_id)]
+    exact = [r for r in rows if str(r.get("name") or "").lower() == said.lower()]
+    pick = exact if len(exact) == 1 else rows
+    if len(pick) == 1:
+        return str(pick[0]["_id"]), ""
+    if not pick:
+        return None, f"No drawing file on this job is named like {said!r}."
+    return None, ("More than one file matches: " + ", ".join(str(r.get("name")) for r in pick[:6])
+                  + ". Which one?")
+
+
+async def _dm_pdf_media_url(frec: dict, pages: Optional[List[int]]) -> Tuple[Optional[str], str]:
+    """(the URL WaAPI fetches the PDF from, "") -- the stored file itself
+    when `pages` is None, else a new PDF of those pages, uploaded as a
+    temporary file; (None, why) when it can't be made or is over the limit."""
+    import tempfile as _tempfile
+    import uuid as _uuid
+    if pages is None:
+        tok = await _mint_temp_media_token(frec["r2_key"], "application/pdf", ttl_seconds=3600)
+        return _public_temp_media_url(tok), ""
+    with _tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "source.pdf")
+        try:
+            await _sheet_fetch_pdf(frec, path)
+            data, _count = await asyncio.to_thread(plan_sources.extract_pages, path, pages)
+        except ValueError as e:
+            return None, str(e)
+        except Exception as e:
+            logger.warning(f"[dm-brain] plan file pages failed: {type(e).__name__}")
+            return None, "the pages couldn't be cut from the file"
+    if len(data) > plan_sources.MAX_SEND_BYTES:
+        return None, (f"those pages come to {plan_sources.size_mb(len(data))}, over the "
+                      f"{plan_sources.MAX_SEND_MB} MB limit for sending a file in this chat")
+    key = f"temp/whatsapp/dm/{_uuid.uuid4()}.pdf"
+    try:
+        await asyncio.to_thread(_upload_to_r2, data, key, "application/pdf")
+        tok = await _mint_temp_media_token(key, "application/pdf", ttl_seconds=3600)
+    except Exception as e:
+        logger.warning(f"[dm-brain] plan file temp upload failed: {type(e).__name__}")
+        return None, "the PDF couldn't be stored for sending"
+    return _public_temp_media_url(tok), ""
+
+
+async def _dm_send_document(dm_chat: str, media_url: str, media_name: str, caption: str) -> bool:
+    """One PDF to this DM chat as a WhatsApp document, through the DM gate
+    (the reply window, paced, in the ledger), like _dm_send_sheet. Kept in
+    the chat's history as "[File] <caption>"."""
+    verdict = await _dm_send_verdict(dm_chat, f"[file {media_name}]", None)
+    if not verdict["allowed"]:
+        logger.info(f"[dm-brain] file refused ({verdict['reason']}) to {_log_chat(dm_chat)}")
+        return False
+    ledger_id = verdict.get("ledger_id")
+    ok, body, err = await _waapi_send_dm_paced(
+        f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
+        {"chatId": dm_chat, "mediaUrl": media_url, "mediaName": media_name, "caption": caption},
+        {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"})
+    inner = body.get("data") if isinstance(body, dict) else None
+    if ok and isinstance(inner, dict) and inner.get("status") == "error":
+        ok, err = False, "data.status error"
+    if ledger_id is not None:
+        await _ledger_finish(ledger_id, ok, err)
+    if not ok:
+        logger.warning(f"[dm-brain] file {media_name} not sent to {_log_chat(dm_chat)}: {err}")
+        return False
+    try:
+        now = datetime.now(timezone.utc)
+        await db.whatsapp_messages.insert_one({
+            "group_id": dm_chat, "is_dm": True, "sender": "bot", "body": f"[File] {caption}",
+            "has_audio": False, "message_id": "", "from_me": True,
+            "timestamp": now, "created_at": now})
+    except Exception as e:
+        logger.debug(f"[dm-brain] file bot-log skipped: {type(e).__name__}")
+    return True
+
+
+async def _dm_send_plan_file(ctx: dict, job: dict, args: dict) -> str:
+    """send_plan_file: the drawing's PDF -- the page a sheet is on, a page
+    range, or the whole file -- to this chat. Same scope as send_sheet; the
+    eval (dry run) sends nothing."""
+    ident, dm_chat, dry = ctx["ident"], ctx["dm_chat"], bool(ctx.get("dry_run"))
+    pid = str(job["id"])
+    company_id = str(ident.get("company_id") or "")
+    if not company_id or not await _bot_project_scope(company_id, pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    sheet_q = str(args.get("sheet") or "").strip()
+    file_q = str(args.get("file") or "").strip()
+    pages_q = str(args.get("pages") or "").strip()
+    page = None
+    if sheet_q:
+        rows = await _find_named_sheet(pid, sheet_q)
+        page = rows[0] if rows else None
+        if not page:
+            listed, uploaded = await _drawing_list_and_sheets(pid)
+            return " ".join([f"{sheet_q.upper()} isn't in the uploaded drawings for {job['label']}, "
+                             f"so there is no PDF of it to send."]
+                            + plan_sources.list_notes(sheet_q, "", listed, uploaded))
+        file_id = str(page.get("file_id") or "")
+    elif file_q:
+        file_id, why = await _dm_plan_file_named(pid, company_id, file_q)
+        if not file_id:
+            return why
+    else:
+        return "Say which sheet or file to send."
+    frec = await db.project_files.find_one(
+        {"_id": to_query_id(file_id), "project_id": pid, "is_deleted": {"$ne": True}},
+        {"name": 1, "company_id": 1, "r2_key": 1, "size": 1, "drawing_track": 1,
+         "drawing_track_label": 1})
+    # The file's own company must be the asker's: a file row with no company
+    # is not sent (its project is in scope, but the row proves nothing).
+    if not frec or str(frec.get("company_id") or "") != company_id:
+        return "That drawing's file isn't on this job any more."
+    if not frec.get("r2_key"):
+        return f"{frec.get('name') or 'That file'} has no stored copy in Levelog to send."
+    src = plan_sources.source_of(frec)
+    name = src["file_name"] or "drawing.pdf"
+    if not name.lower().endswith(".pdf"):
+        return f"{name} isn't a PDF."
+    if pages_q:
+        pages, why = plan_sources.parse_pages(pages_q)
+        if why:
+            return f"Nothing sent: {why}."
+    elif page is not None and args.get("whole_file") is not True and page.get("page_number"):
+        pages = [int(page["page_number"])]
+    else:
+        pages = None
+    label = plan_sources.cite_with_set(page.get("sheet_number") or sheet_q.upper(), src) if page else ""
+    what = (f"{name} ({src['set_name']})" if pages is None
+            else f"{plan_sources.pages_label(pages)} of {name} ({src['set_name']})")
+    if label:
+        what = f"{label}, {what}"
+    size = frec.get("size")
+    if pages is None and isinstance(size, (int, float)) and size > plan_sources.MAX_SEND_BYTES:
+        return (f"Not sent: {name} is {plan_sources.size_mb(size)}, over the {plan_sources.MAX_SEND_MB} MB "
+                f"limit for sending a file in this chat. Some of its pages can be sent (pages, or a "
+                f"sheet's page).")
+    if dry:
+        ctx["sent"].append(f"[file {name}]")
+        return f"(eval) Would send {what} here as a PDF."
+    media_url, why = await _dm_pdf_media_url(frec, pages)
+    if not media_url:
+        return f"Nothing sent: {why}. Say so plainly -- don't say the PDF was sent."
+    stem = re.sub(r"\.pdf$", "", name, flags=re.I)
+    media_name = name if pages is None else f"{stem} - {plan_sources.pages_label(pages)}.pdf"
+    if not await _dm_send_document(dm_chat, media_url, media_name, what):
+        return f"The PDF of {what} could NOT be sent. Say so plainly -- don't say it was sent."
+    ctx["sent"].append(f"[file {name}]")
+    return f"Sent {what} to them as a PDF."
+
+
 # ── WHERE A PLANS ANSWER CAME FROM, ON THE SHEET (lib/plan_crop) ────────────
 #
 # "Window protection details are on SSP-011.00" still sends a superintendent
@@ -66017,6 +66692,13 @@ async def _dm_plan_evidence(ctx: dict, sink: list) -> bool:
             except Exception as e:
                 logger.warning(f"[dm-brain] plan page read failed: {type(e).__name__}")
                 pages[pid] = {}
+    # Each page's file and set, for the picture's caption (rendering only).
+    want = {str(p.get("file_id")) for p in pages.values() if p and p.get("file_id")}
+    have = ctx.setdefault("plan_sources", {})
+    if want - set(have):
+        some = next((p for p in pages.values() if p and p.get("project_id")), None)
+        if some:
+            have.update(await _plan_file_sources(str(some["project_id"]), sorted(want - set(have))))
     if _dm_plan_records(ctx):
         ctx["plan_image_due"] = True
     return bool(ctx.get("plan_image_due"))
@@ -66049,8 +66731,11 @@ def _dm_plan_shots(ctx: dict, out: dict) -> list:
     groups = plan_crop.by_page(choice["marks"])
     total = sum(len(marks) for _pid, marks in groups)
     pages, sent = ctx["plan_pages"], ctx.get("sheets_sent") or set()
+    srcs = ctx.get("plan_sources") or {}
     return [{"page": pages[pid], "marks": marks, "total": total,
-             "label": pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+             "label": plan_sources.cite_with_set(
+                 pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+                 srcs.get(str(pages[pid].get("file_id") or ""))),
              "ambiguous": choice["ambiguous"], "unverified": choice["unverified"],
              "pictures": len(groups)}
             for pid, marks in groups if pid not in sent]
@@ -66823,11 +67508,178 @@ async def _ranked_for_subject(project_id: str, page_ids: list, subject: str,
              if not plan_search.matched_only_through_label(r, terms)], terms)
 
 
+async def _level_rows(project_id: str) -> List[dict]:
+    """The current pages' titles and floor columns - what the SET calls its
+    levels (lib.plan_levels). Read only when a question names a level or a
+    meaning that lives on one."""
+    live_ids = await _live_plan_file_ids(str(project_id))
+    return await db.document_page_index.find(
+        {"project_id": str(project_id), **_current_page_filter(live_ids)},
+        {"_id": 1, "sheet_number": 1, "sheet_title": 1, "floor": 1, "floors": 1},
+    ).to_list(5000)
+
+
+async def _interpret_levels(project_id: str, subject: str, floor: str,
+                            attribute: str, interp: dict) -> Tuple[str, str, list]:
+    """(subject, floor, extra scopes) after reading the question's level words
+    against the set's own levels (lib.plan_levels).
+
+    QUERY INTERPRETATION AND RETRIEVAL SCOPE ONLY. "5th floor" on a set whose
+    numbered floors stop at four is its mezzanine: the phrase leaves the
+    searched words (no sheet prints 5TH, and an unprinted word empties the
+    search), the floor filter gives way to the set's level, that level's
+    sheets are searched as well, and `interp["level_mapping"]` carries the
+    sentence the answer must say. The ceiling of the top occupied level is
+    the underside of the roof assembly, so the roof sections and details are
+    searched too. What a record may say is the gate's, unchanged."""
+    from_subject = plan_levels.find_phrases(subject)
+    from_floor = plan_levels.find_phrases(floor, field_is_a_level=True)
+    if not from_subject and not from_floor:
+        return subject, floor, []
+    rows = await _level_rows(project_id)
+    levels = plan_levels.set_levels(rows)
+    if not levels:
+        return subject, floor, []
+    in_subject = [plan_levels.map_phrase(p, levels) for p in from_subject]
+    in_floor = [plan_levels.map_phrase(p, levels) for p in from_floor]
+    maps = in_subject + in_floor
+    interp["levels"] = [lv["token"] for m in maps for lv in m["levels"]]
+    restate = [m for m in maps if m["restate"]]
+    interp["level_mapping"] = [plan_levels.describe(m, levels) for m in restate]
+    scoped: list = []
+    if any(m["restate"] for m in in_subject):
+        subject = plan_levels.strip_phrases(subject) or subject
+    if any(m["restate"] for m in in_floor):
+        floor = ""
+    sheet_of = interp.setdefault("page_sheets", {})
+    sheet_of.update({str(r.get("_id")): str(r.get("sheet_number") or "") for r in rows})
+    ids = sorted({i for m in restate for lv in m["levels"] for i in lv["page_ids"]})
+    if ids:
+        scoped.append(("level", ids, subject))
+    if (plan_levels.asks_about_ceiling(f"{subject} {attribute}")
+            and set(plan_levels.top_occupied(levels)) & set(interp["levels"])):
+        roof = plan_levels.roof_assembly_sheets(rows)
+        if roof:
+            interp["searched_sheets"] = [r["sheet_number"] for r in roof]
+            scoped.append(("roof assembly",
+                           sorted({i for r in roof for i in r["page_ids"]}),
+                           plan_levels.without_ceiling(subject) or subject))
+    return subject, floor, scoped
+
+
+async def _sense_scopes(project_id: str, terms: List[str], asked: str,
+                        interp: dict, subject: str) -> list:
+    """A meaning the question settles may name the level that draws it (a
+    rooftop bulkhead is on the roof sheets): those sheets are searched too."""
+    want = {tok for t in terms for tok in plan_term_senses.levels_for(
+        plan_term_senses.resolve(t, asked, interp.get("levels") or ()))}
+    if not want:
+        return []
+    rows = await _level_rows(project_id)
+    interp.setdefault("page_sheets", {}).update(
+        {str(r.get("_id")): str(r.get("sheet_number") or "") for r in rows})
+    lv = plan_levels.set_levels(rows)
+    ids = sorted({i for x in lv if x["token"] in want for i in x["page_ids"]})
+    return [("sense", ids, subject)] if ids else []
+
+
+#: Records each extra scope (the set's level, the roof assembly) may add,
+#: ahead of the whole-set results.
+SCOPED_PLANS_MAX = 4
+
+
+def _on_sheet(record: dict, sheet_number: str) -> bool:
+    """Does `record` sit on the sheet the caller named (the same prefix rule
+    `_current_record_page_ids` applies to pages)?"""
+    if not sheet_number:
+        return True
+    return str(record.get("sheet_number") or "").upper().startswith(sheet_number.upper())
+
+
+async def _interpret_query(project_id: str, subject: str, floor: str, attribute: str,
+                           intent: str, interp: dict, *, discipline: str = "",
+                           sheet_number: str = "") -> Tuple[str, str, List[dict]]:
+    """(subject, floor, records from the extra scopes) for what the question
+    MEANS on this set: its level words read against the set's levels, and a
+    two-meaning term's settled meaning (lib.plan_levels, lib.plan_term_senses).
+    Fills `interp` with `level_mapping`, `searched_sheets` and `scoped_sheets`.
+    A failure here costs the interpretation and nothing else: the question is
+    searched as it was asked.
+
+    AN EXPLICIT SHEET OR DISCIPLINE STILL HOLDS. The extra scopes widen what
+    the question means; they never widen past a sheet or discipline the
+    caller named - 'roof bulkhead' on M-200 does not return A-105. Each
+    scope is cut to the pages those filters allow, and any extra record off
+    them is dropped before it is merged."""
+    asked = f"{subject} {attribute}"
+    scoped: list = []
+    try:
+        subject, floor, scoped = await _interpret_levels(
+            project_id, subject, floor, attribute, interp)
+    except Exception as e:
+        logger.warning(f"search_plans level reading failed for {subject!r}: {e!r}")
+    terms = plan_term_senses.terms_in(asked)
+    if terms:
+        try:
+            scoped += await _sense_scopes(project_id, terms, asked, interp, subject)
+        except Exception as e:
+            logger.warning(f"search_plans sense scope failed for {subject!r}: {e!r}")
+    allowed: Optional[set] = None
+    if scoped and (sheet_number or discipline):
+        try:
+            allowed = set(await _current_record_page_ids(
+                project_id, discipline=discipline, sheet_number=sheet_number))
+        except Exception as e:
+            logger.warning(f"search_plans scope filter failed for {subject!r}: {e!r}")
+            allowed = set()
+    if allowed is not None:
+        scoped = [(why, [i for i in ids if i in allowed], subj) for why, ids, subj in scoped]
+    sheet_of = interp.get("page_sheets") or {}
+    kept = {i for _why, ids, _s in scoped for i in ids}
+    interp["scoped_sheets"] = sorted({sheet_of[i] for i in kept if sheet_of.get(i)})
+    if interp.get("searched_sheets"):
+        interp["searched_sheets"] = [s for s in interp["searched_sheets"]
+                                     if s in interp["scoped_sheets"]]
+    extra: List[dict] = []
+    for _why, ids, subj in scoped:
+        if not ids:
+            continue
+        subj = plan_search.normalize_arguments(subj, attribute, intent, "")[0]
+        got = await _ranked_for_subject(project_id, ids, subj, intent)
+        if got is not None:
+            extra += [r for r in plan_search.drop_impossible_dimensions(
+                plan_search.drop_indexes(got[0]))
+                if not plan_search.is_glyph_evidence(r)
+                and (allowed is None or str(r.get("page_id")) in allowed)
+                and _on_sheet(r, sheet_number)][:SCOPED_PLANS_MAX]
+    return subject, floor, extra
+
+
+def _with_scoped(extra: List[dict], out: List[dict], asked: str, interp: dict) -> List[dict]:
+    """The extra scopes' records ahead of the whole set's, each once; and the
+    meaning of any two-meaning term, read with what the sheets returned."""
+    if extra:
+        def key(r):
+            return (r.get("page_id"), r.get("record_type"), r.get("ordinal"))
+        first: List[dict] = []
+        for r in extra:
+            if key(r) not in {key(x) for x in first}:
+                first.append(r)
+        taken = {key(r) for r in first}
+        out = first + [r for r in out if key(r) not in taken]
+    terms = plan_term_senses.terms_in(asked)
+    if terms:
+        interp["term_senses"] = [plan_term_senses.describe(plan_term_senses.resolve(
+            t, asked, interp.get("levels") or (), out)) for t in terms]
+    return out
+
+
 async def search_plans(project_id: str, subject: str, *, intent: str = "",
                        discipline: str = "", floor: str = "",
                        sheet_number: str = "", limit: int = 8,
                        also: Optional[List[str]] = None,
-                       attribute: str = "") -> List[dict]:
+                       attribute: str = "",
+                       interp: Optional[dict] = None) -> List[dict]:
     """The records on this project's current sheets that speak to `subject`.
 
     Returns RECORDS, not prose. The agent composes; `answer_is_grounded` then
@@ -66846,19 +67698,38 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     # floor-checked on its own printed words, exactly as `subject` is, and a
     # record ranks by the best it does under any of them - so ranking still
     # counts only what the sheet prints, and the gate is unchanged.
+
+    ── WHAT THE QUESTION MEANS ON THIS SET (`interp`) ───────────────────────
+    #
+    # "5th floor ceiling" on a set whose numbered floors stop at four
+    # (2026-10-27): its mezzanine, searched as such, with the roof assembly's
+    # sections and details, and `interp` (filled when given) carries the
+    # `level_mapping` the answer must say and the `term_senses` of a word
+    # with two construction meanings (_interpret_query). Query and scope
+    # only: the records are what the sheets print and the gate is unchanged.
     """
     if not project_id:
         return []
+    interp = interp if interp is not None else {}
+    asked = f"{subject} {attribute}"
+    interp["filters"] = {"sheet_number": sheet_number, "discipline": discipline}
+    subject, floor, extra = await _interpret_query(
+        project_id, subject, floor, attribute, intent, interp,
+        discipline=discipline, sheet_number=sheet_number)
     # The property out of the subject, and no floor filter on a count
     # (plan_search.normalize_arguments) - before anything reads them.
     subject, attribute, floor = plan_search.normalize_arguments(subject, attribute, intent, floor)
     names = [subject] + [a for a in (also or []) if (a or "").strip() and a != subject]
     page_ids = await _current_record_page_ids(
         project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
+    # Nothing found still says what the question meant (_with_scoped fills
+    # `term_senses`; the level mapping is already in `interp`).
     if not page_ids:
-        return []
+        return _with_scoped(extra, [], asked, interp)
     found = [x for x in [await _ranked_for_subject(project_id, page_ids, n, intent)
                          for n in names] if x is not None]
+    if not found and (extra or plan_term_senses.terms_in(asked)):
+        return _with_scoped(extra, [], asked, interp)
     if not found:
         return []
     ranked = (found[0][0] if len(found) == 1
@@ -66905,14 +67776,68 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
             out += await _area_evidence(project_id)
         except Exception as e:
             logger.warning(f"search_plans area evidence failed for {subject!r}: {e}")
-    return out
+    return _with_scoped(extra, out, asked, interp)
 
 
-def _render_records_for_model(records: List[dict], subject: str) -> str:
+def _interp_lines(interp: Optional[dict]) -> List[str]:
+    """`level_mapping`, `searched_sheets` and `term_senses` as the model is
+    shown them (search_plans `interp`), each with what it must do with it."""
+    interp = interp or {}
+    lines: List[str] = []
+    for m in interp.get("level_mapping") or []:
+        lines.append(f"level_mapping: {m}. State this mapping in your answer, in "
+                     f"these words, before anything you say about that level.")
+    if interp.get("searched_sheets"):
+        lines.append("searched_sheets: the ceiling of the top occupied level is the "
+                     "underside of the roof assembly, so the roof sections/details were "
+                     "searched too (" + ", ".join(interp["searched_sheets"][:6]) + ").")
+    for t in interp.get("term_senses") or []:
+        lines.append(f"term_senses: {t}")
+    return lines
+
+
+def _searched_list(interp: Optional[dict]) -> str:
+    """Which sheets an empty search covered, as far as it is known: the extra
+    scopes by number, then the whole set (or the caller's filters)."""
+    interp = interp or {}
+    named = list(interp.get("scoped_sheets") or [])[:8]
+    f = interp.get("filters") or {}
+    if f.get("sheet_number") or f.get("discipline"):
+        rest = "the sheets matching " + " / ".join(
+            x for x in (f.get("sheet_number"), f.get("discipline")) if x)
+    else:
+        rest = "the indexed set" if not named else "the rest of the indexed set"
+    return ", ".join(named + [rest])
+
+
+def _render_records_for_model(records: List[dict], subject: str,
+                              sources: Optional[Dict[str, dict]] = None,
+                              interp: Optional[dict] = None) -> str:
     """What the agent is shown. Every line carries where it came from and how
     strong it is, because those are the two things the model must not have to
     guess at — and the numbers it is allowed to use are the ones printed
-    here."""
+    here. What the question was read to MEAN on this set (`interp`) comes
+    right after the rule, for the answer to echo.
+
+    `sources` ({file_id: plan_sources.source_of}, _plan_file_sources): each
+    line also names its file and drawing set, and a sheet from a set that is
+    not the filed one is cited with it -- "A-302 (owner's set)". Rendering
+    only: the records, and what the gate checks, are the same."""
+    if not records and _interp_lines(interp):
+        # WHAT THE QUESTION MEANT IS STILL TRUE WHEN NOTHING WAS FOUND. The
+        # mapping is a fact about the set's levels; the empty search is a fact
+        # about the search. They are said apart, and the second is said only
+        # as far as it is known: not found in the sheets searched.
+        return "\n".join(
+            [f"(The search for {subject!r} returned no records.)"]
+            + _interp_lines(interp)
+            + [f"Answer in two separate parts. FIRST, state each level_mapping "
+               f"line above exactly as given (it is about the set's levels, not "
+               f"about {subject!r}). THEN, about the thing asked, say only: "
+               f"'Not found in the sheets searched: {_searched_list(interp)}.' "
+               f"That is a fact about this search, not about the building: never "
+               f"say the drawings do not show it, do not estimate, and do not "
+               f"list other sheets."])
     if not records:
         # NOT "nothing on the drawings mentions it" — that is a claim about
         # the building, and what actually happened is that this search found
@@ -66936,6 +67861,7 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     # sheet, and the two rules it keeps breaking.
     lines = [f"Records for {subject!r}. Use ONLY numbers printed below. "
              f"A schedule ROW is a TYPE, not a quantity: never count rows."]
+    lines += _interp_lines(interp)
     for r in records:
         # Located symbols are shown as their scoped counts, below - one line
         # per row would be 84 lines of OCR'd labels to count by hand.
@@ -66955,6 +67881,10 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
         # The model is told how many sheets carry it, so "on all six mechanical
         # plans" stays available to it and one citation is not mistaken for the
         # only place it appears.
+        if sources:
+            where = plan_sources.evidence_where(
+                where, sources.get(str(r.get("file_id") or "")),
+                sheet_number=str(r.get("sheet_number") or ""), page_number=r.get("page_number"))
         more = [w for w in (r.get("also_on") or []) if w]
         if more:
             where = f"{where} (+{len(more)} sheet{'s' if len(more) > 1 else ''})"
@@ -67946,7 +68876,15 @@ _AGENT_TOOLS = [
                 "search_plans again with THEIR words as the subject. If it "
                 "still returns nothing, say so plainly — 'Still not finding it. "
                 "It may be on a sheet I can't read.' Agreeing without new "
-                "records is how an invented fact reaches a jobsite."
+                "records is how an invented fact reaches a jobsite.\n"
+                "LEVELS AND TWO-MEANING WORDS: put the user's level words in the "
+                "subject as they said them ('5th floor ceiling'); the set's own "
+                "levels decide what they mean. A result line 'level_mapping:' "
+                "must be stated in your answer ('5th floor = Mezzanine (A-104.00) "
+                "on this set'; both, when it gives two). A 'term_senses:' line "
+                "means the word has two construction meanings: never treat one "
+                "as the other - answer the meaning it names, or each meaning "
+                "separately, or ask which."
             ),
             "parameters": {
                 "type": "object",
@@ -69273,7 +70211,7 @@ async def _run_group_agent(
         enabled_tools.append(t)
 
     try:
-        async with ServerHttpClient(timeout=40.0) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(40.0)) as client_http:
             last_content = ""  # track so we can fall back gracefully on overrun
             used_tool = False  # a reply built from tool results is data; never cut it
             # Everything search_plans handed back this conversation. The gate
@@ -69698,20 +70636,26 @@ async def _dispatch_agent_tool(
             subject = (args.get("subject") or user_body or "").strip()
             also = [str(a) for a in (args.get("also") or []) if isinstance(a, str)][:4]
             attribute = args.get("attribute") if isinstance(args.get("attribute"), str) else ""
+            interp: dict = {}
             found = await search_plans(
                 project_id, subject, also=also, attribute=attribute,
                 intent=args.get("intent") or "",
                 discipline=args.get("discipline") or "",
                 floor=args.get("floor") or "",
                 sheet_number=args.get("sheet_number") or "",
+                interp=interp,
             )
             if record_sink is not None:
                 record_sink.append({"subject": subject, "records": found,
-                                    "intent": args.get("intent") or ""})
+                                    "intent": args.get("intent") or "",
+                                    "level_mapping": interp.get("level_mapping") or [],
+                                    "term_senses": interp.get("term_senses") or []})
             logger.info(
                 f"search_plans subject={subject[:40]!r} intent={args.get('intent')!r} "
-                f"hits={len(found)} top={[r.get('tier') for r in found[:3]]}")
-            return _render_records_for_model(found, subject)
+                f"hits={len(found)} top={[r.get('tier') for r in found[:3]]} "
+                f"levels={interp.get('level_mapping') or []}")
+            sources = await _plan_file_sources(project_id, [r.get("file_id") for r in found])
+            return _render_records_for_model(found, subject, sources, interp=interp)
         if name == "who_on_site":
             return await _handle_who_on_site(
                 project_id,
@@ -69801,8 +70745,9 @@ async def _dispatch_agent_tool(
             logger.info(
                 f"query_plan answered from records subject={question[:40]!r} "
                 f"hits={len(found)} (sheet image sent separately)")
+            sources = await _plan_file_sources(project_id, [r.get("file_id") for r in found])
             return ("(The sheet image is on its way to the group.)\n"
-                    + _render_records_for_model(found, question))
+                    + _render_records_for_model(found, question, sources))
         if name == "start_permit_renewal":
             return await _handle_start_permit_renewal(
                 project_id, group_id, sender,
@@ -74480,10 +75425,19 @@ async def _punch_remind_job() -> None:
         logger.warning(f"[punch] remind job failed: {type(e).__name__}")
 
 
-async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
-    """Background task to process an inbound WhatsApp message."""
+async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
+                                    received_at: Optional[float] = None):
+    """Background task to process an inbound WhatsApp message.
+    `received_at`: wall seconds the webhook got it (the task may start later)."""
+    started = _time.time()
     try:
         parsed = parse_inbound_message(payload, vendor=WHATSAPP_VENDOR)
+        try:
+            wa_ts = int(parsed.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            wa_ts = 0
+        _WA_INBOUND.set({"received": received_at or started, "started": started,
+                         "wa_ts": wa_ts})
 
         # ── A NOTIFICATION IS NOT A MESSAGE ────────────────────────────────
         #
@@ -75216,23 +76170,23 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     reply_to=reply_to,
                     address_mode=address_mode,
                 ))
-                # A slow answer: 👀 on the question first, the answer after.
-                eyes = False
+                # "typing…" in the group while it works (WaAPI send-typing
+                # takes any chatId; a failure is a logged warning and
+                # nothing shows). Never a 👀 reaction (Oct 27).
+                thinking = asyncio.Event()
+                typing = asyncio.ensure_future(
+                    _dm_typing_while(group_id, thinking, seen=False))
                 try:
-                    reply = await asyncio.wait_for(
-                        asyncio.shield(agent_task),
-                        wa_react.WORKING_AFTER_SECONDS)
-                except asyncio.TimeoutError:
-                    eyes = await _react_to_message(group_id, reply_to,
-                                                   wa_react.WORKING)
                     reply = await agent_task
+                finally:
+                    thinking.set()
+                    try:
+                        await asyncio.wait_for(typing, 10)
+                    except Exception:
+                        pass
                 if reply:
                     await send_whatsapp_message(group_id, reply,
                                                 reply_to=reply_to)
-                elif eyes:
-                    # Nothing came of it: take the 👀 back rather than leave
-                    # a promise of an answer that is not coming.
-                    await _react_to_message(group_id, reply_to, "")
                 return
 
             # NOT ADDRESSED: SILENCE. The once-a-day "I'm here, say levelog"
@@ -75603,6 +76557,7 @@ async def whatsapp_webhook(request: Request):
     # for this path, the per-request [req] line prints the path only, and
     # whatsapp_webhook_log stores headers and body, never the URL.
     """
+    received = _time.time()
     expected = os.environ.get("WAAPI_WEBHOOK_SECRET", "")
     provided = request.query_params.get(wa_security.WEBHOOK_TOKEN_PARAM)
     if not wa_security.webhook_token_ok(provided, expected):
@@ -75640,7 +76595,7 @@ async def whatsapp_webhook(request: Request):
         return {"status": "ok"}
 
     if payload:
-        asyncio.create_task(_process_whatsapp_message(payload))
+        asyncio.create_task(_process_whatsapp_message(payload, received_at=received))
     return {"status": "ok"}
 
 
