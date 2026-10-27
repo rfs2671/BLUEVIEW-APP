@@ -42,7 +42,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import wa_dm  # noqa: E402
+from lib import datefmt, wa_dm  # noqa: E402
 
 NY = ZoneInfo("America/New_York")
 ANSWERS = "whatsapp_dm_answers"          # server.DM_ANSWERS
@@ -74,7 +74,7 @@ def utc(v):
 
 def ny(v) -> str:
     v = utc(v)
-    return v.astimezone(NY).strftime("%-I:%M:%S %p") if v else "?"
+    return datefmt.strftime(v.astimezone(NY), "%-I:%M:%S %p") if v else "?"
 
 
 def span(a, b) -> str:
