@@ -56496,11 +56496,10 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
             # The request's own parameters (an app search's date range), so a
             # replay asks exactly what was asked.
             "params": params or None,
+            "wa_message_ids": wa_ids or None,
             "created_at": datetime.now(timezone.utc),
         }
         row["content_hash"] = answer_log.content_hash(row)
-        if wa_ids:
-            row["wa_message_ids"] = wa_ids
         await db.answer_log.insert_one(row)
         return row["_id"]
     except Exception as e:

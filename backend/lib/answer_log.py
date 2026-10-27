@@ -25,6 +25,9 @@ A ROW (surface dm | group | app):
   gates                     what the checks decided, as the check exposes it
                             (the plan gate exposes one outcome per answer, not
                             a decision per claim: see `gates` in the report)
+  wa_message_ids            the WhatsApp ids the answer went out as (short
+                            form, no chat): a reply-to on one names this row
+                            (lib/answer_disputes.py)
   model, code_sha, path, timing, created_at
   content_hash              sha256 over the row's content (everything above)
 
@@ -166,7 +169,7 @@ def _canon(v: Any) -> Any:
 #: The fields the hash covers: the row's content, never _id or the hash.
 HASHED = ("surface", "question", "final_text", "user_id", "company_id", "project_ids",
           "asker_last4", "group_id", "records", "tools", "gates", "model", "code_sha",
-          "path", "timing", "features", "params", "created_at")
+          "path", "timing", "features", "params", "wa_message_ids", "created_at")
 
 
 def content_hash(row: Dict[str, Any]) -> str:
