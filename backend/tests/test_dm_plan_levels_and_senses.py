@@ -194,7 +194,7 @@ class NothingFoundStillSaysWhatTheLevelIs(_Direct):
     def test_a_ninth_floor_on_four_floors_is_said_absent_with_the_sets_levels(self):
         got, interp = self.search("sprinkler heads 9th floor")
         self.assertEqual(got, [])
-        shown = server._render_records_for_model(got, "sprinkler heads 9th floor", interp)
+        shown = server._render_records_for_model(got, "sprinkler heads 9th floor", interp=interp)
         self.assertIn("level_mapping: 9th floor: this set has no level by that name "
                       "(its levels: 1st Floor, 2nd Floor, 3rd Floor, 4th Floor, "
                       "Mezzanine, Roof)", shown)
@@ -205,7 +205,7 @@ class NothingFoundStillSaysWhatTheLevelIs(_Direct):
         got, interp = self.search("sprinkler heads 5th floor ceiling")
         self.assertEqual(got, [])
         shown = server._render_records_for_model(got, "sprinkler heads 5th floor ceiling",
-                                                 interp)
+                                                 interp=interp)
         self.assertIn("level_mapping: 5th floor = Mezzanine (A-104.00) on this set", shown)
         self.assertIn("searched_sheets:", shown)
         self.assertIn("'Not found in the sheets searched: A-104.00, A-301.00, "
@@ -214,5 +214,5 @@ class NothingFoundStillSaysWhatTheLevelIs(_Direct):
         self.assertLess(shown.index("level_mapping:"), shown.index("Not found in the sheets"))
 
     def test_with_no_interpretation_the_empty_answer_is_unchanged(self):
-        shown = server._render_records_for_model([], "sprinkler heads", {"filters": {}})
+        shown = server._render_records_for_model([], "sprinkler heads", interp={"filters": {}})
         self.assertIn("Answer exactly:", shown)
