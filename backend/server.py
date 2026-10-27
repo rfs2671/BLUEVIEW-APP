@@ -87,6 +87,7 @@ from lib import punch_brain  # noqa: E402
 from lib import punch_batch  # noqa: E402
 from lib import dm_actions  # noqa: E402
 from lib import answer_log  # noqa: E402
+from lib import answer_disputes  # noqa: E402
 from lib import trades as lib_trades  # noqa: E402
 from lib import dm_brain  # noqa: E402
 from lib import wa_voice  # noqa: E402
@@ -56428,7 +56429,7 @@ _ANSWER_TURN: contextvars.ContextVar = contextvars.ContextVar("answer_turn", def
 
 
 def _answer_turn_begin() -> dict:
-    turn = {"records": [], "gates": [], "model": None}
+    turn = {"records": [], "gates": [], "model": None, "wa_ids": []}
     _ANSWER_TURN.set(turn)
     return turn
 
@@ -56465,8 +56466,12 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
     an answer goes out whether or not its row is written."""
     turn = _ANSWER_TURN.get() or {}
     noted, turn_gates = list(turn.get("records") or []), list(turn.get("gates") or [])
+    # The WhatsApp ids of the messages this answer went out as (short form;
+    # send_whatsapp_message notes them): a reply-to on one names this row
+    # (answer_disputes). Set at insert, like every other field.
+    wa_ids = answer_disputes.ids(turn.get("wa_ids") or [])
     if turn:
-        turn["records"], turn["gates"] = [], []
+        turn["records"], turn["gates"], turn["wa_ids"] = [], [], []
     try:
         row = {
             "_id": str(ObjectId()),
@@ -56490,6 +56495,8 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
             "created_at": datetime.now(timezone.utc),
         }
         row["content_hash"] = answer_log.content_hash(row)
+        if wa_ids:
+            row["wa_message_ids"] = wa_ids
         await db.answer_log.insert_one(row)
         return row["_id"]
     except Exception as e:
@@ -56514,6 +56521,105 @@ async def _answer_log_rows(company_id: Any, *, surface: Optional[str] = None,
         q["surface"] = surface
     return await db.answer_log.find(q).sort([("created_at", -1)]) \
         .to_list(max(1, min(int(limit), 500)))
+
+
+# ── ANSWER DISPUTES (lib/answer_disputes.py; L6 step 2: capture only) ─────
+# "That's wrong" on a bot answer is recorded against that answer's
+# answer_log row, and the person is told "Flagged for review" -- nothing
+# else, ever. One row per (answer, person): the row's _id is derived from
+# both, so a second dispute is a duplicate key and the same reply. The row
+# is inserted with status "pending" and nothing here changes it: only the
+# platform operator reviews (L6.4). Per company: a dispute only ever names
+# an answer of the disputer's own company (_answer_log_get).
+
+async def _answer_dispute_capture(*, surface: str, company_id: Any, user_id: Any,
+                                  answer_log_id: Any, text: Any) -> Optional[bool]:
+    """Record one dispute. True: recorded (or already recorded by this
+    person); False: refused (no company, no user, or not an answer of this
+    company); None: the write failed."""
+    if not company_id or not user_id or not answer_log_id:
+        # Refused: a dispute belongs to one person of one company.
+        return False
+    row = await _answer_log_get(company_id, str(answer_log_id))
+    if not row or str(row.get("company_id")) != str(company_id):
+        logger.info(f"[answer-dispute] refused company={company_id} surface={surface}")
+        return False
+    doc = answer_disputes.dispute_row(row, user_id=user_id, surface=surface, text=text,
+                                      now=datetime.now(timezone.utc))
+    from pymongo.errors import DuplicateKeyError
+    dup = False
+    try:
+        await db[answer_disputes.COLLECTION].insert_one(doc)
+    except DuplicateKeyError:
+        dup = True
+    except Exception as e:
+        logger.warning(f"[answer-dispute] write failed surface={surface}: {type(e).__name__}")
+        return None
+    logger.info(f"[answer-dispute] company={company_id} surface={surface}"
+                f"{' duplicate=true' if dup else ''}")
+    return True
+
+
+async def _answer_dispute_target(company_id: Any, user_id: Any, quoted: dict,
+                                 now: datetime) -> Optional[dict]:
+    """The answer a DM dispute is about: the bot message it replies to (by
+    its WhatsApp id, else by its words), or -- no reply-to -- the last answer
+    to this person within answer_disputes.WINDOW_SECONDS. None: no answer."""
+    if not company_id or not user_id:
+        # Refused: no company or no person, no answer of theirs.
+        return None
+    base = {"company_id": str(company_id), "user_id": str(user_id), "surface": "dm"}
+    qid = answer_disputes.short_id(quoted.get("message_id"))
+    qbody = str(quoted.get("body") or "").strip()
+    try:
+        if qid:
+            row = await db.answer_log.find_one({**base, "wa_message_ids": qid})
+            if row:
+                return row
+        if qid or qbody:
+            # A reply-to: only a bot message is an answer to dispute.
+            if not quoted.get("from_bot") or not qbody:
+                return None
+            since = now - timedelta(seconds=answer_disputes.QUOTE_LOOKBACK_SECONDS)
+            rows = await db.answer_log.find({**base, "created_at": {"$gte": since}}) \
+                .sort([("created_at", -1)]).to_list(30)
+            return next((r for r in rows if answer_disputes.quote_matches(qbody, r)), None)
+        since = now - timedelta(seconds=answer_disputes.WINDOW_SECONDS)
+        rows = await db.answer_log.find({**base, "created_at": {"$gte": since}}) \
+            .sort([("created_at", -1)]).to_list(1)
+    except Exception as e:
+        logger.warning(f"[answer-dispute] lookup failed: {type(e).__name__}")
+        return None
+    return rows[0] if rows else None
+
+
+async def _answer_dispute_dm(ident: dict, dm_chat: str, body: str, message_id: str,
+                             quoted: Optional[dict], heard: Optional[str] = None) -> bool:
+    """A DM that disputes a bot answer: recorded, answered "Flagged for
+    review", and the brain never runs on it. False: not a dispute (or not
+    one this can place), and the turn goes on as before."""
+    text = (body or "").strip()
+    if heard or not answer_disputes.is_dispute(text):
+        # A voice note's transcript is not taken as a dispute: typed words only.
+        return False
+    quoted = quoted or {}
+    replying = bool(quoted.get("message_id") or str(quoted.get("body") or "").strip())
+    if not replying and await _dm_state_get(DM_ACTION_STATE, dm_chat):
+        # An open question ("Should I add ...?"): their "no" answers it.
+        return False
+    now = datetime.now(timezone.utc)
+    row = await _answer_dispute_target(ident.get("company_id"), ident.get("user_id"),
+                                       quoted, now)
+    if not answer_disputes.disputable(row):
+        return False
+    ok = await _answer_dispute_capture(surface="dm", company_id=ident.get("company_id"),
+                                       user_id=ident.get("user_id"),
+                                       answer_log_id=row.get("_id"), text=text)
+    if not ok:
+        return False
+    await _dm_store_inbound(ident, dm_chat, text, message_id)
+    await send_whatsapp_message(dm_chat, answer_disputes.REPLY)
+    return True
 
 
 def _dm_gates(path: str, extra: dict, fallback: bool, reason: Any) -> list:
@@ -57874,6 +57980,9 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     new job never asks it."""
     # This turn's evidence for the answer log, before anything it starts.
     _answer_turn_begin()
+    # "That's wrong" on an answer: flagged for review, never answered.
+    if await _answer_dispute_dm(ident, dm_chat, body, message_id, quoted, heard=heard):
+        return
     if brain:
         # The DM brain (flag dm_brain_v2): one model, tools, guardrails.
         await _dm_brain_reply(ident, dm_chat, body, message_id, heard=heard, quoted=quoted)
@@ -59684,6 +59793,12 @@ async def send_whatsapp_message(
         logger.error(f"[mention] send not confirmed to {_log_chat(chat_id)}: "
                      f"{str((resp_json or {}).get('data', {}).get('status') if isinstance(resp_json, dict) else resp_json)[:60]}")
         return None
+
+    # The answer log's row for this turn keeps the id it went out as, so a
+    # reply-to on it can be traced back to the answer (answer_disputes).
+    turn = _ANSWER_TURN.get()
+    if turn is not None:
+        turn.setdefault("wa_ids", []).extend(answer_disputes.sent_ids(resp_json))
 
     # Log outbound bot turn into whatsapp_messages so the agent's history
     # loader can recall it on the next user message (makes multi-turn
@@ -76115,8 +76230,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
             heard=body if parsed.get("has_audio") else None,
             quoted={"body": parsed.get("quoted_body") or "",
                     "type": parsed.get("quoted_type") or "",
-                    "from_bot": bool(parsed.get("quoted_from_me"))}
-            if (parsed.get("quoted_body") or "").strip() or parsed.get("quoted_type") else None)
+                    "from_bot": bool(parsed.get("quoted_from_me")),
+                    "message_id": parsed.get("quoted_message_id") or ""}
+            if (parsed.get("quoted_body") or "").strip() or parsed.get("quoted_type")
+            or parsed.get("quoted_message_id") else None)
 
     except Exception as e:
         logger.error(f"WhatsApp message processing error: {e}", exc_info=True)
@@ -78397,6 +78514,34 @@ async def _memory_project(project_id: str, current_user) -> str:
     return str(company_id)
 
 
+class AnswerDisputeIn(BaseModel):
+    note: Optional[str] = None
+
+
+@api_router.post("/answers/{answer_log_id}/dispute",
+                 dependencies=[Depends(require_approved)])
+async def dispute_answer(answer_log_id: str, body: Optional[AnswerDisputeIn] = None,
+                         current_user=Depends(get_current_user)):
+    """The app's "this is wrong" on an answer (lib/answer_disputes.py). The
+    caller's own company's answers only: another company's id is a 404, no
+    company a 403. The answer is only ever {"status": "Flagged for review"}:
+    no review state, approve / deny or reviewer is shown to the person."""
+    company_id = get_user_company_id(current_user)
+    user_id = current_user.get("id") or current_user.get("_id")
+    if not company_id or not user_id:
+        raise HTTPException(status_code=403, detail="Company access required")
+    if not await _answer_log_get(company_id, answer_log_id):
+        raise HTTPException(status_code=404, detail="Answer not found")
+    ok = await _answer_dispute_capture(
+        surface="app", company_id=company_id, user_id=user_id,
+        answer_log_id=answer_log_id, text=(body.note if body else None) or "")
+    if ok is None:
+        raise HTTPException(status_code=503, detail="Could not flag it; try again")
+    if not ok:
+        raise HTTPException(status_code=404, detail="Answer not found")
+    return answer_disputes.user_view()
+
+
 def _memory_source_view(src: dict, admin: bool = False) -> dict:
     """One result for the app: the chip (who · group · when) and the words.
     The sender's number: full for a company admin, the last 4 otherwise."""
@@ -78447,7 +78592,7 @@ async def search_project_memory(project_id: str, q: str = "", date_from: str = "
     if answer:
         got = await _memory_answer(company_id, str(project_id), q, dfrom, dto,
                                    phone_view="full" if admin else "last4")
-        await _answer_log_write(
+        answer_log_id = await _answer_log_write(
             "app", question=q, final_text=got["text"], company_id=company_id,
             user_id=current_user.get("id") or current_user.get("_id"),
             project_ids=project_id, sources=got["sources"],
@@ -78467,7 +78612,9 @@ async def search_project_memory(project_id: str, q: str = "", date_from: str = "
                                        "also": [{**by_sid[a["sid"]], "quote": a["quote"]}
                                                 for a in c.get("also") or []]}
                                       for c in got["claims"]],
-                           "found": bool(cited)}}
+                           "found": bool(cited),
+                           # The id to dispute it by (POST /answers/{id}/dispute).
+                           "answer_log_id": answer_log_id}}
     rows = await _memory_search(company_id, str(project_id), q, dfrom, dto, limit=30)
     sources = await _memory_present(rows, company_id, str(project_id))
     return {"results": [_memory_source_view(s, admin) for s in sources], "answer": None}
@@ -82925,6 +83072,13 @@ async def startup_event():
     await db.whatsapp_dm_answers.create_index([("created_at", -1), ("fallback", 1)])
     # The answer log (lib/answer_log.py): one company's answers, newest first.
     await db.answer_log.create_index([("company_id", 1), ("created_at", -1)])
+    # A dispute's answer (lib/answer_disputes.py): one person's DM answers,
+    # newest first, and the answer a reply-to names by its WhatsApp id.
+    await db.answer_log.create_index([("company_id", 1), ("user_id", 1), ("surface", 1),
+                                      ("created_at", -1)])
+    await db.answer_log.create_index([("company_id", 1), ("wa_message_ids", 1)])
+    # The disputes themselves: one company's, newest first (L6.4 reads them).
+    await db.answer_disputes.create_index([("company_id", 1), ("created_at", -1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
     await _ensure_index_resilient(
