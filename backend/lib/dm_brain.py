@@ -124,7 +124,17 @@ words, to reply yes. Never say something is saved, added, sent or changed unless
 was done.
 - If a change is waiting for an answer (see Open flows), their message is probably that answer: pass it \
 with answer_pending_change, or cancel_pending_change if they drop it.
-- send_sheet and send_report send to this chat only (to them). After one, say a short line about it.
+- send_sheet, send_plan_file and send_report send to this chat only (to them). After one, say a short line \
+about it.
+- Drawings: send_sheet sends a PICTURE of a sheet; send_plan_file sends the drawing's PDF itself as a \
+document (the whole file, the page a sheet is on, or a page range). You CAN send PDFs, files and \
+documents of the drawings: never say you can't. sheet_info says which file and which set a sheet is \
+on, and what the drawing list says about it.
+- A sheet's own title block is its title; when the drawing list titles it differently you may mention \
+the list's title as the list's. A sheet the drawing list names that isn't uploaded: say it is listed but \
+not uploaded.
+- When you cite a sheet from a set other than the filed set, name its set as the tool result does: \
+"A-302 (owner's set)".
 
 Context, history
 - Messages starting "[voice note]" were transcribed and may be misheard; read them generously.
@@ -456,6 +466,46 @@ def sends_only_a_picture(reply: Any) -> bool:
     said = [x for x in re.split(r"(?<=[.!?])\s+|\n+", str(reply or "")) if _SENT.search(x)]
     return bool(said) and all(_A_PICTURE.search(x) and not _NOT_A_PICTURE.search(x)
                               for x in said)
+
+
+_FILE_WORD = re.compile(r"\b(?:pdfs?|files?|documents?|attachments?)\b", re.I)
+_NOT_A_FILE_SEND = re.compile(r"\b(?:report|brief)\b", re.I)
+
+
+def claims_file_sent(reply: Any) -> bool:
+    """A "sent" in this reply is about a PDF / file / document ("sent you
+    the PDF", "I've sent the file"). The server holds such a claim true only
+    when a file went this turn -- send_plan_file's drawing PDF, or a
+    report's / brief's own -- never on a sheet picture alone. A sentence
+    that names the report or brief is theirs, not this."""
+    said = [x for x in re.split(r"(?<=[.!?])\s+|\n+", str(reply or "")) if _SENT.search(x)]
+    return any(_FILE_WORD.search(x) and not _NOT_A_FILE_SEND.search(x) for x in said)
+
+
+# "I can't send PDFs", "I'm not able to send files here", "I can only send
+# images" -- untrue since send_plan_file (Oct 27: "send me the PDF").
+_DENIES_FILE_SEND = re.compile(
+    r"\b(?:can'?t|cannot|can\s+not|unable\s+to|not\s+able\s+to|no\s+way\s+to|don'?t\s+have\s+a\s+way\s+to)"
+    r"\s+(?:directly\s+|actually\s+)?(?:send|share|attach|forward|email|e-mail)\b[^.?!\n]{0,40}"
+    r"\b(?:pdfs?|files?|documents?|attachments?)\b"
+    r"|\bi\s+can\s+only\s+send\b[^.?!\n]{0,40}\b(?:images?|pictures?|screenshots?|photos?|text)\b"
+    r"|\b(?:pdfs?|files?|documents?)\b[^.?!\n]{0,30}\b(?:can'?t|cannot)\s+be\s+(?:sent|shared|attached)\b",
+    re.I)
+
+#: Times the model is asked again after saying it can't send a file.
+FILE_DENY_RETRIES = 1
+
+
+def denies_file_send(reply: Any) -> bool:
+    """The reply says it can't send a PDF / file / document (it can:
+    send_plan_file)."""
+    return bool(_DENIES_FILE_SEND.search(str(reply or "").replace("\u2019", "'")))
+
+
+def file_send_note() -> str:
+    return ("Before this goes out: your answer says you can't send a PDF, file or document. You can: "
+            "send_plan_file sends a drawing's PDF (the whole file, the page a sheet is on, or a page "
+            "range) to this chat. Call it if they asked for the file, or answer without that claim.")
 
 
 def claim_note(claims: Sequence[str], tools: Sequence[str]) -> str:

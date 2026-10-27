@@ -3870,6 +3870,7 @@ from lib import plan_records  # noqa: E402
 from lib import plan_search  # noqa: E402
 from lib import plan_areas  # noqa: E402
 from lib import plan_crop  # noqa: E402
+from lib import plan_sources  # noqa: E402
 
 
 
@@ -58424,6 +58425,23 @@ _DM_BRAIN_EXTRA_TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "job": _JOB_PROP, "sheet": {"type": "string", "description": "The sheet number, e.g. 'SSP-011.00'."}},
          "required": ["sheet"]}},
+    {"name": "send_plan_file", "description": (
+        "Send a drawing's PDF here (to them) as a document: the file a sheet is on, a file by "
+        "name, or only some pages of it. With a sheet and no pages: the page that sheet is on; "
+        "whole_file true: the whole file it is in. Over the size limit it says so."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "sheet": {"type": "string", "description": "A sheet number, e.g. 'EN-001'."},
+         "file": {"type": "string", "description": "The file's name, or part of it, when they name a file."},
+         "pages": {"type": "string", "description": "PDF page numbers of the file, e.g. '3-5' or '2, 7'."},
+         "whole_file": {"type": "boolean", "description": "The whole file the sheet is in."}},
+         "required": []}},
+    {"name": "sheet_info", "description": (
+        "Which file and drawing set a sheet is on (its page), its title, and what the drawing "
+        "list says about it and its series (listed but not uploaded). For 'what file is it on'."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP, "sheet": {"type": "string", "description": "The sheet number, e.g. 'EN-001'."}},
+         "required": ["sheet"]}},
     {"name": "send_report", "description": (
         "Build a project report PDF and send it here (to them)."),
      "input_schema": {"type": "object", "properties": {
@@ -58808,7 +58826,8 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
     args = dict(args or {})
     dry = bool(ctx.get("dry_run"))
     now = datetime.now(timezone.utc)
-    if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet"):
+    if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
+                                               "send_plan_file", "sheet_info"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
             return why
@@ -58825,7 +58844,9 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             page = rows[0] if rows else None
             if not page:
                 return f"{str(args.get('sheet') or '').upper()} isn't in the indexed drawings for {job['label']}."
-            label = page.get("sheet_number") or str(args.get("sheet")).upper()
+            src = (await _plan_file_sources(pid, [page.get("file_id")])).get(str(page.get("file_id")))
+            label = plan_sources.cite_with_set(
+                page.get("sheet_number") or str(args.get("sheet")).upper(), src)
             title = page.get("sheet_title") or page.get("title") or ""
             if not page.get("page_jpeg_r2_key"):
                 return f"{label} is indexed but has no image yet (notes sheet or still rendering)."
@@ -58839,8 +58860,13 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             shot = await _dm_plan_sheet_shot(ctx, page)
             if await _dm_send_sheet(dm_chat, page, **shot):
                 ctx["sent"].append(f"[sheet {label}]")
-                return f"Sent the image of {label} {title} to them."
+                where = plan_sources.sheet_source_text(label, src, page.get("page_number"))
+                return f"Sent the image of {label} {title} to them." + (f" {where}" if where else "")
             return f"Found {label} but the image couldn't be sent (may still be rendering)."
+        if name == "sheet_info":
+            return await _dm_sheet_info(str(job["id"]), str(args.get("sheet") or ""))
+        if name == "send_plan_file":
+            return await _dm_send_plan_file(ctx, job, args)
         if name == "search_project_history" and _memory_disabled():
             return "Project history search is off."
         sink: list = []
@@ -58970,7 +58996,7 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
 
 
 #: Tools that send something: one of each (same arguments) per turn.
-_DM_BRAIN_SENDS = ("send_sheet", "send_report", "resend_my_brief")
+_DM_BRAIN_SENDS = ("send_sheet", "send_plan_file", "send_report", "resend_my_brief")
 
 
 def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
@@ -59012,7 +59038,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
     trace: List[dict] = []
     sources = [system] + [m["content"] for m in messages if isinstance(m.get("content"), str)]
     retries, deflects, calls, last_text, missing = 0, 0, 0, "", []
-    cuts, claimed, yous = 0, 0, 0
+    cuts, claimed, yous, file_denied = 0, 0, 0, 0
     done_sends: set = set()
     budget = dm_brain.MAX_TOKENS
     usage: Dict[str, Any] = {"input": 0, "output": 0, "calls": 0, "seconds": 0.0, "models": []}
@@ -59022,8 +59048,14 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
         # so "here's the sheet" is true of it -- but only of the picture: a
         # "sent the report" with no send this turn is still caught.
         picture = ctx.get("plan_image_due") and dm_brain.sends_only_a_picture(last_text)
-        return set(ctx.get("acted") or set()) | (
-            {"sent"} if ctx.get("sent") or picture else set())
+        sent = bool(ctx.get("sent") or picture)
+        if sent and dm_brain.claims_file_sent(last_text) and not any(
+                str(x).startswith(("[file", "[report", "[brief")) for x in ctx.get("sent") or []):
+            # "Sent you the PDF" only when a file went: the drawing's PDF
+            # (send_plan_file), or the report's / brief's own. A sheet
+            # picture is not a PDF.
+            sent = False
+        return set(ctx.get("acted") or set()) | ({"sent"} if sent else set())
 
     def fix(note: str) -> None:
         msgs.append({"role": "assistant", "content": last_text or "(nothing)"})
@@ -59128,6 +59160,14 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
                 continue
             return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=["from you"],
                         stop="unverified_sender", draft=last_text)
+        if (dm_brain.denies_file_send(last_text) and file_denied < dm_brain.FILE_DENY_RETRIES
+                and not any(t.get("tool") == "send_plan_file" for t in trace)):
+            # Never "I can't send PDFs" (Oct 27): send_plan_file sends them.
+            # After it ran, its result (e.g. over the size limit) is the truth.
+            file_denied += 1
+            logger.info("[dm-brain] re-asked: said it can't send a file")
+            fix(dm_brain.file_send_note())
+            continue
         if dm_brain.cant_answer(last_text) and deflects < dm_brain.DEFLECT_RETRIES:
             # Never "check with the site manager" / "not sure" before the
             # tools (Tue 12:28 PM): asked again, with what it tried.
@@ -65751,6 +65791,241 @@ async def _dm_send_sheet(dm_chat: str, page: dict, *, jpeg: Optional[bytes] = No
     return True
 
 
+# ── WHAT FILE, WHICH SET, AND THE PDF ITSELF (lib/plan_sources) ─────────────
+#
+# Oct 27, the owner: EN-001 / EN-002, then "what file is it on", then "send me
+# the PDF". The evidence named sheets only, and nothing could send a PDF. A
+# record and a sheet now say their file and set (project_files.drawing_track,
+# DRAWING_TRACKS), sheet_info answers "what file", and send_plan_file sends the
+# drawing's PDF -- the whole file or some of its pages -- through the DM gate.
+# Data and rendering only: nothing here binds, withholds or ranks a record.
+
+
+async def _plan_file_sources(project_id: str, file_ids: Any) -> Dict[str, dict]:
+    """{file_id: plan_sources.source_of(row)} for this project's files.
+    {} when it could not look: a citation then goes out as it did before."""
+    ids = sorted({str(f) for f in file_ids or [] if f})
+    if not ids:
+        return {}
+    try:
+        rows = await db.project_files.find(
+            {"_id": {"$in": [to_query_id(i) for i in ids]}, "project_id": str(project_id),
+             "is_deleted": {"$ne": True}},
+            {"name": 1, "drawing_track": 1, "drawing_track_label": 1}).to_list(len(ids))
+    except Exception as e:
+        logger.warning(f"plan file sources lookup failed for {project_id}: {type(e).__name__}")
+        return {}
+    out = {}
+    for r in rows:
+        src = plan_sources.source_of(r)
+        if src:
+            out[str(r["_id"])] = src
+    return out
+
+
+async def _drawing_list_and_sheets(project_id: str) -> Tuple[Dict[str, dict], List[str]]:
+    """(the drawing list -- {sheet key: {sheet, title, on}} from the index
+    schedules on the current pages, plan_sources.drawing_list -- and the
+    sheet numbers actually uploaded). ({}, []) when it could not look."""
+    pid = str(project_id)
+    live = await _live_plan_file_ids(pid)
+    try:
+        pages = await db.document_page_index.find(
+            {"project_id": pid, **_current_page_filter(live)}, {"sheet_number": 1}).to_list(5000)
+        recs = await db[PLAN_RECORDS].find(
+            {"project_id": pid, "record_type": "schedule",
+             "page_id": {"$in": [str(p["_id"]) for p in pages]}},
+            {"payload.name": 1, "payload.rows": 1, "quote": 1, "sheet_number": 1}).to_list(2000)
+    except Exception as e:
+        logger.warning(f"drawing list lookup failed for {pid}: {type(e).__name__}")
+        return {}, []
+    listed = plan_sources.drawing_list([r for r in recs if plan_search.is_index_record(r)])
+    return listed, [p.get("sheet_number") for p in pages if p.get("sheet_number")]
+
+
+async def _dm_sheet_info(project_id: str, sheet_q: str) -> str:
+    """sheet_info: the file and set a sheet is on, its own title, and what
+    the drawing list says (another title for it; its series' sheets listed
+    but not uploaded)."""
+    pid = str(project_id)
+    rows = await _find_named_sheet(pid, sheet_q)
+    page = rows[0] if rows else None
+    listed, uploaded = await _drawing_list_and_sheets(pid)
+    asked = (page or {}).get("sheet_number") or str(sheet_q or "").strip().upper()
+    lines = []
+    if page:
+        src = (await _plan_file_sources(pid, [page.get("file_id")])).get(str(page.get("file_id")))
+        label = plan_sources.cite_with_set(asked, src)
+        title = page.get("sheet_title") or ""
+        lines.append(label + (f" — {title}" if title else "") + " (its title block).")
+        where = plan_sources.sheet_source_text(label, src, page.get("page_number"))
+        if not where and page.get("file_name"):
+            where = f"{label} is page {page.get('page_number')} of {page['file_name']}."
+        if where:
+            lines.append(where)
+        lines.append("send_plan_file sends its PDF (that page, or whole_file for the whole file).")
+    else:
+        lines.append(f"{asked} isn't among the uploaded, indexed sheets.")
+    lines += plan_sources.list_notes(asked, (page or {}).get("sheet_title") or "", listed, uploaded)
+    return "\n".join(lines)
+
+
+async def _dm_plan_file_named(project_id: str, company_id: Any, said: str
+                              ) -> Tuple[Optional[str], str]:
+    """(file id, "") for the live file of this project whose name is `said`
+    (or contains it, when only one does); (None, why) otherwise."""
+    live = await _live_plan_file_ids(project_id)
+    q: Dict[str, Any] = {"project_id": project_id, "is_deleted": {"$ne": True},
+                         "name": {"$regex": "(?i)" + re.escape(said)}}
+    if live is not None:
+        q["_id"] = {"$in": [to_query_id(i) for i in live]}
+    rows = await db.project_files.find(q, {"name": 1, "company_id": 1}).to_list(20)
+    rows = [r for r in rows if str(r.get("company_id") or company_id) == str(company_id)]
+    exact = [r for r in rows if str(r.get("name") or "").lower() == said.lower()]
+    pick = exact if len(exact) == 1 else rows
+    if len(pick) == 1:
+        return str(pick[0]["_id"]), ""
+    if not pick:
+        return None, f"No drawing file on this job is named like {said!r}."
+    return None, ("More than one file matches: " + ", ".join(str(r.get("name")) for r in pick[:6])
+                  + ". Which one?")
+
+
+async def _dm_pdf_media_url(frec: dict, pages: Optional[List[int]]) -> Tuple[Optional[str], str]:
+    """(the URL WaAPI fetches the PDF from, "") -- the stored file itself
+    when `pages` is None, else a new PDF of those pages, uploaded as a
+    temporary file; (None, why) when it can't be made or is over the limit."""
+    import tempfile as _tempfile
+    import uuid as _uuid
+    if pages is None:
+        tok = await _mint_temp_media_token(frec["r2_key"], "application/pdf", ttl_seconds=3600)
+        return _public_temp_media_url(tok), ""
+    with _tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "source.pdf")
+        try:
+            await _sheet_fetch_pdf(frec, path)
+            data, _count = await asyncio.to_thread(plan_sources.extract_pages, path, pages)
+        except ValueError as e:
+            return None, str(e)
+        except Exception as e:
+            logger.warning(f"[dm-brain] plan file pages failed: {type(e).__name__}")
+            return None, "the pages couldn't be cut from the file"
+    if len(data) > plan_sources.MAX_SEND_BYTES:
+        return None, (f"those pages come to {plan_sources.size_mb(len(data))}, over the "
+                      f"{plan_sources.MAX_SEND_MB} MB limit for sending a file in this chat")
+    key = f"temp/whatsapp/dm/{_uuid.uuid4()}.pdf"
+    try:
+        await asyncio.to_thread(_upload_to_r2, data, key, "application/pdf")
+        tok = await _mint_temp_media_token(key, "application/pdf", ttl_seconds=3600)
+    except Exception as e:
+        logger.warning(f"[dm-brain] plan file temp upload failed: {type(e).__name__}")
+        return None, "the PDF couldn't be stored for sending"
+    return _public_temp_media_url(tok), ""
+
+
+async def _dm_send_document(dm_chat: str, media_url: str, media_name: str, caption: str) -> bool:
+    """One PDF to this DM chat as a WhatsApp document, through the DM gate
+    (the reply window, paced, in the ledger), like _dm_send_sheet. Kept in
+    the chat's history as "[File] <caption>"."""
+    verdict = await _dm_send_verdict(dm_chat, f"[file {media_name}]", None)
+    if not verdict["allowed"]:
+        logger.info(f"[dm-brain] file refused ({verdict['reason']}) to {_log_chat(dm_chat)}")
+        return False
+    ledger_id = verdict.get("ledger_id")
+    ok, body, err = await _waapi_send_dm_paced(
+        f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
+        {"chatId": dm_chat, "mediaUrl": media_url, "mediaName": media_name, "caption": caption},
+        {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"})
+    inner = body.get("data") if isinstance(body, dict) else None
+    if ok and isinstance(inner, dict) and inner.get("status") == "error":
+        ok, err = False, "data.status error"
+    if ledger_id is not None:
+        await _ledger_finish(ledger_id, ok, err)
+    if not ok:
+        logger.warning(f"[dm-brain] file {media_name} not sent to {_log_chat(dm_chat)}: {err}")
+        return False
+    try:
+        now = datetime.now(timezone.utc)
+        await db.whatsapp_messages.insert_one({
+            "group_id": dm_chat, "is_dm": True, "sender": "bot", "body": f"[File] {caption}",
+            "has_audio": False, "message_id": "", "from_me": True,
+            "timestamp": now, "created_at": now})
+    except Exception as e:
+        logger.debug(f"[dm-brain] file bot-log skipped: {type(e).__name__}")
+    return True
+
+
+async def _dm_send_plan_file(ctx: dict, job: dict, args: dict) -> str:
+    """send_plan_file: the drawing's PDF -- the page a sheet is on, a page
+    range, or the whole file -- to this chat. Same scope as send_sheet; the
+    eval (dry run) sends nothing."""
+    ident, dm_chat, dry = ctx["ident"], ctx["dm_chat"], bool(ctx.get("dry_run"))
+    pid = str(job["id"])
+    if not await _bot_project_scope(ident["company_id"], pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    sheet_q = str(args.get("sheet") or "").strip()
+    file_q = str(args.get("file") or "").strip()
+    pages_q = str(args.get("pages") or "").strip()
+    page = None
+    if sheet_q:
+        rows = await _find_named_sheet(pid, sheet_q)
+        page = rows[0] if rows else None
+        if not page:
+            listed, uploaded = await _drawing_list_and_sheets(pid)
+            return " ".join([f"{sheet_q.upper()} isn't in the uploaded drawings for {job['label']}, "
+                             f"so there is no PDF of it to send."]
+                            + plan_sources.list_notes(sheet_q, "", listed, uploaded))
+        file_id = str(page.get("file_id") or "")
+    elif file_q:
+        file_id, why = await _dm_plan_file_named(pid, ident["company_id"], file_q)
+        if not file_id:
+            return why
+    else:
+        return "Say which sheet or file to send."
+    frec = await db.project_files.find_one(
+        {"_id": to_query_id(file_id), "project_id": pid, "is_deleted": {"$ne": True}},
+        {"name": 1, "company_id": 1, "r2_key": 1, "size": 1, "drawing_track": 1,
+         "drawing_track_label": 1})
+    if not frec or str(frec.get("company_id") or ident["company_id"]) != str(ident["company_id"]):
+        return "That drawing's file isn't on this job any more."
+    if not frec.get("r2_key"):
+        return f"{frec.get('name') or 'That file'} has no stored copy in Levelog to send."
+    src = plan_sources.source_of(frec)
+    name = src["file_name"] or "drawing.pdf"
+    if not name.lower().endswith(".pdf"):
+        return f"{name} isn't a PDF."
+    if pages_q:
+        pages, why = plan_sources.parse_pages(pages_q)
+        if why:
+            return f"Nothing sent: {why}."
+    elif page is not None and args.get("whole_file") is not True and page.get("page_number"):
+        pages = [int(page["page_number"])]
+    else:
+        pages = None
+    label = plan_sources.cite_with_set(page.get("sheet_number") or sheet_q.upper(), src) if page else ""
+    what = (f"{name} ({src['set_name']})" if pages is None
+            else f"{plan_sources.pages_label(pages)} of {name} ({src['set_name']})")
+    if label:
+        what = f"{label}, {what}"
+    size = frec.get("size")
+    if pages is None and isinstance(size, (int, float)) and size > plan_sources.MAX_SEND_BYTES:
+        return (f"Not sent: {name} is {plan_sources.size_mb(size)}, over the {plan_sources.MAX_SEND_MB} MB "
+                f"limit for sending a file in this chat. Some of its pages can be sent (pages, or a "
+                f"sheet's page).")
+    if dry:
+        ctx["sent"].append(f"[file {name}]")
+        return f"(eval) Would send {what} here as a PDF."
+    media_url, why = await _dm_pdf_media_url(frec, pages)
+    if not media_url:
+        return f"Nothing sent: {why}. Say so plainly -- don't say the PDF was sent."
+    stem = re.sub(r"\.pdf$", "", name, flags=re.I)
+    media_name = name if pages is None else f"{stem} - {plan_sources.pages_label(pages)}.pdf"
+    if not await _dm_send_document(dm_chat, media_url, media_name, what):
+        return f"The PDF of {what} could NOT be sent. Say so plainly -- don't say it was sent."
+    ctx["sent"].append(f"[file {name}]")
+    return f"Sent {what} to them as a PDF."
+
+
 # ── WHERE A PLANS ANSWER CAME FROM, ON THE SHEET (lib/plan_crop) ────────────
 #
 # "Window protection details are on SSP-011.00" still sends a superintendent
@@ -65788,6 +66063,13 @@ async def _dm_plan_evidence(ctx: dict, sink: list) -> bool:
             except Exception as e:
                 logger.warning(f"[dm-brain] plan page read failed: {type(e).__name__}")
                 pages[pid] = {}
+    # Each page's file and set, for the picture's caption (rendering only).
+    want = {str(p.get("file_id")) for p in pages.values() if p and p.get("file_id")}
+    have = ctx.setdefault("plan_sources", {})
+    if want - set(have):
+        some = next((p for p in pages.values() if p and p.get("project_id")), None)
+        if some:
+            have.update(await _plan_file_sources(str(some["project_id"]), sorted(want - set(have))))
     if _dm_plan_records(ctx):
         ctx["plan_image_due"] = True
     return bool(ctx.get("plan_image_due"))
@@ -65820,8 +66102,11 @@ def _dm_plan_shots(ctx: dict, out: dict) -> list:
     groups = plan_crop.by_page(choice["marks"])
     total = sum(len(marks) for _pid, marks in groups)
     pages, sent = ctx["plan_pages"], ctx.get("sheets_sent") or set()
+    srcs = ctx.get("plan_sources") or {}
     return [{"page": pages[pid], "marks": marks, "total": total,
-             "label": pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+             "label": plan_sources.cite_with_set(
+                 pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+                 srcs.get(str(pages[pid].get("file_id") or ""))),
              "ambiguous": choice["ambiguous"], "unverified": choice["unverified"],
              "pictures": len(groups)}
             for pid, marks in groups if pid not in sent]
@@ -66670,11 +66955,17 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     return out
 
 
-def _render_records_for_model(records: List[dict], subject: str) -> str:
+def _render_records_for_model(records: List[dict], subject: str,
+                              sources: Optional[Dict[str, dict]] = None) -> str:
     """What the agent is shown. Every line carries where it came from and how
     strong it is, because those are the two things the model must not have to
     guess at — and the numbers it is allowed to use are the ones printed
-    here."""
+    here.
+
+    `sources` ({file_id: plan_sources.source_of}, _plan_file_sources): each
+    line also names its file and drawing set, and a sheet from a set that is
+    not the filed one is cited with it -- "A-302 (owner's set)". Rendering
+    only: the records, and what the gate checks, are the same."""
     if not records:
         # NOT "nothing on the drawings mentions it" — that is a claim about
         # the building, and what actually happened is that this search found
@@ -66717,6 +67008,10 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
         # The model is told how many sheets carry it, so "on all six mechanical
         # plans" stays available to it and one citation is not mistaken for the
         # only place it appears.
+        if sources:
+            where = plan_sources.evidence_where(
+                where, sources.get(str(r.get("file_id") or "")),
+                sheet_number=str(r.get("sheet_number") or ""), page_number=r.get("page_number"))
         more = [w for w in (r.get("also_on") or []) if w]
         if more:
             where = f"{where} (+{len(more)} sheet{'s' if len(more) > 1 else ''})"
@@ -69473,7 +69768,9 @@ async def _dispatch_agent_tool(
             logger.info(
                 f"search_plans subject={subject[:40]!r} intent={args.get('intent')!r} "
                 f"hits={len(found)} top={[r.get('tier') for r in found[:3]]}")
-            return _render_records_for_model(found, subject)
+            # Each record's file and drawing set, for the render (data only).
+            sources = await _plan_file_sources(project_id, [r.get("file_id") for r in found])
+            return _render_records_for_model(found, subject, sources)
         if name == "who_on_site":
             return await _handle_who_on_site(
                 project_id,
@@ -69563,8 +69860,9 @@ async def _dispatch_agent_tool(
             logger.info(
                 f"query_plan answered from records subject={question[:40]!r} "
                 f"hits={len(found)} (sheet image sent separately)")
+            sources = await _plan_file_sources(project_id, [r.get("file_id") for r in found])
             return ("(The sheet image is on its way to the group.)\n"
-                    + _render_records_for_model(found, question))
+                    + _render_records_for_model(found, question, sources))
         if name == "start_permit_renewal":
             return await _handle_start_permit_renewal(
                 project_id, group_id, sender,
