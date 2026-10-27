@@ -47250,18 +47250,27 @@ async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict,
 
     A retry after a timeout can deliver a message twice if the first attempt
     reached WhatsApp; the alternative — never retrying — drops it. WaAPI
-    exposes no idempotency key to do better."""
+    exposes no idempotency key to do better.
+
+    A DM turn that set _DM_SENDS gets one entry per send: when it finished,
+    the action, ok, how long it waited for the lock and the pacing, tries."""
     loop = asyncio.get_running_loop()
+    sends = _DM_SENDS.get()
+    t_in = _time.monotonic()
+    ok, tried, waited = False, 0, 0
     async with _DM_SEND_LOCK:
         wait = _DM_LAST_SENT[0] + wa_dm.DM_MIN_INTERVAL_SECONDS - loop.time()
         if wait > 0:
             await asyncio.sleep(wait)
+        waited = int((_time.monotonic() - t_in) * 1000)
         err = None
         try:
             tries = attempts or wa_dm.DM_SEND_ATTEMPTS
             for attempt in range(tries):
+                tried += 1
                 code, body, exc = await _waapi_post_raw(url, payload, headers)
                 if exc is None and code is not None and code < 400:
+                    ok = True
                     return True, body, None
                 # Which call, its status and what WaAPI said (no numbers).
                 err = send_retry.waapi_error(url.rsplit("/", 1)[-1], code, body, exc)
@@ -47272,6 +47281,9 @@ async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict,
             return False, None, err
         finally:
             _DM_LAST_SENT[0] = loop.time()
+            if sends is not None:
+                sends.append({"at": _time.monotonic(), "action": url.rsplit("/", 1)[-1],
+                              "ok": ok, "wait_ms": waited, "tries": tried})
 
 
 async def send_whatsapp_dm(user_id: Any, message: str, *, kind: str,
@@ -58201,8 +58213,8 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
                           project_id: Optional[str] = None, question: Optional[str] = None,
                           labels: Any = (), styled: bool = False,
                           job_label: Optional[str] = None) -> None:
-    """Send the answer; 👀 on the question first if it takes over 5 s, and
-    taken back if no answer comes. A voice note's answer opens with
+    """Send the answer; "typing…" in their chat while it is worked out (no
+    reaction: Oct 27, 👀 read as "seen, not answering"). A voice note's answer opens with
     `Heard: "…"`. Every answer goes through the style post-check
     (lib/wa_style.py): short job names, no preamble, ~300 characters unless
     a list was asked for -- the rest offered ("Want the names?").
@@ -58211,14 +58223,16 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
     the site manager" -- they ARE the site manager / PM): the sentences that
     send them elsewhere are dropped (dm_brain.no_referral); with nothing
     left, "I couldn't find that in Levelog for <job>." -- never made up."""
-    task = asyncio.ensure_future(answer_coro)
-    eyes = False
+    thinking = asyncio.Event()
+    typing = asyncio.ensure_future(_dm_typing_while(dm_chat, thinking))
     try:
-        reply = await asyncio.wait_for(asyncio.shield(task),
-                                       wa_react.WORKING_AFTER_SECONDS)
-    except asyncio.TimeoutError:
-        eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
-        reply = await task
+        reply = await answer_coro
+    finally:
+        thinking.set()
+        try:
+            await asyncio.wait_for(typing, 10)
+        except Exception:
+            pass
     if reply:
         reply = _dm_old_no_referral(reply, job_label, ident=log[0] if log else None,
                                     path=log[3] if log else "headcount")
@@ -58269,8 +58283,6 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         if heard:
             reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
         await send_whatsapp_message(dm_chat, reply)
-    elif eyes:
-        await _react_to_message(dm_chat, message_id, "")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -58306,6 +58318,14 @@ _DM_MODEL: contextvars.ContextVar = contextvars.ContextVar("dm_model", default=N
 _DM_ASKER: contextvars.ContextVar = contextvars.ContextVar("dm_asker", default=None)
 #: How often the "typing…" indicator is sent again while the brain works.
 DM_TYPING_EVERY_SECONDS = 8.0
+#: This inbound message's clock (_process_whatsapp_message): {"received":
+#: wall seconds the webhook got it, "started": when its task began, "wa_ts":
+#: WhatsApp's own send time, epoch seconds or 0}. The DM answer log's timing.
+_WA_INBOUND: contextvars.ContextVar = contextvars.ContextVar("wa_inbound", default=None)
+#: This DM turn's message sends (_waapi_send_dm_paced, refusals in
+#: send_whatsapp_message): a list the turn sets before the brain task starts,
+#: so the task's own sends (a tool that sends a sheet) land in it too.
+_DM_SENDS: contextvars.ContextVar = contextvars.ContextVar("dm_sends", default=None)
 
 
 def _dm_is_asker(jid: str, person: Optional[dict]) -> bool:
@@ -58354,12 +58374,14 @@ async def _wa_seen(chat_id: str) -> bool:
     return await _wa_chat_action(chat_id, "send-seen")
 
 
-async def _dm_typing_while(chat_id: str, done: asyncio.Event) -> None:
+async def _dm_typing_while(chat_id: str, done: asyncio.Event, seen: bool = True) -> None:
     """What a person does: open the chat (read ticks), then "typing…" until
     `done`, sent again every DM_TYPING_EVERY_SECONDS (WhatsApp drops it
-    after a while)."""
+    after a while). The ONLY "working on it" signal -- no 👀 reaction (Oct
+    27). A group passes seen=False: typing only, nothing marked read."""
     try:
-        await _wa_seen(chat_id)
+        if seen:
+            await _wa_seen(chat_id)
         while not done.is_set():
             await _wa_typing(chat_id, True)
             try:
@@ -58848,6 +58870,8 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             name, args, project_id=str(job["id"]), group_id=dm_chat,
             company_id=str(ident["company_id"]), sender=wa_dm.phone_digits(dm_chat),
             reply_to=None, user_body=ctx["text"], record_sink=sink)
+        if sink:
+            ctx["_records"] = sink                   # the trace keeps where they are
         if sink and await _dm_plan_evidence(ctx, sink):
             out += ("\n(A picture of the sheet, with where this is marked, goes to them right "
                     "after your answer. No need to call send_sheet for it.)")
@@ -59000,16 +59024,48 @@ def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
             pass
 
 
+def _dm_trace_records(sink: Any, limit: int = 6) -> list:
+    """The plan records one tool call returned, as the answer log keeps them:
+    sheet, file, page, set and the quote (160 chars). [] for none."""
+    out: list = []
+    for hit in sink or []:
+        for r in (hit or {}).get("records") or []:
+            if len(out) >= limit:
+                return out
+            row = {"sheet": r.get("sheet_number") or None, "file": r.get("file_name") or None,
+                   "page": r.get("page_number"),
+                   "set": r.get("set_name") or r.get("drawing_set") or r.get("revision") or None,
+                   "quote": str(r.get("quote") or r.get("text") or "")[:160]}
+            out.append({k: v for k, v in row.items() if v not in (None, "")})
+    return out
+
+
 async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[str] = None) -> dict:
     """The model, its tool calls (one after another, at most
     dm_brain.MAX_TOOL_CALLS a turn), and the number check, until an answer.
     Every retry (cut, evidence, claims, "you", deflect) is on the same model.
-    {reply, trace, rounds, retries, unverified, stop, usage}."""
+    {reply, trace, rounds, retries, unverified, stop, usage, timing_rounds}.
+
+    TIMED (Oct 27: a 588 answer took 7 minutes and nothing said where): each
+    model round is {round, t_ms, ms, finish, tools[, then][, error]} in
+    timing_rounds and each tool call carries round / t_ms / ms in the trace;
+    t_ms counts from ctx["t0"] (the message's receipt), else from here. The
+    same lists sit on ctx (_trace, _rounds) so a turn that raises still
+    leaves what it did."""
     client = _dm_brain_client()
     tools = _dm_brain_tools()
     use = model or _DM_MODEL.get() or dm_brain.MODEL
     msgs = [{"role": "system", "content": system}] + [dict(m) for m in messages]
     trace: List[dict] = []
+    rounds_log: List[dict] = []
+    ctx["_trace"], ctx["_rounds"] = trace, rounds_log
+    t_zero = ctx.get("t0") or _time.monotonic()
+
+    def at_ms(t: float) -> int:
+        return int((t - t_zero) * 1000)
+
+    def took_ms(t: float) -> int:
+        return int((_time.monotonic() - t) * 1000)
     sources = [system] + [m["content"] for m in messages if isinstance(m.get("content"), str)]
     retries, deflects, calls, last_text, missing = 0, 0, 0, "", []
     cuts, claimed, yous = 0, 0, 0
@@ -59025,27 +59081,38 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
         return set(ctx.get("acted") or set()) | (
             {"sent"} if ctx.get("sent") or picture else set())
 
-    def fix(note: str) -> None:
+    def fix(note: str, why: str) -> None:
         msgs.append({"role": "assistant", "content": last_text or "(nothing)"})
         msgs.append({"role": "user", "content": "[Levelog check, not from them] " + note})
+        if rounds_log:
+            rounds_log[-1]["then"] = why
 
     def done(**kw):
         return {"trace": trace, "retries": retries, "deflect_retries": deflects, "usage": usage,
+                "timing_rounds": rounds_log,
                 "model": use, "tools_tried": [
                     f"{t['tool']}({json.dumps(t.get('args') or {}, ensure_ascii=False)})" for t in trace],
                 **kw}
     for rounds in range(1, dm_brain.MAX_ROUNDS + 1):
         can_call = calls < dm_brain.MAX_TOOL_CALLS
         t0 = _time.monotonic()
-        resp = await client.chat.completions.create(
-            model=use, messages=msgs, tools=tools, tool_choice="auto" if can_call else "none",
-            temperature=dm_brain.TEMPERATURE, max_tokens=budget,
-            **({"extra_body": {"reasoning_effort": dm_brain.REASONING_EFFORT}}
-               if dm_brain.REASONING_EFFORT else {}))
+        try:
+            resp = await client.chat.completions.create(
+                model=use, messages=msgs, tools=tools, tool_choice="auto" if can_call else "none",
+                temperature=dm_brain.TEMPERATURE, max_tokens=budget,
+                **({"extra_body": {"reasoning_effort": dm_brain.REASONING_EFFORT}}
+                   if dm_brain.REASONING_EFFORT else {}))
+        except Exception as e:
+            # The SDK's own retries are inside this one call: its ms says so.
+            rounds_log.append({"round": rounds, "t_ms": at_ms(t0), "ms": took_ms(t0),
+                               "error": type(e).__name__})
+            raise
         _dm_usage(usage, resp, use, t0)
         choice = resp.choices[0]
         m = choice.message
         asked = list(getattr(m, "tool_calls", None) or []) if can_call else []
+        rounds_log.append({"round": rounds, "t_ms": at_ms(t0), "ms": took_ms(t0),
+                           "finish": str(choice.finish_reason or ""), "tools": len(asked)})
         if asked:
             # SEQUENTIAL: each call runs after the one before it; past the cap
             # the rest are not run (and not shown as asked).
@@ -59057,12 +59124,14 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             for tc in asked:
                 calls += 1
                 name = tc.function.name
+                t_tool = _time.monotonic()
                 if name in _DM_BRAIN_SENDS:
                     # The same send twice in one turn goes out once.
                     key = (name, " ".join(str(tc.function.arguments or "").lower().split()))
                     if key in done_sends:
                         out = "Already done in this turn -- not sent again."
-                        trace.append({"tool": name, "args": {}, "result": out, "duplicate": True})
+                        trace.append({"tool": name, "args": {}, "result": out, "duplicate": True,
+                                      "round": rounds, "t_ms": at_ms(t_tool), "ms": 0})
                         msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out})
                         continue
                     done_sends.add(key)
@@ -59079,7 +59148,11 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
                         logger.warning(f"[dm-brain] tool {name} failed: {type(e).__name__}: {e}")
                         out, err = f"The tool failed ({type(e).__name__}). Say so plainly if it matters.", True
                 out = str(out)[:DM_BRAIN_TOOL_CHARS]
-                trace.append({"tool": name, "args": args, "result": out[:3000], **({"error": True} if err else {})})
+                found = _dm_trace_records(ctx.pop("_records", None))
+                trace.append({"tool": name, "args": args, "result": out[:3000],
+                              "round": rounds, "t_ms": at_ms(t_tool), "ms": took_ms(t_tool),
+                              **({"records": found} if found else {}),
+                              **({"error": True} if err else {})})
                 sources.append(out)
                 msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out})
             continue
@@ -59092,7 +59165,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
                 cuts += 1
                 budget = dm_brain.RETRY_MAX_TOKENS
                 logger.info(f"[dm-brain] cut answer ({choice.finish_reason}, {len(last_text)} chars): retried")
-                fix(dm_brain.cut_note())
+                fix(dm_brain.cut_note(), "cut")
                 continue
             if last_text and choice.finish_reason != "length" and not dm_brain._bold_unbalanced(last_text):
                 pass                                     # short, but whole: it goes
@@ -59104,7 +59177,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             # The one retry, on the same model.
             retries += 1
             logger.info(f"[dm-brain] re-asked: unverified {missing[:6]}")
-            fix(dm_brain.verify_note(missing))
+            fix(dm_brain.verify_note(missing), "verify")
             continue
         if missing:
             return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=missing,
@@ -59115,7 +59188,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             if claimed < 1:
                 claimed += 1
                 logger.info(f"[dm-brain] re-asked: claimed {unsupported} with no tool doing it")
-                fix(dm_brain.claim_note(unsupported, [t["tool"] for t in trace]))
+                fix(dm_brain.claim_note(unsupported, [t["tool"] for t in trace]), "claim")
                 continue
             return done(reply=dm_brain.ACTION_UNVERIFIED_TEXT, rounds=rounds, unverified=[],
                         stop="unsupported_claim", draft=last_text)
@@ -59124,7 +59197,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             if yous < 1:
                 yous += 1
                 logger.info("[dm-brain] re-asked: said 'from you' with no record marked theirs")
-                fix(dm_brain.you_note())
+                fix(dm_brain.you_note(), "you")
                 continue
             return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=["from you"],
                         stop="unverified_sender", draft=last_text)
@@ -59133,7 +59206,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             # tools (Tue 12:28 PM): asked again, with what it tried.
             deflects += 1
             logger.info(f"[dm-brain] re-asked: deflected after {[t['tool'] for t in trace]}")
-            fix(dm_brain.deflect_note([t["tool"] for t in trace]))
+            fix(dm_brain.deflect_note([t["tool"] for t in trace]), "deflect")
             continue
         return done(reply=last_text, rounds=rounds, unverified=[], stop=choice.finish_reason,
                     cant_answer=dm_brain.cant_answer(last_text), cut_retries=cuts,
@@ -59145,9 +59218,11 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
 async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: list,
                            now: datetime, dry_run: bool = False,
                            flows: Optional[List[str]] = None,
-                           active: Optional[str] = None) -> dict:
+                           active: Optional[str] = None,
+                           t0: Optional[float] = None) -> dict:
     """Build the context and run the brain for one message (the live path
-    and the eval). {reply, trace, ...} plus `sent` (what tools sent)."""
+    and the eval). {reply, trace, ...} plus `sent` (what tools sent).
+    `t0`: the monotonic clock at the message's receipt (timing offsets)."""
     jobs = await _dm_jobs(ident) if ident.get("projects") else []
     by_id = {j["id"]: j for j in jobs}
     if active is None and not dry_run:
@@ -59173,7 +59248,7 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
     messages = dm_brain.turn_messages(dm_brain.history_messages(history, now), text)
     ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
            "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
-           "used_job": None}
+           "used_job": None, "t0": t0}
     _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phones": [
         p for p in ("" if str(dm_chat).endswith("@lid") else wa_dm.phone_digits(dm_chat),
                     wa_dm.phone_digits(str((ident.get("user") or {}).get("phone") or ""))) if p]})
@@ -59181,8 +59256,10 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
         out = await _dm_brain_run(ctx, messages, system)
     except Exception as e:
         logger.error(f"[dm-brain] model failed: {type(e).__name__}: {e}")
-        out = {"reply": dm_brain.FAILED_TEXT, "trace": [], "rounds": 0, "retries": 0,
-               "unverified": [], "stop": f"error:{type(e).__name__}"}
+        # What it did before it failed (and how long each step took) is kept.
+        out = {"reply": dm_brain.FAILED_TEXT, "trace": ctx.get("_trace") or [],
+               "timing_rounds": ctx.get("_rounds") or [], "rounds": len(ctx.get("_rounds") or []),
+               "retries": 0, "unverified": [], "stop": f"error:{type(e).__name__}"}
     if out.get("reply"):
         out["reply"] = dm_brain.redact_phones(out["reply"])
     # Where on the sheets the answer came from: sent after the words
@@ -59250,23 +59327,28 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
         question = f"[voice note] {question}"
 
     t_start = _time.monotonic()
-    task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history, now=now))
-    # "typing…" in their chat while the brain works, sent again every 8 s.
+    # The clock starts at the webhook's receipt, not here: a turn that began
+    # late (a queued task, a walkthrough lease, a voice note) shows it.
+    inbound = _WA_INBOUND.get() or {}
+    received = float(inbound.get("received") or _time.time())
+    t0 = t_start - max(0.0, _time.time() - received)
+    sends: list = []
+    _DM_SENDS.set(sends)                     # before the task: its sends land here too
+    task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history,
+                                                  now=now, t0=t0))
+    # "typing…" in their chat while the brain works, sent again every 8 s --
+    # the only "working on it" signal (no 👀 reaction: Oct 27).
     thinking = asyncio.Event()
     typing = asyncio.ensure_future(_dm_typing_while(dm_chat, thinking))
-    eyes = False
     try:
-        try:
-            out = await asyncio.wait_for(asyncio.shield(task), wa_react.WORKING_AFTER_SECONDS)
-        except asyncio.TimeoutError:
-            eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
-            out = await task
+        out = await task
     finally:
         thinking.set()
         try:
             await asyncio.wait_for(typing, 10)
         except Exception:
             pass
+    brain_done = _time.monotonic()
     reply = out.get("reply")
     # Which path answered, provably: one line per brain answer (no phone, no words).
     logger.info(f"[dm-brain] answered company={ident.get('company_id') or '?'} "
@@ -59275,14 +59357,6 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
     if out.get("used_job"):
         await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
                             project_id=out["used_job"])
-    await _dm_log_answer(
-        ident, out.get("used_job"), question, reply or " | ".join(out.get("sent") or []), "brain",
-        tool_data=out.get("trace"), model=out.get("model") or dm_brain.MODEL, rounds=out.get("rounds"),
-        usage=out.get("usage"),
-        verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
-        stop=out.get("stop"), deflect_retries=out.get("deflect_retries") or None,
-        tools_tried=_dm_redact(out.get("tools_tried") or []),
-        **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
     if out.get("cant_answer"):
         # Every "can't answer" is logged with the tools it tried (rule 3).
         logger.info(f"[dm-brain] cant_answer tools={_dm_redact(out.get('tools_tried') or [])}")
@@ -59293,14 +59367,48 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
                 {"$set": {"project_id": str(out["used_job"])}})
         except Exception as e:
             logger.warning(f"[voice] dm job stamp failed: {type(e).__name__}")
-    if reply:
-        if heard:
-            reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
-        await send_whatsapp_message(dm_chat, reply)
-        # The words first; then where on the sheet they came from.
-        await _dm_send_plan_shots(dm_chat, out.get("plan_shots") or [])
-    elif eyes:
-        await _react_to_message(dm_chat, message_id, "")
+    try:
+        if reply:
+            if heard:
+                reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
+            await send_whatsapp_message(dm_chat, reply)
+            # The words first; then where on the sheet they came from.
+            await _dm_send_plan_shots(dm_chat, out.get("plan_shots") or [])
+    finally:
+        # Logged AFTER the sends, so the row says when the first one went.
+        await _dm_log_answer(
+            ident, out.get("used_job"), question, out.get("reply") or " | ".join(out.get("sent") or []),
+            "brain", tool_data=out.get("trace"), model=out.get("model") or dm_brain.MODEL,
+            rounds=out.get("rounds"), usage=out.get("usage"),
+            verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
+            stop=out.get("stop"), deflect_retries=out.get("deflect_retries") or None,
+            tools_tried=_dm_redact(out.get("tools_tried") or []),
+            timing=_dm_turn_timing(inbound, received, t0, t_start, brain_done, out, sends),
+            **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
+
+
+def _dm_turn_timing(inbound: dict, received: float, t0: float, t_start: float,
+                    brain_done: float, out: dict, sends: list) -> dict:
+    """One DM turn's clock for the answer log, every offset in ms from the
+    webhook's receipt: received_at; queue_ms (webhook -> its task began);
+    wa_lag_ms (WhatsApp's send time -> webhook); brain_start_ms / brain_ms;
+    rounds (each model call); sends (each message out: t_ms, action, ok,
+    wait_ms for the DM send lock, tries, or `refused`); first_send_ms (the
+    first send that went). No phone, no words."""
+    def off(t: float) -> int:
+        return int((t - t0) * 1000)
+    wa_ts = int(inbound.get("wa_ts") or 0)
+    rows = [{"t_ms": off(x["at"]), **{k: v for k, v in x.items() if k != "at"}}
+            for x in sends or []]
+    went = [r["t_ms"] for r in rows if r.get("ok")]
+    return {
+        "received_at": datetime.fromtimestamp(received, timezone.utc),
+        "queue_ms": int((float(inbound["started"]) - received) * 1000) if inbound.get("started") else None,
+        "wa_lag_ms": int((received - wa_ts) * 1000) if wa_ts else None,
+        "brain_start_ms": off(t_start), "brain_ms": int((brain_done - t_start) * 1000),
+        "rounds": out.get("timing_rounds") or [],
+        "sends": rows, "first_send_ms": min(went) if went else None,
+    }
 
 
 def _iso_utc(v: Any) -> Any:
@@ -59385,6 +59493,10 @@ async def send_whatsapp_message(
         if not verdict["allowed"]:
             logger.info(f"WhatsApp DM refused ({verdict['reason']}) "
                         f"to ...{wa_dm.phone_digits(chat_id)[-4:]}")
+            sends = _DM_SENDS.get()
+            if sends is not None:
+                sends.append({"at": _time.monotonic(), "action": "send-message", "ok": False,
+                              "refused": str(verdict.get("reason") or "?")})
             return None
         ledger_id = verdict.get("ledger_id")
 
@@ -74242,10 +74354,19 @@ async def _punch_remind_job() -> None:
         logger.warning(f"[punch] remind job failed: {type(e).__name__}")
 
 
-async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
-    """Background task to process an inbound WhatsApp message."""
+async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
+                                    received_at: Optional[float] = None):
+    """Background task to process an inbound WhatsApp message.
+    `received_at`: wall seconds the webhook got it (the task may start later)."""
+    started = _time.time()
     try:
         parsed = parse_inbound_message(payload, vendor=WHATSAPP_VENDOR)
+        try:
+            wa_ts = int(parsed.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            wa_ts = 0
+        _WA_INBOUND.set({"received": received_at or started, "started": started,
+                         "wa_ts": wa_ts})
 
         # ── A NOTIFICATION IS NOT A MESSAGE ────────────────────────────────
         #
@@ -74978,23 +75099,23 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     reply_to=reply_to,
                     address_mode=address_mode,
                 ))
-                # A slow answer: 👀 on the question first, the answer after.
-                eyes = False
+                # "typing…" in the group while it works (WaAPI send-typing
+                # takes any chatId; a failure is a logged warning and
+                # nothing shows). Never a 👀 reaction (Oct 27).
+                thinking = asyncio.Event()
+                typing = asyncio.ensure_future(
+                    _dm_typing_while(group_id, thinking, seen=False))
                 try:
-                    reply = await asyncio.wait_for(
-                        asyncio.shield(agent_task),
-                        wa_react.WORKING_AFTER_SECONDS)
-                except asyncio.TimeoutError:
-                    eyes = await _react_to_message(group_id, reply_to,
-                                                   wa_react.WORKING)
                     reply = await agent_task
+                finally:
+                    thinking.set()
+                    try:
+                        await asyncio.wait_for(typing, 10)
+                    except Exception:
+                        pass
                 if reply:
                     await send_whatsapp_message(group_id, reply,
                                                 reply_to=reply_to)
-                elif eyes:
-                    # Nothing came of it: take the 👀 back rather than leave
-                    # a promise of an answer that is not coming.
-                    await _react_to_message(group_id, reply_to, "")
                 return
 
             # NOT ADDRESSED: SILENCE. The once-a-day "I'm here, say levelog"
@@ -75358,6 +75479,7 @@ async def whatsapp_webhook(request: Request):
     # for this path, the per-request [req] line prints the path only, and
     # whatsapp_webhook_log stores headers and body, never the URL.
     """
+    received = _time.time()
     expected = os.environ.get("WAAPI_WEBHOOK_SECRET", "")
     provided = request.query_params.get(wa_security.WEBHOOK_TOKEN_PARAM)
     if not wa_security.webhook_token_ok(provided, expected):
@@ -75395,7 +75517,7 @@ async def whatsapp_webhook(request: Request):
         return {"status": "ok"}
 
     if payload:
-        asyncio.create_task(_process_whatsapp_message(payload))
+        asyncio.create_task(_process_whatsapp_message(payload, received_at=received))
     return {"status": "ok"}
 
 
