@@ -317,7 +317,8 @@ def _refused_tags(space: Optional[Dict[str, Any]]) -> List[str]:
 def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any],
                  fams: Dict[str, Dict[str, Any]], *, track: str = "filed",
                  refused: Sequence[Tuple[Dict[str, Any], str]] = (),
-                 widest_door: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 widest_door: Optional[Dict[str, Any]] = None,
+                 progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None) -> Dict[str, Any]:
     """Every opening row of one drawing track.
 
     `floors` are plan_glyph_pass's floors (each architectural plan with its
@@ -325,7 +326,9 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
     are the plan-titled architectural pages the pairing refused, with why:
     each carries tags this pass did not read, so each is a refusal row that
     blocks its track's building figures (and its floor's, when it has one).
-    A track with no door or window schedule reconciled writes nothing."""
+    A track with no door or window schedule reconciled writes nothing.
+    `progress` is plan_glyph_pass.run_pass's (one "openings" step a floor)."""
+    from lib.plan_pass_progress import tell
     from lib.plan_takeoff import Units
 
     run = {n: f for n, f in fams.items() if f["tags"]}
@@ -350,8 +353,9 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
                                            pass_key=f"openings|{sheet}", role=KIND)])
         summary["refused"].append([sheet, why])
     located: set = set()
-    for f in floors:
+    for i, f in enumerate(floors, 1):
         arch_p, a_sheet = f["arch_p"], f["a_sheet"]
+        tell(progress, "sheet", stage="openings", sheet=a_sheet, i=i, n=len(floors))
         units_ = f.get("units") or {}
         space = f.get("space")
         floor = {"arch": a_sheet, "families": {}}

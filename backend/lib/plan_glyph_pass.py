@@ -72,7 +72,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
              door_pages: Sequence[Dict[str, Any]] = (), *, track: str = "filed",
              sweeps: Optional[Dict[Any, Any]] = None,
              plan_only: Optional[Dict[str, Dict[str, Any]]] = None,
-             opening_schedules: Sequence[Dict[str, Any]] = ()) -> Dict[str, Any]:
+             opening_schedules: Sequence[Dict[str, Any]] = (),
+             progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None) -> Dict[str, Any]:
     """Every glyph row for the project's `track`, and what was done and
     refused.
 
@@ -91,8 +92,16 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     architectural plans print, read against the door/window schedules
     (`opening_schedules`) on the SAME floors - their units, membership maps,
     stair links and voids - and returned apart, in "opening_rows", so the
-    equipment rows are exactly what they were."""
+    equipment rows are exactly what they were.
+
+    PROGRESS (2026-10-27): `progress`, when given, is called at every step -
+    progress(kind, info), kind "plan" / "stage" / "sheet" / "done" (lib.
+    plan_pass_progress, whose tracker the server hands in). It is called
+    from this function's thread; one that raises is logged and ignored
+    (plan_pass_progress.tell). It reads nothing the pass computes with, so
+    the rows are the same with it or without it."""
     from lib import plan_openings as popen
+    from lib.plan_pass_progress import tell
     from lib.plan_sheet import load_sheet
     from lib.plan_space import build_space
     from lib.plan_takeoff import Units, located_labels, run_takeoff, sweep
@@ -115,11 +124,15 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         return n
 
     paired = derive.pair_plan_sheets(pages)
+    if progress is not None:
+        tell(progress, "plan", steps=sheet_steps(pages, schedules, plan_only, opening_schedules,
+                                                 paired=paired))
     for page, why, role in paired["refused"]:
         rows += emit.refusal_rows([(page, why, role)])
         summary["refused_sheets"].append([page.get("sheet_number"), why, role])
 
     door = {"inches": None, "doors": {}, "why": "no door schedule in the set"}
+    tell(progress, "stage", stage="door")
     for p in door_pages:
         got = derive.widest_door_in(open_page(p).directed_words)
         if got["inches"] and (door["inches"] is None or got["inches"] > door["inches"]):
@@ -170,8 +183,11 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                                        "refused": res.get("refused"),
                                        "labels_by_tag": res.get("labels_by_tag")}
 
-    for mech_p in paired.get("unpaired_mech") or []:
+    unpaired = paired.get("unpaired_mech") or []
+    for i, mech_p in enumerate(unpaired, 1):
         m_sheet = mech_p.get("sheet_number")
+        tell(progress, "sheet", stage="sheet_scope", sheet=m_sheet, i=i, n=len(unpaired),
+             sweep=_sweep_state(mech_p, sweeps) if run_fams else None)
         seq = (derive.PLAN_SHEET.match(str(m_sheet or "").upper()) or [None, None, "?"])[2]
         sheet_scope(mech_p, None, f"{m_sheet} has no architectural partner A-{seq}")
 
@@ -179,10 +195,12 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     # carry its unit to another (rule (b), plan_derive.stair_target), so no
     # floor is placed before every floor has been read.
     floors_in: List[Dict[str, Any]] = []
-    for arch_p, mech_p in paired["pairs"]:
+    for i, (arch_p, mech_p) in enumerate(paired["pairs"], 1):
         f: Dict[str, Any] = {"arch_p": arch_p, "mech_p": mech_p,
                              "a_sheet": arch_p.get("sheet_number"),
                              "m_sheet": mech_p.get("sheet_number")}
+        tell(progress, "sheet", stage="floors", sheet=f["a_sheet"], i=i,
+             n=len(paired["pairs"]))
         floors_in.append(f)
         summary["pairs"].append([f["a_sheet"], f["m_sheet"]])
         if not run_fams and not open_run:
@@ -205,23 +223,28 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
             arch_pg.directed_words, member.at, f["units"]["tags"]))
         f["stairs"] = derive.unit_stairs(arch_pg.directed_words, member.at,
                                          f["units"]["tags"])
+    tell(progress, "stage", stage="seeding")
     summary["stair_seeds"] = seed_from_stairs(floors_in, open_page, door["inches"])
     # AREAS (lib.plan_areas, ruling 2026-10-26): every floor's apartment and
     # room areas, checked against what the plan prints - BEFORE a void joins
     # a unit (an open-to-below bay is no floor area of the unit beside it).
     # (only where the equipment pass prepared the floors, as before doors and
     # windows: a set with door schedules and no equipment one writes no areas)
+    tell(progress, "stage", stage="areas")
     areas, summary["areas"] = floor_area_rows(floors_in if run_fams else [], open_page,
                                               track=track)
+    tell(progress, "stage", stage="voids")
     summary["voids"] = assign_voids(floors_in)
     opening = popen.run_openings(
         floors_in, open_page, ofams, track=track, widest_door=door,
         refused=[(p, why) for p, why, role in paired["refused"]
-                 if role == derive.ROLE_ARCHITECTURAL])
+                 if role == derive.ROLE_ARCHITECTURAL], progress=progress)
     summary["openings"] = opening["summary"]
 
-    for f in floors_in:
+    for i, f in enumerate(floors_in, 1):
         arch_p, mech_p, a_sheet, m_sheet = f["arch_p"], f["mech_p"], f["a_sheet"], f["m_sheet"]
+        tell(progress, "sheet", stage="takeoff", sheet=f"{a_sheet}|{m_sheet}", i=i,
+             n=len(floors_in), sweep=_sweep_state(mech_p, sweeps) if run_fams else None)
         if not run_fams:
             rows.append(emit.sheet_refusal(
                 mech_p, "no equipment schedule with an identifier column",
@@ -265,16 +288,60 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                 "refused": res.get("refused"),
                 "labels_by_tag": res.get("labels_by_tag")}
     summary["plan_only"] = {}
+    n_plan_only = sum(1 for p in pages for name in (plan_only or {})
+                      if _is_family_plan(p, name))
     for name, fam in sorted((plan_only or {}).items()):
-        got, note = run_plan_only(name, fam, pages, open_page, door)
+        got, note = run_plan_only(name, fam, pages, open_page, door, progress=progress,
+                                  steps_before=sum(len(n["plans"])
+                                                   for n in summary["plan_only"].values()),
+                                  steps=n_plan_only)
         rows += got
         summary["plan_only"][name] = note
     for i, r in enumerate(rows):
         r["ordinal"] = i
         r.setdefault("payload", {})["track"] = track
     summary["rows"] = len(rows)
+    tell(progress, "done")
     return {"rows": rows, "summary": summary, "areas": areas,
             "opening_rows": opening["rows"], "opening_health": opening["health"]}
+
+
+def sheet_steps(pages: Sequence[Dict[str, Any]], schedules: Sequence[Dict[str, Any]] = (),
+                plan_only: Optional[Dict[str, Dict[str, Any]]] = None,
+                opening_schedules: Sequence[Dict[str, Any]] = (), *,
+                paired: Optional[Dict[str, Any]] = None) -> List[tuple]:
+    """[(stage, sheet)] - every sheet step run_pass takes on `pages`, in its
+    order (lib.plan_pass_progress): each unpaired mechanical plan
+    (sheet_scope), each pair's floor read (floors), its doors and windows
+    when a door/window schedule has tags (openings), its placement
+    (takeoff), and each plan-only family's plans (plan_only). From the page
+    list alone, so the server counts every track's sheets before it runs."""
+    from lib import plan_openings as popen
+
+    paired = paired if paired is not None else derive.pair_plan_sheets(pages)
+    pairs = paired.get("pairs") or []
+    steps: List[tuple] = [("sheet_scope", m.get("sheet_number"))
+                          for m in paired.get("unpaired_mech") or []]
+    steps += [("floors", a.get("sheet_number")) for a, _m in pairs]
+    if any(f["tags"] for f in popen.families(opening_schedules).values()):
+        steps += [("openings", a.get("sheet_number")) for a, _m in pairs]
+    steps += [("takeoff", f"{a.get('sheet_number')}|{m.get('sheet_number')}") for a, m in pairs]
+    for name in sorted(plan_only or {}):
+        steps += [(ROLE_PLAN_ONLY, f"{p.get('sheet_number')} ({name})")
+                  for p in pages if _is_family_plan(p, name)]
+    return steps
+
+
+def _is_family_plan(page: Dict[str, Any], name: str) -> bool:
+    from lib import plan_only as _po
+    return _po.is_family_plan(page, name)
+
+
+def _sweep_state(mech_p: Dict[str, Any], sweeps: Dict[Any, Any]) -> str:
+    """"reused" when an earlier track already swept this mechanical sheet
+    (run_pass's reads_of key), else "read"."""
+    k = mech_p.get("page_id") or (mech_p.get("file_id"), mech_p.get("page_number"))
+    return "reused" if k in sweeps else "read"
 
 
 def floor_area_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any], *,
@@ -313,7 +380,9 @@ ROLE_PLAN_ONLY = "plan_only"
 
 
 def run_plan_only(name: str, fam: Dict[str, Any], pages: Sequence[Dict[str, Any]],
-                  open_page: Callable[[Dict[str, Any]], Any], door: Dict[str, Any]):
+                  open_page: Callable[[Dict[str, Any]], Any], door: Dict[str, Any], *,
+                  progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+                  steps_before: int = 0, steps: Optional[int] = None):
     """(rows, summary) for one plan-only family (lib.plan_only, ruling
     2026-10-26) on every plan of it among `pages`.
 
@@ -328,6 +397,7 @@ def run_plan_only(name: str, fam: Dict[str, Any], pages: Sequence[Dict[str, Any]
     in the lighter pen. Neither sweep joins the mechanical sweeps the
     set-health read scans: that read is of mechanical plans."""
     from lib import plan_only as _po
+    from lib.plan_pass_progress import tell
     from lib.plan_sheet import load_sheet
     from lib.plan_takeoff import located_labels, run_takeoff, sweep
 
@@ -339,6 +409,8 @@ def run_plan_only(name: str, fam: Dict[str, Any], pages: Sequence[Dict[str, Any]
             continue
         sheet = p.get("sheet_number")
         note["plans"].append(sheet)
+        tell(progress, "sheet", stage=ROLE_PLAN_ONLY, sheet=f"{sheet} ({name})",
+             i=steps_before + len(note["plans"]), n=steps, sweep="read")
         lab = _po.label([sheet])
         key = f"plan-only|{sheet}|{name}"
         n = None
