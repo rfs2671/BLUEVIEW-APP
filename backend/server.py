@@ -52475,21 +52475,36 @@ async def _agent_model_down(kind: str, status_code: int, body: Any,
     now = now or datetime.now(timezone.utc)
     logger.error(f"[agent-model-down] {kind}: HTTP {status_code} in {where} "
                  f"{send_retry.scrub(str(body), 300)}")
-    from lib.notifications import send_notification
     text = (model_outage.alert_text(kind, status_code, body, AGENT_MODEL)
             + f"\n\nFirst seen this hour in: {where}.")
-    for recipient in await _waapi_monitor_recipients():
+    await _operator_alert(
+        model_outage.alert_key(kind, now), "agent_model_unavailable",
+        ("WhatsApp assistant down: DeepInfra balance exhausted"
+         if kind == model_outage.BILLING
+         else "WhatsApp assistant down: DeepInfra key refused"),
+        text, {"kind": kind, "status": status_code}, tag="agent-model-down")
+
+
+async def _operator_alert(key: str, trigger_type: str, subject: str, text: str,
+                          metadata: dict, tag: str = "operator-alert") -> None:
+    """One email to each platform operator through the existing alert path
+    (lib/notifications): `key` is the notification id it dedupes on. The
+    assistant's alerts (_agent_model_down, _dm_turn_gave_up) go out here.
+    Never raises."""
+    from lib.notifications import send_notification
+    try:
+        recipients = await _waapi_monitor_recipients()
+    except Exception as e:
+        logger.warning(f"[{tag}] no recipients: {type(e).__name__}")
+        return
+    for recipient in recipients:
         try:
             await send_notification(
-                db, permit_renewal_id=model_outage.alert_key(kind, now),
-                trigger_type="agent_model_unavailable", recipient=recipient,
-                subject=("WhatsApp assistant down: DeepInfra balance exhausted"
-                         if kind == model_outage.BILLING
-                         else "WhatsApp assistant down: DeepInfra key refused"),
-                html="<p>" + text.replace("\n\n", "</p><p>") + "</p>",
-                text=text, metadata={"kind": kind, "status": status_code})
+                db, permit_renewal_id=key, trigger_type=trigger_type, recipient=recipient,
+                subject=subject, html="<p>" + text.replace("\n\n", "</p><p>") + "</p>",
+                text=text, metadata=metadata)
         except Exception as e:
-            logger.warning(f"[agent-model-down] email failed: {type(e).__name__}")
+            logger.warning(f"[{tag}] email failed: {type(e).__name__}")
 
 
 async def _alert_if_model_refused(resp: Any, where: str) -> None:
@@ -55158,7 +55173,7 @@ async def _dm_scope(body: str) -> str:
     if not LLM_API_KEY:
         return wa_assistant.SCOPE_PROJECT
     try:
-        async with ServerHttpClient(timeout=10) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(10)) as client_http:
             resp = await client_http.post(
                 llm_provider.CHAT_URL,
                 json={"model": llm_provider.CHAT_MODEL, "temperature": 0, "max_tokens": 3,
@@ -55179,7 +55194,7 @@ async def _dm_llm(system: str, user_text: str) -> Optional[str]:
     if not LLM_API_KEY:
         return None
     try:
-        async with ServerHttpClient(timeout=30) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(30)) as client_http:
             resp = await client_http.post(
                 llm_provider.CHAT_URL,
                 json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 400,
@@ -55384,7 +55399,7 @@ async def _dm_subs_model(messages: list, tool_choice: Any) -> Optional[dict]:
     if not LLM_API_KEY:
         return None
     try:
-        async with ServerHttpClient(timeout=30) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(30)) as client_http:
             resp = await client_http.post(
                 llm_provider.CHAT_URL,
                 json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 400,
@@ -56316,7 +56331,7 @@ async def _memory_llm(messages: list) -> Optional[str]:
     if not LLM_API_KEY:
         return None
     try:
-        async with ServerHttpClient(timeout=60.0) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(60.0)) as client_http:
             resp = await client_http.post(
                 llm_provider.CHAT_URL,
                 headers={"Authorization": f"Bearer {LLM_API_KEY}",
@@ -58224,17 +58239,49 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
     NEVER "CHECK WITH X" (Oct 21: "How many framers in 588" got "check with
     the site manager" -- they ARE the site manager / PM): the sentences that
     send them elsewhere are dropped (dm_brain.no_referral); with nothing
-    left, "I couldn't find that in Levelog for <job>." -- never made up."""
+    left, "I couldn't find that in Levelog for <job>." -- never made up.
+
+    THE ANSWER BUDGET (_dm_await_budget), as the brain's: "Still checking
+    the drawings." at DM_SLOW_NOTICE_SECONDS with nothing sent, the turn
+    given up at DM_GIVE_UP_SECONDS; its model calls take no longer than
+    what is left (_dm_call_timeout)."""
+    inbound = _WA_INBOUND.get() or {}
+    received = float(inbound.get("received") or _time.time())
+    t_start = _time.monotonic()
+    t0 = t_start - max(0.0, _time.time() - received)
+    sends = _DM_SENDS.get()
+    if sends is None:
+        sends = []
+        _DM_SENDS.set(sends)
+    _DM_DEADLINE.set(t0 + DM_GIVE_UP_SECONDS)
+    task = asyncio.ensure_future(answer_coro)
     thinking = asyncio.Event()
     typing = asyncio.ensure_future(_dm_typing_while(dm_chat, thinking))
     try:
-        reply = await answer_coro
+        budget, reply = await _dm_await_budget(task, dm_chat, t_start - t0, sends)
     finally:
         thinking.set()
         try:
             await asyncio.wait_for(typing, 10)
         except Exception:
             pass
+    answered = _time.monotonic()
+
+    def timing() -> dict:
+        return _dm_turn_timing(inbound, received, t0, t_start, answered, {}, sends, budget=budget)
+    if budget == "gave_up":
+        try:
+            await send_whatsapp_message(dm_chat, DM_GAVE_UP_TEXT)
+        finally:
+            clock = timing()
+            path = log[3] if log else "headcount"
+            trace = (log[4] if log and len(log) > 4 else None) or []
+            if log:
+                await _dm_log_answer(log[0], log[1], log[2], DM_GAVE_UP_TEXT, log[3],
+                                     tool_data=trace or None, stop="gave_up", timing=clock)
+            await _dm_turn_gave_up(log[0] if log else None, dm_chat, path, clock,
+                                   [t for t in trace if isinstance(t, dict)], message_id)
+        return
     if reply:
         reply = _dm_old_no_referral(reply, job_label, ident=log[0] if log else None,
                                     path=log[3] if log else "headcount")
@@ -58269,7 +58316,7 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         # (ident, project_id, question, path[, tool trace]); a blocked repeat
         # keeps the answer it would have sent, for the next dm_eval.
         await _dm_log_answer(log[0], log[1], log[2], reply, log[3],
-                             tool_data=log[4] if len(log) > 4 else None,
+                             tool_data=log[4] if len(log) > 4 else None, timing=timing(),
                              **({"repeated": _dm_redact(repeated)} if reply and repeated else {}))
     job_id = (log[1] if log else None) or project_id
     if heard and message_id and job_id:
@@ -58328,6 +58375,184 @@ _WA_INBOUND: contextvars.ContextVar = contextvars.ContextVar("wa_inbound", defau
 #: send_whatsapp_message): a list the turn sets before the brain task starts,
 #: so the task's own sends (a tool that sends a sheet) land in it too.
 _DM_SENDS: contextvars.ContextVar = contextvars.ContextVar("dm_sends", default=None)
+#: This DM turn's deadline on the monotonic clock: the receipt plus
+#: DM_GIVE_UP_SECONDS. Model calls made for the turn take no longer than
+#: what is left of it (_dm_call_timeout, _dm_brain_create). None outside a
+#: DM turn: every other caller keeps its own timeout.
+_DM_DEADLINE: contextvars.ContextVar = contextvars.ContextVar("dm_deadline", default=None)
+
+# ── THE ANSWER BUDGET (owner's decision, Oct 27) ──────────────────────────
+#
+# "typing…" until the whole answer is ready -- never a partial answer. From
+# the DM's receipt: nothing sent by DM_SLOW_NOTICE_SECONDS -> one line,
+# DM_SLOW_NOTICE_TEXT, once a turn (typing goes on); at DM_GIVE_UP_SECONDS
+# the turn is cancelled, DM_GAVE_UP_TEXT goes, and the operators get the
+# turn's timeline (_dm_turn_gave_up). An answer that finishes after the
+# notice is sent as usual; an answer that races the give-up wins, and the
+# give-up line is not sent -- never both. The answer row's timing.budget
+# says which: "ok" | "slow_notice" | "gave_up".
+DM_SLOW_NOTICE_SECONDS = 45.0
+DM_GIVE_UP_SECONDS = 120.0
+DM_SLOW_NOTICE_TEXT = "Still checking the drawings."
+DM_GAVE_UP_TEXT = "Couldn't finish that one, try again"
+#: The DM brain client's own per-call timeout (_dm_brain_client) and how
+#: many times a transient failure is tried again -- both inside the deadline.
+DM_MODEL_CALL_SECONDS = 60.0
+DM_MODEL_RETRIES = 2
+
+
+class _DmBudgetSpent(Exception):
+    """A DM turn's model call found its deadline already passed."""
+
+
+def _dm_budget_clock() -> float:
+    """The budget's clock (patched in tests)."""
+    return _time.monotonic()
+
+
+async def _dm_budget_wait(task: "asyncio.Future", seconds: float) -> None:
+    """Wait for `task`, at most `seconds` (patched in tests)."""
+    await asyncio.wait({task}, timeout=max(0.0, seconds))
+
+
+def _dm_call_timeout(default: float) -> float:
+    """A model call's timeout: its own, or what is left of this DM turn's
+    budget when that is less (a floor of half a second: the turn is about to
+    be given up, and the call should fail fast rather than not be made)."""
+    deadline = _DM_DEADLINE.get()
+    if deadline is None:
+        return default
+    return max(0.5, min(float(default), deadline - _time.monotonic()))
+
+
+async def _dm_await_budget(task: "asyncio.Future", dm_chat: str, waited: float,
+                           sends: Optional[list]) -> Tuple[str, Any]:
+    """(budget, the task's result) for one DM turn's answer task. `waited`:
+    seconds already gone since the DM's receipt. budget "gave_up" -> the
+    task was cancelled and the result is None; the caller sends the give-up
+    line. A task that raised re-raises here, as `await task` did."""
+    start = _dm_budget_clock() - max(0.0, waited)
+    budget, noticed = "ok", False
+    while not task.done():
+        elapsed = _dm_budget_clock() - start
+        if elapsed >= DM_GIVE_UP_SECONDS:
+            # An answer finishing in this same tick wins: let it.
+            for _ in range(5):
+                if task.done():
+                    break
+                await asyncio.sleep(0)
+            if task.done():
+                break
+            task.cancel()
+            try:
+                result = await task
+            except (asyncio.CancelledError, _DmBudgetSpent):
+                return "gave_up", None
+            return budget, result                        # it finished regardless
+        if not noticed and elapsed >= DM_SLOW_NOTICE_SECONDS:
+            noticed = True
+            if not any(x.get("ok") for x in sends or []):
+                budget = "slow_notice"
+                await send_whatsapp_message(dm_chat, DM_SLOW_NOTICE_TEXT)
+                await _wa_typing(dm_chat, True)          # and still typing
+            continue
+        await _dm_budget_wait(task, (DM_GIVE_UP_SECONDS if noticed else DM_SLOW_NOTICE_SECONDS)
+                              - elapsed)
+    if not task.cancelled() and isinstance(task.exception(), _DmBudgetSpent):
+        return "gave_up", None
+    return budget, task.result()
+
+
+def _dm_timeline_text(timing: dict, trace: Any = None) -> str:
+    """A turn's timing block as lines for a person: every offset from the
+    DM's receipt. No phone, no words -- tool names and clocks only."""
+    def sec(ms: Any) -> str:
+        return "?" if ms is None else f"{int(ms) / 1000:.1f} s"
+    at = timing.get("received_at")
+    lines = [f"Received: {at.isoformat() if isinstance(at, datetime) else at or '?'}",
+             f"Queue: {sec(timing.get('queue_ms'))}",
+             f"Answer started: {sec(timing.get('brain_start_ms'))}",
+             f"First send: {sec(timing.get('first_send_ms'))}",
+             f"Budget: {timing.get('budget') or '?'}"]
+    for r in timing.get("rounds") or []:
+        lines.append(f"Model round {r.get('round')}: at {sec(r.get('t_ms'))}, took {sec(r.get('ms'))}, "
+                     + (f"error {r['error']}" if r.get("error")
+                        else f"{r.get('finish') or '?'}, {r.get('tools') or 0} tool(s)")
+                     + (f", then {r['then']}" if r.get("then") else ""))
+    for t in trace or []:
+        lines.append(f"Tool {t.get('tool')} (round {t.get('round')}): at {sec(t.get('t_ms'))}, "
+                     f"took {sec(t.get('ms'))}" + (", failed" if t.get("error") else ""))
+    for x in timing.get("sends") or []:
+        lines.append(f"Send {x.get('action')}: at {sec(x.get('t_ms'))}, "
+                     + ("ok" if x.get("ok") else f"not sent ({x.get('refused') or 'failed'})"))
+    return "\n".join(lines)
+
+
+async def _dm_turn_gave_up(ident: Optional[dict], dm_chat: str, path: str, timing: dict,
+                           trace: Any = None, message_id: str = "") -> None:
+    """The DM turn ran out of its DM_GIVE_UP_SECONDS: an ERROR line and the
+    operators' alert (_operator_alert, as the model-down alert) with the
+    turn's timeline. The chat as its last 4 digits only; nobody's words."""
+    company = str((ident or {}).get("company_id") or "?")
+    chat = _log_chat(dm_chat)
+    logger.error(f"[dm-gave-up] company={company} chat={chat} path={path} "
+                 f"rounds={len(timing.get('rounds') or [])} tools={len(trace or [])}")
+    text = (f"A WhatsApp DM got no answer within {int(DM_GIVE_UP_SECONDS)} s, so the turn was "
+            f"cancelled and they were told \"{DM_GAVE_UP_TEXT}\".\n\n"
+            f"Company: {company}\nChat: {chat}\nPath: {path}\n\n"
+            + _dm_timeline_text(timing, trace)
+            + "\n\nscripts/dm_thread_timeline.py prints the thread.")
+    safe = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in timing.items()}
+    tools = [{k: t.get(k) for k in ("tool", "round", "t_ms", "ms", "error") if k in t}
+             for t in trace or []]
+    await _operator_alert(
+        f"dm_turn_gave_up:{message_id or uuid.uuid4().hex}", "dm_turn_gave_up",
+        f"WhatsApp DM not answered in {int(DM_GIVE_UP_SECONDS)} s", text,
+        {"company_id": company, "chat": chat, "path": path, "timing": safe, "tools": tools},
+        tag="dm-gave-up")
+
+
+async def _dm_brain_create(client: Any, **kw) -> Any:
+    """One DM brain model call. Inside a DM turn (_DM_DEADLINE set): the
+    call's timeout is what is left of the turn (at most
+    DM_MODEL_CALL_SECONDS), the client's own retries are off, and a
+    transient failure (connection, timeout, 408/409/429/5xx -- what the SDK
+    retried) is tried again here only while the deadline allows. Past the
+    deadline: _DmBudgetSpent. Outside a turn (the eval): as before."""
+    deadline = _DM_DEADLINE.get()
+    if deadline is None:
+        return await client.chat.completions.create(**kw)
+    tries = 0
+    while True:
+        left = deadline - _time.monotonic()
+        if left <= 0:
+            raise _DmBudgetSpent("the DM turn's budget is spent")
+        c = client.with_options(max_retries=0) if hasattr(client, "with_options") else client
+        try:
+            return await c.chat.completions.create(timeout=min(DM_MODEL_CALL_SECONDS, left), **kw)
+        except Exception as e:
+            left = deadline - _time.monotonic()
+            if left <= 0.5:
+                raise _DmBudgetSpent("the DM turn's budget is spent") from e
+            pause = min(8.0, 0.5 * 2 ** tries)
+            if tries >= DM_MODEL_RETRIES or not _dm_model_retryable(e) or left <= pause + 1.0:
+                raise
+            tries += 1
+            await asyncio.sleep(pause)
+
+
+def _dm_model_retryable(e: BaseException) -> bool:
+    """What the OpenAI client retries on its own: a connection error or a
+    timeout, and 408 / 409 / 429 / 5xx."""
+    try:
+        import openai
+    except Exception:  # pragma: no cover - the brain needs it
+        return False
+    if isinstance(e, openai.APIConnectionError):
+        return True
+    code = getattr(e, "status_code", None)
+    return isinstance(e, openai.APIStatusError) and isinstance(code, int) and (
+        code in (408, 409, 429) or code >= 500)
 
 
 def _dm_is_asker(jid: str, person: Optional[dict]) -> bool:
@@ -59099,8 +59324,9 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
         can_call = calls < dm_brain.MAX_TOOL_CALLS
         t0 = _time.monotonic()
         try:
-            resp = await client.chat.completions.create(
-                model=use, messages=msgs, tools=tools, tool_choice="auto" if can_call else "none",
+            # Inside a DM turn: no longer than what is left of its budget.
+            resp = await _dm_brain_create(
+                client, model=use, messages=msgs, tools=tools, tool_choice="auto" if can_call else "none",
                 temperature=dm_brain.TEMPERATURE, max_tokens=budget,
                 **({"extra_body": {"reasoning_effort": dm_brain.REASONING_EFFORT}}
                    if dm_brain.REASONING_EFFORT else {}))
@@ -59221,10 +59447,13 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
                            now: datetime, dry_run: bool = False,
                            flows: Optional[List[str]] = None,
                            active: Optional[str] = None,
-                           t0: Optional[float] = None) -> dict:
+                           t0: Optional[float] = None,
+                           live: Optional[dict] = None) -> dict:
     """Build the context and run the brain for one message (the live path
     and the eval). {reply, trace, ...} plus `sent` (what tools sent).
-    `t0`: the monotonic clock at the message's receipt (timing offsets)."""
+    `t0`: the monotonic clock at the message's receipt (timing offsets).
+    `live`: given, live["ctx"] is the turn's context -- what a turn that is
+    given up (_dm_await_budget) had done, and when."""
     jobs = await _dm_jobs(ident) if ident.get("projects") else []
     by_id = {j["id"]: j for j in jobs}
     if active is None and not dry_run:
@@ -59251,11 +59480,15 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
     ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
            "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
            "used_job": None, "t0": t0}
+    if live is not None:
+        live["ctx"] = ctx
     _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phones": [
         p for p in ("" if str(dm_chat).endswith("@lid") else wa_dm.phone_digits(dm_chat),
                     wa_dm.phone_digits(str((ident.get("user") or {}).get("phone") or ""))) if p]})
     try:
         out = await _dm_brain_run(ctx, messages, system)
+    except _DmBudgetSpent:
+        raise                                    # the turn is given up (_dm_await_budget)
     except Exception as e:
         logger.error(f"[dm-brain] model failed: {type(e).__name__}: {e}")
         # What it did before it failed (and how long each step took) is kept.
@@ -59336,14 +59569,17 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
     t0 = t_start - max(0.0, _time.time() - received)
     sends: list = []
     _DM_SENDS.set(sends)                     # before the task: its sends land here too
+    _DM_DEADLINE.set(t0 + DM_GIVE_UP_SECONDS)
+    live: dict = {}
     task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history,
-                                                  now=now, t0=t0))
+                                                  now=now, t0=t0, live=live))
     # "typing…" in their chat while the brain works, sent again every 8 s --
-    # the only "working on it" signal (no 👀 reaction: Oct 27).
+    # the only "working on it" signal (no 👀 reaction: Oct 27). Until the
+    # whole answer is ready, or the budget is spent (_dm_await_budget).
     thinking = asyncio.Event()
     typing = asyncio.ensure_future(_dm_typing_while(dm_chat, thinking))
     try:
-        out = await task
+        budget, out = await _dm_await_budget(task, dm_chat, t_start - t0, sends)
     finally:
         thinking.set()
         try:
@@ -59351,6 +59587,14 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
         except Exception:
             pass
     brain_done = _time.monotonic()
+    if budget == "gave_up":
+        # What the turn had done when it was cancelled, and when.
+        c = live.get("ctx") or {}
+        out = {"reply": None, "trace": c.get("_trace") or [],
+               "timing_rounds": c.get("_rounds") or [], "rounds": len(c.get("_rounds") or []),
+               "retries": 0, "unverified": [], "stop": "gave_up",
+               "sent": c.get("sent") or [], "used_job": c.get("used_job"),
+               "tools_tried": [t.get("tool") for t in c.get("_trace") or []]}
     reply = out.get("reply")
     # Which path answered, provably: one line per brain answer (no phone, no words).
     logger.info(f"[dm-brain] answered company={ident.get('company_id') or '?'} "
@@ -59369,8 +59613,11 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
                 {"$set": {"project_id": str(out["used_job"])}})
         except Exception as e:
             logger.warning(f"[voice] dm job stamp failed: {type(e).__name__}")
+    timing: dict = {}
     try:
-        if reply:
+        if budget == "gave_up":
+            await send_whatsapp_message(dm_chat, DM_GAVE_UP_TEXT)
+        elif reply:
             if heard:
                 reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
             await send_whatsapp_message(dm_chat, reply)
@@ -59378,25 +59625,32 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
             await _dm_send_plan_shots(dm_chat, out.get("plan_shots") or [])
     finally:
         # Logged AFTER the sends, so the row says when the first one went.
+        timing = _dm_turn_timing(inbound, received, t0, t_start, brain_done, out, sends,
+                                 budget=budget)
         await _dm_log_answer(
-            ident, out.get("used_job"), question, out.get("reply") or " | ".join(out.get("sent") or []),
+            ident, out.get("used_job"), question,
+            DM_GAVE_UP_TEXT if budget == "gave_up"
+            else out.get("reply") or " | ".join(out.get("sent") or []),
             "brain", tool_data=out.get("trace"), model=out.get("model") or dm_brain.MODEL,
             rounds=out.get("rounds"), usage=out.get("usage"),
             verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
             stop=out.get("stop"), deflect_retries=out.get("deflect_retries") or None,
             tools_tried=_dm_redact(out.get("tools_tried") or []),
-            timing=_dm_turn_timing(inbound, received, t0, t_start, brain_done, out, sends),
+            timing=timing,
             **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
+        if budget == "gave_up":
+            await _dm_turn_gave_up(ident, dm_chat, "brain", timing, out.get("trace"), message_id)
 
 
 def _dm_turn_timing(inbound: dict, received: float, t0: float, t_start: float,
-                    brain_done: float, out: dict, sends: list) -> dict:
+                    brain_done: float, out: dict, sends: list, budget: str = "ok") -> dict:
     """One DM turn's clock for the answer log, every offset in ms from the
     webhook's receipt: received_at; queue_ms (webhook -> its task began);
     wa_lag_ms (WhatsApp's send time -> webhook); brain_start_ms / brain_ms;
     rounds (each model call); sends (each message out: t_ms, action, ok,
     wait_ms for the DM send lock, tries, or `refused`); first_send_ms (the
-    first send that went). No phone, no words."""
+    first send that went); budget ("ok" | "slow_notice" | "gave_up", see
+    _dm_await_budget). No phone, no words."""
     def off(t: float) -> int:
         return int((t - t0) * 1000)
     wa_ts = int(inbound.get("wa_ts") or 0)
@@ -59410,6 +59664,7 @@ def _dm_turn_timing(inbound: dict, received: float, t0: float, t_start: float,
         "brain_start_ms": off(t_start), "brain_ms": int((brain_done - t_start) * 1000),
         "rounds": out.get("timing_rounds") or [],
         "sends": rows, "first_send_ms": min(went) if went else None,
+        "budget": budget,
     }
 
 
@@ -69392,7 +69647,7 @@ async def _run_group_agent(
         enabled_tools.append(t)
 
     try:
-        async with ServerHttpClient(timeout=40.0) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(40.0)) as client_http:
             last_content = ""  # track so we can fall back gracefully on overrun
             used_tool = False  # a reply built from tool results is data; never cut it
             # Everything search_plans handed back this conversation. The gate
