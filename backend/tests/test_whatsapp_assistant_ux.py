@@ -7,7 +7,8 @@
   * Per-project send window: Anytime (default) / Work hours / Custom; outside
     it alerts and the GC-group question wait for its start.
   * Reactions instead of filler: ✅ for "done N", 👍 for a discarded
-    checklist, 🙏 / ❤️ for thanks / praise, 👀 on a slow answer. A failed
+    checklist, 🙏 / ❤️ for thanks / praise; a slow answer gets "typing…",
+    never a 👀 (removed Oct 27, 2026). A failed
     reaction falls back to the old text; never both.
   * The bot names a job by its address; only linkers may unlink.
 """
@@ -294,7 +295,7 @@ class Reactions(unittest.TestCase):
 
     def test_the_map_is_fixed(self):
         self.assertEqual(wa_react.REACTIONS, {
-            "done": "👍", "complete": "✅", "saved": "📌", "working": "👀",
+            "done": "👍", "complete": "✅", "saved": "📌",
             "thanks": "🙏", "praise": "❤️"})
 
     def test_only_a_bare_thanks_or_compliment_counts(self):
@@ -306,8 +307,13 @@ class Reactions(unittest.TestCase):
             self.assertEqual(wa_react.social_reaction(body), want, body)
 
     def _process(self, db, body, *, react_ok=True, agent_reply="answer",
-                 agent_delay=0.0, msg_id="M1", reply_to_bot=False):
+                 agent_delay=0.0, msg_id="M1", reply_to_bot=False, typing=None):
         sent, reactions, agent_calls = [], [], []
+        typing = [] if typing is None else typing
+
+        async def type_(chat, on=True):
+            typing.append((chat, on))
+            return True
 
         async def send(chat, text, reply_to=None, **kw):
             sent.append(text)
@@ -330,7 +336,8 @@ class Reactions(unittest.TestCase):
                 patch.object(server, "_react_to_message", react), \
                 patch.object(server, "_run_group_agent", agent), \
                 patch.object(server, "_detect_material_request", no_detect), \
-                patch.object(wa_react, "WORKING_AFTER_SECONDS", 0.05), \
+                patch.object(server, "_wa_typing", type_), \
+                patch.object(server, "DM_TYPING_EVERY_SECONDS", 0.02), \
                 patch.dict(os.environ, {"WAAPI_DISPLAY_NUMBER": BOT_NUMBER}):
             p = _payload(body, msg_id=msg_id)
             if reply_to_bot:
@@ -429,17 +436,23 @@ class Reactions(unittest.TestCase):
         sent, reactions, _ = self._process(self._db(), "levelog who is on site")
         self.assertEqual((sent, reactions), (["answer"], []))
 
-    def test_a_slow_answer_gets_eyes_first_then_the_text(self):
+    def test_a_slow_answer_gets_typing_never_eyes(self):
+        """Oct 27, 2026: 👀 on a slow question read as "seen, not answering".
+        The group sees "typing…" (refreshed, then stopped) and no reaction."""
+        typing = []
         sent, reactions, _ = self._process(self._db(), "levelog who is on site",
-                                           agent_delay=0.2)
-        self.assertEqual(reactions, [(f"false_{GROUP}_M1", "👀")])
+                                           agent_delay=0.2, typing=typing)
+        self.assertEqual(reactions, [])
         self.assertEqual(sent, ["answer"])
+        self.assertGreaterEqual([on for _, on in typing].count(True), 2)
+        self.assertEqual(typing[-1], (GROUP, False))
 
-    def test_eyes_are_taken_back_when_no_answer_comes(self):
+    def test_no_answer_leaves_no_reaction_to_take_back(self):
+        typing = []
         sent, reactions, _ = self._process(self._db(), "levelog who is on site",
-                                           agent_delay=0.2, agent_reply=None)
-        self.assertEqual([e for _, e in reactions], ["👀", ""])
-        self.assertEqual(sent, [])
+                                           agent_delay=0.2, agent_reply=None, typing=typing)
+        self.assertEqual((reactions, sent), ([], []))
+        self.assertEqual(typing[-1], (GROUP, False))
 
     def test_the_reaction_call_is_waapi_react_to_message(self):
         calls = []
