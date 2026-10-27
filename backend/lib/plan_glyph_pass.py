@@ -71,7 +71,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
              schedules: Sequence[Dict[str, Any]],
              door_pages: Sequence[Dict[str, Any]] = (), *, track: str = "filed",
              sweeps: Optional[Dict[Any, Any]] = None,
-             plan_only: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+             plan_only: Optional[Dict[str, Dict[str, Any]]] = None,
+             opening_schedules: Sequence[Dict[str, Any]] = ()) -> Dict[str, Any]:
     """Every glyph row for the project's `track`, and what was done and
     refused.
 
@@ -84,7 +85,14 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
 
     `plan_only` is lib.plan_only.families() of the set's records: the
     plan-only families the set allows (a detail or note names the object).
-    Each is located on its own plans in this track's pages (run_plan_only)."""
+    Each is located on its own plans in this track's pages (run_plan_only).
+
+    DOORS AND WINDOWS (lib.plan_openings, 2026-10-26): the tags the
+    architectural plans print, read against the door/window schedules
+    (`opening_schedules`) on the SAME floors - their units, membership maps,
+    stair links and voids - and returned apart, in "opening_rows", so the
+    equipment rows are exactly what they were."""
+    from lib import plan_openings as popen
     from lib.plan_sheet import load_sheet
     from lib.plan_space import build_space
     from lib.plan_takeoff import Units, located_labels, run_takeoff, sweep
@@ -122,6 +130,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     run_fams = {n: f for n, f in fams.items() if f["tags"]}
     summary["families"] = {n: f["tags"] for n, f in run_fams.items()}
     summary["skipped_families"] = sorted(n for n, f in fams.items() if not f["tags"])
+    ofams = popen.families(opening_schedules)
+    open_run = any(f["tags"] for f in ofams.values())
 
     def sheet_scope(mech_p, arch_p, why):
         """COUNT WHAT CANNOT BE PLACED (operator ruling 2026-10-07). The
@@ -175,7 +185,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                              "m_sheet": mech_p.get("sheet_number")}
         floors_in.append(f)
         summary["pairs"].append([f["a_sheet"], f["m_sheet"]])
-        if not run_fams:
+        if not run_fams and not open_run:
             continue
         arch_pg = open_page(arch_p)
         f["data"] = load_sheet(arch_pg)
@@ -199,8 +209,16 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     # AREAS (lib.plan_areas, ruling 2026-10-26): every floor's apartment and
     # room areas, checked against what the plan prints - BEFORE a void joins
     # a unit (an open-to-below bay is no floor area of the unit beside it).
-    areas, summary["areas"] = floor_area_rows(floors_in, open_page, track=track)
+    # (only where the equipment pass prepared the floors, as before doors and
+    # windows: a set with door schedules and no equipment one writes no areas)
+    areas, summary["areas"] = floor_area_rows(floors_in if run_fams else [], open_page,
+                                              track=track)
     summary["voids"] = assign_voids(floors_in)
+    opening = popen.run_openings(
+        floors_in, open_page, ofams, track=track, widest_door=door,
+        refused=[(p, why) for p, why, role in paired["refused"]
+                 if role == derive.ROLE_ARCHITECTURAL])
+    summary["openings"] = opening["summary"]
 
     for f in floors_in:
         arch_p, mech_p, a_sheet, m_sheet = f["arch_p"], f["mech_p"], f["a_sheet"], f["m_sheet"]
@@ -255,7 +273,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         r["ordinal"] = i
         r.setdefault("payload", {})["track"] = track
     summary["rows"] = len(rows)
-    return {"rows": rows, "summary": summary, "areas": areas}
+    return {"rows": rows, "summary": summary, "areas": areas,
+            "opening_rows": opening["rows"], "opening_health": opening["health"]}
 
 
 def floor_area_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any], *,

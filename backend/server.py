@@ -62847,6 +62847,24 @@ _GLYPH_PASS_RUNNING: set = set()
 _DOOR_SCHEDULE_TEXT = re.compile(r"DOOR\s+SCHEDULE", re.I)
 
 
+async def _opening_schedules(pid: str, page_ids: List[str]) -> List[dict]:
+    """The door and window schedules on the given pages (lib.plan_openings):
+    schedule records on ARCHITECTURAL sheets whose printed name says DOOR or
+    WINDOW SCHEDULE - A-400.00's three on 588 Boyland. The pass and the
+    count gate read them the same way, as the equipment's M-sheet schedules."""
+    sched = await db[PLAN_RECORDS].find(
+        {"project_id": pid, "record_type": "schedule", "page_id": {"$in": list(page_ids)},
+         "sheet_number": {"$regex": "^A"},
+         "payload.name": {"$regex": "(?i)(door|window)s?\\b.*\\bschedule"}},
+        {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
+         "payload.rows": 1},
+    ).to_list(500)
+    return [{"name": (r.get("payload") or {}).get("name"),
+             "columns": (r.get("payload") or {}).get("columns"),
+             "rows": (r.get("payload") or {}).get("rows"),
+             "tier": r.get("tier"), "sheet_number": r.get("sheet_number")} for r in sched]
+
+
 def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
                        live: set) -> List[Tuple[str, List[dict]]]:
     """[(drawing track, its current index rows)], the filed track first.
@@ -63000,6 +63018,10 @@ async def _plan_glyph_pass(project_id: str) -> dict:
                   "rows": (s.get("payload") or {}).get("rows"),
                   "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
                  for s in sched]
+    # DOORS AND WINDOWS (lib.plan_openings): the door/window schedules, read
+    # on the same floors; their rows follow every equipment row, so the
+    # equipment rows and their numbering are what they were.
+    opening_schedules = await _opening_schedules(pid, sorted(current_ids))
     # PLAN-ONLY FAMILIES (lib.plan_only, ruling 2026-10-26): the roof drains
     # no schedule counts, allowed only while a detail or note in the set names
     # them - read from the same current pages the pass places against.
@@ -63026,15 +63048,23 @@ async def _plan_glyph_pass(project_id: str) -> dict:
 
         sweeps: Dict[Any, Any] = {}
         rows: List[dict] = []
+        opening_rows: List[dict] = []
+        opening_health: List[dict] = []
         areas: List[dict] = []
         summary: Dict[str, Any] = {"tracks": {}}
         for track, pages in by_track:
+            # (passed only when there is one: a set with no door or window
+            # schedule runs exactly the equipment pass it ran before)
+            extra = {"opening_schedules": opening_schedules} if opening_schedules else {}
             out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
                                           door_pages, track=track, sweeps=sweeps,
-                                          plan_only=plan_only)
+                                          plan_only=plan_only, **extra)
             rows += out["rows"]
             areas += out.get("areas") or []
+            opening_rows += out.get("opening_rows") or []
+            opening_health += out.get("opening_health") or []
             summary["tracks"][track] = out["summary"]
+        rows += opening_rows
         # SET HEALTH (PR 5), while the PDFs are still here - a callout bubble
         # is read from the page's geometry. A failure is logged, never sinks
         # the pass: its rows stand on their own.
@@ -63045,6 +63075,9 @@ async def _plan_glyph_pass(project_id: str) -> dict:
         try:
             health = await asyncio.to_thread(_glyph_set_health, tracks, rows, schedules,
                                              sweeps, open_page)
+            from lib import plan_openings as _openings
+            health = _health.dedupe(health + _health.unreconciled(
+                _openings.families(opening_schedules)) + opening_health)
             if not health:
                 health = [_health.clean(datetime.now(timezone.utc))]
         except Exception as e:
@@ -63088,7 +63121,8 @@ def _glyph_set_health(tracks: List[Tuple[str, List[dict]]], rows: List[dict],
     sheet_of = {str(p["_id"]): p.get("sheet_number") for _t, ps in tracks for p in ps}
     for page_id, reads in sorted(sweeps.items(), key=lambda kv: str(sheet_of.get(str(kv[0])))):
         items += H.tag_reads(str(sheet_of.get(str(page_id)) or page_id), reads, reconciled)
-    located = {r.get("label") for r in rows if r.get("label") and r.get("glyph_status") == "resolved"}
+    located = {r.get("label") for r in rows if r.get("label") and r.get("glyph_status") == "resolved"
+               and (r.get("payload") or {}).get("kind") != "opening"}
     items += H.not_located(reconciled, located)
     current: Dict[str, dict] = {}
     for track, pages in tracks:
@@ -66324,6 +66358,12 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                       for s in sched])
     want = plan_search.glyph_families_for(
         subject, {n: f.get("tags") or [] for n, f in fams.items()})
+    # DOORS AND WINDOWS (lib.plan_openings): their schedules' families, wanted
+    # the same way; censused apart (scope OPENING), never mixed with the above.
+    from lib import plan_openings as _openings
+    ofams_all = _openings.families(await _opening_schedules(pid, page_ids))
+    owant = plan_search.opening_families_for(
+        subject, {n: f.get("tags") or [] for n, f in ofams_all.items()})
     # PLAN-ONLY FAMILIES (lib.plan_only, ruling 2026-10-26), read at question
     # time from the same pages: a family exists only while a detail or note
     # names its object, and its census carries what the set says of it.
@@ -66342,7 +66382,8 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
     # live, from the same schedules - every family with no identifier column,
     # so a claim about one refuses with the reason and none is skipped silently.
     from lib import plan_set_health as _health
-    health = [dict(h, record_type="set_health") for h in _health.unreconciled(fams)]
+    health = [dict(h, record_type="set_health") for h in
+              _health.unreconciled(fams) + _health.unreconciled(ofams_all)]
     try:
         stored = await db[_health.COLLECTION].find({"project_id": pid}, {"_id": 0}).to_list(2000)
         # no item at all: no pass has assessed the set - said, never read as clean
@@ -66353,7 +66394,7 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
         logger.warning("plan set health read failed for %s: %r", pid, e)
         health.append(dict(_health.unavailable(e, datetime.now(timezone.utc)),
                            record_type="set_health"))
-    if not want:
+    if not want and not owant:
         unrec = plan_search.unreconciled_families_for(
             subject, [h["subject"] for h in health if h["kind"] == _health.FAMILY_NOT_RECONCILED])
         return [h for h in health if h["kind"] == _health.FAMILY_NOT_RECONCILED
@@ -66368,10 +66409,18 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                          {"payload.track": 1}).to_list(GLYPH_EVIDENCE_MAX)} - {None}) or [None]
     checks = []
     for track in tracks:
-        checks += [(plan_search.glyph_family_filter(pid, page_ids, name, tags, track=track),
-                    ("family", name, tags, track)) for name, tags in sorted(want.items())]
-        checks.append((plan_search.glyph_refusal_filter(pid, page_ids, track=track),
-                       ("refusals", None, [], track)))
+        if want:
+            checks += [(plan_search.glyph_family_filter(pid, page_ids, name, tags, track=track),
+                        ("family", name, tags, track, None)) for name, tags in sorted(want.items())]
+            checks.append((plan_search.glyph_refusal_filter(pid, page_ids, track=track),
+                           ("refusals", None, [], track, None)))
+        if owant:
+            op = plan_search.OPENING
+            checks += [(plan_search.glyph_family_filter(pid, page_ids, name, tags, track=track,
+                                                        scope=op),
+                        ("family", name, tags, track, op)) for name, tags in sorted(owant.items())]
+            checks.append((plan_search.glyph_refusal_filter(pid, page_ids, track=track, scope=op),
+                           ("refusals", None, [], track, op)))
     # THE SCHEDULE'S QTY, per tag, from the same best-tier reading the
     # families come from - so a building total can be checked against what
     # the schedule prints (plan_search._qty_check).
@@ -66381,17 +66430,34 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
         nm = str((s.get("payload") or {}).get("name") or "").strip().upper()
         if nm and (nm not in best or _tier_rank(s.get("tier")) < _tier_rank(best[nm].get("tier"))):
             best[nm] = s
+    obest: Dict[str, dict] = {}
+    if owant:
+        for r in await db[PLAN_RECORDS].find(
+                {"project_id": pid, "record_type": "schedule", "page_id": {"$in": page_ids},
+                 "sheet_number": {"$regex": "^A"}},
+                {"tier": 1, "payload.name": 1, "payload.columns": 1, "payload.rows": 1}).to_list(500):
+            nm = str((r.get("payload") or {}).get("name") or "").strip().upper()
+            if nm in owant and (nm not in obest
+                                or _tier_rank(r.get("tier")) < _tier_rank(obest[nm].get("tier"))):
+                obest[nm] = r
     rows: List[dict] = []
     census: List[dict] = []
-    for flt, (kind, name, tags, track) in checks:
+    for flt, (kind, name, tags, track, scope) in checks:
         rows += await db[PLAN_RECORDS].find(flt, proj).to_list(GLYPH_EVIDENCE_MAX)
         n = await db[PLAN_RECORDS].count_documents(flt)
-        qty = (plan_search.schedule_quantities((best.get(name) or {}).get("payload"), tags)
+        # A door/window schedule's QTY (none on A-400.00) is a cross-check
+        # only: a located total that disagrees refuses (_building_count), and
+        # it lends no figure to a door or window claim (opening_values never
+        # reads it).
+        src = best if scope is None else obest
+        qty = (plan_search.schedule_quantities((src.get(name) or {}).get("payload"), tags)
                if kind == "family" else None)
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
                                                family=name, tags=tags, qty=qty,
                                                track=track,
-                                               plan_only=plan_only.get(name)))
+                                               plan_only=(plan_only.get(name)
+                                                          if scope is None else None),
+                                               scope=scope))
     return rows + census + health
 
 
@@ -66677,6 +66743,9 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     located = plan_search.render_glyph_evidence(records)
     if located:
         lines.append(located)
+    openings = plan_search.render_opening_evidence(records)
+    if openings:
+        lines.append(openings)
     areas = plan_areas.render_area_evidence(records)
     if areas:
         lines.append(areas)
