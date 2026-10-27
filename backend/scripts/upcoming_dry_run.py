@@ -6,7 +6,7 @@
 WHAT RUNS. Every message of the scenario is stored in an in-memory database
 (tests._fake_mongo.FakeDb, swapped in for server.db) at the time it was
 sent, and server._upcoming_chat_tick runs a minute after each one -- the
-cheap filter, the model (gpt-4o-mini, the production call; or with
+cheap filter, the model (lib/llm_provider, the production call; or with
 --scripted, the scenario's own answers), and every check in code
 (lib/upcoming.decide). No production collection is read or written;
 nothing is sent to anyone.
@@ -156,8 +156,8 @@ async def run(sc: dict, scripted: bool = False) -> dict:
     patches += [patch.object(server, name, no_send) for name in SEND_PATHS
                 if hasattr(server, name)]
     llm = Scripted(sc, db) if scripted else None
-    if not scripted and not server.OPENAI_API_KEY:
-        raise ScenarioError("no OPENAI_API_KEY: run with --scripted, or with the key set")
+    if not scripted and not server.LLM_API_KEY:
+        raise ScenarioError("no model key (LLM_API_KEY, else QWEN_API_KEY): run under `railway run`, or pass --scripted")
     report = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "skipped": {}}
     trace: list = []
     for p in patches:

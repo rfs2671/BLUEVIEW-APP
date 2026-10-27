@@ -19,8 +19,8 @@ WHAT RUNS
   The scenario's group messages and filed daily reports go into an IN-MEMORY
   database (tests/_fake_mongo.FakeDb, swapped in for server.db); the real
   indexer (_memory_index_tick) indexes and embeds them
-  (text-embedding-3-small unless --scripted); each question goes through
-  _memory_answer: retrieval, the real answer model (gpt-4o), and the verbatim
+  (the provider's embedding model, lib/llm_provider, unless --scripted); each
+  question goes through _memory_answer: retrieval, the real answer model, and the verbatim
   quote check. No production collection is read or written; nothing is sent.
 
 SCORE, PER QUESTION
@@ -243,8 +243,8 @@ async def run(sc: dict, scripted: bool = False) -> dict:
         async def fake_embed(texts):
             return [hashed_vector(t) for t in texts]
         patches.append(patch.object(server, "_memory_embed_many", fake_embed))
-    elif not server.OPENAI_API_KEY:
-        raise ScenarioError("no OPENAI_API_KEY: run under `railway run`, or pass --scripted")
+    elif not server.LLM_API_KEY:
+        raise ScenarioError("no model key (LLM_API_KEY, else QWEN_API_KEY): run under `railway run`, or pass --scripted")
     for p in patches:
         p.start()
     try:
