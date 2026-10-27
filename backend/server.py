@@ -88,6 +88,7 @@ from lib import punch_batch  # noqa: E402
 from lib import dm_actions  # noqa: E402
 from lib import trades as lib_trades  # noqa: E402
 from lib import dm_brain  # noqa: E402
+from lib import dm_negative_claims  # noqa: E402
 from lib import wa_voice  # noqa: E402
 from lib import wa_mention  # noqa: E402
 from lib import wa_gc  # noqa: E402
@@ -58210,6 +58211,20 @@ def _dm_old_no_referral(reply: Any, job_label: Optional[str] = None,
     return out
 
 
+def _dm_no_negative_claims(reply: Any, trace: Any, ident: Optional[dict] = None) -> str:
+    """NEVER ABSENCE AS FACT (10-27, spray foam on 588: "Nothing on the
+    drawings calls for spray foam" after search_plans returned A-104.00 and
+    A-302.00): each such sentence becomes "Not found in the sheets I
+    searched: <this turn's sheets>." plus the closest record found
+    (lib/dm_negative_claims). Logged with the company and the count only --
+    never the phone or the words."""
+    out, n = dm_negative_claims.rewrite(reply, trace if isinstance(trace, list) else None)
+    if n:
+        logger.info(f"[dm-gate] negative claim rewritten "
+                    f"company={(ident or {}).get('company_id') or '?'} n={n}")
+    return out
+
+
 async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
                           heard: Optional[str] = None, log: Optional[tuple] = None,
                           project_id: Optional[str] = None, question: Optional[str] = None,
@@ -58238,6 +58253,8 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
     if reply:
         reply = _dm_old_no_referral(reply, job_label, ident=log[0] if log else None,
                                     path=log[3] if log else "headcount")
+        reply = _dm_no_negative_claims(reply, log[4] if log and len(log) > 4 else None,
+                                       ident=log[0] if log else None)
     repeated = None
     if reply:
         asked = question if question is not None else (log[2] if log else "")
@@ -59264,6 +59281,7 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
                "retries": 0, "unverified": [], "stop": f"error:{type(e).__name__}"}
     if out.get("reply"):
         out["reply"] = dm_brain.redact_phones(out["reply"])
+        out["reply"] = _dm_no_negative_claims(out["reply"], out.get("trace"), ident)
     # Where on the sheets the answer came from: sent after the words
     # (_dm_brain_reply); the eval only records it.
     out["plan_shots"] = _dm_plan_shots(ctx, out)
