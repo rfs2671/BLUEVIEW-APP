@@ -132,7 +132,8 @@ class ThePassCarriesItOntoEveryRow(unittest.TestCase):
                                                 "sheet_number": "A-10%d.00" % n, "superseded_by": None})
         seen = {"pages": [], "tracks": {}}
 
-        def fake_pass(pages, open_page, schedules, door_pages, track="filed", sweeps=None):
+        def fake_pass(pages, open_page, schedules, door_pages, track="filed", sweeps=None,
+                      plan_only=None):
             # one call per drawing track (two-track rows, EMIT_VERSION 7)
             seen["pages"] += pages
             seen["tracks"][track] = sorted(p["file_id"] for p in pages)

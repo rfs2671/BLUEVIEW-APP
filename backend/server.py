@@ -3868,6 +3868,7 @@ from lib import plan_text  # noqa: E402
 from lib import plan_ocr  # noqa: E402
 from lib import plan_records  # noqa: E402
 from lib import plan_search  # noqa: E402
+from lib import plan_areas  # noqa: E402
 from lib import plan_crop  # noqa: E402
 
 
@@ -63021,6 +63022,12 @@ async def _plan_glyph_pass(project_id: str) -> dict:
     # on the same floors; their rows follow every equipment row, so the
     # equipment rows and their numbering are what they were.
     opening_schedules = await _opening_schedules(pid, sorted(current_ids))
+    # PLAN-ONLY FAMILIES (lib.plan_only, ruling 2026-10-26): the roof drains
+    # no schedule counts, allowed only while a detail or note in the set names
+    # them - read from the same current pages the pass places against.
+    from lib import plan_only as _plan_only
+    plan_only = _plan_only.families(await db[PLAN_RECORDS].find(
+        _plan_only.record_query(pid, sorted(current_ids)), {"embedding": 0}).to_list(2000))
 
     import tempfile as _tf
     with _tf.TemporaryDirectory(prefix="glyphpass-") as tmp:
@@ -63043,14 +63050,17 @@ async def _plan_glyph_pass(project_id: str) -> dict:
         rows: List[dict] = []
         opening_rows: List[dict] = []
         opening_health: List[dict] = []
+        areas: List[dict] = []
         summary: Dict[str, Any] = {"tracks": {}}
         for track, pages in by_track:
             # (passed only when there is one: a set with no door or window
             # schedule runs exactly the equipment pass it ran before)
             extra = {"opening_schedules": opening_schedules} if opening_schedules else {}
             out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
-                                          door_pages, track=track, sweeps=sweeps, **extra)
+                                          door_pages, track=track, sweeps=sweeps,
+                                          plan_only=plan_only, **extra)
             rows += out["rows"]
+            areas += out.get("areas") or []
             opening_rows += out.get("opening_rows") or []
             opening_health += out.get("opening_health") or []
             summary["tracks"][track] = out["summary"]
@@ -63089,6 +63099,7 @@ async def _plan_glyph_pass(project_id: str) -> dict:
         return summary
     summary["written"] = await _write_glyph_records(pid, rows)
     summary["set_health"] = await _write_set_health(pid, health)
+    summary["areas_written"] = await _write_area_records(pid, areas)
     logger.info("plan glyph pass %s: %s", pid, summary)
     return summary
 
@@ -63122,6 +63133,32 @@ def _glyph_set_health(tracks: List[Tuple[str, List[dict]]], rows: List[dict],
     present = {H.sheet_stem(p.get("sheet_number")) for p in current.values()} - {None}
     items += H.missing_references(list(current.values()), present, open_page)
     return H.dedupe(items)
+
+
+async def _write_area_records(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's area rows with one pass's (lib.plan_areas). Own
+    collection, as set health: search fetches them only for a question about
+    an area (search_plans), and the eval's record baseline does not move."""
+    from lib.plan_areas import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    for i, r in enumerate(rows):
+        r["ordinal"] = i
+        r["created_at"] = now
+    await db[COLLECTION].insert_many(rows)
+    return len(rows)
+
+
+async def _area_evidence(project_id: str) -> List[dict]:
+    """Every area row of the project's last glyph pass (lib.plan_areas):
+    whole project, every track, like the located symbols - a floor filter on
+    the question must not hide the row that withholds a figure."""
+    from lib.plan_areas import COLLECTION
+    return await db[COLLECTION].find({"project_id": str(project_id)},
+                                     {"_id": 0, "created_at": 0}).to_list(2000)
 
 
 async def _write_set_health(project_id: str, items: List[dict]) -> int:
@@ -66327,6 +66364,20 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
     ofams_all = _openings.families(await _opening_schedules(pid, page_ids))
     owant = plan_search.opening_families_for(
         subject, {n: f.get("tags") or [] for n, f in ofams_all.items()})
+    # PLAN-ONLY FAMILIES (lib.plan_only, ruling 2026-10-26), read at question
+    # time from the same pages: a family exists only while a detail or note
+    # names its object, and its census carries what the set says of it.
+    from lib import plan_only as _plan_only
+    plan_only: Dict[str, dict] = {}
+    try:
+        po_all = _plan_only.families(await db[PLAN_RECORDS].find(
+            _plan_only.record_query(pid, page_ids), {"embedding": 0}).to_list(2000))
+        po_want = plan_search.glyph_families_for(
+            subject, {n: f["tags"] for n, f in po_all.items() if n not in fams})
+        plan_only = {n: po_all[n] for n in po_want}
+    except Exception as e:
+        logger.warning("plan-only families unavailable for %s: %r", pid, e)
+    want = dict(want, **{n: plan_only[n]["tags"] for n in plan_only})
     # SET HEALTH (PR 5): what the pass recorded about the set, and - read
     # live, from the same schedules - every family with no identifier column,
     # so a claim about one refuses with the reason and none is skipped silently.
@@ -66403,7 +66454,10 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                if kind == "family" else None)
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
                                                family=name, tags=tags, qty=qty,
-                                               track=track, scope=scope))
+                                               track=track,
+                                               plan_only=(plan_only.get(name)
+                                                          if scope is None else None),
+                                               scope=scope))
     return rows + census + health
 
 
@@ -66604,6 +66658,15 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
             # Without the census nothing about a located symbol binds, so a
             # failure here costs those figures and nothing else.
             logger.warning(f"search_plans glyph evidence failed for {subject!r}: {e}")
+    # AN AREA IS CHECKED AGAINST WHAT THE PLAN PRINTS (lib.plan_areas,
+    # ruling 2026-10-26): a question about an area, an apartment or a room
+    # brings every area row, whatever the intent, and the gate binds a
+    # figure only where the printed and the measured one agree.
+    if plan_areas.is_area_subject(" ".join(names), attribute):
+        try:
+            out += await _area_evidence(project_id)
+        except Exception as e:
+            logger.warning(f"search_plans area evidence failed for {subject!r}: {e}")
     return out
 
 
@@ -66639,6 +66702,10 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
         # Located symbols are shown as their scoped counts, below - one line
         # per row would be 84 lines of OCR'd labels to count by hand.
         if plan_search.is_glyph_evidence(r):
+            continue
+        # An area row is shown through its check, below: its quote is a
+        # printed figure the check may withhold.
+        if plan_areas.is_area_record(r):
             continue
         # The same citation the crew is shown, for the same reason: a model
         # given '?' or 'pNone' will write one into the answer. A record that
@@ -66679,6 +66746,9 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     openings = plan_search.render_opening_evidence(records)
     if openings:
         lines.append(openings)
+    areas = plan_areas.render_area_evidence(records)
+    if areas:
+        lines.append(areas)
     health = plan_search.render_set_health(records)
     if health:
         lines.append(health)

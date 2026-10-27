@@ -296,7 +296,8 @@ class NeverSilent(unittest.TestCase):
             db.document_page_index.docs.append(dict(p, project_id=str(proj)))
         written = {}
 
-        def fake_pass(pages, open_page, schedules, door_pages, track="filed", sweeps=None):
+        def fake_pass(pages, open_page, schedules, door_pages, track="filed", sweeps=None,
+                      plan_only=None):
             return {"rows": [], "summary": {}}
 
         async def live(_pid):

@@ -109,28 +109,102 @@ def _read(png: bytes):
     return out
 
 
-def sweep(page, segs):
+#: A rotated page's sweep must land on the words its own text layer prints.
+#: Measured 2026-10-26 on P-206.00 (/Rotate 270): of the text-layer words
+#: (5+ letters, upright, inside the swept crop) some read carries, 12 sit
+#: inside the box of a read carrying them (every PARAPET, both RECREATIONs, a
+#: PASSIVE, STORM) and 2 were read only elsewhere (the other PASSIVE and
+#: SANITARY, read as fragments). The same reads put in the unrotated frame:
+#: 0 at their place, 14 elsewhere.
+FRAME_PAD_PT = 12.0
+FRAME_MIN_WORDS = 3
+
+
+def frame_check(page, reads, crop=None):
+    """(ok, why): do the sweep's reads sit where the page's own text layer
+    prints the same words? On a rotated page this is the evidence that the
+    reads are in the display frame the rest of the reader uses.
+
+    For every upright text-layer word of 5+ letters inside `crop` (x0, y0,
+    x1, y1 - the swept area; the whole page when None) that some read
+    carries: AT ITS PLACE when a read carrying it has a box
+    (padded FRAME_PAD_PT) holding the word's centre. The frame holds when at
+    least FRAME_MIN_WORDS are at their place and they are at least twice the
+    words seen only elsewhere."""
+    try:
+        words = [(str(w[0]).upper(), float(w[1]), float(w[2]))
+                 for w in page.directed_words if len(w) > 3 and w[3] == "ltr"]
+    except Exception as e:                       # no text layer to check against
+        return False, f"no text layer to check the frame against ({type(e).__name__})"
+    x0, y0, x1, y1 = crop if crop is not None else (0, 0, page.width, page.height)
+    words = [w for w in words if len(w[0]) >= 5 and w[0].isalpha()
+             and x0 <= w[1] <= x1 and y0 <= w[2] <= y1]
+    at, elsewhere = 0, 0
+    pad = FRAME_PAD_PT
+    for wt, wx, wy in words:
+        carrying = [r for r in reads if wt in str(r[0]).upper().replace(" ", "")]
+        if not carrying:
+            continue
+        if any(r[3][0] - pad <= wx <= r[3][2] + pad and r[3][1] - pad <= wy <= r[3][3] + pad
+               for r in carrying):
+            at += 1
+        else:
+            elsewhere += 1
+    why = (f"{at} text-layer word(s) read at their place, {elsewhere} read only "
+           f"elsewhere")
+    return (at >= FRAME_MIN_WORDS and at >= 2 * elsewhere), why
+
+
+def ink_only(img, ink_below: int):
+    """The render with every pixel lighter than `ink_below` (0-255) made white.
+
+    A LABEL CROSSED BY A LIGHTER PEN (the SLOPE DN fix, ruling 2026-10-26).
+    On P-206.00 both RD-1 labels are crossed by the SLOPE DN arrows and their
+    text, drawn in a grey pen (~160) over black labels (0); the drain symbols
+    are a dark grey (~64-80). OCR read the crossed labels as `RD-` or not at
+    all. With the grey pen removed it reads the label the sheet printed. The
+    OCR engine is untouched (lib.plan_ocr): this is what it is handed."""
+    from PIL import Image as _Image
+    g = img.convert("L")
+    lut = [0 if v < ink_below else 255 for v in range(256)]
+    return _Image.merge("RGB", [g.point(lut)] * 3)
+
+
+def sweep(page, segs, ink_below: Optional[int] = None, region=None):
     """[(text, x, y, box)] over the drawing, in display points.
 
     THE CROP IS THE SHEET'S OWN: everything left of the title block's
     full-height rule (plan_cells.title_block_edge), full height. It was a
     fixed 0.20-0.76 x 0.15-0.65 of the page - the same class as the 0.74
     viewport cut that once hid four PTAC units.
-    Clips are in page space and results are used as display space, so a
-    rotated page is refused rather than read in the wrong frame.
+
+    ROTATION-AWARE (ruling 2026-10-26). Tiles are rendered in DISPLAY space
+    (PlanPage.render takes a display-space clip; width and height are the
+    rotated page's), so a read is placed where a person sees it. A rotated
+    page used to be refused here. It is now read - and its frame is then
+    checked against the page's own text layer (frame_check): reads that do
+    not land on the words they share with it refuse the sheet, as before.
+    Only the plain sweep of a whole sheet is checked - a caller that wants an
+    ink-filtered or partial sweep of a rotated page checks the frame with a
+    plain one first (plan_glyph_pass, plan-only families).
+
+    `ink_below` keeps only pixels darker than it (ink_only); `region`
+    (x0, y0, x1, y1), display space, sweeps part of the sheet.
     """
-    if page.rotation:
-        raise ValueError(f"sweep: page rotation {page.rotation} - clip and "
-                         "display frames differ; not handled")
     W, H = page.width, page.height
     edge = pc.title_block_edge(segs, W, H)
-    log.info(f"SWEEP CROP  x 0..{edge:.0f} of {W:.0f}   y 0..{H:.0f}")
+    rx0, ry0, rx1, ry1 = region if region is not None else (0, 0, edge, H)
+    rx1, ry1 = min(rx1, edge), min(ry1, H)
+    log.info(f"SWEEP CROP  x {rx0:.0f}..{rx1:.0f} of {W:.0f}   y {ry0:.0f}..{ry1:.0f}"
+             f"   rotation {page.rotation}")
     out = []
-    for x0 in range(0, int(edge), SWEEP_STEP_PT):
-        for y0 in range(0, int(H), SWEEP_STEP_PT):
-            x1, y1 = (min(x0 + SWEEP_STEP_PT + 20, edge),
-                      min(y0 + SWEEP_STEP_PT + 20, H))
+    for x0 in range(int(rx0), int(rx1), SWEEP_STEP_PT):
+        for y0 in range(int(ry0), int(ry1), SWEEP_STEP_PT):
+            x1, y1 = (min(x0 + SWEEP_STEP_PT + 20, rx1),
+                      min(y0 + SWEEP_STEP_PT + 20, ry1))
             img = page.render((x0, y0, x1, y1), SWEEP_DPI)
+            if ink_below is not None:
+                img = ink_only(img, ink_below)
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             sx = (x1 - x0) / max(img.width, 1)
@@ -139,6 +213,14 @@ def sweep(page, segs):
                 out.append((text, x0 + cx * sx, y0 + cy * sy,
                             (x0 + bx0 * sx, y0 + by0 * sy,
                              x0 + bx1 * sx, y0 + by1 * sy)))
+    # THE FRAME IS CHECKED ON THE PLAIN SWEEP: an ink-filtered one drops the
+    # lighter pens the text layer's words are often drawn in, and its tiles
+    # are the same tiles, placed by the same arithmetic.
+    if page.rotation and region is None and ink_below is None:
+        ok, why = frame_check(page, out, (0, 0, edge, H))
+        if not ok:
+            raise ValueError(f"sweep: page rotation {page.rotation} - the reads do not "
+                             f"land on the page's own words ({why})")
     return out
 
 
@@ -330,8 +412,14 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
                 corroborations: Optional[Dict[str, str]],
                 unit_tags: Sequence[str], widest_door_in: Optional[float],
                 force_geometry: bool = False, reads=None, space=None,
-                unplaced_reason: Optional[str] = None) -> dict:
+                unplaced_reason: Optional[str] = None,
+                ink_below: Optional[int] = None) -> dict:
     """The takeoff for one equipment type on one floor.
+
+    `ink_below` (0-255): geometry drawn in a pen lighter than this is never
+    the symbol - the SLOPE DN arrows and the architectural background on
+    P-206.00 are grey (169) beside dark-grey drains (77). None, the default,
+    keeps every object, as every mechanical sheet is read.
 
     `reads` is the mechanical sheet's sweep, when the caller already has it:
     the sweep is most of the cost, and every equipment family on one sheet
@@ -376,6 +464,9 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
         reads = sweep(mech_page, mech["segs"])
     kept_boxed = [r for r in reads if tag_only(r[0], tags, corr)]
     objects = symbol_objects(mech_page)
+    if ink_below is not None:
+        objects = [o for o in objects if not o.get("colour")
+                   or sum(o["colour"][:3]) / 3.0 < ink_below]
     labels = located_labels(reads, tags, corr)
     recs = []
     for tag, lx, ly in sorted(labels, key=lambda l: (l[2], l[1])):

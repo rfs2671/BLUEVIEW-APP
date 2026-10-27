@@ -45,6 +45,7 @@ import re
 from typing import (Any, Collection, Dict, Iterable, List, NamedTuple,
                     Optional, Sequence, Tuple)
 
+from lib import plan_areas as _areas
 from lib import plan_dimensions as _dims
 from lib.plan_records import TIER_ORDER, column_role, tier_rank
 from lib.plan_text import SHEET_ID_RE
@@ -1128,9 +1129,12 @@ def _values(text: str) -> List[str]:
 
 
 def _vouches_for_nothing(r: Dict[str, Any]) -> bool:
-    """A contested cell, or a located symbol outside its scoped count - the
-    records `_supported_values` reads nothing from."""
-    return bool((r.get("payload") or {}).get("count_contested")) or is_glyph_evidence(r)
+    """A contested cell, a located symbol outside its scoped count, or an
+    area row (lib.plan_areas: it vouches only through its own check,
+    `_areas.figures_in_clause`) - the records `_supported_values` reads
+    nothing from."""
+    return (bool((r.get("payload") or {}).get("count_contested")) or is_glyph_evidence(r)
+            or _areas.is_area_record(r))
 
 
 def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
@@ -1154,6 +1158,12 @@ def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
         # vouch for nearly any number. Measured: one EF-1 row carries 56,
         # 908 and fourteen coordinates.
         if is_glyph_evidence(r):
+            continue
+        # AN AREA ROW VOUCHES ONLY THROUGH ITS CHECK (lib.plan_areas): its
+        # payload carries the measured figure, which binds only where the
+        # printed one agrees, and the printed one, which a disagreement
+        # withholds.
+        if _areas.is_area_record(r):
             continue
         ok.update(_values(r.get("quote") or ""))
         # ── WHAT A CITATION MAY CONTAIN ────────────────────────────────────
@@ -1648,6 +1658,7 @@ def glyph_census(kind: str, project_id: str, page_ids: Sequence[str], count: int
                  family: Optional[str] = None, tags: Sequence[str] = (),
                  qty: Optional[Dict[str, str]] = None,
                  track: Optional[str] = None,
+                 plan_only: Optional[Dict[str, Any]] = None,
                  scope: Optional[str] = None) -> Dict[str, Any]:
     """What the database said, at question time, about one filter - and, for
     a family, what its schedule's QTY column prints per tag (`qty`, read by
@@ -1661,6 +1672,12 @@ def glyph_census(kind: str, project_id: str, page_ids: Sequence[str], count: int
         out["track"] = track
     if scope is not None:
         out["scope"] = scope
+    if plan_only is not None:
+        # A PLAN-ONLY FAMILY (lib.plan_only): no schedule lists it; what the
+        # set said about it AT QUESTION TIME - which details and notes name
+        # it, each tag's own words, and any figure a note prints for a tag.
+        out["plan_only"] = {k: plan_only.get(k) for k in
+                            ("named_by", "tag_words", "printed", "object")}
     return out
 
 
@@ -1751,6 +1768,9 @@ class GlyphFamily(NamedTuple):
     rows: List[Dict[str, Any]]          # its glyph rows in hand, refusals excluded
     why: Optional[str]                  # None when complete
     qty: Dict[str, str] = {}            # tag -> its schedule's QTY cell, as printed
+    #: a plan-only family (lib.plan_only): what the set says about it, from
+    #: its census - None for a schedule's family
+    plan_only: Optional[Dict[str, Any]] = None
 
 
 class GlyphBook(NamedTuple):
@@ -1787,6 +1807,11 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
         rows.append(r)
     censuses = [r for r in records or [] if r.get("record_type") == GLYPH_CENSUS]
     ref_c = [c for c in censuses if c.get("kind") == "refusals"]
+    row_tracks = {_row_track(r) for r in rows}
+    if any(isinstance(c.get("plan_only"), dict) for c in censuses):
+        # beside a plan-only family, one track's rows and a census per track
+        # (_plan_only_censuses): the other tracks' refusals must be none too
+        ref_c = _one_track(ref_c, row_tracks)
     refused = [r for r in rows if _is_refusal(r)]
     refusals_complete = (len(ref_c) == 1 and sum(
         1 for r in rows if glyph_in_census(r, ref_c[0])) == ref_c[0].get("count"))
@@ -1797,6 +1822,7 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
             fam_c.setdefault(c["family"], []).append(c)
     families: Dict[str, GlyphFamily] = {}
     for name, cs in fam_c.items():
+        cs = _plan_only_censuses(cs, row_tracks)
         c = cs[0]
         mine = [r for r in rows if glyph_in_census(r, c)]
         located = [r for r in mine if not _is_refusal(r)]
@@ -1817,8 +1843,11 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
             why = "a row's tag and its schedule disagree"
         elif not any(r.get("glyph_status") == _tally.RESOLVED for r in located):
             why = _NO_LOCATED
+        po = c.get("plan_only") if isinstance(c.get("plan_only"), dict) else None
+        if po is not None and why is None:
+            why = _plan_only_why(mine, po)
         families[name] = GlyphFamily(name, tags, located, why,
-                                     dict(c.get("qty") or {}))
+                                     dict(c.get("qty") or {}), po)
 
     levels: Dict[str, set] = {}
     titles: Dict[str, str] = {}
@@ -2056,7 +2085,9 @@ def _blocking(r: Dict[str, Any]) -> bool:
     roof plan - carries no mechanical symbol a total could miss. A refusal
     row with no role (written before emit_version 3) blocks: fail closed."""
     payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
-    return payload.get("role") != "architectural"
+    # A plan-only family's plan (lib.plan_only) carries no mechanical symbol
+    # either: refused, it blocks its own family (_plan_only_why), no other.
+    return payload.get("role") not in ("architectural", "plan_only")
 
 
 def _refused_floors(book: GlyphBook) -> set:
@@ -2446,15 +2477,119 @@ def _clause_subjects(clause: str, book: GlyphBook
     if tagged:
         return tagged
     words = {_stem(w) for w in re.findall(r"[A-Za-z]{2,}", clause)}
-    hits = {name: family_words(name) & words for name in book.families}
+    # A PLAN-ONLY FAMILY IS NAMED BY ITS OBJECT, never by a word it shares
+    # with a schedule's name - "roof" is a level, and "the roof has 2
+    # exhaust fans" must stay the exhaust-fan schedule's (_plan_only_subjects).
+    plan = [s for fam in book.families.values() if fam.plan_only is not None
+            for s in _plan_only_subjects(words, fam)]
+    sched = [n for n, f in book.families.items() if f.plan_only is None]
+    hits = {name: family_words(name) & words for name in sched}
     hits = {n: h for n, h in hits.items() if h}
     if not hits:
-        return []
+        return plan
     top = [n for n, h in hits.items() if not any(h < g for g in hits.values())]
     if len(top) != 1:
         return None
     fam = book.families[top[0]]
-    return [(fam, list(fam.tags))]
+    return [(fam, list(fam.tags))] + plan
+
+
+def _plan_only_subjects(words: set, fam: GlyphFamily) -> List[Tuple[GlyphFamily, List[str]]]:
+    """What a clause's words name of a plan-only family: the tags whose own
+    words it uses ("overflow" -> RD-2), each its own subject; else, when it
+    names the object ("roof drains"), the family as ONE subject - a combined
+    total, which _book_values refuses. A clause without the object's noun
+    names none of it ("the roof"); nor does one naming only the noun
+    ("floor drains")."""
+    po = fam.plan_only or {}
+    obj = [_stem(w) for w in re.findall(r"[A-Za-z]{2,}", str(po.get("object") or ""))]
+    if not obj or obj[-1] not in words:
+        return []
+    own = [t for t in fam.tags
+           if {_stem(w) for w in ((po.get("tag_words") or {}).get(t) or [])} & words]
+    if own:
+        return [(fam, [t]) for t in own]
+    if set(obj) <= words:
+        return [(fam, list(fam.tags))]
+    return []
+
+
+def _plan_only_censuses(cs: List[Dict[str, Any]], row_tracks: set) -> List[Dict[str, Any]]:
+    """A PLAN-ONLY FAMILY'S PLAN IS ON ONE TRACK. search_plans counts every
+    family once per drawing track; the roof drains' plan (P-206.00) is the
+    filed track's alone, so beside rows of that one track the owner's census
+    says 0 - and read as one book, two censuses for one family refused the
+    lot. Here the rows' own track's census stands, provided every other
+    track's census counted none of the family; anything else stays two
+    censuses, and refuses.
+
+    (Found 2026-10-26 emulating the rebuild against production. A schedule
+    family on one track has the same shape - asked about SAF-1, M-106.00's
+    rows are the filed track's and "The bulkhead has 1 SAF-1." refuses on
+    main - and is left as it is: that is a binding change for a ruling.)"""
+    if not all(isinstance(c.get("plan_only"), dict) for c in cs):
+        return cs
+    return _one_track(cs, row_tracks)
+
+
+def _one_track(cs: List[Dict[str, Any]], row_tracks: set) -> List[Dict[str, Any]]:
+    """The census of the rows' one track, when every other track's census of
+    the same filter counted nothing; else all of them (and the caller refuses)."""
+    if len(cs) < 2 or len(row_tracks) != 1:
+        return cs
+    (t,) = row_tracks
+    own = [c for c in cs if c.get("track") == t]
+    if len(own) == 1 and all(c.get("count") == 0 for c in cs if c is not own[0]):
+        return own
+    return cs
+
+
+def _without_object(clause: str, fam: GlyphFamily) -> str:
+    from lib import plan_only as _po
+    obj = str((fam.plan_only or {}).get("object") or "").split()
+    return _po.object_pattern(obj).sub(" ", clause) if obj else clause
+
+
+def _sheet_scope_only(clause: str, book: GlyphBook) -> bool:
+    """The clause names no floor, no unit, no per-unit share, and nothing
+    that maps to none of them."""
+    keys, floor_unknown = _clause_floors(clause, book)
+    units, unit_unknown = _clause_units(clause, book)
+    return not (keys or floor_unknown or units or unit_unknown
+                or _PER_UNIT.search(clause) or _PER_APARTMENT.search(clause))
+
+
+def _plan_only_why(rows: Sequence[Dict[str, Any]], po: Dict[str, Any]) -> Optional[str]:
+    """Why a plan-only family's located rows count for nothing, or None:
+    no detail or note names it now; a label beside one of them could not be
+    read as its tag (it could be any of them); or rows on more than one plan
+    (the ruling is one plan, at sheet scope)."""
+    if not po.get("named_by"):
+        return "no detail or note in the set names it"
+    if any(_is_refusal(r) for r in rows):
+        return "its plan could not be read"
+    if any(r.get("glyph_status") != _tally.RESOLVED for r in rows):
+        return "a label beside one of them could not be read as its tag"
+    if len({r.get("sheet_number") for r in rows}) > 1:
+        return "located on more than one plan"
+    return None
+
+
+def _plan_only_count(book: GlyphBook, fam: GlyphFamily, tag: str) -> Optional[int]:
+    """ONE TAG of a plan-only family at sheet scope: its located count, when
+    the family is complete and no note's printed figure for the tag
+    disagrees. A DISAGREEMENT WITHHOLDS BOTH (ruling 2026-10-26): the located
+    count is not stated, and the printed figure lends nothing anywhere."""
+    if fam.why or _building_refused(book):
+        return None
+    n = sum(1 for r in fam.rows if r.get("label") == tag
+            and r.get("glyph_status") == _tally.RESOLVED)
+    if not n:
+        return None
+    printed = ((fam.plan_only or {}).get("printed") or {}).get(tag) or []
+    if any(str(p.get("value")) != str(n) for p in printed):
+        return None
+    return n
 
 
 def glyph_values(clause: str, book) -> set:
@@ -2513,9 +2648,20 @@ def _book_values(clause: str, book: GlyphBook, zero: bool = False) -> set:
         return out
     keys, floor_unknown = _clause_floors(clause, book)
     named_units, unit_unknown = _clause_units(clause, book)
-    if floor_unknown or unit_unknown:
-        return out
     for fam, tags in subjects:
+        if fam.plan_only is not None:
+            # PER TAG ONLY, AT SHEET SCOPE (ruling 2026-10-26): a combined
+            # total refuses, and so does any floor, unit or per-unit figure -
+            # the family is located on its plan and placed nowhere. Its
+            # object's name is not a scope: the ROOF of "overflow roof
+            # drains" names no level.
+            if len(tags) == 1 and _sheet_scope_only(_without_object(clause, fam), book):
+                v = _plan_only_count(book, fam, tags[0])
+                if v is not None:
+                    out.add(str(v))
+            continue
+        if floor_unknown or unit_unknown:
+            continue
         if named_units:
             for u, k in named_units.items():
                 if keys and not (keys & set(_apartment_floors(book, u) or [k])):
@@ -2651,6 +2797,9 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
                      "figure only in a sentence naming the set it is per.")
     for name in sorted(book.families):
         fam = book.families[name]
+        if fam.plan_only is not None:
+            lines += _render_plan_only(book, fam)
+            continue
         head = f"{name} ({', '.join(fam.tags)})"
         if fam.why:
             # NOTHING LOCATED, QTY PRINTED: THE QTY STANDS (ruling (a),
@@ -2895,6 +3044,44 @@ def render_opening_evidence(records: Sequence[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _render_plan_only(book: GlyphBook, fam: GlyphFamily) -> List[str]:
+    """A plan-only family's lines (ruling 2026-10-26): per tag, joined by
+    '+', labelled where it was located and that no schedule lists it - and
+    never a combined total."""
+    from lib import plan_only as _po
+    po = fam.plan_only or {}
+    words = po.get("tag_words") or {}
+    tags = ", ".join(f"{t} ({' '.join(words[t])})" if words.get(t) else t for t in fam.tags)
+    named = "; ".join(f"{n.get('where') or n.get('sheet') or n.get('file')} '{n.get('quote')}'"
+                      for n in po.get("named_by") or [])
+    if fam.why:
+        return [f"{fam.name} ({tags}) - plan-only: NOT COUNTED - {fam.why}. "
+                f"State no count of these."]
+    lab = _po.label(r.get("sheet_number") for r in fam.rows)
+    lines = [f"{fam.name} ({tags}) - plan-only, {lab}. Named in the set by: {named}. "
+             f"State each tag's figure on its own; never one total of {fam.name.lower()}:"]
+    if _building_refused(book):
+        lines.append(f"- NOT AVAILABLE - {len(_blocking_refusals(book))} sheet(s) that can "
+                     f"carry located symbols were not counted")
+        return lines
+    parts, notes = [], []
+    for t in fam.tags:
+        n = sum(1 for r in fam.rows if r.get("label") == t)
+        printed = (po.get("printed") or {}).get(t) or []
+        off = [p for p in printed if str(p.get("value")) != str(n)]
+        if off:
+            notes.append(f"- {t}: located {n}, but {off[0].get('source')} prints "
+                         f"{off[0].get('value')} - THEY DISAGREE; state neither")
+            continue
+        if n:
+            parts.append(f"{t} {n}")
+        for p in printed:
+            notes.append(f"- {p.get('source')} prints {p.get('value')} for {t} - agrees")
+    if parts:
+        lines.append(f"- {' + '.join(parts)} ({lab})")
+    return lines + notes
+
+
 def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
                            ) -> Tuple[bool, List[str]]:
     """Every quantity must come from a record about the thing it counts.
@@ -2933,6 +3120,10 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     citations = sorted(set(_citation_texts(records)) | {
         l for l in list(books.labels.values()) + list(obooks.labels.values()) if len(l) >= 3}, key=len, reverse=True)
     unsupported: List[str] = []
+    # "1,970 sq ft" is one figure: with area rows in hand the thousands comma
+    # is not a clause break (_areas.join_thousands). Without them, unchanged.
+    if any(_areas.is_area_record(r) for r in records or []):
+        text = _areas.join_thousands(text)
     for clause in _clauses(_undated_set_names(text)):
         # A citation in the clause is removed as text before its numbers are
         # read (_citation_texts): '[M-200.00]' and 'issued 8/18/2026' say
@@ -2961,6 +3152,9 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
             # (glyph_values) - never a printed QTY, which is no track's, and
             # never on untracked rows.
             allowed = glyph_values(clause, books) | opening_values(clause, obooks)
+            if _areas.is_area_clause(bare):
+                a_add, a_drop = _areas.figures_in_clause(bare, records, named)
+                allowed = (allowed - a_drop) | a_add
             unsupported.extend(v for v in said if v not in allowed)
             continue
         allowed: set = set()
@@ -3013,6 +3207,13 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
         allowed |= glyph_values(clause, books)
         # DOORS AND WINDOWS: their own books, every scope per drawing track
         allowed |= opening_values(clause, obooks)
+        # AN AREA AGREES WITH WHAT IS PRINTED, OR NEITHER IS SAID
+        # (lib.plan_areas, ruling 2026-10-26, like the QTY above): a measured
+        # area binds only where the plan prints one that agrees, and a
+        # printed one the measurement contradicts is withheld.
+        if _areas.is_area_clause(bare):
+            a_add, a_drop = _areas.figures_in_clause(bare, records)
+            allowed = (allowed - a_drop) | a_add
         unsupported.extend(v for v in said if v not in allowed)
     return (not unsupported), unsupported
 
@@ -3057,7 +3258,24 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     # attribute cases. Applying the bound rule to them would refuse two true
     # answers to catch nothing. (The count branch is taken above.)
     ok = _supported_values(records)
-    unsupported = bad_dims + [v for v in said if v not in ok]
+    if not any(_areas.is_area_record(r) for r in records or []):
+        unsupported = bad_dims + [v for v in said if v not in ok]
+        return (not unsupported), unsupported
+    # AN AREA AGREES WITH WHAT IS PRINTED, OR NEITHER IS SAID (ruling
+    # 2026-10-26, lib.plan_areas). The union holds every printed area - so a
+    # clause stating one is decided by the area check first: a figure it
+    # allows binds (the measured one included, which no quote prints), a
+    # figure it withholds is refused whatever the union holds, and anything
+    # else falls to the union as before.
+    unsupported = list(bad_dims)
+    for clause in _clauses(_areas.join_thousands("".join(rest))):
+        named, bare = _track_claim(clause)
+        vals = _values(clause)
+        if not _areas.is_area_clause(bare):
+            unsupported += [v for v in vals if v not in ok]
+            continue
+        a_add, a_drop = _areas.figures_in_clause(bare, records, named)
+        unsupported += [v for v in vals if v not in a_add and (v in a_drop or v not in ok)]
     return (not unsupported), unsupported
 
 
@@ -3159,6 +3377,10 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
     # reader is shown something as an answer.
     """
     terms = search_terms(subject)
+    # An area row is shown through its check (render_area_evidence), never
+    # as a quote: its quote is a printed figure the check may withhold.
+    everything = list(records or [])
+    records = [r for r in everything if not _areas.is_area_record(r)]
     if terms:
         records = [r for r in records if not matched_only_through_label(r, terms)]
     if not records:
@@ -3194,6 +3416,9 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
         # The record type is machinery and is gone. The sheet trails the line
         # the way a citation does, so the eye reaches the content first.
         line = f"{quote[:200]} [{where_all}]"
+        # A PRINTED AREA THE CHECK WITHHELD is not repeated as if it stood
+        # (lib.plan_areas): the line says the drawn region disagrees.
+        line += _areas.withheld_note(quote, everything)
         readings = (r.get("payload") or {}).get("count_readings")
         if readings:
             said = " and ".join(str(x.get("value")) for x in readings)
