@@ -70,7 +70,8 @@ SHEET_SCOPE_UNITS = {"tags": [], "method": "sheet_scope", "zero_units": False,
 def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any],
              schedules: Sequence[Dict[str, Any]],
              door_pages: Sequence[Dict[str, Any]] = (), *, track: str = "filed",
-             sweeps: Optional[Dict[Any, Any]] = None) -> Dict[str, Any]:
+             sweeps: Optional[Dict[Any, Any]] = None,
+             opening_schedules: Sequence[Dict[str, Any]] = ()) -> Dict[str, Any]:
     """Every glyph row for the project's `track`, and what was done and
     refused.
 
@@ -79,7 +80,14 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     pass writes says `track`. A mechanical sheet belongs to no track, so its
     sweep is read once and shared through `sweeps` (page id -> reads); each
     located row also carries `mech_count`, the labels that sweep locates for
-    its family before any architectural sheet is read."""
+    its family before any architectural sheet is read.
+
+    DOORS AND WINDOWS (lib.plan_openings, 2026-10-26): the tags the
+    architectural plans print, read against the door/window schedules
+    (`opening_schedules`) on the SAME floors - their units, membership maps,
+    stair links and voids - and returned apart, in "opening_rows", so the
+    equipment rows are exactly what they were."""
+    from lib import plan_openings as popen
     from lib.plan_sheet import load_sheet
     from lib.plan_space import build_space
     from lib.plan_takeoff import Units, located_labels, run_takeoff, sweep
@@ -117,6 +125,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     run_fams = {n: f for n, f in fams.items() if f["tags"]}
     summary["families"] = {n: f["tags"] for n, f in run_fams.items()}
     summary["skipped_families"] = sorted(n for n, f in fams.items() if not f["tags"])
+    ofams = popen.families(opening_schedules)
+    open_run = any(f["tags"] for f in ofams.values())
 
     def sheet_scope(mech_p, arch_p, why):
         """COUNT WHAT CANNOT BE PLACED (operator ruling 2026-10-07). The
@@ -170,7 +180,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                              "m_sheet": mech_p.get("sheet_number")}
         floors_in.append(f)
         summary["pairs"].append([f["a_sheet"], f["m_sheet"]])
-        if not run_fams:
+        if not run_fams and not open_run:
             continue
         arch_pg = open_page(arch_p)
         f["data"] = load_sheet(arch_pg)
@@ -192,6 +202,11 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                                          f["units"]["tags"])
     summary["stair_seeds"] = seed_from_stairs(floors_in, open_page, door["inches"])
     summary["voids"] = assign_voids(floors_in)
+    opening = popen.run_openings(
+        floors_in, open_page, ofams, track=track, widest_door=door,
+        refused=[(p, why) for p, why, role in paired["refused"]
+                 if role == derive.ROLE_ARCHITECTURAL])
+    summary["openings"] = opening["summary"]
 
     for f in floors_in:
         arch_p, mech_p, a_sheet, m_sheet = f["arch_p"], f["mech_p"], f["a_sheet"], f["m_sheet"]
@@ -241,7 +256,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         r["ordinal"] = i
         r.setdefault("payload", {})["track"] = track
     summary["rows"] = len(rows)
-    return {"rows": rows, "summary": summary}
+    return {"rows": rows, "summary": summary, "opening_rows": opening["rows"],
+            "opening_health": opening["health"]}
 
 
 def seed_from_stairs(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any],
