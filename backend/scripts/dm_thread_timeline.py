@@ -371,13 +371,18 @@ async def run(a) -> int:
     used = set(paired.values())
     pairs = {k: answers[i] for k, i in paired.items()}
 
-    def answers_which(b) -> str:
+    def answers_idx(b):
+        """Index of the message whose logged answer this outgoing message carries, or None."""
         body = clean(b.get("body"), 100000)
         for k2, ans in pairs.items():
             head = clean(ans.get("answer"), 100000)[:40]
             if head and head in body:
-                return f" [= the answer to their {ny(inbound[k2].get('created_at'))} message]"
-        return ""
+                return k2
+        return None
+
+    def answers_which(b) -> str:
+        k2 = answers_idx(b)
+        return "" if k2 is None else f" [= the answer to their {ny(inbound[k2].get('created_at'))} message]"
 
     for k, m in enumerate(inbound):
         at = m.get("created_at")
@@ -422,8 +427,13 @@ async def run(a) -> int:
                                    "message_id_tail": msg_tail(m.get("message_id"))[-8:],
                                    "webhook": hits[:1]},
                        "answer": safe_answer(ans) if ans is not None else None,
-                       "outbound": [{"at": b.get("created_at"), "body": clean(b.get("body"), 1000)}
-                                    for b in outs + late]})
+                       # answers_mine: True = carries THIS message's answer, False = carries
+                       # another message's answer, None = can't tell. late: went out after
+                       # their next message.
+                       "outbound": [{"at": b.get("created_at"), "body": clean(b.get("body"), 1000),
+                                     "answers_mine": (None if answers_idx(b) is None else answers_idx(b) == k),
+                                     "late": b not in outs}
+                                    for b in outs + [x for x in late if x not in outs]]})
 
     rest = [x for j, x in enumerate(answers) if j not in used]
     if rest:
