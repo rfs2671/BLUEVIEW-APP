@@ -179,15 +179,27 @@ def summarise(outcomes: Sequence[str]) -> Dict[str, Any]:
 def find_turns(case: Dict[str, Any], timeline: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Each message in a dm_thread_timeline --json file that asks this case:
     {answer, tools, at}. The answer is the logged reply plus every message
-    Levelog sent for that turn -- what the person actually got."""
+    Levelog sent for that turn -- what the person actually got. Outgoing
+    messages the timeline attributes to a different message are left out."""
     rx = re.compile(case["match"], re.I)
     turns = []
+
+    def mine(o: Dict[str, Any]) -> bool:
+        # An outgoing message that carries ANOTHER message's answer is not
+        # this turn's; one that went out after their next message counts only
+        # when it is known to carry this answer.
+        owner = o.get("answers_mine")
+        if owner is False:
+            return False
+        return owner is True or not o.get("late")
+
     for m in timeline.get("messages") or []:
         body = str((m.get("inbound") or {}).get("body") or "")
         if not rx.search(body):
             continue
         a = m.get("answer") or {}
-        parts = [str(a.get("answer") or "")] + [str(o.get("body") or "") for o in m.get("outbound") or []]
+        parts = [str(a.get("answer") or "")] + [str(o.get("body") or "") for o in m.get("outbound") or []
+                                                if mine(o)]
         tools = [str(t.get("tool")) for t in a.get("tool_data") or [] if isinstance(t, dict)]
         turns.append({"answer": "\n".join(p for p in parts if p), "tools": tools,
                       "at": (m.get("inbound") or {}).get("at"), "asked": body})

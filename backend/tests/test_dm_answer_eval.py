@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -139,6 +140,23 @@ class TheRunner(unittest.TestCase):
         self.assertIn("NOT-ASKED       kitchen-soffits", text)
         self.assertEqual(saved["summary"]["pass"], 1)
         self.assertEqual(saved["summary"]["pass_rate"], round(1 / 6, 3))
+
+    def test_a_reply_to_another_message_is_not_scored_as_this_answer(self):
+        # Overlapping turns: the late refusal of an earlier ask went out after
+        # "send me the PDF" and is attributed to that earlier message.
+        case = {"id": "pdf", "match": r"send me the pdf"}
+        day = {"messages": [
+            {"inbound": {"body": "send me the PDF", "at": "t2"},
+             "answer": {"answer": "Sent AR - 3.28.25.pdf", "tool_data": [{"tool": "send_plan_file"}]},
+             "outbound": [
+                 {"body": "Sorry, I can't send files.", "answers_mine": False, "late": False},
+                 {"body": "Sent AR - 3.28.25.pdf", "answers_mine": True, "late": False},
+                 {"body": "Unrelated late reply", "answers_mine": None, "late": True},
+                 {"body": "Here is page 2 too", "answers_mine": None, "late": False}]}]}
+        (turn,) = de.find_turns(case, day)
+        self.assertIsNone(re.search(r"can't send files", turn["answer"]))
+        self.assertIsNone(re.search(r"Unrelated late reply", turn["answer"]))
+        self.assertRegex(turn["answer"], r"Here is page 2 too")
 
     def test_pending_counts_against_the_rate(self):
         s = de.summarise(["pass", "failing-pending"])
