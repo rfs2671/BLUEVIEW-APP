@@ -215,7 +215,7 @@ class PassProgress:
                     f"took {secs:.0f}s"]
         self.timings.append({"track": st["track"], "stage": st["stage"], "sheet": st["sheet"],
                              "seconds": secs, "sweep": st["sweep"]})
-        if st["track"] in self._done and st["stage"] in SHEET_STAGES:
+        if st["track"] in self._done:
             self._done[st["track"]] += 1
         done, total = self._totals()
         eta = self._eta()

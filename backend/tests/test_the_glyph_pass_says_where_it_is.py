@@ -254,6 +254,49 @@ class _Route(unittest.TestCase):
 
     tearDown = setUp
 
+    def _server_pass(self, st, takeoff=_takeoff):
+        """The real _plan_glyph_pass and run_pass on FILED + OWNER, with the
+        OCR, R2, the database reads and the three writers stubbed. Returns
+        {rows, health, areas}: what each writer was handed."""
+        async def pages(pid):           # every file has an R2 key: open_page reaches the stub
+            return [("filed", FILED), ("post_co", OWNER)], {
+                f: {"r2_key": f"k/{f}"} for f in ("mech", "ar", "own", "plumb")}
+
+        async def opening_schedules(pid, ids):
+            return DOORS
+
+        written = {}
+
+        def writer(name):
+            async def w(pid, rows):
+                written[name] = len(rows)
+                return len(rows)
+            return w
+
+        class _R2:
+            def get_object(self, **k):
+                return {"Body": type("B", (), {"read": lambda self: b""})()}
+
+        self.db[server.PLAN_RECORDS].docs.extend(
+            {"_id": f"s{i}", "project_id": PID, "record_type": "schedule", "page_id": "pm101",
+             "sheet_number": s["sheet_number"], "tier": s["tier"],
+             "payload": {"name": s["name"], "columns": s["columns"], "rows": s["rows"]}}
+            for i, s in enumerate(SCHED))
+        _fast(st, takeoff)
+        st.enter_context(patch.object(server, "db", self.db))
+        st.enter_context(patch.object(server, "_glyph_pages", pages))
+        st.enter_context(patch.object(server, "_opening_schedules", opening_schedules))
+        st.enter_context(patch("lib.plan_only.record_query", lambda pid, ids: {"project_id": pid,
+                                                                              "record_type": "-"}))
+        st.enter_context(patch("lib.plan_only.families", lambda recs: PLAN_ONLY))
+        st.enter_context(patch.object(server, "_glyph_set_health", lambda *a, **k: []))
+        st.enter_context(patch.object(server, "_r2_client", _R2()))
+        st.enter_context(patch("lib.plan_page.PlanPage", lambda path, n: _Page()))
+        for n, fn in (("rows", "_write_glyph_records"), ("health", "_write_set_health"),
+                      ("areas", "_write_area_records")):
+            st.enter_context(patch.object(server, fn, writer(n)))
+        return written
+
     def _run_route(self, fake_pass):
         """POST .../plan-glyphs/run with the pass faked; waits for it to end."""
         async def go():
@@ -284,25 +327,6 @@ class TheStatusSaysWhereARunningPassIs(_Route):
                 release.wait(20)
             return _takeoff(*a, **k)
 
-        async def pages(pid):           # every file has an R2 key: open_page reaches the stub
-            return [("filed", FILED), ("post_co", OWNER)], {
-                f: {"r2_key": f"k/{f}"} for f in ("mech", "ar", "own", "plumb")}
-
-        async def opening_schedules(pid, ids):
-            return DOORS
-
-        written = {}
-
-        def writer(name):
-            async def w(pid, rows):
-                written[name] = len(rows)
-                return len(rows)
-            return w
-
-        class _R2:
-            def get_object(self, **k):
-                return {"Body": type("B", (), {"read": lambda self: b""})()}
-
         async def go():
             await server.run_plan_glyph_pass(PID, current_user=ADMIN)
             for _ in range(1000):
@@ -317,25 +341,8 @@ class TheStatusSaysWhereARunningPassIs(_Route):
                 await asyncio.sleep(0.01)
             return during, await server.plan_glyph_pass_status(PID, current_user=ADMIN)
 
-        self.db[server.PLAN_RECORDS].docs.extend(
-            {"_id": f"s{i}", "project_id": PID, "record_type": "schedule", "page_id": "pm101",
-             "sheet_number": s["sheet_number"], "tier": s["tier"],
-             "payload": {"name": s["name"], "columns": s["columns"], "rows": s["rows"]}}
-            for i, s in enumerate(SCHED))
         with ExitStack() as st:
-            _fast(st, takeoff)
-            st.enter_context(patch.object(server, "db", self.db))
-            st.enter_context(patch.object(server, "_glyph_pages", pages))
-            st.enter_context(patch.object(server, "_opening_schedules", opening_schedules))
-            st.enter_context(patch("lib.plan_only.record_query", lambda pid, ids: {"project_id": pid,
-                                                                                  "record_type": "-"}))
-            st.enter_context(patch("lib.plan_only.families", lambda recs: PLAN_ONLY))
-            st.enter_context(patch.object(server, "_glyph_set_health", lambda *a, **k: []))
-            st.enter_context(patch.object(server, "_r2_client", _R2()))
-            st.enter_context(patch("lib.plan_page.PlanPage", lambda path, n: _Page()))
-            for n, fn in (("rows", "_write_glyph_records"), ("health", "_write_set_health"),
-                          ("areas", "_write_area_records")):
-                st.enter_context(patch.object(server, fn, writer(n)))
+            written = self._server_pass(st, takeoff)
             during, after = asyncio.run(go())
 
         for k in ("progress", "last_result"):
@@ -474,15 +481,27 @@ class ARaisingCallbackDoesNotBreakThePass(unittest.TestCase):
         out = _both_tracks(tr.callback)
         self.assertEqual(self._rows(out), self._rows(_both_tracks()))
 
-    def test_a_failing_tracker_does_not_fail_the_server_pass(self):
-        P = _present()
-        tr = P.PassProgress(PID)
 
-        def bad_event(*a, **k):
-            raise RuntimeError("tracker is broken")
-        with patch.object(tr, "_close", bad_event):
-            out = _both_tracks(tr.callback)
-        self.assertEqual(self._rows(out), self._rows(_both_tracks()))
+class ABrokenTrackerDoesNotFailTheServerPass(_Route):
+
+    def test_a_tracker_whose_logging_raises_everywhere(self):
+        """The server calls the tracker itself (plan_tracks, server_stage,
+        finish): every one of those logs, and none may raise into the pass."""
+        P = _present()
+
+        async def go():
+            await server.run_plan_glyph_pass(PID, current_user=ADMIN)
+            for _ in range(1000):
+                if PID not in server._GLYPH_PASS_RUNNING:
+                    break
+                await asyncio.sleep(0.01)
+        with ExitStack() as st:
+            written = self._server_pass(st)
+            st.enter_context(patch.object(P.log, "info", side_effect=OSError("disk full")))
+            asyncio.run(go())
+        self.assertEqual(server._GLYPH_PASS_PROGRESS[PID].last_result()["result"], "ok")
+        self.assertEqual(set(written), {"rows", "health", "areas"})
+        self.assertGreater(written["rows"], 0)
 
 
 # ── 6. every key the status returned before ───────────────────────────────
