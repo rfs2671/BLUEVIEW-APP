@@ -609,7 +609,7 @@ class TheServerFetchesAndCensusesThem(unittest.TestCase):
         seen, written = [], {}
 
         def fake_pass(pages, open_page, schedules, door_pages, track="filed", sweeps=None,
-                      opening_schedules=()):
+                      plan_only=None, opening_schedules=()):
             seen.append([s["name"] for s in opening_schedules])
             return {"rows": [{"label": "EF-1", "payload": {"track": track}}],
                     "summary": {}, "opening_rows": [{"label": "W1", "payload": {"kind": "opening",
@@ -625,11 +625,17 @@ class TheServerFetchesAndCensusesThem(unittest.TestCase):
 
         async def write_health(_pid, items):
             return len(items)
+
+        def no_plan_only(pid, _page_ids):
+            # the roof drains' record query ($elemMatch) is not this test's
+            # subject, and the fake database does not model that operator
+            return {"project_id": str(pid), "record_type": "no-plan-only-family-here"}
         with patch.object(server, "db", db), patch.object(server, "_live_plan_file_ids", live), \
                 patch("lib.plan_glyph_pass.run_pass", fake_pass), \
                 patch.object(server, "_glyph_set_health", lambda *a, **k: []), \
                 patch.object(server, "_write_glyph_records", write), \
-                patch.object(server, "_write_set_health", write_health):
+                patch.object(server, "_write_set_health", write_health), \
+                patch("lib.plan_only.record_query", no_plan_only):
             asyncio.run(server._plan_glyph_pass(str(proj)))
         self.assertTrue(seen and all(s == [WIN] for s in seen))
         labels = [r["label"] for r in written["rows"]]
