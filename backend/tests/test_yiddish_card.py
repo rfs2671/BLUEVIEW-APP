@@ -5,7 +5,7 @@
 - A Yiddish group note stores voice.english_direct; any other note does not
   call it. A failed translation leaves the card the translated transcript.
 - The Attention list gives a Yiddish voice item {original, english}.
-- scripts/voice_lang_eval.py: the "whisper-1 translate" row, scored against
+- scripts/voice_lang_eval.py: the "whisper translate" row, scored against
   each clip's .en.txt; the card's two lines in --verbose.
 """
 
@@ -154,8 +154,7 @@ class TheEvalsTranslationRow(unittest.TestCase):
         class A:
             clips, hint, job, concurrency, verbose = str(d), "off", None, 2, True
             json = str(d / "out.json")
-        os.environ.setdefault("OPENAI_API_KEY", "k")
-        with patch.object(v, "transcribe", fake):
+        with patch.object(v, "transcribe", fake), patch.object(v.llm_provider, "API_KEY", "k"):
             self.assertEqual(asyncio.run(v.main_async(A)), 0)
         import json
         rows = json.loads((d / "out.json").read_text(encoding="utf-8"))
