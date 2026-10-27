@@ -3,8 +3,8 @@ layer, exactly as they are, READ-ONLY.
 
 A fake database shaped like production's rows (a project, its file, two
 indexed pages numbered A-302.00 -- one current, one from a deleted file --
-and their plan_records) and a fake R2 that hands back a real PDF drawn with
-reportlab, read by the indexer's own lib/plan_text. Asserted: the records
+and their plan_records) and a fake R2 that hands back a real PDF (written by
+hand), read by the indexer's own lib/plan_text. Asserted: the records
 holding the term print with type, bbox and the WHOLE quote; the PDF's block
 around the term prints word for word with its detail bubble; a page off a
 deleted file says so; nothing is written; R2 is asked for the file's own key.
@@ -33,18 +33,33 @@ PDF_LINE = "2 1/2\" CLOSED CELL SPRAY FOAM AT UNDERSIDE OF DECK"
 
 
 def _pdf() -> bytes:
-    from reportlab.pdfgen import canvas
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=(1296, 864))
-    c.setFont("Helvetica", 10)
-    c.drawString(60, 740, "4")                         # the detail bubble, its own block
-    c.drawString(120, 700, "ROOF ASSEMBLY DETAIL")
-    c.drawString(120, 686, PDF_LINE)
-    c.drawString(120, 640, "SEE STRUCTURAL FOR DECK")  # nearby: printed as around it
-    c.drawString(1000, 100, "UNRELATED TITLE BLOCK TEXT")
-    c.showPage()
-    c.save()
-    return buf.getvalue()
+    """A real one-page PDF, written by hand (no PDF library in CI's
+    requirements): each string at its own position, Helvetica 10."""
+    items = [(60, 740, "4"),                          # the detail bubble, its own block
+             (120, 700, "ROOF ASSEMBLY DETAIL"),
+             (120, 686, PDF_LINE),
+             (120, 640, "SEE STRUCTURAL FOR DECK"),   # nearby: printed as around it
+             (1000, 100, "UNRELATED TITLE BLOCK TEXT")]
+
+    def esc(t):
+        return t.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream = " ".join(f"BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({esc(t)}) Tj ET" for x, y, t in items)
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [4 0 R] /Count 1 >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1296 864] "
+            b"/Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>",
+            f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream".encode()]
+    out = b"%PDF-1.4\n"
+    offsets = []
+    for k, obj in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += f"{k} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return out
 
 
 def _db():
