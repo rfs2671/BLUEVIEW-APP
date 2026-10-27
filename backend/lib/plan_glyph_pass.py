@@ -70,7 +70,8 @@ SHEET_SCOPE_UNITS = {"tags": [], "method": "sheet_scope", "zero_units": False,
 def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any],
              schedules: Sequence[Dict[str, Any]],
              door_pages: Sequence[Dict[str, Any]] = (), *, track: str = "filed",
-             sweeps: Optional[Dict[Any, Any]] = None) -> Dict[str, Any]:
+             sweeps: Optional[Dict[Any, Any]] = None,
+             plan_only: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Every glyph row for the project's `track`, and what was done and
     refused.
 
@@ -79,7 +80,11 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     pass writes says `track`. A mechanical sheet belongs to no track, so its
     sweep is read once and shared through `sweeps` (page id -> reads); each
     located row also carries `mech_count`, the labels that sweep locates for
-    its family before any architectural sheet is read."""
+    its family before any architectural sheet is read.
+
+    `plan_only` is lib.plan_only.families() of the set's records: the
+    plan-only families the set allows (a detail or note names the object).
+    Each is located on its own plans in this track's pages (run_plan_only)."""
     from lib.plan_sheet import load_sheet
     from lib.plan_space import build_space
     from lib.plan_takeoff import Units, located_labels, run_takeoff, sweep
@@ -237,11 +242,79 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                 "method": res.get("method"), "fallback_reason": res.get("fallback_reason"),
                 "refused": res.get("refused"),
                 "labels_by_tag": res.get("labels_by_tag")}
+    summary["plan_only"] = {}
+    for name, fam in sorted((plan_only or {}).items()):
+        got, note = run_plan_only(name, fam, pages, open_page, door)
+        rows += got
+        summary["plan_only"][name] = note
     for i, r in enumerate(rows):
         r["ordinal"] = i
         r.setdefault("payload", {})["track"] = track
     summary["rows"] = len(rows)
     return {"rows": rows, "summary": summary}
+
+
+#: A refused plan-only sheet blocks its own family, never another's total:
+#: it can carry no mechanical symbol (plan_search._blocking).
+ROLE_PLAN_ONLY = "plan_only"
+
+
+def run_plan_only(name: str, fam: Dict[str, Any], pages: Sequence[Dict[str, Any]],
+                  open_page: Callable[[Dict[str, Any]], Any], door: Dict[str, Any]):
+    """(rows, summary) for one plan-only family (lib.plan_only, ruling
+    2026-10-26) on every plan of it among `pages`.
+
+    AT SHEET SCOPE: the labels its tags snap to are located on the plan and
+    the symbol beside each is found, as a mechanical sheet's are
+    (plan_takeoff.run_takeoff with no architectural page); nothing is placed.
+    The plain sweep comes first - on a rotated page it is the frame check
+    (plan_takeoff.sweep) - then the INK-ONLY sweep (plan_takeoff.ink_only:
+    the SLOPE DN arrows crossing both RD-1 labels on P-206.00 are a lighter
+    pen). A label counts when either sweep reads it EXACTLY
+    (plan_only.exact_label_reads), and the symbol beside it is never drawn
+    in the lighter pen. Neither sweep joins the mechanical sweeps the
+    set-health read scans: that read is of mechanical plans."""
+    from lib import plan_only as _po
+    from lib.plan_sheet import load_sheet
+    from lib.plan_takeoff import located_labels, run_takeoff, sweep
+
+    rows: List[Dict[str, Any]] = []
+    note: Dict[str, Any] = {"plans": [], "named_by": fam.get("named_by"),
+                            "tags": fam.get("tags"), "located": {}}
+    for p in pages:
+        if not _po.is_family_plan(p, name):
+            continue
+        sheet = p.get("sheet_number")
+        note["plans"].append(sheet)
+        lab = _po.label([sheet])
+        key = f"plan-only|{sheet}|{name}"
+        n = None
+        try:
+            pg = open_page(p)
+            segs = load_sheet(pg)["segs"]
+            plain = sweep(pg, segs)                 # and, on a rotated page, its frame
+            ink = sweep(pg, segs, ink_below=_po.INK_BELOW)
+            reads = _po.exact_label_reads(plain + ink, fam["tags"])
+            n = len(located_labels(reads, fam["tags"], {}))
+            res = run_takeoff(None, pg, fam["tags"], {}, [], door.get("inches"), reads=reads,
+                              unplaced_reason=f"refused: plan-only family, {lab}: "
+                                              f"counted at sheet scope, not placed",
+                              ink_below=_po.INK_BELOW)
+        except Exception as e:                      # one plan never sinks the pass
+            log.exception("glyph pass %s failed: %r", key, e)
+            res = {"refused": f"plan-only takeoff failed: {type(e).__name__}: {str(e)[:160]}"}
+        got = emit.glyph_rows(res, mech=p, arch=None, family=name, pass_key=key,
+                              units=SHEET_SCOPE_UNITS, widest_door=door, mech_count=n)
+        for r in got:
+            pl = r.setdefault("payload", {})
+            if r.get("glyph_status") == "unsupported_unit":
+                pl["role"] = ROLE_PLAN_ONLY
+            pl["plan_only"] = {"label": lab, "named_by": fam.get("named_by"),
+                               "tag_words": fam.get("tag_words"),
+                               "printed": fam.get("printed")}
+        rows += got
+        note["located"][str(sheet)] = res.get("labels_by_tag") or res.get("refused")
+    return rows, note
 
 
 def seed_from_stairs(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any],

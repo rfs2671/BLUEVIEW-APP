@@ -64,7 +64,12 @@ SOURCE = "plan_takeoff"
 #: (plan_voids, plan_glyph_pass.assign_voids); payload.units.voids records
 #: each, per unit: its box, what marked it, the floor below, the share of
 #: its cells over that unit.
-EMIT_VERSION = 8
+#: 9 (2026-10-26): a PLAN-ONLY family (lib.plan_only - the roof drains no
+#: schedule counts) is located at sheet scope on its own plan; its rows carry
+#: payload.plan_only (the label, the details and notes naming it, each tag's
+#: words, a note's printed figure), and a refused plan of it payload.role
+#: "plan_only". Rows of every other family are unchanged.
+EMIT_VERSION = 9
 
 #: the citation fields a row carries from its page (as _write_page_records)
 CITE = ("project_id", "company_id", "file_id", "file_hash", "file_name",
