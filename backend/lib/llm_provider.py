@@ -27,7 +27,13 @@ API_BASE = (os.environ.get("LLM_API_BASE") or "https://api.deepinfra.com/v1/open
 #: The DeepInfra key the DM brain already uses (QWEN_API_KEY), unless set.
 API_KEY = os.environ.get("LLM_API_KEY") or os.environ.get("QWEN_API_KEY", "")
 CHAT_MODEL = os.environ.get("LLM_MODEL") or "Qwen/Qwen3.8-Flash"
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL") or "openai/whisper-large-v3-turbo"
+#: openai/whisper-large-v3, not -turbo (operator ruling 2026-10-27). Measured
+#: on DeepInfra through lib/voice_ingest, ten construction phrases: turbo
+#: returned EMPTY text for 6 of 10 under the prompt a 588 group note carries
+#: (1 of 10 under the glossary alone), and its translations endpoint returned
+#: the source language unchanged; large-v3 heard 10 of 10 under that prompt
+#: (6.3% word error) and translated.
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL") or "openai/whisper-large-v3"
 #: BAAI/bge-m3: 1024 dimensions. Vectors from the old model (OpenAI
 #: text-embedding-3-small, 1536) are not comparable and are re-embedded
 #: (project memory) or left unread (plan pages and chunks).

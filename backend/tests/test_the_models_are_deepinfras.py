@@ -1,6 +1,6 @@
 """Every model call goes to DeepInfra (operator decision 2026-10-26: OpenAI is
 retired). The chat model is Qwen/Qwen3.8-Flash, Whisper is
-openai/whisper-large-v3-turbo, embeddings are BAAI/bge-m3 (1024 dimensions),
+openai/whisper-large-v3 (ruled 2026-10-27, over -turbo), embeddings are BAAI/bge-m3 (1024 dimensions),
 all through lib/llm_provider, on the DeepInfra key the DM brain already uses.
 
 Each test fails by assertion on the branch before this change.
@@ -65,7 +65,7 @@ class NothingCallsOpenAI(unittest.TestCase):
         p = _provider()
         self.assertEqual(p.API_BASE, "https://api.deepinfra.com/v1/openai")
         self.assertEqual(p.CHAT_MODEL, "Qwen/Qwen3.8-Flash")
-        self.assertEqual(p.WHISPER_MODEL, "openai/whisper-large-v3-turbo")
+        self.assertEqual(p.WHISPER_MODEL, "openai/whisper-large-v3")
         self.assertEqual((p.EMBED_MODEL, p.EMBED_DIMS), ("BAAI/bge-m3", 1024))
         self.assertEqual(server.LLM_API_KEY, p.API_KEY)
 
