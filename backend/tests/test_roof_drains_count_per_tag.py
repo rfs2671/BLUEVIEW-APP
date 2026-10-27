@@ -164,6 +164,33 @@ class PerTagOnly(unittest.TestCase):
             self.assertFalse(_ok(s, recs), s)
 
 
+class ATrackWithoutThePlanDoesNotVetoIt(unittest.TestCase):
+    """search_plans counts a family once per drawing track. Asked about roof
+    drains alone, the rows that come back are the filed track's (P-206.00 and
+    the refused sheets); the owner's census of the family says 0."""
+
+    def _with_owner_census(self, n):
+        P = _P()
+        recs = _records()
+        fam = P.families(_set_records())[FAM]
+        c = next(r for r in recs if r.get("record_type") == S.GLYPH_CENSUS and r.get("family") == FAM)
+        recs.append(S.glyph_census("family", PID, c["page_ids"], n, family=FAM, tags=TAGS,
+                                   track="post_co", plan_only=fam))
+        recs.append(S.glyph_census("refusals", PID, c["page_ids"], 0, track="post_co"))
+        return recs
+
+    def test_an_owner_census_of_none_lets_the_filed_rows_bind(self):
+        recs = self._with_owner_census(0)
+        self.assertTrue(_ok("RD-1: 2.", recs))
+        self.assertIn("RD-1 2 + RD-2 2", S.render_glyph_evidence(recs))
+
+    def test_an_owner_census_of_some_refuses(self):
+        """Rows of the family the owner's track holds and none came back."""
+        recs = self._with_owner_census(1)
+        self.assertTrue(_ok("RD-1: 2.", _records()))
+        self.assertFalse(_ok("RD-1: 2.", recs))
+
+
 class TheNoteMustAgree(unittest.TestCase):
 
     def test_sd12_agrees_and_rd1_binds(self):

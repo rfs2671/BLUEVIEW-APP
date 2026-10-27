@@ -1736,6 +1736,11 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
         rows.append(r)
     censuses = [r for r in records or [] if r.get("record_type") == GLYPH_CENSUS]
     ref_c = [c for c in censuses if c.get("kind") == "refusals"]
+    row_tracks = {_row_track(r) for r in rows}
+    if any(isinstance(c.get("plan_only"), dict) for c in censuses):
+        # beside a plan-only family, one track's rows and a census per track
+        # (_plan_only_censuses): the other tracks' refusals must be none too
+        ref_c = _one_track(ref_c, row_tracks)
     refused = [r for r in rows if _is_refusal(r)]
     refusals_complete = (len(ref_c) == 1 and sum(
         1 for r in rows if glyph_in_census(r, ref_c[0])) == ref_c[0].get("count"))
@@ -1746,6 +1751,7 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
             fam_c.setdefault(c["family"], []).append(c)
     families: Dict[str, GlyphFamily] = {}
     for name, cs in fam_c.items():
+        cs = _plan_only_censuses(cs, row_tracks)
         c = cs[0]
         mine = [r for r in rows if glyph_in_census(r, c)]
         located = [r for r in mine if not _is_refusal(r)]
@@ -2418,6 +2424,36 @@ def _plan_only_subjects(words: set, fam: GlyphFamily) -> List[Tuple[GlyphFamily,
     if set(obj) <= words:
         return [(fam, list(fam.tags))]
     return []
+
+
+def _plan_only_censuses(cs: List[Dict[str, Any]], row_tracks: set) -> List[Dict[str, Any]]:
+    """A PLAN-ONLY FAMILY'S PLAN IS ON ONE TRACK. search_plans counts every
+    family once per drawing track; the roof drains' plan (P-206.00) is the
+    filed track's alone, so beside rows of that one track the owner's census
+    says 0 - and read as one book, two censuses for one family refused the
+    lot. Here the rows' own track's census stands, provided every other
+    track's census counted none of the family; anything else stays two
+    censuses, and refuses.
+
+    (Found 2026-10-26 emulating the rebuild against production. A schedule
+    family on one track has the same shape - asked about SAF-1, M-106.00's
+    rows are the filed track's and "The bulkhead has 1 SAF-1." refuses on
+    main - and is left as it is: that is a binding change for a ruling.)"""
+    if not all(isinstance(c.get("plan_only"), dict) for c in cs):
+        return cs
+    return _one_track(cs, row_tracks)
+
+
+def _one_track(cs: List[Dict[str, Any]], row_tracks: set) -> List[Dict[str, Any]]:
+    """The census of the rows' one track, when every other track's census of
+    the same filter counted nothing; else all of them (and the caller refuses)."""
+    if len(cs) < 2 or len(row_tracks) != 1:
+        return cs
+    (t,) = row_tracks
+    own = [c for c in cs if c.get("track") == t]
+    if len(own) == 1 and all(c.get("count") == 0 for c in cs if c is not own[0]):
+        return own
+    return cs
 
 
 def _without_object(clause: str, fam: GlyphFamily) -> str:
