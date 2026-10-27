@@ -118,11 +118,13 @@ async def _rerun_group(server, row: dict) -> Dict[str, Any]:
     features = dict(server._default_bot_config()["features"])
     features.update(row.get("features") or {})
     turn = server._answer_turn_begin()
+    trace: list = []
     reply = await server._run_group_agent(
         project_id=pids[0], group_id=row.get("group_id") or "replay@g.us",
         company_id=row.get("company_id"), sender="", body=str(row.get("question") or ""),
-        features=features, explicit_mention=True)
+        features=features, explicit_mention=True, tool_trace=trace)
     return {"final_text": reply or "", "records": answer_log.records_snapshot(turn["records"]),
+            "tools": answer_log.tools_snapshot(trace),
             "gates": answer_log.redact(turn["gates"]), "model": turn.get("model")}
 
 
@@ -130,8 +132,10 @@ async def _rerun_app(server, row: dict) -> Dict[str, Any]:
     pids = row.get("project_ids") or []
     if not pids:
         return {"skipped": "the logged app answer names no job"}
+    p = row.get("params") or {}
     got = await server._memory_answer(str(row.get("company_id")), pids[0],
-                                      str(row.get("question") or ""), phone_view="last4")
+                                      str(row.get("question") or ""),
+                                      p.get("date_from"), p.get("date_to"), phone_view="last4")
     return {"final_text": got.get("text") or "",
             "records": [answer_log.source_snapshot(s) for s in got.get("sources") or []],
             "gates": answer_log.redact(server._memory_gates(got))}

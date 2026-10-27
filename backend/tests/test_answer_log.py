@@ -108,6 +108,18 @@ class AppendOnly(unittest.TestCase):
                                    ("_process_whatsapp_message", "group"),
                                    ("search_project_memory", "app")})
 
+    def test_the_group_and_app_sites_keep_their_evidence(self):
+        """The group send logs the agent's own tool trace; the app logs its
+        date range -- each by keyword at its one call."""
+        tree = ast.parse((BACKEND / "server.py").read_text(encoding="utf-8"))
+        kw = {}
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "_answer_log_write"):
+                kw[ast.literal_eval(node.args[0])] = {k.arg for k in node.keywords}
+        self.assertTrue("tools" in kw["group"])
+        self.assertTrue("params" in kw["app"])
+
     def test_no_purge_sweeps_it(self):
         self.assertEqual([c for c in wa_retention.COLLECTIONS if c == answer_log.COLLECTION], [])
         self.assertEqual([c for c in server._PROJECT_OWNED_COLLECTIONS
@@ -299,6 +311,39 @@ class Replay(unittest.TestCase):
         row["gates"] = server._dm_gates("brain", {"stop": "stop", "verify_retries": 0}, fb, why)
         d = _run(answer_replay.replay(fake, CO_A, "a1"))["diff"]
         self.assertEqual((d["text_same"], d["records_same"], d["gates_same"]), (True, True, True))
+
+    def test_an_app_replay_asks_the_logged_date_range(self):
+        row = {"_id": "a2", "company_id": CO_A, "surface": "app", "project_ids": ["p1"],
+               "question": "concrete pour", "final_text": "x",
+               "params": {"date_from": "2026-10-01", "date_to": "2026-10-07"}}
+        asked = []
+
+        async def memory_answer(cid, pid, q, date_from=None, date_to=None, **k):
+            asked.append((cid, pid, q, date_from, date_to))
+            return {"text": "x", "sources": [], "claims": []}
+
+        async def get(cid, lid):
+            return row if cid == CO_A and lid == "a2" else None
+        fake = SimpleNamespace(_answer_log_get=get, _memory_answer=memory_answer,
+                               _memory_gates=server._memory_gates)
+        _run(answer_replay.replay(fake, CO_A, "a2"))
+        self.assertEqual(asked, [(CO_A, "p1", "concrete pour", "2026-10-01", "2026-10-07")])
+
+    def test_a_group_replay_records_the_agents_tools(self):
+        row = {"_id": "g1", "company_id": CO_A, "surface": "group", "project_ids": ["p1"],
+               "question": "who is on site", "final_text": "3 on site", "group_id": "x@g.us"}
+
+        async def agent(**kw):
+            kw["tool_trace"].append({"tool": "who_on_site", "args": {}, "result": "3 on site"})
+            return "3 on site"
+
+        async def get(cid, lid):
+            return row if cid == CO_A else None
+        fake = SimpleNamespace(_answer_log_get=get, _run_group_agent=agent,
+                               _answer_turn_begin=server._answer_turn_begin,
+                               _default_bot_config=server._default_bot_config)
+        out = _run(answer_replay.replay(fake, CO_A, "g1"))
+        self.assertEqual([t["tool"] for t in out["now"]["tools"]], ["who_on_site"])
 
     def test_every_send_path_is_stubbed(self):
         async def real(*a, **k):

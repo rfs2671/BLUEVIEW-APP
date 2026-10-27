@@ -166,7 +166,7 @@ def _canon(v: Any) -> Any:
 #: The fields the hash covers: the row's content, never _id or the hash.
 HASHED = ("surface", "question", "final_text", "user_id", "company_id", "project_ids",
           "asker_last4", "group_id", "records", "tools", "gates", "model", "code_sha",
-          "path", "timing", "features", "created_at")
+          "path", "timing", "features", "params", "created_at")
 
 
 def content_hash(row: Dict[str, Any]) -> str:
