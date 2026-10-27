@@ -66630,6 +66630,8 @@ async def _interpret_levels(project_id: str, subject: str, floor: str,
         subject = plan_levels.strip_phrases(subject) or subject
     if any(m["restate"] for m in in_floor):
         floor = ""
+    sheet_of = interp.setdefault("page_sheets", {})
+    sheet_of.update({str(r.get("_id")): str(r.get("sheet_number") or "") for r in rows})
     ids = sorted({i for m in restate for lv in m["levels"] for i in lv["page_ids"]})
     if ids:
         scoped.append(("level", ids, subject))
@@ -66652,7 +66654,10 @@ async def _sense_scopes(project_id: str, terms: List[str], asked: str,
         plan_term_senses.resolve(t, asked, interp.get("levels") or ()))}
     if not want:
         return []
-    lv = plan_levels.set_levels(await _level_rows(project_id))
+    rows = await _level_rows(project_id)
+    interp.setdefault("page_sheets", {}).update(
+        {str(r.get("_id")): str(r.get("sheet_number") or "") for r in rows})
+    lv = plan_levels.set_levels(rows)
     ids = sorted({i for x in lv if x["token"] in want for i in x["page_ids"]})
     return [("sense", ids, subject)] if ids else []
 
@@ -66662,14 +66667,29 @@ async def _sense_scopes(project_id: str, terms: List[str], asked: str,
 SCOPED_PLANS_MAX = 4
 
 
+def _on_sheet(record: dict, sheet_number: str) -> bool:
+    """Does `record` sit on the sheet the caller named (the same prefix rule
+    `_current_record_page_ids` applies to pages)?"""
+    if not sheet_number:
+        return True
+    return str(record.get("sheet_number") or "").upper().startswith(sheet_number.upper())
+
+
 async def _interpret_query(project_id: str, subject: str, floor: str, attribute: str,
-                           intent: str, interp: dict) -> Tuple[str, str, List[dict]]:
+                           intent: str, interp: dict, *, discipline: str = "",
+                           sheet_number: str = "") -> Tuple[str, str, List[dict]]:
     """(subject, floor, records from the extra scopes) for what the question
     MEANS on this set: its level words read against the set's levels, and a
     two-meaning term's settled meaning (lib.plan_levels, lib.plan_term_senses).
-    Fills `interp` with `level_mapping` and `searched_sheets`. A failure here
-    costs the interpretation and nothing else: the question is searched as
-    it was asked."""
+    Fills `interp` with `level_mapping`, `searched_sheets` and `scoped_sheets`.
+    A failure here costs the interpretation and nothing else: the question is
+    searched as it was asked.
+
+    AN EXPLICIT SHEET OR DISCIPLINE STILL HOLDS. The extra scopes widen what
+    the question means; they never widen past a sheet or discipline the
+    caller named - 'roof bulkhead' on M-200 does not return A-105. Each
+    scope is cut to the pages those filters allow, and any extra record off
+    them is dropped before it is merged."""
     asked = f"{subject} {attribute}"
     scoped: list = []
     try:
@@ -66683,14 +66703,34 @@ async def _interpret_query(project_id: str, subject: str, floor: str, attribute:
             scoped += await _sense_scopes(project_id, terms, asked, interp, subject)
         except Exception as e:
             logger.warning(f"search_plans sense scope failed for {subject!r}: {e!r}")
+    allowed: Optional[set] = None
+    if scoped and (sheet_number or discipline):
+        try:
+            allowed = set(await _current_record_page_ids(
+                project_id, discipline=discipline, sheet_number=sheet_number))
+        except Exception as e:
+            logger.warning(f"search_plans scope filter failed for {subject!r}: {e!r}")
+            allowed = set()
+    if allowed is not None:
+        scoped = [(why, [i for i in ids if i in allowed], subj) for why, ids, subj in scoped]
+    sheet_of = interp.get("page_sheets") or {}
+    kept = {i for _why, ids, _s in scoped for i in ids}
+    interp["scoped_sheets"] = sorted({sheet_of[i] for i in kept if sheet_of.get(i)})
+    if interp.get("searched_sheets"):
+        interp["searched_sheets"] = [s for s in interp["searched_sheets"]
+                                     if s in interp["scoped_sheets"]]
     extra: List[dict] = []
     for _why, ids, subj in scoped:
+        if not ids:
+            continue
         subj = plan_search.normalize_arguments(subj, attribute, intent, "")[0]
         got = await _ranked_for_subject(project_id, ids, subj, intent)
         if got is not None:
             extra += [r for r in plan_search.drop_impossible_dimensions(
                 plan_search.drop_indexes(got[0]))
-                if not plan_search.is_glyph_evidence(r)][:SCOPED_PLANS_MAX]
+                if not plan_search.is_glyph_evidence(r)
+                and (allowed is None or str(r.get("page_id")) in allowed)
+                and _on_sheet(r, sheet_number)][:SCOPED_PLANS_MAX]
     return subject, floor, extra
 
 
@@ -66751,19 +66791,23 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
         return []
     interp = interp if interp is not None else {}
     asked = f"{subject} {attribute}"
+    interp["filters"] = {"sheet_number": sheet_number, "discipline": discipline}
     subject, floor, extra = await _interpret_query(
-        project_id, subject, floor, attribute, intent, interp)
+        project_id, subject, floor, attribute, intent, interp,
+        discipline=discipline, sheet_number=sheet_number)
     # The property out of the subject, and no floor filter on a count
     # (plan_search.normalize_arguments) - before anything reads them.
     subject, attribute, floor = plan_search.normalize_arguments(subject, attribute, intent, floor)
     names = [subject] + [a for a in (also or []) if (a or "").strip() and a != subject]
     page_ids = await _current_record_page_ids(
         project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
+    # Nothing found still says what the question meant (_with_scoped fills
+    # `term_senses`; the level mapping is already in `interp`).
     if not page_ids:
-        return _with_scoped(extra, [], asked, interp) if extra else []
+        return _with_scoped(extra, [], asked, interp)
     found = [x for x in [await _ranked_for_subject(project_id, page_ids, n, intent)
                          for n in names] if x is not None]
-    if not found and extra:
+    if not found and (extra or plan_term_senses.terms_in(asked)):
         return _with_scoped(extra, [], asked, interp)
     if not found:
         return []
@@ -66831,6 +66875,20 @@ def _interp_lines(interp: Optional[dict]) -> List[str]:
     return lines
 
 
+def _searched_list(interp: Optional[dict]) -> str:
+    """Which sheets an empty search covered, as far as it is known: the extra
+    scopes by number, then the whole set (or the caller's filters)."""
+    interp = interp or {}
+    named = list(interp.get("scoped_sheets") or [])[:8]
+    f = interp.get("filters") or {}
+    if f.get("sheet_number") or f.get("discipline"):
+        rest = "the sheets matching " + " / ".join(
+            x for x in (f.get("sheet_number"), f.get("discipline")) if x)
+    else:
+        rest = "the indexed set" if not named else "the rest of the indexed set"
+    return ", ".join(named + [rest])
+
+
 def _render_records_for_model(records: List[dict], subject: str,
                               interp: Optional[dict] = None) -> str:
     """What the agent is shown. Every line carries where it came from and how
@@ -66838,6 +66896,21 @@ def _render_records_for_model(records: List[dict], subject: str,
     guess at — and the numbers it is allowed to use are the ones printed
     here. What the question was read to MEAN on this set (`interp`) comes
     right after the rule, for the answer to echo."""
+    if not records and _interp_lines(interp):
+        # WHAT THE QUESTION MEANT IS STILL TRUE WHEN NOTHING WAS FOUND. The
+        # mapping is a fact about the set's levels; the empty search is a fact
+        # about the search. They are said apart, and the second is said only
+        # as far as it is known: not found in the sheets searched.
+        return "\n".join(
+            [f"(The search for {subject!r} returned no records.)"]
+            + _interp_lines(interp)
+            + [f"Answer in two separate parts. FIRST, state each level_mapping "
+               f"line above exactly as given (it is about the set's levels, not "
+               f"about {subject!r}). THEN, about the thing asked, say only: "
+               f"'Not found in the sheets searched: {_searched_list(interp)}.' "
+               f"That is a fact about this search, not about the building: never "
+               f"say the drawings do not show it, do not estimate, and do not "
+               f"list other sheets."])
     if not records:
         # NOT "nothing on the drawings mentions it" — that is a claim about
         # the building, and what actually happened is that this search found

@@ -11,6 +11,7 @@ the drawings for the word 5TH. A two-meaning word comes back with its
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
 
 import server  # noqa: E402
@@ -135,3 +136,83 @@ class AWordWithTwoMeaningsSaysWhichItIs(_Levels):
         # No level was named, so no mapping is there to state.
         self.assertEqual([ln for ln in seen["result"].splitlines()
                           if ln.startswith("level_mapping:")], [])
+
+
+# ── Review findings on the first cut (2026-10-27) ──────────────────────────
+
+MECH = {"_id": "pgX", "project_id": THOMAS, "file_id": "f1", "file_name": "A-set.pdf",
+        "page_number": 20, "sheet_number": "M-200.00", "sheet_title": "MECHANICAL ROOF PLAN",
+        "discipline": "ME"}
+ROOF_BULKHEAD = _rec("pgT", "STAIR BULKHEAD ON ROOF")
+MECH_BULKHEAD = dict(_rec("pgT", "ROOF BULKHEAD EXHAUST FAN"), page_id="pgX",
+                     sheet_number="M-200.00")
+
+
+class _Direct(_Levels):
+    """search_plans called as the tool calls it, with the same fakes."""
+
+    def search(self, subject, records=None, **kw):
+        recs = RECORDS if records is None else records
+        interp: dict = {}
+
+        async def ranked(project_id, page_ids, subj, intent):
+            self.searches.append((sorted(page_ids), subj))
+            terms = plan_search.search_terms(subj)
+            hits = [dict(r) for r in recs if r["page_id"] in page_ids
+                    and all(any(f in r["quote"].lower() for f in plan_search.term_forms(t))
+                            for t in terms)]
+            return (hits, terms) if hits else None
+        async def page_ids(project_id, *, discipline="", floor="", sheet_number=""):
+            # The fake Mongo has no $options; the same prefix / exact rule.
+            return [str(p["_id"]) for p in self.db.document_page_index.rows
+                    if str(p.get("sheet_number", "")).upper().startswith(sheet_number.upper())
+                    and (not discipline
+                         or str(p.get("discipline", "")).upper() == discipline.upper())]
+        with patch.object(server, "_ranked_for_subject", ranked), \
+                patch.object(server, "_current_record_page_ids", page_ids), _Ctx(db=self.db):
+            got = asyncio.run(server.search_plans(THOMAS, subject, interp=interp, **kw))
+        return got, interp
+
+
+class AnExplicitSheetOrDisciplineHoldsForTheExtraScopes(_Direct):
+    def test_roof_bulkhead_on_m200_returns_no_architectural_sheet(self):
+        self.db.document_page_index.rows.append(dict(MECH))
+        got, _ = self.search("roof bulkhead", records=[ROOF_BULKHEAD, MECH_BULKHEAD],
+                             sheet_number="M-200", discipline="ME")
+        sheets = [r["sheet_number"] for r in got]
+        self.assertEqual(sheets, ["M-200.00"])
+        self.assertEqual([s for s in sheets if s.startswith("A-")], [])
+        # The roof level's pages were never searched past the filter.
+        self.assertFalse(any("pgT" in ids for ids, _s in self.searches), self.searches)
+
+    def test_without_the_filters_the_rooftop_meaning_reaches_the_roof_sheets(self):
+        got, _ = self.search("roof bulkhead", records=[ROOF_BULKHEAD])
+        self.assertEqual([r["sheet_number"] for r in got], ["A-105.00"])
+
+
+class NothingFoundStillSaysWhatTheLevelIs(_Direct):
+    def test_a_ninth_floor_on_four_floors_is_said_absent_with_the_sets_levels(self):
+        got, interp = self.search("sprinkler heads 9th floor")
+        self.assertEqual(got, [])
+        shown = server._render_records_for_model(got, "sprinkler heads 9th floor", interp)
+        self.assertIn("level_mapping: 9th floor: this set has no level by that name "
+                      "(its levels: 1st Floor, 2nd Floor, 3rd Floor, 4th Floor, "
+                      "Mezzanine, Roof)", shown)
+        self.assertIn("'Not found in the sheets searched: the indexed set.'", shown)
+        self.assertIn("never say the drawings do not show it", shown)
+
+    def test_a_remapped_level_with_nothing_found_shows_the_mapping_and_the_sheets(self):
+        got, interp = self.search("sprinkler heads 5th floor ceiling")
+        self.assertEqual(got, [])
+        shown = server._render_records_for_model(got, "sprinkler heads 5th floor ceiling",
+                                                 interp)
+        self.assertIn("level_mapping: 5th floor = Mezzanine (A-104.00) on this set", shown)
+        self.assertIn("searched_sheets:", shown)
+        self.assertIn("'Not found in the sheets searched: A-104.00, A-301.00, "
+                      "the rest of the indexed set.'", shown)
+        # Two parts, the mapping first.
+        self.assertLess(shown.index("level_mapping:"), shown.index("Not found in the sheets"))
+
+    def test_with_no_interpretation_the_empty_answer_is_unchanged(self):
+        shown = server._render_records_for_model([], "sprinkler heads", {"filters": {}})
+        self.assertIn("Answer exactly:", shown)
