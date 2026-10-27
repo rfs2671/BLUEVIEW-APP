@@ -208,7 +208,8 @@ class ThePassRunsOncePerTrack(unittest.TestCase):
             db.document_page_index.docs.append(dict(p, project_id=str(proj)))
         calls = []
 
-        def fake_pass(pages, open_page, schedules, door_pages, track="filed", sweeps=None):
+        def fake_pass(pages, open_page, schedules, door_pages, track="filed", sweeps=None,
+                      plan_only=None):
             calls.append((track, id(sweeps), len(pages)))
             return {"rows": [{"page_id": "pg-m100", "ordinal": i, "payload": {"track": track}}
                              for i in range(3)], "summary": {}}
