@@ -2,7 +2,7 @@
 
 Read-only: no database, nothing sent to any group. For every line that
 should not be handled before the model (state updates, merged parts), one
-gpt-4o-mini call with the lines before it as context -- the replied-to
+call to the worker's model (lib/llm_provider) with the lines before it as context -- the replied-to
 message, or the open ask just before it, shown as the worker shows them --
 then the checks the worker applies (evidence, a schedule update is no issue,
 severity only as stated). Short acks ("Np", "will do", "👍 tmrw") are read
@@ -10,7 +10,7 @@ by code as the worker reads them, with no model call. Prints one row per
 line, then the agreement two ways: hard (type as labelled) and soft
 (trackable but the other of question / request).
 
-    OPENAI_API_KEY=... python scripts/attention_fixture_eval.py \\
+    railway run python scripts/attention_fixture_eval.py \\
         tests/fixtures/attention/pass2_2026_10.json
 """
 
@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from lib import llm_provider  # noqa: E402
 from lib import wa_attention as wa  # noqa: E402
 from lib import wa_attention_state as was  # noqa: E402
 from lib.server_http import ServerHttpClient  # noqa: E402
@@ -33,8 +34,8 @@ SKIP = ("state", "part_done", "follow_up", "flag", "merged")
 async def _call(messages):
     async with ServerHttpClient(timeout=60) as client:
         resp = await client.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+            llm_provider.CHAT_URL,
+            headers={"Authorization": f"Bearer {llm_provider.API_KEY}"},
             json={"model": wa.MODEL, "temperature": 0, "max_tokens": 500,
                   "messages": messages, "response_format": {"type": "json_object"}})
         resp.raise_for_status()
