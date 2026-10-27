@@ -1,5 +1,5 @@
 {
-  "suite": "C:/Users/asddd/bv-worktrees/ceilheight/backend/eval/boyland.json",
+  "suite": "eval/boyland.json",
   "suite_cases": [
     "ptac-count",
     "ptac-make-and-model",
