@@ -65961,7 +65961,8 @@ async def _dm_send_plan_file(ctx: dict, job: dict, args: dict) -> str:
     eval (dry run) sends nothing."""
     ident, dm_chat, dry = ctx["ident"], ctx["dm_chat"], bool(ctx.get("dry_run"))
     pid = str(job["id"])
-    if not await _bot_project_scope(ident["company_id"], pid):
+    company_id = str(ident.get("company_id") or "")
+    if not company_id or not await _bot_project_scope(company_id, pid):
         return wa_security.BOT_SCOPE_REFUSAL
     sheet_q = str(args.get("sheet") or "").strip()
     file_q = str(args.get("file") or "").strip()
@@ -65977,7 +65978,7 @@ async def _dm_send_plan_file(ctx: dict, job: dict, args: dict) -> str:
                             + plan_sources.list_notes(sheet_q, "", listed, uploaded))
         file_id = str(page.get("file_id") or "")
     elif file_q:
-        file_id, why = await _dm_plan_file_named(pid, ident["company_id"], file_q)
+        file_id, why = await _dm_plan_file_named(pid, company_id, file_q)
         if not file_id:
             return why
     else:
@@ -65986,7 +65987,9 @@ async def _dm_send_plan_file(ctx: dict, job: dict, args: dict) -> str:
         {"_id": to_query_id(file_id), "project_id": pid, "is_deleted": {"$ne": True}},
         {"name": 1, "company_id": 1, "r2_key": 1, "size": 1, "drawing_track": 1,
          "drawing_track_label": 1})
-    if not frec or str(frec.get("company_id") or ident["company_id"]) != str(ident["company_id"]):
+    # The file's own company must be the asker's: a file row with no company
+    # is not sent (its project is in scope, but the row proves nothing).
+    if not frec or str(frec.get("company_id") or "") != company_id:
         return "That drawing's file isn't on this job any more."
     if not frec.get("r2_key"):
         return f"{frec.get('name') or 'That file'} has no stored copy in Levelog to send."

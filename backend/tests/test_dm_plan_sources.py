@@ -217,6 +217,21 @@ class SendPlanFile(_Sources):
         self.assertEqual(docs, [])
         self.assertEqual(last_tool_results(llm.calls[1])[0], server.wa_security.BOT_SCOPE_REFUSAL)
 
+    def test_a_file_row_without_its_company_is_not_sent(self):
+        """The job is in scope, but a file row that doesn't name the asker's
+        company proves nothing about whose file it is: refused, not sent."""
+        for r in self.db.project_files.rows:
+            if r["_id"] == "f1":
+                r.pop("company_id", None)
+        llm = FakeLLM(resp(use("send_plan_file", {"job": "588", "sheet": "A-201"})),
+                      resp(text("That drawing's file isn't on this job any more.")))
+        with _Ctx(db=self.db) as c:
+            self.ask(c, "send me A-201 pdf", llm, [])
+            docs = self.documents(c)
+        self.assertEqual(docs, [])
+        self.assertEqual(last_tool_results(llm.calls[1])[0],
+                         "That drawing's file isn't on this job any more.")
+
     def test_a_sheet_listed_but_not_uploaded(self):
         seen = []
 
