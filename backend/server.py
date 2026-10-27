@@ -59241,7 +59241,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             # After it ran, its result (e.g. over the size limit) is the truth.
             file_denied += 1
             logger.info("[dm-brain] re-asked: said it can't send a file")
-            fix(dm_brain.file_send_note())
+            fix(dm_brain.file_send_note(), "file_deny")
             continue
         if dm_brain.cant_answer(last_text) and deflects < dm_brain.DEFLECT_RETRIES:
             # Never "check with the site manager" / "not sure" before the
