@@ -57,8 +57,10 @@ the distance between the outermost two, in points. That length over the
 printed value is the scale that dimension implies.
 
 A viewport is VERIFIED when at least MIN_AGREEING of its dimensions agree
-with its note within AGREE_TOL, and no other scale is implied by more of
-them than the note's is. Otherwise it is refused, with the reason.
+with its note within AGREE_TOL, at least MIN_DISTINCT different printed
+values are among those (copies count, ruling 2026-10-27), and no other
+scale is implied by more of them than the note's is. Otherwise it is
+refused, with the reason.
 
 AGREE_TOL is set from what the error is made of, not from a pass rate (see
 the constant). A sheet whose scale text is drawn as vectors (SHX text: the
@@ -97,10 +99,23 @@ from lib.plan_cells import title_block_edge
 #: every Boyland verdict is the same for any value from 0.5% to 5%; the
 #: first change is at 8%, and at 10% three SET_UPDATED elevations whose
 #: drawing is 9.7% larger than their 3/16" note would wrongly verify.
+#: With MIN_DISTINCT (2026-10-27, Q10_scale_distinct_measure.md) the band is
+#: 2.1% to 7%: below 2.1% GN-004.00's FIRST FLOOR EGRESS PLAN loses its only
+#: second value (30'-5", drawn 2.05% short), and those three elevations,
+#: which print one value (10'-0"), no longer verify at 10%.
 AGREE_TOL = 0.03
 
 #: Dimensions that must agree before a viewport's note is accepted.
 MIN_AGREEING = 3
+
+#: ...and how many DIFFERENT printed values must be among them (ruling,
+#: Roy 2026-10-27: "copies count, but the >=3 must include >=2 distinct
+#: dimension values"). Eight 3'-0" door widths on an egress plan, or six
+#: 10'-0" floor-to-floor heights on an elevation, are one length drawn eight
+#: or six times - often one block copied - so they check the note at one
+#: length only. Copies still count toward MIN_AGREEING; a value is the
+#: printed length (36" and 3'-0" are one value), and only agreeing ones count.
+MIN_DISTINCT = 2
 
 #: Raster cell for finding the bodies of ink, in points.
 CELL_PT = 3.0
@@ -494,11 +509,18 @@ def verify(note: Optional[ScaleNote], dims: Sequence[Dimension]) -> Tuple[bool, 
         return False, 0, "no scale note in the text layer inside this viewport"
     if note.nts or not note.pt_per_in:
         return False, 0, f"the note says there is no scale ({note.text})"
-    imp = [d.implied_pt_per_in for d in dims if d.implied_pt_per_in]
-    agree = [v for v in imp if abs(v / note.pt_per_in - 1) <= AGREE_TOL]
+    measured = [d for d in dims if d.implied_pt_per_in]
+    imp = [d.implied_pt_per_in for d in measured]
+    agree = [d for d in measured if abs(d.implied_pt_per_in / note.pt_per_in - 1) <= AGREE_TOL]
     if len(agree) < MIN_AGREEING:
         return False, len(agree), (f"{len(agree)} of {len(imp)} measured dimensions agree with "
                                    f"{note.text} (need {MIN_AGREEING})")
+    # Copies count, but not as different evidence: this viewport's OWN
+    # agreeing dimensions must print at least MIN_DISTINCT different values.
+    values = {round(d.inches * 16) for d in agree}      # to 1/16": 36" == 3'-0"
+    if len(values) < MIN_DISTINCT:
+        return False, len(agree), (f"{len(agree)} dimensions agree with {note.text} but all read "
+                                   f"{agree[0].text}; {MIN_DISTINCT} different values needed")
     rival = 0
     for v in imp:
         if abs(v / note.pt_per_in - 1) <= 2 * AGREE_TOL:
@@ -646,6 +668,6 @@ def read_sheet(page) -> Sheet:
     return Sheet(viewports=vps, labels=lab, width=page.width, height=page.height)
 
 
-__all__ = ["AGREE_TOL", "MIN_AGREEING", "ScaleNote", "Dimension", "Viewport", "Sheet",
+__all__ = ["AGREE_TOL", "MIN_AGREEING", "MIN_DISTINCT", "ScaleNote", "Dimension", "Viewport", "Sheet",
            "parse_scale_note", "find_scale_notes", "text_lines", "dimension_words",
            "measure_dimension", "verify", "claimed_viewport", "read_sheet"]
