@@ -56,6 +56,7 @@ import json
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from lib import plan_dimensions
 from lib import plan_refusal
 from lib import plan_search as ps
 from lib.plan_extract import TIER_SCHEDULE_CELL
@@ -232,6 +233,9 @@ def validate_suite(suite: Dict[str, Any]) -> None:
                 isinstance(x, str) and x.strip() for x in lr)):
             raise SuiteError(f"{cid}: located_render is a non-empty list of the "
                              f"phrases the located-symbol render must state, or absent")
+        nsv = exp.get("no_stated_value")
+        if nsv is not None and (nsv is not True or c.get("intent") != "attribute"):
+            raise SuiteError(f"{cid}: no_stated_value is true on an attribute case, or absent")
         claims = exp.get("claims")
         if claims is not None:
             if not isinstance(claims, list) or not claims:
@@ -528,6 +532,29 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
         checks[f"refuses:{sent}"] = not ok
         if ok:
             reasons.append(f"the gate allowed {sent!r}, which the case says is wrong")
+
+    # ── NO VALUE OF IT IS STATED ───────────────────────────────────────────
+    #
+    # For a property the drawings do not show (ceiling height, ruled
+    # 2026-10-27: "floor-to-floor 10'-0" (A-300.00); ceiling height not shown
+    # on the drawings"). An answer may state a value only when the gate binds
+    # it, so every dimension a returned record prints is put to the gate as
+    # the subject's value, and any that binds fails the case. Measured the day
+    # it was written: the gate bound "The ceiling height is 10'-0"." on
+    # A-300.00's floor-to-floor dimension. The count of values put to the gate
+    # is recorded: with none printed, the check holds vacuously and says so.
+    if exp.get("no_stated_value"):
+        texts = plan_dimensions.record_texts(list(returned), ps._vouches_for_nothing)
+        printed = sorted({f.text.strip() for t in texts
+                          for f in plan_dimensions.find(plan_dimensions.unreverse(t)) if f.dims})
+        bound = [d for d in printed
+                 if ps.answer_is_grounded(_sentence(subject, d), returned, intent=intent)[0]]
+        checks["printed_values_put_to_the_gate"] = len(printed)
+        checks["no_value_binds"] = not bound
+        if bound:
+            reasons.append(f"the gate allowed {len(bound)} printed value(s) as the "
+                           f"{subject}, which the drawings do not show: "
+                           + " | ".join(_sentence(subject, d) for d in bound[:4]))
 
     # ── NO UNSCOPED COUNT ──────────────────────────────────────────────────
     #

@@ -196,7 +196,7 @@ async def main_async(a) -> int:
     except Exception as e:
         print(f"   $search FAILED: {server._memory_err(e)}")
     qv = await server._memory_embed_one(a.query)
-    print(f"   query embedding: {'ok' if qv else 'FAILED (no OPENAI_API_KEY or API error)'}")
+    print(f"   query embedding: {'ok' if qv else 'FAILED (no LLM_API_KEY / QWEN_API_KEY, or API error)'}")
     if qv:
         try:
             rows = await db.project_memory.aggregate([
