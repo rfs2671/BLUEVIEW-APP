@@ -67918,8 +67918,37 @@ async def _check_one_sheet(project_id: str, user_words: str,
         return None
 
 
+async def plan_abbreviation_tables(project_id: str) -> Dict[str, Dict[str, List[str]]]:
+    """file_id -> the abbreviations table its current pages print in their
+    text layer (plan_search.abbreviation_table): the alternative names an
+    attribute's subject may be printed under, in that file's drawings only
+    (plan_search, ruling 2026-10-27). READ-ONLY. A failure costs only the
+    alternative names - every value then needs its subject spelled out -
+    never a binding."""
+    out: Dict[str, Dict[str, List[str]]] = {}
+    if not project_id:
+        return out
+    try:
+        live = await _live_plan_file_ids(project_id)
+        async for p in db.document_page_index.find(
+                {"project_id": project_id, **_current_page_filter(live),
+                 "raw_text": {"$regex": "ABBREVIATION", "$options": "i"}},
+                {"file_id": 1, "raw_text": 1}):
+            table = plan_search.abbreviation_table(p.get("raw_text") or "")
+            if table:
+                mine = out.setdefault(str(p.get("file_id") or ""), {})
+                for ab, ms in table.items():
+                    mine.setdefault(ab, []).extend(m for m in ms if m not in mine.get(ab, []))
+    except Exception as e:
+        logger.warning(f"abbreviation tables unread for {project_id}: {e!r}")
+        return {}
+    return out
+
+
 def gate_plan_answer(text: str, records: List[dict], subject: str = "",
-                     intent: str = "") -> Tuple[str, str]:
+                     intent: str = "",
+                     aliases: Optional[Dict[str, Dict[str, List[str]]]] = None
+                     ) -> Tuple[str, str]:
     """(text_to_send, outcome). THE HARD GATE.
 
     Every number and dimension in a composed answer must appear in a record
@@ -67958,7 +67987,7 @@ def gate_plan_answer(text: str, records: List[dict], subject: str = "",
             return plan_search.NOT_FOUND, "no_records_refused"
         return text, "no_records"
     grounded, unsupported = plan_search.answer_is_grounded(
-        text, records, intent=intent)
+        text, records, intent=intent, aliases=aliases)
     leaked = plan_search.contains_label(text, records)
     if grounded and not leaked:
         return text, "grounded"
@@ -68001,7 +68030,13 @@ async def gate_and_warrant(
     # caller that has no project (the suite, most tests) gets the gate alone
     # and identical behaviour to before.
     """
-    sent, outcome = gate_plan_answer(text, records, subject, intent=intent)
+    # AN ATTRIBUTE BINDS TO THE SUBJECT ITS RECORD NAMES, or to one of its
+    # alternative names - the set's own abbreviations (plan_search, ruling
+    # 2026-10-27). Read only for an attribute, and only with a project.
+    aliases = (await plan_abbreviation_tables(project_id)
+               if project_id and (intent or "").strip().lower() == "attribute" else None)
+    sent, outcome = gate_plan_answer(text, records, subject, intent=intent,
+                                     aliases=aliases)
     if not project_id:
         return sent, outcome
     # TRIGGERED ON `classify_reply`, THE SAME INSTRUMENT THE BENCHMARK COUNTS

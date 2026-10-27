@@ -123,12 +123,16 @@ async def run(args) -> int:
         print(f"   {cls:46} {got:4}{flag}")
 
     known = pe.known_failure_classes(suite)
+    # The alternative names the gate is given (server.gate_and_warrant).
+    aliases = await server.plan_abbreviation_tables(pid)
+    print(f"abbreviations tables: {sum(len(t) for t in aliases.values())} "
+          f"abbreviations in {len(aliases)} file(s)")
     results = []
     for case in cases:
         returned = await server.search_plans(
             pid, case["subject"], intent=case.get("intent") or "",
             also=case.get("also") or [], attribute=case.get("attribute") or "")
-        r = pe.score_case(case, returned, stale)
+        r = pe.score_case(case, returned, stale, aliases=aliases)
         r["known_failure"] = known.get(case["id"])
         results.append(r)
 

@@ -3218,13 +3218,272 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     return (not unsupported), unsupported
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# A printed value binds only to the subject its record names
+# ══════════════════════════════════════════════════════════════════════════
+#
+# ── WHY THE UNION WAS NOT ENOUGH FOR AN ATTRIBUTE EITHER ──────────────────
+#
+# An attribute answer kept the union: a value bound if ANY returned record
+# printed it. Measured 2026-10-27: "The ceiling height is 10'-0"." bound on
+# A-300.00, which prints the floor-to-floor level marks and never the word
+# CEILING; asked "ceiling height" on production, 13 printed values bound as
+# the ceiling height - 1'-4" out of A-500.00's partition table, 1/2" out of
+# "1/2" METAL FLUSHED ON THE CEILING". The drawings show no ceiling height.
+#
+# Ruling 2026-10-27 (operator): a printed value binds only when its record
+# names the claim's subject or one of its alternative names.
+#
+#   THE CLAIM'S SUBJECT is what its clause says before the value - "the
+#   ceiling height is 10'-0"" is about the ceiling height - in the words the
+#   search reads (search_terms: the stop words out), a citation removed
+#   first. With nothing before the value, it is what follows it ("a 42"
+#   parapet"). A clause that names nothing states a value of nothing, and it
+#   is refused, as a count naming nothing is.
+#
+#   ITS RECORD NAMES IT when EVERY one of those words is printed where the
+#   value is: as a word (term_pattern - the plural, a truncation with its
+#   period, the CONVENTIONS contractions), or as an alternative name. "1/2"
+#   METAL FLUSHED ON THE CEILING" names the ceiling and not its height.
+#
+#   WHERE THE VALUE IS. A schedule is a grid, and its record is the whole
+#   grid: A-500.00's partition table prints CEILING in one type's cell and
+#   FULL HEIGHT in another, so read as one record it "names" a ceiling
+#   height it never states. So a schedule cell is named by the grid's own
+#   name and headers, and by its row when a column of the grid is its
+#   identifier (a row is then one thing - EF-1, DH-1); without one, by the
+#   cell alone. Any other record is named by what it prints (_printed: the
+#   quote, its subject terms, its payload name - never a vision label).
+#
+#   AN ALTERNATIVE NAME is an abbreviation the set's own abbreviations table
+#   defines (abbreviation_table) - GA. = GAUGE on S-002.00 - and it names
+#   only in the drawings of the file that prints that table, and only where
+#   the value's own record prints it.
+#
+# What this does not touch: a count (_count_answer_is_bound), an area clause
+# (lib.plan_areas decides those first, as before), and every intent other
+# than "attribute", which keep the union.
+
+#: An abbreviation as a table prints it: one token, no space.
+_ABBREV_TOKEN = re.compile(r"^[A-Za-z0-9#Ø/&'.\-]{1,8}$")
+#: A meaning: words, at least one letter, no colon (a colon is a heading).
+_ABBREV_MEANING = re.compile(r"^[A-Z][A-Z0-9 /&'().,\-]*$")
+_ABBREV_HEADING = re.compile(r"^\s*(?:GENERAL\s+)?ABBREVIATIONS?\s*:?\s*$", re.I)
+
+
+def abbreviation_table(raw_text: str) -> Dict[str, List[str]]:
+    """abbreviation -> its meanings, read off a page's text layer where it
+    prints an ABBREVIATIONS list as alternating lines (S-002.00: "GA." then
+    "GAUGE"). The list ends at the first pair that is not one - a heading
+    ("GRAVITY LOADS:") or a line with a space where the abbreviation stands.
+    "ELEVATION OR ELEVATOR" and "FEET/FOOT" are two meanings each."""
+    out: Dict[str, List[str]] = {}
+    lines = [ln.strip() for ln in (raw_text or "").splitlines()]
+    i = 0
+    while i < len(lines):
+        if not _ABBREV_HEADING.match(lines[i]):
+            i += 1
+            continue
+        i += 1
+        while i + 1 < len(lines):
+            ab, mean = lines[i], lines[i + 1]
+            if not (_ABBREV_TOKEN.match(ab) and _ABBREV_MEANING.match(mean)
+                    and any(c.isalpha() for c in mean)):
+                break
+            for m in re.split(r"\s+OR\s+|/", mean):
+                m = m.strip()
+                if m and m.upper() != ab.upper() and m not in out.setdefault(ab, []):
+                    out[ab].append(m)
+            i += 2
+    return out
+
+
+def _alias_pairs(table: Dict[str, List[str]]) -> List[Tuple[str, List[str]]]:
+    """(abbreviation, the meaning's words) for every meaning, longest first."""
+    pairs = [(ab, search_terms(m)) for ab, ms in (table or {}).items() for m in ms]
+    return sorted([p for p in pairs if p[1]], key=lambda p: -len(p[1]))
+
+
+def _abbrev_printed(ab: str, text: str) -> bool:
+    """The abbreviation exactly as its table prints it, as a whole token."""
+    return bool(re.search(_ALNUM_BEFORE + re.escape(ab) + _ALNUM_AFTER, text or ""))
+
+
+def names_subject(text: str, words: Sequence[str],
+                  table: Optional[Dict[str, List[str]]] = None) -> bool:
+    """Does `text` print every one of `words`, each as a word or through an
+    alternative name (`table`: abbreviation -> meanings) printed in `text`?"""
+    if not words:
+        return False
+    left = list(words)
+    for ab, mw in _alias_pairs(table or {}):
+        n = len(mw)
+        for k in range(len(left) - n + 1):
+            if all(set(term_forms(a)) & set(term_forms(b))
+                   for a, b in zip(left[k:k + n], mw)) and _abbrev_printed(ab, text):
+                del left[k:k + n]
+                break
+    return all(_rx(w).search(text or "") for w in left)
+
+
+def _scalars(v: Any) -> List[str]:
+    """The strings `_supported_values` reads out of one payload value."""
+    if isinstance(v, (str, int, float)):
+        return [str(v)]
+    out: List[str] = []
+    if isinstance(v, list):
+        for item in v:
+            if isinstance(item, (str, int, float)):
+                out.append(str(item))
+            elif isinstance(item, list):
+                out.extend(str(c) for c in item)
+    return out
+
+
+def value_parts(record: Dict[str, Any]) -> List[Tuple[List[str], str]]:
+    """(the texts a value may be read from, the text that names what they
+    are), part by part. The value texts are what `_supported_values` and
+    plan_dimensions.record_texts read; only the naming is narrowed."""
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    rows = payload.get("rows")
+    if (record.get("record_type") != "schedule" or not isinstance(rows, list)
+            or not any(isinstance(row, list) and row for row in rows)):
+        texts = [str(record.get("quote") or "")]
+        for v in payload.values():
+            texts += _scalars(v)
+        return [(texts, " | ".join(_printed(record)))]
+    cols = payload.get("columns") or []
+    headers = [str((c.get("header") if isinstance(c, dict) else c) or "") for c in cols]
+    ident = [i for i, c in enumerate(cols) if isinstance(c, dict) and c.get("role") == "identifier"]
+    grid = " | ".join([str(payload.get("name") or "")] + headers
+                      + [str(t) for t in (record.get("subject_terms") or [])])
+    # The grid as a whole - its quote, its name and headers, the payload's
+    # other fields - is named by its name and headers alone.
+    whole = [str(record.get("quote") or "")] + headers
+    for k, v in payload.items():
+        if k not in ("rows", "columns"):
+            whole += _scalars(v)
+    parts: List[Tuple[List[str], str]] = [(whole, grid)]
+    for row in rows:
+        if not isinstance(row, list) or not row:
+            continue
+        cells = [str(c if c is not None else "") for c in row]
+        if ident:
+            parts.append((cells, grid + " | " + " | ".join(cells)))
+        else:
+            parts.extend(([c], grid + " | " + c) for c in cells)
+    return parts
+
+
+def _claim_subject(clause: str, spans: Sequence[Tuple[int, int]]) -> List[str]:
+    """The words a clause says its values are OF: before its first value,
+    or - when nothing stands there - after its last."""
+    if not spans:
+        return []
+    before = search_terms(clause[:min(s for s, _ in spans)])
+    return before or search_terms(clause[max(e for _, e in spans):])
+
+
+def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
+                   citations: Sequence[str],
+                   aliases: Optional[Dict[str, Dict[str, List[str]]]] = None
+                   ) -> List[str]:
+    """The values in one attribute clause (its quotation marks already
+    blanked) that no record naming its subject prints. A dimension is one
+    whole value (plan_dimensions); the rest are numbers, as `_values` reads
+    them."""
+    masked = _strip_citations(clause, citations)
+    found = _dims.find(masked)
+    rest = list(masked)
+    for f in found:
+        rest[f.span[0]:f.span[1]] = " " * (f.span[1] - f.span[0])
+    flat = _SPLIT_RE.sub(" ", _UNIT_RE.sub(" ", "".join(rest)))
+    nums = [(m.group(0).replace(",", "").rstrip("."), m.span()) for m in _VALUE_RE.finditer(flat)]
+    nums = [(v, sp) for v, sp in nums if v]
+    if not found and not nums:
+        return []
+    subject = _claim_subject(flat, [f.span for f in found] + [sp for _, sp in nums])
+    named: List[List[str]] = []
+    if subject:
+        for r in records or []:
+            if _vouches_for_nothing(r):
+                continue
+            table = (aliases or {}).get(str(r.get("file_id") or ""))
+            for texts, naming in value_parts(r):
+                if names_subject(naming, subject, table):
+                    named.append(texts)
+    bad = [f.text.strip() for f in found
+           if not any(_dims.supported(f, _dims.evidence(t)) for t in named)]
+    printed = set()
+    for t in named:
+        for x in t:
+            printed.update(_values(x))
+    bad += [v for v, _sp in nums if v not in printed]
+    return bad
+
+
+def _clause_spans(text: str) -> List[Tuple[int, int]]:
+    """Where each of `_clauses(text)` sits in `text`."""
+    out, at = [], 0
+    for m in _CLAUSE_SPLIT.finditer(text or ""):
+        if text[at:m.start()].strip():
+            out.append((at, m.start()))
+        at = m.end()
+    if (text or "")[at:].strip():
+        out.append((at, len(text)))
+    return out
+
+
+def _attribute_answer_is_bound(text: str, records: Sequence[Dict[str, Any]],
+                               aliases: Optional[Dict[str, Dict[str, List[str]]]] = None
+                               ) -> Tuple[bool, List[str]]:
+    """An attribute answer, clause by clause: each value binds only on a
+    record naming the clause's subject (_subject_bound). An area clause is
+    decided as before - its area check first (lib.plan_areas), anything else
+    by what any returned record prints."""
+    has_areas = any(_areas.is_area_record(r) for r in records or [])
+    masked = _dims.mask_quotation_marks(_areas.join_thousands(text or ""))
+    found = _dims.find(masked)
+    hold = list(masked)
+    for f in found:
+        hold[f.span[0]:f.span[1]] = "\x00" * (f.span[1] - f.span[0])
+    hold_s = "".join(hold)
+    citations = _citation_texts(records)
+    union = None
+    unsupported: List[str] = []
+    for c0, c1 in _clause_spans(hold_s):
+        plain = hold_s[c0:c1].replace("\x00", " ")
+        named, bare = _track_claim(plain)
+        if has_areas and _areas.is_area_clause(bare):
+            if union is None:
+                union = (_dims.evidence(_dims.record_texts(records, _vouches_for_nothing)),
+                         _supported_values(records))
+            ev, ok = union
+            unsupported += [f.text.strip() for f in found
+                            if c0 <= f.span[0] < c1 and not _dims.supported(f, ev)]
+            a_add, a_drop = _areas.figures_in_clause(bare, records, named)
+            unsupported += [v for v in _values(plain)
+                            if v not in a_add and (v in a_drop or v not in ok)]
+            continue
+        unsupported += _subject_bound(_track_claim(masked[c0:c1])[1], records,
+                                      citations, aliases)
+    return (not unsupported), unsupported
+
+
 def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
-                       intent: str = "") -> Tuple[bool, List[str]]:
+                       intent: str = "",
+                       aliases: Optional[Dict[str, Dict[str, List[str]]]] = None
+                       ) -> Tuple[bool, List[str]]:
     """(ok, the numbers nothing returned can vouch for).
 
     A CHECK ON THE OUTPUT, not an instruction in a prompt. The model composes;
     this decides whether what it composed may be sent. A number with nothing
     behind it is the worst failure this product has — it looks verified."""
+    # AN ATTRIBUTE BINDS TO THE SUBJECT ITS RECORD NAMES (ruling 2026-10-27,
+    # _attribute_answer_is_bound). `aliases`: file_id -> that file's own
+    # abbreviations table (abbreviation_table), the alternative names.
+    if (intent or "").strip().lower() == "attribute":
+        return _attribute_answer_is_bound(text, records, aliases)
     # ── A DIMENSION IS ONE VALUE, NOT ITS DIGITS ───────────────────────────
     #
     # "The doors are 3'-5" X 7'-0"." passed with only 3'-0" X 7'-0" printed:
