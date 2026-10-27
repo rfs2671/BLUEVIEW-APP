@@ -468,7 +468,15 @@ def sends_only_a_picture(reply: Any) -> bool:
                               for x in said)
 
 
-_FILE_WORD = re.compile(r"\b(?:pdfs?|files?|documents?|attachments?)\b", re.I)
+# The thing sent is a file: "the PDF", "the file", "a document" -- the word
+# itself, not the ".pdf" ending of a file name -- or a file name ("A-set.pdf").
+_FILE_WORD = re.compile(r"(?<![.\w])(?:pdfs?|files?|documents?|attachments?)\b|\S\.pdf\b", re.I)
+# A file named only as where something came from: "from A-set.pdf", "on
+# Owner set.pdf", "in the A set file" (Codex on #892: "Sent you the picture
+# of A-201 from A-set.pdf." is a picture, truthfully sent).
+_FILE_AS_SOURCE = re.compile(
+    r"\b(?:from|on|in|inside|out\s+of|of)\s+(?:the\s+)?"
+    r"(?:\S+(?:\s+\S+){0,4}?\.pdf\b|\S+(?:\s+\S+){0,3}?\s+(?:file|pdf|document)\b)", re.I)
 _NOT_A_FILE_SEND = re.compile(r"\b(?:report|brief)\b", re.I)
 
 
@@ -479,7 +487,8 @@ def claims_file_sent(reply: Any) -> bool:
     report's / brief's own -- never on a sheet picture alone. A sentence
     that names the report or brief is theirs, not this."""
     said = [x for x in re.split(r"(?<=[.!?])\s+|\n+", str(reply or "")) if _SENT.search(x)]
-    return any(_FILE_WORD.search(x) and not _NOT_A_FILE_SEND.search(x) for x in said)
+    return any(_FILE_WORD.search(_FILE_AS_SOURCE.sub(" ", x)) and not _NOT_A_FILE_SEND.search(x)
+               for x in said)
 
 
 # "I can't send PDFs", "I'm not able to send files here", "I can only send

@@ -248,7 +248,41 @@ class TheSentClaim(_Sources):
         self.assertEqual(out, ["Sent you the picture of A-201."])
         self.assertIn("no tool this turn", notes[0])
 
+    def test_a_picture_named_with_its_source_file_is_not_re_asked(self):
+        """Codex on #892: the file name is where the picture came from."""
+        answer = "Sent you the picture of A-201 from A-set.pdf."
+        llm = FakeLLM(resp(use("send_sheet", {"job": "588", "sheet": "A-201"})), resp(text(answer)))
+        with _Ctx(db=self.db) as c:
+            out = self.ask(c, "send me A-201", llm, [])
+        self.assertEqual(out, [answer])
+        self.assertEqual(len(llm.calls), 2)                              # no re-ask
+
+    def test_a_file_name_as_the_thing_sent_still_needs_the_file(self):
+        notes = []
+
+        def second(kw):
+            notes.append(kw["messages"][-1]["content"])
+            return resp(text("Sent you the picture of A-201."))
+        llm = FakeLLM(resp(use("send_sheet", {"job": "588", "sheet": "A-201"})),
+                      resp(text("Sent you A-set.pdf, the whole file.")), second)
+        with _Ctx(db=self.db) as c:
+            out = self.ask(c, "send me A-201", llm, [])
+        self.assertEqual(out, ["Sent you the picture of A-201."])
+        self.assertIn("no tool this turn", notes[0])
+
+    def test_the_pdf_after_send_plan_file_passes(self):
+        llm = FakeLLM(resp(use("send_plan_file", {"job": "588", "sheet": "A-201"})),
+                      resp(text("Sent you the PDF of that sheet.")))
+        with _Ctx(db=self.db) as c:
+            out = self.ask(c, "send me the PDF of A-201", llm, [])
+        self.assertEqual(out, ["Sent you the PDF of that sheet."])
+        self.assertEqual(len(llm.calls), 2)
+
     def test_the_rule_itself(self):
+        self.assertFalse(dm_brain.claims_file_sent("Sent you the picture of A-201 from A-set.pdf."))
+        self.assertFalse(dm_brain.claims_file_sent("Sent you A-302, on Owner set.pdf p2."))
+        self.assertTrue(dm_brain.claims_file_sent("Sent you A-set.pdf."))
+        self.assertTrue(dm_brain.claims_file_sent("Sent you the PDF of A-201 from A-set.pdf."))
         self.assertTrue(dm_brain.claims_file_sent("Sent you the PDF."))
         self.assertTrue(dm_brain.claims_file_sent("I've sent the file over."))
         self.assertFalse(dm_brain.claims_file_sent("Sent the report PDF for 588."))
