@@ -62968,7 +62968,7 @@ async def _reindex_in_flight(project_id: str, since: Optional[datetime] = None) 
              "status": r.get("status")} for r in rows]
 
 
-async def _plan_glyph_pass(project_id: str) -> dict:
+async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict:
     """Run the equipment-placement pass over the project's current sheets
     and write its rows (lib.plan_glyph_pass, lib.plan_emit) - once per
     drawing track (_glyph_track_pages), each mechanical sheet swept once.
@@ -62976,12 +62976,22 @@ async def _plan_glyph_pass(project_id: str) -> dict:
     NOT CALLED BY THE INDEXER. It runs when an operator starts it
     (POST .../plan-glyphs/run): its rows change what the count-answer gate
     allows (plan_search.glyph_tallies), and the first write is reviewed by
-    render before it is made."""
+    render before it is made.
+
+    DRAWING-SET QUESTIONS (ruling 21, lib.plan_set_questions): the stored
+    answers are applied on this pass, and the questions it raises are
+    stored (_store_set_questions) - NEVER SENT from here: asking is its own
+    operator action (POST .../plan-set-questions/ask)."""
     from lib.plan_glyph_pass import run_pass
     from lib.plan_page import PlanPage
 
     pid = str(project_id)
     began = datetime.now(timezone.utc)
+    try:
+        set_answers = await _set_question_answers(pid)
+    except Exception as e:                  # no answers read: every question stays open
+        logger.warning("plan set questions unreadable for %s: %r", pid, e)
+        set_answers = {}
     tracks, files = await _glyph_pages(pid)
     by_track: List[Tuple[str, List[dict]]] = []
     door_pages, seen_doors, current_ids = [], set(), set()
@@ -63050,12 +63060,15 @@ async def _plan_glyph_pass(project_id: str) -> dict:
         rows: List[dict] = []
         opening_rows: List[dict] = []
         opening_health: List[dict] = []
+        set_questions: List[dict] = []
         areas: List[dict] = []
         summary: Dict[str, Any] = {"tracks": {}}
         for track, pages in by_track:
             # (passed only when there is one: a set with no door or window
             # schedule runs exactly the equipment pass it ran before)
             extra = {"opening_schedules": opening_schedules} if opening_schedules else {}
+            if opening_schedules and set_answers:
+                extra["set_answers"] = set_answers
             out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
                                           door_pages, track=track, sweeps=sweeps,
                                           plan_only=plan_only, **extra)
@@ -63063,6 +63076,7 @@ async def _plan_glyph_pass(project_id: str) -> dict:
             areas += out.get("areas") or []
             opening_rows += out.get("opening_rows") or []
             opening_health += out.get("opening_health") or []
+            set_questions += out.get("set_questions") or []
             summary["tracks"][track] = out["summary"]
         rows += opening_rows
         # SET HEALTH (PR 5), while the PDFs are still here - a callout bubble
@@ -63100,8 +63114,217 @@ async def _plan_glyph_pass(project_id: str) -> dict:
     summary["written"] = await _write_glyph_records(pid, rows)
     summary["set_health"] = await _write_set_health(pid, health)
     summary["areas_written"] = await _write_area_records(pid, areas)
+    try:
+        summary["set_questions"] = await _store_set_questions(
+            pid, set_questions, opening_rows, actor or "system:glyph_pass")
+    except Exception as e:                  # the rows stand on their own
+        logger.exception("plan set questions %s not stored: %r", pid, e)
+        summary["set_questions"] = {"error": type(e).__name__}
     logger.info("plan glyph pass %s: %s", pid, summary)
     return summary
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# DRAWING-SET QUESTIONS (ruling 21, lib.plan_set_questions)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# "The system never decides which drawings belong to a set or which governs.
+# When it's ambiguous: if the project has a PM or SM on record, ask them
+# through the app/WhatsApp: one question per ambiguity, naming the sheets
+# and what each would change. Their answer is stored per project,
+# audit-logged, and applied on the next pass." (operator, 2026-10-27)
+#
+#   STORED   by the glyph pass (_store_set_questions): one document per
+#            question, _id = its stable id; never re-opened, never re-asked.
+#   ASKED    only by the operator action POST .../plan-set-questions/ask
+#            (_ask_set_questions): a WhatsApp DM to each PM / Site Manager
+#            on record (send_whatsapp_dm, kind plan_set_question, one ledger
+#            window per question). No PM/SM, or none reachable: stored
+#            unasked, and the render says so.
+#   ANSWERED by the PM's reply "Q1 YES" / "Q1 NO" (_handle_set_question_reply,
+#            in the inbound DM route beside the GC-group answer), or by an
+#            admin (POST .../plan-set-questions/{id}/answer). Audit-logged.
+#   APPLIED  on the next glyph pass (_set_question_answers -> run_pass).
+
+async def _set_question_answers(pid: str) -> Dict[str, str]:
+    from lib import plan_set_questions as psq
+    docs = await db[psq.COLLECTION].find(
+        {"project_id": str(pid), "status": psq.ANSWERED}).to_list(500)
+    return {str(d["_id"]): d["answer"] for d in docs if d.get("answer") in psq.ANSWERS}
+
+
+async def _store_set_questions(pid: str, detected: List[dict], opening_rows: List[dict],
+                               actor: str) -> dict:
+    """One pass's questions into the project's stored ones (psq.reconcile):
+    a new one opened, a known one's figures refreshed while it is open, an
+    open one no longer raised withdrawn. Each opening and withdrawal is
+    audited."""
+    from lib import plan_set_questions as psq
+    pid = str(pid)
+    coll = db[psq.COLLECTION]
+    company_id = await _project_company_id(pid)
+    existing = await coll.find({"project_id": pid}).to_list(500)
+    taken = [d.get("code") for d in await coll.find(
+        {"company_id": company_id}, {"code": 1}).to_list(5000)] if company_id else []
+    seen: Dict[str, dict] = {}
+    for d in detected:
+        seen.setdefault(d["id"], d)        # one question, whatever track raised it
+    detected = list(seen.values())
+    for d in detected:
+        d["figures"] = psq.figures(opening_rows, d["id"], d["track"])
+    plan = psq.reconcile(existing, detected, taken=taken)
+    now = datetime.now(timezone.utc)
+    status_of = {str(q.get("_id")): q.get("status") for q in existing}
+    for d in plan["insert"]:
+        doc = {k: v for k, v in d.items() if k != "id"}
+        doc.update(_id=d["id"], project_id=pid, company_id=company_id, status=psq.OPEN,
+                   asked=[], asked_user_ids=[], created_at=now, last_seen_at=now)
+        await coll.insert_one(doc)
+        await audit_log("plan_set_question_opened", actor, "plan_set_question", d["id"],
+                        {"project_id": pid, "code": d["code"], "label": d["label"],
+                         "track": d["track"], "figures": d["figures"]})
+    for d in plan["refresh"]:
+        fields = {"last_seen_at": now}
+        if status_of.get(d["id"]) == psq.OPEN:
+            fields.update(pages=d["pages"], figures=d["figures"], label=d["label"],
+                          short=d["short"])
+        await coll.update_one({"_id": d["id"]}, {"$set": fields})
+    withdrawn = 0
+    for q in plan["withdraw"]:
+        res = await coll.update_one(
+            {"_id": q["_id"], "status": psq.OPEN},
+            {"$set": {"status": psq.WITHDRAWN, "withdrawn_at": now,
+                      "withdrawn_reason": "the glyph pass no longer raises it"}})
+        if getattr(res, "matched_count", 0):
+            withdrawn += 1
+            await audit_log("plan_set_question_withdrawn", actor, "plan_set_question",
+                            str(q["_id"]), {"project_id": pid, "label": q.get("label")})
+    return {"opened": len(plan["insert"]), "refreshed": len(plan["refresh"]),
+            "withdrawn": withdrawn}
+
+
+async def _set_question_people(pid: str) -> Tuple[Optional[dict], List[dict]]:
+    """(the project, its PMs / Site Managers on record)."""
+    from lib import plan_set_questions as psq
+    try:
+        proj = await db.projects.find_one({"_id": to_query_id(str(pid))},
+                                          {"name": 1, "company_id": 1})
+    except Exception:
+        proj = None
+    if not proj or not proj.get("company_id"):
+        return proj, []
+    cid = str(proj["company_id"])
+    users = await db.users.find({"company_id": _company_id_filter(cid), "role": "pm",
+                                 "is_deleted": {"$ne": True}},
+                                {"password": 0}).to_list(200)
+    return proj, [u for u in users if psq.pm_on_record(u, pid, cid)]
+
+
+async def _ask_set_questions(pid: str, actor: str) -> dict:
+    """ASK, ONCE (ruling 21): every open question not yet delivered to
+    anyone goes to each PM / Site Manager on record, by WhatsApp DM. A
+    question delivered once is never sent again. Called ONLY by the
+    operator action POST .../plan-set-questions/ask."""
+    from lib import plan_set_questions as psq
+    pid = str(pid)
+    coll = db[psq.COLLECTION]
+    proj, pms = await _set_question_people(pid)
+    name = str((proj or {}).get("name") or "your project")
+    now = datetime.now(timezone.utc)
+    report: List[dict] = []
+    for q in await coll.find({"project_id": pid, "status": psq.OPEN}).to_list(500):
+        qid = str(q["_id"])
+        if any(a.get("sent") for a in q.get("asked") or []):
+            report.append({"id": qid, "code": q.get("code"), "skipped": "already asked"})
+            continue
+        if not pms:
+            why = "no PM or Site Manager on record for this project"
+            await coll.update_one({"_id": qid}, {"$set": {"unasked_reason": why}})
+            report.append({"id": qid, "code": q.get("code"), "unasked": why})
+            continue
+        asked: List[dict] = []
+        for u in pms:
+            uid = str(u.get("_id"))
+            who = u.get("full_name") or u.get("name") or "the PM"
+            reason = await _dm_refusal_reason(uid, psq.WA_KIND)
+            res = None
+            if reason is None:
+                res = await send_whatsapp_dm(uid, psq.message(q, name), kind=psq.WA_KIND,
+                                             window=qid, project_id=pid)
+                if res is None:
+                    reason = "not delivered"
+            asked.append({"user_id": uid, "name": who, "channel": "WhatsApp", "at": now,
+                          "sent": res is not None, "reason": reason})
+        sent_to = [a["user_id"] for a in asked if a["sent"]]
+        fields: Dict[str, Any] = {"asked": (q.get("asked") or []) + asked,
+                                  "asked_user_ids": sorted(set((q.get("asked_user_ids") or [])
+                                                               + sent_to))}
+        fields["unasked_reason"] = (None if sent_to else "no PM or Site Manager could be reached: "
+                                    + "; ".join(f"{a['name']} ({a['reason']})" for a in asked))
+        if sent_to:
+            fields["asked_at"] = now
+        await coll.update_one({"_id": qid}, {"$set": fields})
+        await audit_log("plan_set_question_asked", actor, "plan_set_question", qid,
+                        {"project_id": pid, "code": q.get("code"), "sent_to": sent_to,
+                         "refused": [{"user_id": a["user_id"], "reason": a["reason"]}
+                                     for a in asked if not a["sent"]]})
+        report.append({"id": qid, "code": q.get("code"), "sent_to": sent_to,
+                       "unasked": fields["unasked_reason"]})
+    return {"questions": report}
+
+
+async def _record_set_answer(pid: str, qid: str, answer: str, actor: str, *, via: str,
+                             name: Optional[str] = None) -> Optional[dict]:
+    """Record one answer - only to an OPEN question of THIS project, once -
+    and audit it. None when there was no such question (answered already,
+    withdrawn, another project's). Applied on the next glyph pass."""
+    from lib import plan_set_questions as psq
+    if answer not in psq.ANSWERS:
+        raise ValueError(f"answer must be one of {psq.ANSWERS}")
+    pid, qid = str(pid), str(qid)
+    coll = db[psq.COLLECTION]
+    now = datetime.now(timezone.utc)
+    res = await coll.update_one(
+        {"_id": qid, "project_id": pid, "status": psq.OPEN},
+        {"$set": {"status": psq.ANSWERED, "answer": answer, "answered_by": str(actor),
+                  "answered_by_name": name, "answered_at": now, "answered_via": via}})
+    if not getattr(res, "matched_count", 0):
+        return None
+    doc = await coll.find_one({"_id": qid})
+    await audit_log("plan_set_question_answered", str(actor), "plan_set_question", qid,
+                    {"project_id": pid, "code": (doc or {}).get("code"), "answer": answer,
+                     "via": via, "label": (doc or {}).get("label")})
+    return doc
+
+
+async def _handle_set_question_reply(chat_id: str, code: str, answer: str) -> bool:
+    """A PM's "Q1 YES" / "Q1 NO" to a drawing-set question Levelog asked
+    THEM. True when it was one (recorded, and confirmed back); False sends
+    the message on to normal handling. Re-checked at the moment of the
+    answer: the person is still a PM / Site Manager on record for that
+    project."""
+    from lib import plan_set_questions as psq
+    optin = await _active_optin_for_phone(wa_dm.phone_digits(chat_id))
+    if not optin or not optin.get("user_id"):
+        return False
+    uid = str(optin["user_id"])
+    qs = await db[psq.COLLECTION].find({"code": code, "status": psq.OPEN,
+                                        "asked_user_ids": uid}).to_list(5)
+    if len(qs) != 1:
+        return False
+    q = qs[0]
+    _proj, pms = await _set_question_people(str(q.get("project_id")))
+    me = next((u for u in pms if str(u.get("_id")) == uid), None)
+    if me is None:
+        _security_event("plan_set_answer_refused", user_id=uid,
+                        project_id=str(q.get("project_id")), reason="not_pm_on_record")
+        return False
+    doc = await _record_set_answer(str(q["project_id"]), str(q["_id"]), answer, uid,
+                                   via="whatsapp", name=me.get("full_name") or me.get("name"))
+    if doc is None:
+        return False
+    await send_whatsapp_message(chat_id, psq.answer_text(q, answer))
+    return True
 
 
 def _glyph_set_health(tracks: List[Tuple[str, List[dict]]], rows: List[dict],
@@ -66394,6 +66617,15 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
         logger.warning("plan set health read failed for %s: %r", pid, e)
         health.append(dict(_health.unavailable(e, datetime.now(timezone.utc)),
                            record_type="set_health"))
+    # DRAWING-SET QUESTIONS (ruling 21): the open ones, so the render can say
+    # whether each was asked. The gate reads the rows, never these.
+    if owant:
+        try:
+            from lib import plan_set_questions as _psq
+            health += [dict(q, record_type="set_question") for q in await db[_psq.COLLECTION].find(
+                {"project_id": pid, "status": _psq.OPEN}).to_list(200)]
+        except Exception as e:
+            logger.warning("plan set questions unreadable for %s: %r", pid, e)
     if not want and not owant:
         unrec = plan_search.unreconciled_families_for(
             subject, [h["subject"] for h in health if h["kind"] == _health.FAMILY_NOT_RECONCILED])
@@ -75065,6 +75297,13 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             answer = wa_gc.parse_confirm_reply(parsed.get("body"))
             if answer and await _handle_gc_confirm_reply(dm_chat, answer):
                 return
+            # "Q1 YES" / "Q1 NO" to a drawing-set question Levelog asked this
+            # person (ruling 21). The code is required: a bare "yes" is the
+            # assistant's, which confirms its own pending change.
+            from lib import plan_set_questions as _psq
+            set_reply = _psq.parse_reply(parsed.get("body"))
+            if set_reply and await _handle_set_question_reply(dm_chat, *set_reply):
+                return
 
         # ── LEVELOG ASSISTANT IN A DM ─────────────────────────────────────
         # Only an opted-in Admin or PM, found through the opt-in for THIS
@@ -79626,10 +79865,11 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
                       "done (GET .../plan-index/jobs/{job_id})",
             "jobs": busy})
     _GLYPH_PASS_RUNNING.add(pid)
+    who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
 
     async def _go():
         try:
-            await _plan_glyph_pass(pid)
+            await _plan_glyph_pass(pid, actor=who or None)
         except Exception as e:
             logger.exception("plan glyph pass %s failed: %r", pid, e)
         finally:
@@ -79637,6 +79877,48 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
 
     asyncio.create_task(_go())
     return {"started": True}
+
+
+class PlanSetAnswer(BaseModel):
+    answer: Literal["include", "exclude"]
+
+
+@api_router.get("/projects/{project_id}/plan-set-questions",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def list_plan_set_questions(project_id: str, current_user=Depends(get_admin_user)):
+    """Read-only: the project's drawing-set questions (ruling 21) - open,
+    answered and withdrawn - with who was asked and who answered."""
+    from lib import plan_set_questions as psq
+    docs = await db[psq.COLLECTION].find({"project_id": str(project_id)}).to_list(500)
+    return {"questions": [dict(d, id=str(d.pop("_id"))) for d in docs]}
+
+
+@api_router.post("/projects/{project_id}/plan-set-questions/ask",
+                 dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
+async def ask_plan_set_questions(project_id: str, current_user=Depends(get_admin_user)):
+    """SENDS WHATSAPP MESSAGES. Ask the project's PM / Site Manager each open
+    drawing-set question not yet delivered (ruling 21) - the only place a
+    question is sent from. Nothing is sent twice."""
+    who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
+    return await _ask_set_questions(str(project_id), actor=who)
+
+
+@api_router.post("/projects/{project_id}/plan-set-questions/{question_id}/answer",
+                 dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
+async def answer_plan_set_question(project_id: str, question_id: str, body: PlanSetAnswer,
+                                   current_user=Depends(get_admin_user)):
+    """Record the answer to an open drawing-set question (ruling 21), as the
+    PM gave it: "include" (the pages are part of the set) or "exclude".
+    Audit-logged; applied on the next glyph pass."""
+    who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
+    doc = await _record_set_answer(str(project_id), question_id, body.answer, who, via="admin",
+                                   name=(current_user or {}).get("full_name")
+                                   or (current_user or {}).get("name"))
+    if doc is None:
+        raise HTTPException(status_code=409,
+                            detail="no open drawing-set question with that id on this project")
+    return {"id": str(doc.get("_id")), "status": doc.get("status"), "answer": doc.get("answer"),
+            "applies": "on the next glyph pass"}
 
 
 @api_router.get("/projects/{project_id}/plan-glyphs/status",
