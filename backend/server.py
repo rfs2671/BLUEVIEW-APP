@@ -56460,7 +56460,8 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
                             gates: Optional[list] = None, model: Optional[str] = None,
                             path: Optional[str] = None, timing: Any = None,
                             features: Optional[dict] = None,
-                            group_id: Optional[str] = None) -> Optional[str]:
+                            group_id: Optional[str] = None,
+                            params: Optional[dict] = None) -> Optional[str]:
     """THE one writer of the answer log: an insert, never an update. Takes
     (and empties) this turn's noted records and gate decisions. Never raises:
     an answer goes out whether or not its row is written."""
@@ -56492,6 +56493,9 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
             "path": path,
             "timing": timing,
             "features": features,
+            # The request's own parameters (an app search's date range), so a
+            # replay asks exactly what was asked.
+            "params": params or None,
             "created_at": datetime.now(timezone.utc),
         }
         row["content_hash"] = answer_log.content_hash(row)
@@ -75890,6 +75894,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                 # The answer log's evidence: begun before the task, so the
                 # task's records and gate decision land in this dict.
                 _answer_turn_begin()
+                group_trace: list = []           # each tool call and what it returned
                 agent_task = asyncio.ensure_future(_run_group_agent(
                     project_id=str(project_id),
                     group_id=group_id,
@@ -75900,6 +75905,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                     explicit_mention=explicit_mention,
                     reply_to=reply_to,
                     address_mode=address_mode,
+                    tool_trace=group_trace,
                 ))
                 # "typing…" in the group while it works (WaAPI send-typing
                 # takes any chatId; a failure is a logged warning and
@@ -75921,7 +75927,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                     await _answer_log_write(
                         "group", question=body, final_text=reply,
                         company_id=msg_company_id, project_ids=project_id,
-                        asker_phone=sender, path="group_agent",
+                        asker_phone=sender, path="group_agent", tools=group_trace,
                         features=dict(features or {}), group_id=group_id)
                 return
 
@@ -78597,7 +78603,7 @@ async def search_project_memory(project_id: str, q: str = "", date_from: str = "
             user_id=current_user.get("id") or current_user.get("_id"),
             project_ids=project_id, sources=got["sources"],
             gates=_memory_gates(got), model=project_memory.ANSWER_MODEL,
-            path="memory_search")
+            path="memory_search", params={"date_from": dfrom, "date_to": dto})
         cited = {c["sid"] for c in got["claims"]}
         by_sid = {s["sid"]: _memory_source_view(s, admin) for s in got["sources"]}
         return {"results": [_memory_source_view(s, admin) for s in got["sources"]],
