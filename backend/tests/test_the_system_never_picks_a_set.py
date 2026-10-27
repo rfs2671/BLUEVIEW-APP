@@ -695,16 +695,126 @@ class NothingIsSentButByTheOperator(unittest.TestCase):
         self.assertEqual(len(calls), 1, "one call site")
         i = src.index("async def ask_plan_set_questions(")
         self.assertIn("_ask_set_questions(", src[i:i + 900])
-        gate = src[i - 300:i]
-        self.assertIn("require_project_access", gate, "the company's own admin gate")
-        self.assertNotIn("require_project_admin_access", gate,
-                         "not the operator gate: it is pinned to the routes Roy ruled")
+        # ruling 33: the operator may ask - the operator-admitting, audited gate
+        self.assertIn("require_project_admin_access", src[i - 300:i])
         self.assertIn("get_admin_user", src[i:i + 200])
         sends = [m.start() for m in re.finditer(r"send_whatsapp_dm\(.{0,200}?psq\.WA_KIND", src, re.S)]
         j = src.index("async def _ask_set_questions(")
         k = src.index("\nasync def ", j + 10)
         self.assertTrue(sends and all(j < s < k for s in sends),
                         "the question is sent from _ask_set_questions alone")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 4. Ruling 33: the operator VIEWS and ASKS; he never ANSWERS. Real requests
+#    through server.app (middleware, JWT, each route's own dependencies) over
+#    the fake database - the request-level proof harness.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _opworld():
+    from tests.test_operator_project_admin_access import _db as op_db, PROJ_A, CO_A
+    db = op_db()
+    db["plan_set_questions"].docs.append({
+        "_id": "q-a1x", "project_id": str(PROJ_A), "company_id": CO_A, "code": "Q1",
+        "status": "open", "track": "filed", "file_name": A1X, "short": "the A.1.x plans",
+        "label": f"the A.1.x plans (A.1.1 to A.1.7, {A1X})",
+        "pages": [{"sheet_number": f"A.1.{i}", "page_number": 10 + i, "sheet_title": "FLOOR PLAN"}
+                  for i in range(1, 8)],
+        "figures": [{"family": INT, "tag": "F", "without": 36, "with": 72}],
+        "asked": [], "asked_user_ids": []})
+    return db, str(PROJ_A)
+
+
+async def _http(db, email, pw, calls):
+    import httpx
+    wire = _NoWire()
+    out = {}
+    with patch.object(server, "db", db), patch.object(server, "send_whatsapp_dm", wire.dm),             patch.object(server, "send_whatsapp_message", wire.message),             patch.object(server, "_waapi_post_raw", wire.post_raw):
+        if hasattr(server, "auth_rate_limiter") and hasattr(server.auth_rate_limiter, "requests"):
+            server.auth_rate_limiter.requests.clear()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app),
+                                     base_url="http://t") as c:
+            r = await c.post("/api/auth/login", json={"email": email, "password": pw})
+            assert r.status_code == 200, r.text
+            h = {"Authorization": f"Bearer {r.json()['token']}"}
+            for method, path, body in calls:
+                r = await c.request(method, path, json=body, headers=h)
+                out[(method, path)] = (r.status_code, r.text)
+    return out, wire
+
+
+class TheOperatorViewsAndAsksButNeverAnswers(unittest.TestCase):
+
+    def _paths(self, pid):
+        base = f"/api/projects/{pid}/plan-set-questions"
+        return base, base + "/ask", base + "/q-a1x/answer"
+
+    def test_the_operator_views_and_asks_audited(self):
+        _psq()
+        _server_has("_ask_set_questions")
+        db, pid = _opworld()
+        view, ask, _answer = self._paths(pid)
+        got, wire = _run(_http(db, "op@x.test", "pw-op-123",
+                               [("GET", view, None), ("POST", ask, None)]))
+        status, body = got[("GET", view)]
+        self.assertEqual(status, 200, body)
+        self.assertIn("Reply Q1 YES", body, "the exact message text is shown")
+        self.assertEqual(got[("POST", ask)][0], 200, got[("POST", ask)][1])
+        self.assertEqual(len([r for r in db.audit_logs.docs
+                              if r.get("action") == "operator_project_admin_access"]), 2,
+                         "every operator use is audited")
+        self.assertEqual(wire.raw, [], "nothing reached WaAPI")
+
+    def test_the_operator_is_refused_on_answer(self):
+        _psq()
+        _server_has("_record_set_answer")
+        db, pid = _opworld()
+        _view, _ask, answer = self._paths(pid)
+        got, _w = _run(_http(db, "op@x.test", "pw-op-123", [("POST", answer, {"answer": "include"})]))
+        status, body = got[("POST", answer)]
+        self.assertEqual(status, 403, body)
+        q = db["plan_set_questions"].docs[0]
+        self.assertEqual((q["status"], q.get("answer")), ("open", None))
+        self.assertFalse(any(a.get("action") == "plan_set_question_answered"
+                             for a in db.audit_logs.docs))
+
+    def test_the_handler_itself_refuses_the_operator(self):
+        """Even past the gate: a later change to the route's dependencies
+        cannot let the operator answer for a project."""
+        _psq()
+        _server_has("answer_plan_set_question")
+        from fastapi import HTTPException
+        db = _db()
+        db["plan_set_questions"].docs.append({"_id": "q-a1x", "project_id": PID, "status": "open"})
+        with patch.object(server, "db", db):
+            with self.assertRaises(HTTPException) as cm:
+                _run(server.answer_plan_set_question(
+                    PID, "q-a1x", server.PlanSetAnswer(answer="include"),
+                    current_user={"id": "op", "is_platform_operator": True, "role": "owner"}))
+        self.assertEqual(cm.exception.status_code, 403)
+        self.assertEqual(db["plan_set_questions"].docs[0]["status"], "open")
+
+    def test_the_companys_admin_answers_in_app(self):
+        _psq()
+        _server_has("_record_set_answer")
+        db, pid = _opworld()
+        _view, _ask, answer = self._paths(pid)
+        got, _w = _run(_http(db, "a@a.test", "pw-a-123", [("POST", answer, {"answer": "exclude"})]))
+        self.assertEqual(got[("POST", answer)][0], 200, got[("POST", answer)][1])
+        q = db["plan_set_questions"].docs[0]
+        self.assertEqual((q["status"], q["answer"], q["answered_via"]), ("answered", "exclude", "admin"))
+
+    def test_another_companys_admin_reaches_none_of_them(self):
+        _psq()
+        db, pid = _opworld()
+        view, ask, answer = self._paths(pid)
+        got, wire = _run(_http(db, "b@b.test", "pw-b-123",
+                               [("GET", view, None), ("POST", ask, None),
+                                ("POST", answer, {"answer": "include"})]))
+        for k, (status, body) in got.items():
+            self.assertEqual(status, 403, f"{k}: {body}")
+        self.assertEqual(db["plan_set_questions"].docs[0]["status"], "open")
+        self.assertEqual(wire.dms + wire.messages, [])
 
 
 if __name__ == "__main__":

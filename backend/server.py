@@ -9514,6 +9514,12 @@ OPERATOR_PROJECT_ADMIN_ROUTES = (
     ("DELETE", "/api/projects/{project_id}/whatsapp/people/{key}"),
     ("POST", "/api/projects/{project_id}/plan-glyphs/run"),
     ("POST", "/api/projects/{project_id}/plan-index/{file_id}/retry"),
+    # DRAWING-SET QUESTIONS (ruling 33, operator, 2026-10-27): VIEW + ASK
+    # ONLY. The operator may list a project's pending questions and send
+    # them to its PM; he never ANSWERS one - .../{question_id}/answer keeps
+    # the company's own gate, and refuses him in the handler as well.
+    ("GET", "/api/projects/{project_id}/plan-set-questions"),
+    ("POST", "/api/projects/{project_id}/plan-set-questions/ask"),
 )
 
 
@@ -79884,17 +79890,41 @@ class PlanSetAnswer(BaseModel):
 
 
 @api_router.get("/projects/{project_id}/plan-set-questions",
-                dependencies=[Depends(require_approved), Depends(require_project_access)])
+                dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def list_plan_set_questions(project_id: str, current_user=Depends(get_admin_user)):
-    """Read-only: the project's drawing-set questions (ruling 21) - open,
-    answered and withdrawn - with who was asked and who answered."""
+    """READ-ONLY: the project's drawing-set questions (ruling 21) - open,
+    answered and withdrawn: the sheets, the two readings with their figures,
+    the exact WhatsApp text, who was asked and when, and the answer. The
+    operator may view them (ruling 33; there is no view-only variant of
+    require_project_admin_access, so this route carries that gate)."""
     from lib import plan_set_questions as psq
-    docs = await db[psq.COLLECTION].find({"project_id": str(project_id)}).to_list(500)
-    return {"questions": [dict(d, id=str(d.pop("_id"))) for d in docs]}
+    pid = str(project_id)
+    proj, _pms = await _set_question_people(pid)
+    name = str((proj or {}).get("name") or "your project")
+    out = []
+    for d in await db[psq.COLLECTION].find({"project_id": pid}).to_list(500):
+        out.append({
+            "id": str(d.get("_id")), "code": d.get("code"), "status": d.get("status"),
+            "track": d.get("track"), "file_name": d.get("file_name"), "label": d.get("label"),
+            "sheets": [{"sheet_number": p.get("sheet_number"), "page_number": p.get("page_number"),
+                        "sheet_title": p.get("sheet_title")} for p in d.get("pages") or []],
+            "readings": {"without": {f"{f['family']}|{f['tag']}": f["without"]
+                                     for f in d.get("figures") or []},
+                         "with": {f"{f['family']}|{f['tag']}": f["with"]
+                                  for f in d.get("figures") or []}},
+            "figures": d.get("figures") or [],
+            "message": psq.message(d, name),
+            "asked": d.get("asked") or [], "asked_at": d.get("asked_at"),
+            "unasked_reason": d.get("unasked_reason"),
+            "answer": d.get("answer"), "answered_by": d.get("answered_by"),
+            "answered_by_name": d.get("answered_by_name"), "answered_at": d.get("answered_at"),
+            "answered_via": d.get("answered_via"),
+            "created_at": d.get("created_at"), "last_seen_at": d.get("last_seen_at")})
+    return {"questions": out}
 
 
 @api_router.post("/projects/{project_id}/plan-set-questions/ask",
-                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+                 dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def ask_plan_set_questions(project_id: str, current_user=Depends(get_admin_user)):
     """SENDS WHATSAPP MESSAGES. Ask the project's PM / Site Manager each open
     drawing-set question not yet delivered (ruling 21) - the only place a
@@ -79909,7 +79939,16 @@ async def answer_plan_set_question(project_id: str, question_id: str, body: Plan
                                    current_user=Depends(get_admin_user)):
     """Record the answer to an open drawing-set question (ruling 21), as the
     PM gave it: "include" (the pages are part of the set) or "exclude".
-    Audit-logged; applied on the next glyph pass."""
+    Audit-logged; applied on the next glyph pass.
+
+    THE COMPANY ANSWERS, NEVER THE OPERATOR (ruling 33): the company's own
+    gate (require_project_access, which does not admit him), and refused
+    here too, so a later change to the gate cannot let him answer for a
+    project."""
+    if is_platform_operator(current_user):
+        raise HTTPException(status_code=403,
+                            detail="the platform operator does not answer a project's "
+                                   "drawing-set questions; its PM or company admin does")
     who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
     doc = await _record_set_answer(str(project_id), question_id, body.answer, who, via="admin",
                                    name=(current_user or {}).get("full_name")

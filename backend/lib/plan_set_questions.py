@@ -184,13 +184,20 @@ def _noun(family: str, n: Optional[int]) -> str:
     return word if n == 1 else word + "s"
 
 
+def _them(q: Dict[str, Any]) -> str:
+    return "them" if len(q.get("pages") or []) != 1 else "it"
+
+
 def change_lines(q: Dict[str, Any], limit: int = 0) -> List[str]:
-    """Plain-words lines: "type F doors: 36 without them, 72 with them"."""
+    """Plain-words lines, the largest counts first: "type F doors: 36
+    without them, 72 with them"."""
+    them = _them(q)
     out = []
-    for f in q.get("figures") or []:
-        w = "not known (a page could not be read)" if f["with"] is None else str(f["with"])
-        out.append(f"{type_name(f['tag'])} {_noun(f['family'], 2)}: {f['without']} without them, "
-                   f"{w} with them")
+    figs = sorted(q.get("figures") or [], key=lambda f: (-(f["without"] or 0), f["tag"]))
+    for f in figs:
+        w = "not known (the page could not be read)" if f["with"] is None else str(f["with"])
+        out.append(f"{type_name(f['tag'])} {_noun(f['family'], 2)}: {f['without']} without {them}, "
+                   f"{w} with {them}")
     return out[:limit] if limit else out
 
 
@@ -204,8 +211,9 @@ def message(q: Dict[str, Any], project_name: str) -> str:
             f"an unnumbered {pages[0].get('sheet_title') or 'plan'} (page {pages[0].get('page_number')})"
             if pages else "some plans")
     track = "the filed set" if q.get("track") in (None, "filed") else f"the {q.get('track')} set"
+    are = "Are they" if _them(q) == "them" else "Is it"
     lines = [f"Levelog question about the drawings for {project_name}.",
-             f"The file \"{q.get('file_name')}\" has {what}. Are they part of {track}?"]
+             f"The file \"{q.get('file_name')}\" has {what}. {are} part of {track}?"]
     ch = change_lines(q, limit=4)
     if ch:
         lines.append("It changes the building's counts:")
@@ -214,8 +222,9 @@ def message(q: Dict[str, Any], project_name: str) -> str:
         if more > 0:
             lines.append(f"- and {more} more")
     lines.append("Until you answer, Levelog gives both numbers and states neither as the count.")
-    lines.append(f"Reply {q.get('code')} YES if they are part of {track}, "
-                 f"or {q.get('code')} NO if they are not.")
+    they, are_ = ("they", "are") if _them(q) == "them" else ("it", "is")
+    lines.append(f"Reply {q.get('code')} YES if {they} {are_} part of {track}, "
+                 f"or {q.get('code')} NO if {they} {are_} not.")
     return "\n".join(lines)
 
 
