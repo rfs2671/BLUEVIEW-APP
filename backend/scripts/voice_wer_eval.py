@@ -1,15 +1,15 @@
 """Whisper glossary eval: word error rate on ten construction phrases, without
-and with the prompt (lib/voice_glossary.py). Calls OpenAI; writes nothing to
-the database.
+and with the prompt (lib/voice_glossary.py). Calls DeepInfra (lib/llm_provider);
+writes nothing to the database.
 
     # Real recordings (best): a folder with 01.ogg … 10.ogg (any of .ogg .m4a
     # .mp3 .wav .webm), one per phrase in voice_eval/construction_phrases.json,
     # plus es1/es2 for the language guard. WhatsApp voice notes exported as is.
-    OPENAI_API_KEY=… python scripts/voice_wer_eval.py --audio-dir ~/voice_eval
+    railway run python scripts/voice_wer_eval.py --audio-dir ~/voice_eval
 
-    # No recordings: OpenAI text-to-speech reads each phrase (saved into
+    # No recordings: DeepInfra's Kokoro text-to-speech reads each phrase (saved into
     # --audio-dir, so a rerun compares the same audio).
-    OPENAI_API_KEY=… python scripts/voice_wer_eval.py --audio-dir /tmp/ve --tts
+    railway run python scripts/voice_wer_eval.py --audio-dir /tmp/ve --tts
 
 Prints, per phrase: the reference, what Whisper heard without and with the
 prompt, and the WER of each; then the totals (word-weighted). The language
@@ -35,6 +35,11 @@ sys.path.insert(0, str(HERE.parent))
 
 PHRASES = HERE / "voice_eval" / "construction_phrases.json"
 EXTS = (".ogg", ".m4a", ".mp3", ".wav", ".webm")
+#: Text-to-speech on DeepInfra (OpenAI-compatible /audio/speech, measured
+#: 2026-10-26). Kokoro reads the language of its voice: am_onyx is American
+#: English, em_alex Spanish.
+TTS_MODEL = "hexgrad/Kokoro-82M"
+TTS_VOICES = {"en": "am_onyx", "es": "em_alex"}
 
 
 def _find(audio_dir: Path, pid: str):
@@ -45,22 +50,23 @@ def _find(audio_dir: Path, pid: str):
     return None
 
 
-async def _tts(text: str, key: str) -> bytes:
+async def _tts(text: str, key: str, lang: str = "en") -> bytes:
+    from lib import llm_provider
     from lib.server_http import ServerHttpClient
     async with ServerHttpClient(timeout=60) as c:
-        r = await c.post("https://api.openai.com/v1/audio/speech",
+        r = await c.post(f"{llm_provider.API_BASE}/audio/speech",
                          headers={"Authorization": f"Bearer {key}"},
-                         json={"model": "tts-1", "voice": "onyx", "input": text,
-                               "response_format": "mp3"})
+                         json={"model": TTS_MODEL, "input": text, "response_format": "mp3",
+                               "voice": TTS_VOICES.get(lang, TTS_VOICES["en"])})
         r.raise_for_status()
         return r.content
 
 
 async def main_async(a) -> int:
-    from lib import voice_glossary, voice_ingest
-    key = os.environ.get("OPENAI_API_KEY", "")
+    from lib import llm_provider, voice_glossary, voice_ingest, wa_voice
+    key = llm_provider.API_KEY
     if not key:
-        print("OPENAI_API_KEY is not set")
+        print("no model key (LLM_API_KEY, else QWEN_API_KEY): run under `railway run`")
         return 2
     spec = json.loads(PHRASES.read_text())
     prompt = voice_glossary.build_prompt(**spec["job"])
@@ -72,7 +78,7 @@ async def main_async(a) -> int:
         path = _find(audio_dir, item["id"])
         if path is None and a.tts:
             path = audio_dir / f"{item['id']}.mp3"
-            path.write_bytes(await _tts(item["text"], key))
+            path.write_bytes(await _tts(item["text"], key, wa_voice.lang_code(item.get("lang") or "en")))
         if path is None:
             return None
         return await voice_ingest.transcribe_whisper(
@@ -114,7 +120,8 @@ async def main_async(a) -> int:
         if r is None:
             print(f"  {item['id']}: no audio")
             continue
-        ok = (r.language or "").lower().startswith(item["lang"][:2])
+        # A code ("es", DeepInfra) or a name ("spanish"): compared as codes.
+        ok = wa_voice.lang_code(r.language) == wa_voice.lang_code(item["lang"])
         if not ok:
             flipped.append(item["id"])
         print(f"  {item['id']}: heard as {r.language!r} {'ok' if ok else 'FLIPPED'} — {r.transcript}")
@@ -126,7 +133,7 @@ def main(argv=None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--audio-dir", required=True)
     ap.add_argument("--tts", action="store_true",
-                    help="read missing phrases aloud with OpenAI TTS (saved for reruns)")
+                    help="read missing phrases aloud with DeepInfra TTS (saved for reruns)")
     return asyncio.run(main_async(ap.parse_args(argv)))
 
 

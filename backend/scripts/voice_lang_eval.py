@@ -1,6 +1,7 @@
 """Voice eval harness: real clips + what was said -> WER and CER per language,
-for whisper-1 and gpt-4o-transcribe, without and with the glossary prompt
-(and the People language hint). Calls OpenAI; writes nothing to the database.
+for DeepInfra's two Whisper models, without and with the glossary prompt
+(and the People language hint). Calls DeepInfra (lib/llm_provider); writes
+nothing to the database.
 
 THE FOLDER (one subfolder per language; each clip beside a .txt of the exact
 words said, in the language's own spelling — Yiddish in Hebrew letters — and,
@@ -15,13 +16,14 @@ for the translation row, a .en.txt of what it means in English):
   as is). Or a clips/manifest.json instead of the .txt files:
       [{"file": "yi/01.ogg", "lang": "yi", "text": "…", "en": "Tomorrow we pour"}]
 
-    OPENAI_API_KEY=… python scripts/voice_lang_eval.py clips/
-    OPENAI_API_KEY=… python scripts/voice_lang_eval.py clips/ --hint both --json out.json
+    railway run python scripts/voice_lang_eval.py clips/
+    railway run python scripts/voice_lang_eval.py clips/ --hint both --json out.json
 
-THE MATRIX, per clip: model (whisper-1, gpt-4o-transcribe) × glossary prompt
-(off, on) × language hint (--hint off | on | both; default both). whisper-1
-goes through the production call (lib/voice_ingest.transcribe_whisper).
-Plus one more row, "whisper-1 translate": Whisper's translations endpoint,
+THE MATRIX, per clip: model (production's Whisper, lib/llm_provider, and the
+other of DeepInfra's two) × glossary prompt (off, on) × language hint (--hint
+off | on | both; default both). The production model goes through the
+production call (lib/voice_ingest.transcribe_whisper).
+Plus one more row, "whisper translate": Whisper's translations endpoint,
 audio straight to English (lib/voice_ingest.translate_whisper, what a
 Yiddish card's English line shows), scored against the clip's .en.txt; a
 clip without one is skipped for that row. --verbose prints, for each Yiddish
@@ -29,7 +31,7 @@ clip, both lines as the card shows them: what was said and the English.
 
 PER LANGUAGE, per configuration: WER and CER (lib/voice_metrics: points and
 ligatures normalized for Yiddish, accents kept for Spanish), how many clips
-came back in the wrong language (whisper-1 reports it) or, for Yiddish, in
+came back in the wrong language (Whisper reports it) or, for Yiddish, in
 Latin letters, and how many calls failed. --verbose prints every transcript.
 
 The prompt is the glossary plus --job terms (default: the 588 terms of
@@ -51,9 +53,14 @@ from typing import Any, Dict, List, Optional
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
+from lib import llm_provider, wa_voice  # noqa: E402
+
 EXTS = (".ogg", ".opus", ".m4a", ".mp3", ".wav", ".webm")
-MODELS = ("whisper-1", "gpt-4o-transcribe")
-TRANSLATE = "whisper-1 translate"
+#: Production's Whisper (lib/llm_provider), and the other of DeepInfra's two.
+WHISPERS = ("openai/whisper-large-v3", "openai/whisper-large-v3-turbo")
+MODELS = (llm_provider.WHISPER_MODEL,
+          *[m for m in WHISPERS if m != llm_provider.WHISPER_MODEL][:1])
+TRANSLATE = "whisper translate"
 LANG_NAMES = {"en": "english", "es": "spanish", "yi": "yiddish"}
 
 
@@ -111,24 +118,25 @@ async def transcribe(model: str, audio: bytes, key: str, prompt: Optional[str],
     if model == TRANSLATE:
         return {"text": await voice_ingest.translate_whisper(audio, openai_api_key=key),
                 "language": "english"}
-    if model == "whisper-1":
+    if model == llm_provider.WHISPER_MODEL:
         r = await voice_ingest.transcribe_whisper(audio, openai_api_key=key, prompt=prompt,
                                                   language=language)
         return {"text": r.transcript, "language": r.language}
     from lib.server_http import ServerHttpClient
     name, mime = voice_ingest.audio_name(audio)
     files = {"file": (name, audio, mime), "model": (None, model),
-             "response_format": (None, "json"), "temperature": (None, "0")}
+             "response_format": (None, "verbose_json"), "temperature": (None, "0")}
     if prompt:
         files["prompt"] = (None, prompt)
     if language:
         files["language"] = (None, language)
     async with ServerHttpClient(timeout=120) as c:
-        resp = await c.post("https://api.openai.com/v1/audio/transcriptions",
+        resp = await c.post(llm_provider.TRANSCRIBE_URL,
                             headers={"Authorization": f"Bearer {key}"}, files=files)
         if resp.status_code != 200:
             raise RuntimeError(f"{model} {resp.status_code}: {resp.text[:200]}")
-        return {"text": (resp.json().get("text") or "").strip(), "language": None}
+        body = resp.json()
+        return {"text": (body.get("text") or "").strip(), "language": body.get("language")}
 
 
 def configs(hint: str) -> List[Dict[str, Any]]:
@@ -158,13 +166,14 @@ def score(rows: List[Result]) -> Dict[str, Any]:
 
 
 def wrong_language(lang: str, got: Dict[str, Any], translated: bool = False) -> bool:
-    """whisper-1 said another language, or a Yiddish note came back in Latin
+    """Whisper said another language, or a Yiddish note came back in Latin
     letters. For a translation: anything but Latin-letter English."""
     from lib import voice_metrics
     if translated:
         return voice_metrics.script_of(got.get("text") or "") == "hebrew"
+    # A code ("es", DeepInfra) or a name ("spanish"): compared as codes.
     said = (got.get("language") or "").lower()
-    if said and lang in LANG_NAMES and not said.startswith(LANG_NAMES[lang][:3]):
+    if said and lang in LANG_NAMES and wa_voice.lang_code(said) != lang:
         return True
     if lang == "yi" and voice_metrics.script_of(got.get("text") or "") == "latin":
         return True
@@ -173,13 +182,13 @@ def wrong_language(lang: str, got: Dict[str, Any], translated: bool = False) -> 
 
 def card_lines(clip: Clip, results: List[Result]) -> List[str]:
     """What a Yiddish card shows for this clip, as the production path would
-    make it: what was said (whisper-1, glossary prompt on, Yiddish hint when
+    make it: what was said (production's Whisper, glossary prompt on, Yiddish hint when
     run, else off) and Whisper's direct English."""
     def pick(model, prompt, hint):
         return next((r for r in results if r.clip == clip.id and r.model == model
                      and r.prompt == prompt and r.hint == hint and r.error is None), None)
-    said = pick("whisper-1", True, True) or pick("whisper-1", True, False) \
-        or pick("whisper-1", False, False)
+    prod = llm_provider.WHISPER_MODEL
+    said = pick(prod, True, True) or pick(prod, True, False) or pick(prod, False, False)
     eng = pick(TRANSLATE, False, False)
     return [f"Said: {said.hyp if said else '—'}",
             f"English: {eng.hyp if eng else '— (no .en.txt, not run)'}"]
@@ -187,9 +196,9 @@ def card_lines(clip: Clip, results: List[Result]) -> List[str]:
 
 async def main_async(a) -> int:
     from lib import voice_glossary, voice_metrics
-    key = os.environ.get("OPENAI_API_KEY", "")
+    key = llm_provider.API_KEY
     if not key:
-        print("OPENAI_API_KEY is not set")
+        print("no model key (LLM_API_KEY, else QWEN_API_KEY): run under `railway run`")
         return 2
     root = Path(a.clips).expanduser()
     clips = load_clips(root)
