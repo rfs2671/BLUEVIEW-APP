@@ -58434,34 +58434,53 @@ async def _dm_await_budget(task: "asyncio.Future", dm_chat: str, waited: float,
     line. A task that raised re-raises here, as `await task` did."""
     start = _dm_budget_clock() - max(0.0, waited)
     budget, noticed = "ok", False
-    while not task.done():
-        elapsed = _dm_budget_clock() - start
-        if elapsed >= DM_GIVE_UP_SECONDS:
-            # An answer finishing in this same tick wins: let it.
-            for _ in range(5):
+    # The notice goes out on its own task: a send queued behind other DMs
+    # (_DM_SEND_LOCK) never stops this answer/deadline race. When the race
+    # resolves, a notice still waiting to go is dropped.
+    notice: Optional[asyncio.Future] = None
+    try:
+        while not task.done():
+            elapsed = _dm_budget_clock() - start
+            if elapsed >= DM_GIVE_UP_SECONDS:
+                # An answer finishing in this same tick wins: let it.
+                for _ in range(5):
+                    if task.done():
+                        break
+                    await asyncio.sleep(0)
                 if task.done():
                     break
-                await asyncio.sleep(0)
-            if task.done():
-                break
-            task.cancel()
-            try:
-                result = await task
-            except (asyncio.CancelledError, _DmBudgetSpent):
-                return "gave_up", None
-            return budget, result                        # it finished regardless
-        if not noticed and elapsed >= DM_SLOW_NOTICE_SECONDS:
-            noticed = True
-            if not any(x.get("ok") for x in sends or []):
-                budget = "slow_notice"
-                await send_whatsapp_message(dm_chat, DM_SLOW_NOTICE_TEXT)
-                await _wa_typing(dm_chat, True)          # and still typing
-            continue
-        await _dm_budget_wait(task, (DM_GIVE_UP_SECONDS if noticed else DM_SLOW_NOTICE_SECONDS)
-                              - elapsed)
-    if not task.cancelled() and isinstance(task.exception(), _DmBudgetSpent):
-        return "gave_up", None
-    return budget, task.result()
+                task.cancel()
+                try:
+                    result = await task
+                except (asyncio.CancelledError, _DmBudgetSpent):
+                    return "gave_up", None
+                return budget, result                    # it finished regardless
+            if not noticed and elapsed >= DM_SLOW_NOTICE_SECONDS:
+                noticed = True
+                if not any(x.get("ok") for x in sends or []):
+                    budget = "slow_notice"
+                    notice = asyncio.ensure_future(_dm_slow_notice(dm_chat))
+                    await asyncio.sleep(0)               # let it start
+                continue
+            await _dm_budget_wait(task, (DM_GIVE_UP_SECONDS if noticed else DM_SLOW_NOTICE_SECONDS)
+                                  - elapsed)
+        if not task.cancelled() and isinstance(task.exception(), _DmBudgetSpent):
+            return "gave_up", None
+        return budget, task.result()
+    finally:
+        if notice is not None and not notice.done():
+            notice.cancel()
+
+
+async def _dm_slow_notice(dm_chat: str) -> None:
+    """The one "Still checking the drawings." line, then typing again."""
+    try:
+        await send_whatsapp_message(dm_chat, DM_SLOW_NOTICE_TEXT)
+        await _wa_typing(dm_chat, True)                  # and still typing
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"[dm-budget] slow notice failed: {type(e).__name__}")
 
 
 def _dm_timeline_text(timing: dict, trace: Any = None) -> str:
@@ -58482,7 +58501,8 @@ def _dm_timeline_text(timing: dict, trace: Any = None) -> str:
                      + (f", then {r['then']}" if r.get("then") else ""))
     for t in trace or []:
         lines.append(f"Tool {t.get('tool')} (round {t.get('round')}): at {sec(t.get('t_ms'))}, "
-                     f"took {sec(t.get('ms'))}" + (", failed" if t.get("error") else ""))
+                     f"took {sec(t.get('ms'))}" + (", cancelled at the deadline" if t.get("cancelled")
+                                                  else ", failed" if t.get("error") else ""))
     for x in timing.get("sends") or []:
         lines.append(f"Send {x.get('action')}: at {sec(x.get('t_ms'))}, "
                      + ("ok" if x.get("ok") else f"not sent ({x.get('refused') or 'failed'})"))
@@ -58504,7 +58524,7 @@ async def _dm_turn_gave_up(ident: Optional[dict], dm_chat: str, path: str, timin
             + _dm_timeline_text(timing, trace)
             + "\n\nscripts/dm_thread_timeline.py prints the thread.")
     safe = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in timing.items()}
-    tools = [{k: t.get(k) for k in ("tool", "round", "t_ms", "ms", "error") if k in t}
+    tools = [{k: t.get(k) for k in ("tool", "round", "t_ms", "ms", "error", "cancelled") if k in t}
              for t in trace or []]
     await _operator_alert(
         f"dm_turn_gave_up:{message_id or uuid.uuid4().hex}", "dm_turn_gave_up",
@@ -59362,10 +59382,12 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
                 temperature=dm_brain.TEMPERATURE, max_tokens=budget,
                 **({"extra_body": {"reasoning_effort": dm_brain.REASONING_EFFORT}}
                    if dm_brain.REASONING_EFFORT else {}))
-        except Exception as e:
+        except BaseException as e:
             # The SDK's own retries are inside this one call: its ms says so.
+            # A call the budget cancelled is logged too: it is where the turn stalled.
             rounds_log.append({"round": rounds, "t_ms": at_ms(t0), "ms": took_ms(t0),
-                               "error": type(e).__name__})
+                               "error": type(e).__name__,
+                               **({"cancelled": True} if isinstance(e, asyncio.CancelledError) else {})})
             raise
         _dm_usage(usage, resp, use, t0)
         choice = resp.choices[0]
@@ -59404,6 +59426,12 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
                 else:
                     try:
                         out, err = await _dm_brain_exec(ctx, name, dict(args)), False
+                    except asyncio.CancelledError:
+                        # Cancelled by the answer budget: the tool it stalled on.
+                        trace.append({"tool": name, "args": args, "result": "", "round": rounds,
+                                      "t_ms": at_ms(t_tool), "ms": took_ms(t_tool),
+                                      "error": True, "cancelled": True})
+                        raise
                     except Exception as e:
                         logger.warning(f"[dm-brain] tool {name} failed: {type(e).__name__}: {e}")
                         out, err = f"The tool failed ({type(e).__name__}). Say so plainly if it matters.", True

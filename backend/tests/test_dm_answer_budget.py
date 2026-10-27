@@ -155,7 +155,10 @@ class TheBrainPath(_Budget):
         for k in ("received_at", "queue_ms", "rounds", "sends", "first_send_ms"):
             self.assertTrue(k in t, k)
         self.assertEqual(t["budget"], "gave_up")
-        self.assertEqual([r["round"] for r in t["rounds"]], [1])
+        # round 2's model call is the one the deadline cancelled: it is in the
+        # timeline, marked, so the alert says where the turn stalled
+        self.assertEqual([r["round"] for r in t["rounds"]], [1, 2])
+        self.assertEqual(t["rounds"][1].get("cancelled"), True)
         self.assertEqual([x["tool"] for x in a["metadata"]["tools"]], ["headcount"])
         self.assertEqual([x["action"] for x in t["sends"]], ["send-message", "send-message"])
         self.assertTrue("Model round 1:" in a["text"])
@@ -195,6 +198,50 @@ class TheBrainPath(_Budget):
                 return await server._dm_await_budget(asyncio.ensure_future(never()), "c", 0.0, sends)
             self.assertEqual(_run(go()), ("gave_up", None))
         self.assertEqual(msgs, [])
+
+    def test_a_notice_stuck_behind_other_sends_never_holds_the_answer(self):
+        """The notice waits on the send lock forever; the answer at 60 s still
+        comes back, and the stuck notice is dropped."""
+        clock = _Clock(60.0)
+        stuck = asyncio.Event()
+
+        async def answer():
+            await clock.hold()
+            return "the answer"
+
+        async def send(chat, message, *a, **k):
+            await stuck.wait()                      # never released
+
+        async def typing(*a, **k):
+            return True
+        with patch.object(server, "_dm_budget_clock", clock.now), \
+                patch.object(server, "_dm_budget_wait", clock.wait), \
+                patch.object(server, "DM_SLOW_NOTICE_SECONDS", 45.0), \
+                patch.object(server, "DM_GIVE_UP_SECONDS", 120.0), \
+                patch.object(server, "send_whatsapp_message", send), \
+                patch.object(server, "_wa_typing", typing):
+            async def go():
+                got = await server._dm_await_budget(asyncio.ensure_future(answer()), "c", 0.0, [])
+                pending = [t for t in asyncio.all_tasks()
+                           if t is not asyncio.current_task() and not t.done()]
+                await asyncio.sleep(0)
+                return got, [t for t in pending if not t.done()]
+            got, still = _run(go())
+        self.assertEqual(got, ("slow_notice", "the answer"))
+        self.assertEqual(still, [])
+
+    def test_a_stalled_tool_is_in_the_give_up_timeline(self):
+        clock = _Clock(None)
+
+        async def stall(ctx, name, args):
+            await clock.hold()
+        with patch.object(server, "_dm_brain_exec", stall):
+            _msgs, _row, alerts, _llm, _w = self.run_brain(
+                None, script=(resp(use("headcount", {"job": "588"})), resp(text("never"))))
+        (a,) = alerts
+        tools = a["metadata"]["tools"]
+        self.assertEqual([(x["tool"], x.get("cancelled")) for x in tools], [("headcount", True)])
+        self.assertTrue("Tool headcount (round 1)" in a["text"] and "cancelled at the deadline" in a["text"])
 
     def test_the_model_call_timeout_is_within_the_budget(self):
         _msgs, _row, _a, llm, _w = self.run_brain(10.0)
