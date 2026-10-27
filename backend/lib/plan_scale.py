@@ -99,10 +99,11 @@ from lib.plan_cells import title_block_edge
 #: every Boyland verdict is the same for any value from 0.5% to 5%; the
 #: first change is at 8%, and at 10% three SET_UPDATED elevations whose
 #: drawing is 9.7% larger than their 3/16" note would wrongly verify.
-#: With MIN_DISTINCT (2026-10-27, Q10_scale_distinct_measure.md) the band is
-#: 2.1% to 7%: below 2.1% GN-004.00's FIRST FLOOR EGRESS PLAN loses its only
-#: second value (30'-5", drawn 2.05% short), and those three elevations,
-#: which print one value (10'-0"), no longer verify at 10%.
+#: With MIN_DISTINCT (2026-10-27, Q10_scale_distinct_measure.md) every
+#: verdict is the same from 2.1% to 7%; under 2.05% GN-004.00's FIRST FLOOR
+#: EGRESS PLAN loses its only second value (30'-5", drawn 2.05% short), and
+#: those three elevations, which print one value (10'-0"), no longer verify
+#: at 10%.
 AGREE_TOL = 0.03
 
 #: Dimensions that must agree before a viewport's note is accepted.
