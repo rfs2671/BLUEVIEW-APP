@@ -58223,6 +58223,9 @@ def _dm_no_negative_claims(reply: Any, trace: Any, ident: Optional[dict] = None)
     if n:
         logger.info(f"[dm-gate] negative claim rewritten "
                     f"company={(ident or {}).get('company_id') or '?'} n={n}")
+        # The appended "Closest detail" quote is a sheet's text: redacted as
+        # the rest of the answer was.
+        out = dm_brain.redact_phones(out)
     return out
 
 

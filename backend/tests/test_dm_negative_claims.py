@@ -72,6 +72,28 @@ class Detect(unittest.TestCase):
         self.assertEqual(gate.rewrite(said, trace), (said, 0))
 
 
+class CodexFindings(unittest.TestCase):
+    def test_curly_apostrophes_are_flagged_too(self):
+        s = "The drawings don\u2019t show spray foam."
+        self.assertEqual(gate.detect(s), [s])
+
+    def test_a_mixed_turn_keeps_its_attendance_negative(self):
+        trace = PLANS + [{"tool": "headcount", "args": {}, "result": "0 on site"}]
+        out, n = gate.rewrite("There are no workers on site today. Spray foam is not required.",
+                              trace)
+        self.assertEqual(n, 1)
+        self.assertRegex(out, r"^There are no workers on site today\. ")
+        self.assertRegex(out, r"Not found in the sheets I searched: A-302\.00\.")
+
+    def test_a_phone_in_the_closest_detail_is_redacted(self):
+        trace = [{"tool": "search_plans", "args": {}, "result": "",
+                  "records": [{"sheet": "A-302.00",
+                               "quote": "FIXTURE TEXT: ROOF BY ACME CALL 718-555-0142"}]}]
+        out = server._dm_no_negative_claims("Spray foam is not required.", trace, {})
+        self.assertRegex(out, r'Closest detail: A-302\.00 — "FIXTURE TEXT: ROOF BY ACME CALL ')
+        self.assertIsNone(re.search(r"555.?0142", out))
+
+
 class Rewrite(unittest.TestCase):
     def test_spray_foam(self):
         out, n = gate.rewrite(SPRAY["answer"], SPRAY["trace"])
