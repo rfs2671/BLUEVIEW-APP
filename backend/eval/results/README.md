@@ -108,3 +108,17 @@ The matcher answered this one, by looking for a value near the term — with a h
 - ~~**Duplicate roof-drain count.**~~ **Corrected 2026-09-18, after the re-index.** The claim that the count is stored twice described the PRE-RE-INDEX corpus. On the current one the AR gas-change page still duplicates A-105.01's legend entry and element count — two of the eight records returned for 'roof drain' — but THE TWO COUNTS AGREE (2 and 2). It is redundancy and a weaker citation, not a double count and not a wrong answer. It is recorded as a known limit in the suite, with the measured overlap that argued against fixing it automatically.
 - **Boilerplate in vision-read notes.** They are never checked for boilerplate. A note repeated verbatim across one discipline's sheets could be handled the same way `boilerplate_lines` handles repeated text-layer lines.
 - **Stale PTAC elements.** The three leave only with a full Boyland re-index under #585. A partial re-index would mix the corpus.
+
+---
+
+## 588 Thomas S Boyland Street, 2026-10-27 — `feat/roof-drains-per-tag`, a working tree (L3, roof drains)
+
+| | |
+|---|---|
+| file | `boyland-2026-10-27-2c8acbf8.json` |
+| code | working tree of `feat/roof-drains-per-tag` at `2c8acbf8` (main `567e8d0b` merged in), run through `railway run` — **not a deployed build** |
+| ran | 02:44:54Z |
+| corpus | 174 pages, 156 current, 20,529 records; unchanged across the run |
+| suite | `eval/boyland.json`, 32 cases — `roof-drain-count` restated onto the 2026-10-26 ruling (RD-1 2 and RD-2 2 per tag, a combined total refused, the located render stating `RD-1 2 + RD-2 2` and `located on P-206.00; no schedule lists them`) |
+
+**29 of 32 pass — every verdict identical to main's `boyland-2026-10-27-2bb56dce.json`.** `roof-drain-count` still fails, as it must before a glyph rebuild: production holds no roof-drain rows, so the family's census counts 0 and every figure refuses. Emulated against the same production records with the four rows the pass writes (EMIT_VERSION 9), the case passes — 30 of 32 after the rebuild.

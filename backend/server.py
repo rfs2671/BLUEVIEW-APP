@@ -63000,6 +63000,12 @@ async def _plan_glyph_pass(project_id: str) -> dict:
                   "rows": (s.get("payload") or {}).get("rows"),
                   "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
                  for s in sched]
+    # PLAN-ONLY FAMILIES (lib.plan_only, ruling 2026-10-26): the roof drains
+    # no schedule counts, allowed only while a detail or note in the set names
+    # them - read from the same current pages the pass places against.
+    from lib import plan_only as _plan_only
+    plan_only = _plan_only.families(await db[PLAN_RECORDS].find(
+        _plan_only.record_query(pid, sorted(current_ids)), {"embedding": 0}).to_list(2000))
 
     import tempfile as _tf
     with _tf.TemporaryDirectory(prefix="glyphpass-") as tmp:
@@ -63024,7 +63030,8 @@ async def _plan_glyph_pass(project_id: str) -> dict:
         summary: Dict[str, Any] = {"tracks": {}}
         for track, pages in by_track:
             out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
-                                          door_pages, track=track, sweeps=sweeps)
+                                          door_pages, track=track, sweeps=sweeps,
+                                          plan_only=plan_only)
             rows += out["rows"]
             areas += out.get("areas") or []
             summary["tracks"][track] = out["summary"]
@@ -66317,6 +66324,20 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                       for s in sched])
     want = plan_search.glyph_families_for(
         subject, {n: f.get("tags") or [] for n, f in fams.items()})
+    # PLAN-ONLY FAMILIES (lib.plan_only, ruling 2026-10-26), read at question
+    # time from the same pages: a family exists only while a detail or note
+    # names its object, and its census carries what the set says of it.
+    from lib import plan_only as _plan_only
+    plan_only: Dict[str, dict] = {}
+    try:
+        po_all = _plan_only.families(await db[PLAN_RECORDS].find(
+            _plan_only.record_query(pid, page_ids), {"embedding": 0}).to_list(2000))
+        po_want = plan_search.glyph_families_for(
+            subject, {n: f["tags"] for n, f in po_all.items() if n not in fams})
+        plan_only = {n: po_all[n] for n in po_want}
+    except Exception as e:
+        logger.warning("plan-only families unavailable for %s: %r", pid, e)
+    want = dict(want, **{n: plan_only[n]["tags"] for n in plan_only})
     # SET HEALTH (PR 5): what the pass recorded about the set, and - read
     # live, from the same schedules - every family with no identifier column,
     # so a claim about one refuses with the reason and none is skipped silently.
@@ -66369,7 +66390,8 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                if kind == "family" else None)
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
                                                family=name, tags=tags, qty=qty,
-                                               track=track))
+                                               track=track,
+                                               plan_only=plan_only.get(name)))
     return rows + census + health
 
 
