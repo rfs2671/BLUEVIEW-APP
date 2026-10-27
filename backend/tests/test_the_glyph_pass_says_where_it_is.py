@@ -40,6 +40,11 @@ for k, v in (("MONGO_URL", "mongodb://localhost:27017"), ("DB_NAME", "smoke_test
 import server  # noqa: E402
 from lib import plan_derive as D  # noqa: E402
 from lib import plan_glyph_pass as G  # noqa: E402
+# IMPORTED BEFORE ANY PATCH: plan_takeoff (and plan_space) bind plan_sheet.load_sheet
+# at import, so a module first imported inside _fast() would keep its stub for
+# every later test in the process - the real end-to-end passes then read no
+# geometry (found when this file ran first, before test_the_owners_set_...).
+from lib import plan_only, plan_openings, plan_space, plan_takeoff  # noqa: E402,F401
 from tests.async_fake_mongo import AsyncFakeDB  # noqa: E402
 
 PID = "proj-progress"
