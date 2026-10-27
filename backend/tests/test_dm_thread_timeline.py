@@ -171,5 +171,78 @@ class TheTimeline(unittest.TestCase):
         self.assertEqual(sorted(ev), ["at", "chat", "event", "from_me", "mid", "type", "wa_ts"])
 
 
+def _in(body, t):
+    return {"body": body, "created_at": t}
+
+
+def _row(question, t):
+    return {"question": question, "created_at": t}
+
+
+class ThePairing(unittest.TestCase):
+    """A message with no answer row stays unpaired (Codex on #893): the
+    reminder's "yes" is stored, answered in code (_upcoming_dm_turn) and
+    logs no row -- it must not take the next question's row."""
+
+    def test_a_reminder_yes_does_not_take_the_next_questions_row(self):
+        inbound = [_in("yes", at(10, 0)), _in("What's open at 588?", at(10, 1))]
+        answers = [_row("What's open at 588?", at(10, 1, 20))]
+        self.assertEqual(tl.pair_answers(inbound, answers), {1: 0})
+
+    def test_and_through_the_script_the_yes_shows_no_row(self):
+        db = FakeDb(
+            users=[{"_id": "u_roy", "email": "roy@x.com", "name": "Roy", "role": "admin",
+                    "phone": "+" + PHONE}],
+            whatsapp_optins=[{"_id": "o1", "user_id": "u_roy", "status": "active", "phone": PHONE}],
+            whatsapp_messages=[
+                {"_id": "m1", "group_id": CHAT, "is_dm": True, "sender": PHONE, "from_me": False,
+                 "body": "yes", "message_id": "x_Y1", "created_at": at(10, 0)},
+                {"_id": "m2", "group_id": CHAT, "is_dm": True, "sender": PHONE, "from_me": False,
+                 "body": "What's open at 588?", "message_id": "x_Q1", "created_at": at(10, 1)}],
+            whatsapp_dm_answers=[{"_id": "a1", "user_id": "u_roy", "path": "brain",
+                                  "question": "What's open at 588?", "answer": "2 punch items.",
+                                  "created_at": at(10, 1, 20)}])
+
+        class Client:
+            def __init__(self, url):
+                pass
+
+            def __getitem__(self, name):
+                return db
+        out = io.StringIO()
+        with patch.dict(os.environ, {"MONGO_URL": "mongodb://x", "DB_NAME": "d"}), \
+                patch("motor.motor_asyncio.AsyncIOMotorClient", Client), \
+                contextlib.redirect_stdout(out):
+            tl.main(["--email", "roy@x.com", "--date", "2026-10-27"])
+        text = out.getvalue()
+        yes, question = text.split('IN 10:00:00 AM  "yes"')[1].split('IN 10:01:00 AM')
+        self.assertIn("answer row: NONE paired with this message", yes)
+        self.assertIn("answer row logged 10:01:20 AM (+20.0s after their message)", question)
+        self.assertEqual(text.count("ANSWER ROWS NOT MATCHED"), 0)
+
+    def test_substrings_never_pair(self):
+        """"?" is inside the question before it; only the "?" row is its."""
+        inbound = [_in("Spray foam on 5th floor ceiling?", at(10, 36)), _in("?", at(10, 42))]
+        answers = [_row("?", at(10, 42, 30)), _row("Spray foam on 5th floor ceiling?", at(10, 43))]
+        self.assertEqual(tl.pair_answers(inbound, answers), {0: 1, 1: 0})
+
+    def test_voice_and_reply_to_forms_are_still_exact(self):
+        inbound = [_in("roof details", at(11, 0)), _in("which sheet", at(11, 5))]
+        answers = [_row("[voice note] roof details", at(11, 1)),
+                   _row("which sheet\n\n(This is a reply to your (Levelog Assistant's) earlier "
+                        "message: \"EN-001\")", at(11, 6))]
+        self.assertEqual(tl.pair_answers(inbound, answers), {0: 0, 1: 1})
+
+    def test_a_leftover_pairs_only_when_one_row_is_in_its_window(self):
+        # A nudge ("same question?") logs the quoted question, not its words:
+        # one row before the next message -> paired; two -> left unpaired.
+        one = tl.pair_answers([_in("again?", at(12, 0)), _in("thanks", at(12, 5))],
+                              [_row("what's open", at(12, 1))])
+        self.assertEqual(one, {0: 0})
+        two = tl.pair_answers([_in("again?", at(12, 0)), _in("thanks", at(12, 5))],
+                              [_row("what's open", at(12, 1)), _row("who's on site", at(12, 2))])
+        self.assertEqual(two, {})
+
+
 if __name__ == "__main__":
     unittest.main()

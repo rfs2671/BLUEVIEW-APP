@@ -193,16 +193,53 @@ def describe_answer(a: dict, inbound_at, quote_chars: int) -> list:
     return out
 
 
-def match_answer(body: str, at, answers: list, used: set):
-    """The answer row for one message: the first unused row at or after it
-    whose question carries their words; else the first unused row after it."""
-    words = clean(body, 10000)
-    later = [(i, a) for i, a in enumerate(answers)
-             if i not in used and utc(a.get("created_at")) and utc(at) and utc(a["created_at"]) >= utc(at)]
-    for i, a in later:
-        if words and words in clean(a.get("question"), 10000):
-            return i, a
-    return later[0] if later else (None, None)
+VOICE_MARK = "[voice note] "
+REPLY_MARK = " (This is a reply to "
+
+
+def asked_exactly(body: str, question) -> bool:
+    """Is this answer row's question exactly this message? Their words, as
+    the brain logs them: optionally "[voice note] " in front, optionally the
+    reply-to context ("(This is a reply to …)") after. Never a substring:
+    "?" or "yes" is inside many questions."""
+    w, q = clean(body, 100000), clean(question, 100000)
+    if q.startswith(VOICE_MARK):
+        q = q[len(VOICE_MARK):]
+    return bool(w) and (q == w or q.startswith(w + REPLY_MARK))
+
+
+def pair_answers(inbound: list, answers: list) -> dict:
+    """{message index: answer row index}. A message with no row stays
+    unpaired -- an exact command (a reminder's "yes", "cancel") is stored
+    and answered in code with no row, and must not take the next question's.
+
+      1. Exact question matches first, for every message: the first unused
+         row at or after it whose question is that message.
+      2. A leftover message gets a row only when it is unambiguous: exactly
+         one unused row logged after it and before their next message."""
+    used, pairs = set(), {}
+    for k, m in enumerate(inbound):
+        at = utc(m.get("created_at"))
+        for i, a in enumerate(answers):
+            if i in used or not at or not utc(a.get("created_at")) or utc(a["created_at"]) < at:
+                continue
+            if asked_exactly(m.get("body") or "", a.get("question")):
+                used.add(i)
+                pairs[k] = i
+                break
+    for k, m in enumerate(inbound):
+        if k in pairs:
+            continue
+        at = utc(m.get("created_at"))
+        nxt = utc(inbound[k + 1].get("created_at")) if k + 1 < len(inbound) else None
+        if not at:
+            continue
+        window = [i for i, a in enumerate(answers) if i not in used and utc(a.get("created_at"))
+                  and at <= utc(a["created_at"]) and (nxt is None or utc(a["created_at"]) < nxt)]
+        if len(window) == 1:
+            used.add(window[0])
+            pairs[k] = window[0]
+    return pairs
 
 
 def msg_tail(mid) -> str:
@@ -329,12 +366,10 @@ async def run(a) -> int:
     # Pair each message with its answer row first, so an outgoing message
     # can be named as the answer to WHICH message (two turns can overlap: a
     # "?" sent while the first answer is still being worked out).
-    used, report, pairs = set(), [], {}
-    for k, m in enumerate(inbound):
-        i, ans = match_answer(m.get("body") or "", m.get("created_at"), answers, used)
-        if ans is not None:
-            used.add(i)
-            pairs[k] = ans
+    report = []
+    paired = pair_answers(inbound, answers)
+    used = set(paired.values())
+    pairs = {k: answers[i] for k, i in paired.items()}
 
     def answers_which(b) -> str:
         body = clean(b.get("body"), 100000)
@@ -360,8 +395,9 @@ async def run(a) -> int:
             for line in describe_answer(ans, at, a.quote_chars):
                 print(line)
         else:
-            print("  answer row: NONE after this message (an exact command, a walkthrough turn, "
-                  "or the turn never finished)")
+            print("  answer row: NONE paired with this message -- no row asked exactly this, and "
+                  "no single row before their next message (an exact command such as a reminder's "
+                  "yes, a walkthrough turn, or a turn that never finished)")
         outs = [b for b in bot if utc(b.get("created_at")) and utc(at)
                 and utc(at) <= utc(b["created_at"]) < (utc(nxt) or end)]
         tag = f"{ny(at)} message]"
