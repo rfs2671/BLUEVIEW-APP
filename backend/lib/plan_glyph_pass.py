@@ -196,6 +196,10 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         f["stairs"] = derive.unit_stairs(arch_pg.directed_words, member.at,
                                          f["units"]["tags"])
     summary["stair_seeds"] = seed_from_stairs(floors_in, open_page, door["inches"])
+    # AREAS (lib.plan_areas, ruling 2026-10-26): every floor's apartment and
+    # room areas, checked against what the plan prints - BEFORE a void joins
+    # a unit (an open-to-below bay is no floor area of the unit beside it).
+    areas, summary["areas"] = floor_area_rows(floors_in, open_page, track=track)
     summary["voids"] = assign_voids(floors_in)
 
     for f in floors_in:
@@ -251,7 +255,37 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         r["ordinal"] = i
         r.setdefault("payload", {})["track"] = track
     summary["rows"] = len(rows)
-    return {"rows": rows, "summary": summary}
+    return {"rows": rows, "summary": summary, "areas": areas}
+
+
+def floor_area_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any], *,
+                    track: str = "filed") -> "tuple[List[Dict[str, Any]], List[str]]":
+    """(area rows, a line per floor) - lib.plan_areas on every floor whose
+    membership map was built. One floor that fails never sinks the pass: it
+    is said, and writes no row."""
+    from lib import plan_areas
+
+    rows: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    for f in floors:
+        sp = f.get("space")
+        if not sp or (f.get("units") or {}).get("tags") is None:
+            continue
+        try:
+            res = plan_areas.floor_areas(open_page(f["arch_p"]), sp)
+        except Exception as e:                      # one floor never sinks the pass
+            log.exception("area check %s failed: %r", f.get("a_sheet"), e)
+            notes.append(f"{f.get('a_sheet')}: area check failed ({type(e).__name__}) - no area rows")
+            continue
+        got = plan_areas.area_rows(res, f["arch_p"], track=track)
+        rows += got
+        tally = {}
+        for r in got:
+            tally[r["status"]] = tally.get(r["status"], 0) + 1
+        notes.append(f"{f.get('a_sheet')}: " + ", ".join(f"{k} {v}" for k, v in sorted(tally.items())))
+    for n in notes:
+        log.info("glyph pass areas: %s", n)
+    return rows, notes
 
 
 #: A refused plan-only sheet blocks its own family, never another's total:

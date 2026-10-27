@@ -3868,6 +3868,7 @@ from lib import plan_text  # noqa: E402
 from lib import plan_ocr  # noqa: E402
 from lib import plan_records  # noqa: E402
 from lib import plan_search  # noqa: E402
+from lib import plan_areas  # noqa: E402
 from lib import plan_crop  # noqa: E402
 
 
@@ -63025,12 +63026,14 @@ async def _plan_glyph_pass(project_id: str) -> dict:
 
         sweeps: Dict[Any, Any] = {}
         rows: List[dict] = []
+        areas: List[dict] = []
         summary: Dict[str, Any] = {"tracks": {}}
         for track, pages in by_track:
             out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
                                           door_pages, track=track, sweeps=sweeps,
                                           plan_only=plan_only)
             rows += out["rows"]
+            areas += out.get("areas") or []
             summary["tracks"][track] = out["summary"]
         # SET HEALTH (PR 5), while the PDFs are still here - a callout bubble
         # is read from the page's geometry. A failure is logged, never sinks
@@ -63063,6 +63066,7 @@ async def _plan_glyph_pass(project_id: str) -> dict:
         return summary
     summary["written"] = await _write_glyph_records(pid, rows)
     summary["set_health"] = await _write_set_health(pid, health)
+    summary["areas_written"] = await _write_area_records(pid, areas)
     logger.info("plan glyph pass %s: %s", pid, summary)
     return summary
 
@@ -63095,6 +63099,32 @@ def _glyph_set_health(tracks: List[Tuple[str, List[dict]]], rows: List[dict],
     present = {H.sheet_stem(p.get("sheet_number")) for p in current.values()} - {None}
     items += H.missing_references(list(current.values()), present, open_page)
     return H.dedupe(items)
+
+
+async def _write_area_records(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's area rows with one pass's (lib.plan_areas). Own
+    collection, as set health: search fetches them only for a question about
+    an area (search_plans), and the eval's record baseline does not move."""
+    from lib.plan_areas import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    for i, r in enumerate(rows):
+        r["ordinal"] = i
+        r["created_at"] = now
+    await db[COLLECTION].insert_many(rows)
+    return len(rows)
+
+
+async def _area_evidence(project_id: str) -> List[dict]:
+    """Every area row of the project's last glyph pass (lib.plan_areas):
+    whole project, every track, like the located symbols - a floor filter on
+    the question must not hide the row that withholds a figure."""
+    from lib.plan_areas import COLLECTION
+    return await db[COLLECTION].find({"project_id": str(project_id)},
+                                     {"_id": 0, "created_at": 0}).to_list(2000)
 
 
 async def _write_set_health(project_id: str, items: List[dict]) -> int:
@@ -66562,6 +66592,15 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
             # Without the census nothing about a located symbol binds, so a
             # failure here costs those figures and nothing else.
             logger.warning(f"search_plans glyph evidence failed for {subject!r}: {e}")
+    # AN AREA IS CHECKED AGAINST WHAT THE PLAN PRINTS (lib.plan_areas,
+    # ruling 2026-10-26): a question about an area, an apartment or a room
+    # brings every area row, whatever the intent, and the gate binds a
+    # figure only where the printed and the measured one agree.
+    if plan_areas.is_area_subject(" ".join(names), attribute):
+        try:
+            out += await _area_evidence(project_id)
+        except Exception as e:
+            logger.warning(f"search_plans area evidence failed for {subject!r}: {e}")
     return out
 
 
@@ -66597,6 +66636,10 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
         # Located symbols are shown as their scoped counts, below - one line
         # per row would be 84 lines of OCR'd labels to count by hand.
         if plan_search.is_glyph_evidence(r):
+            continue
+        # An area row is shown through its check, below: its quote is a
+        # printed figure the check may withhold.
+        if plan_areas.is_area_record(r):
             continue
         # The same citation the crew is shown, for the same reason: a model
         # given '?' or 'pNone' will write one into the answer. A record that
@@ -66634,6 +66677,9 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     located = plan_search.render_glyph_evidence(records)
     if located:
         lines.append(located)
+    areas = plan_areas.render_area_evidence(records)
+    if areas:
+        lines.append(areas)
     health = plan_search.render_set_health(records)
     if health:
         lines.append(health)

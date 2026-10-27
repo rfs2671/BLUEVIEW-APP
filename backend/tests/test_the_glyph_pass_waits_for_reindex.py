@@ -104,9 +104,14 @@ class APassDuringAReindexWritesNothing(unittest.TestCase):
         async def write_health(pid, items):
             written.append("health")
             return len(items)
+
+        async def write_areas(pid, rows):       # area rows (lib.plan_areas) wait too
+            written.append("areas")
+            return len(rows)
         with patch.object(server, "db", db), patch.object(server, "_glyph_pages", pages), \
                 patch.object(server, "_write_glyph_records", write_rows), \
-                patch.object(server, "_write_set_health", write_health):
+                patch.object(server, "_write_set_health", write_health), \
+                patch.object(server, "_write_area_records", write_areas, create=True):
             summary = asyncio.run(server._plan_glyph_pass(PID))
         return summary, written
 
@@ -126,7 +131,7 @@ class APassDuringAReindexWritesNothing(unittest.TestCase):
     def test_a_reindex_finished_before_the_pass_lets_it_write(self):
         old = datetime.now(timezone.utc) - timedelta(hours=1)
         summary, written = self._pass(job_before=_job("done", enqueued_at=old, started_at=old, finished_at=old))
-        self.assertEqual(written, ["rows", "health"])
+        self.assertEqual(written, ["rows", "health", "areas"])
         self.assertNotIn("aborted", summary)
 
 

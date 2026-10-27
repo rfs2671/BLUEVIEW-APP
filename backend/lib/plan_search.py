@@ -45,6 +45,7 @@ import re
 from typing import (Any, Collection, Dict, Iterable, List, NamedTuple,
                     Optional, Sequence, Tuple)
 
+from lib import plan_areas as _areas
 from lib import plan_dimensions as _dims
 from lib.plan_records import TIER_ORDER, column_role, tier_rank
 from lib.plan_text import SHEET_ID_RE
@@ -1128,9 +1129,12 @@ def _values(text: str) -> List[str]:
 
 
 def _vouches_for_nothing(r: Dict[str, Any]) -> bool:
-    """A contested cell, or a located symbol outside its scoped count - the
-    records `_supported_values` reads nothing from."""
-    return bool((r.get("payload") or {}).get("count_contested")) or is_glyph_evidence(r)
+    """A contested cell, a located symbol outside its scoped count, or an
+    area row (lib.plan_areas: it vouches only through its own check,
+    `_areas.figures_in_clause`) - the records `_supported_values` reads
+    nothing from."""
+    return (bool((r.get("payload") or {}).get("count_contested")) or is_glyph_evidence(r)
+            or _areas.is_area_record(r))
 
 
 def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
@@ -1154,6 +1158,12 @@ def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
         # vouch for nearly any number. Measured: one EF-1 row carries 56,
         # 908 and fourteen coordinates.
         if is_glyph_evidence(r):
+            continue
+        # AN AREA ROW VOUCHES ONLY THROUGH ITS CHECK (lib.plan_areas): its
+        # payload carries the measured figure, which binds only where the
+        # printed one agrees, and the printed one, which a disagreement
+        # withholds.
+        if _areas.is_area_record(r):
             continue
         ok.update(_values(r.get("quote") or ""))
         # ── WHAT A CITATION MAY CONTAIN ────────────────────────────────────
@@ -2856,6 +2866,10 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     citations = sorted(set(_citation_texts(records)) | {
         l for l in books.labels.values() if len(l) >= 3}, key=len, reverse=True)
     unsupported: List[str] = []
+    # "1,970 sq ft" is one figure: with area rows in hand the thousands comma
+    # is not a clause break (_areas.join_thousands). Without them, unchanged.
+    if any(_areas.is_area_record(r) for r in records or []):
+        text = _areas.join_thousands(text)
     for clause in _clauses(_undated_set_names(text)):
         # A citation in the clause is removed as text before its numbers are
         # read (_citation_texts): '[M-200.00]' and 'issued 8/18/2026' say
@@ -2883,6 +2897,9 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
             # (glyph_values) - never a printed QTY, which is no track's, and
             # never on untracked rows.
             allowed = glyph_values(clause, books)
+            if _areas.is_area_clause(bare):
+                a_add, a_drop = _areas.figures_in_clause(bare, records, named)
+                allowed = (allowed - a_drop) | a_add
             unsupported.extend(v for v in said if v not in allowed)
             continue
         allowed: set = set()
@@ -2933,6 +2950,13 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
         # rows in hand equal an independent census, and only at a scope -
         # unit, floor, building - nothing refused falls inside.
         allowed |= glyph_values(clause, books)
+        # AN AREA AGREES WITH WHAT IS PRINTED, OR NEITHER IS SAID
+        # (lib.plan_areas, ruling 2026-10-26, like the QTY above): a measured
+        # area binds only where the plan prints one that agrees, and a
+        # printed one the measurement contradicts is withheld.
+        if _areas.is_area_clause(bare):
+            a_add, a_drop = _areas.figures_in_clause(bare, records)
+            allowed = (allowed - a_drop) | a_add
         unsupported.extend(v for v in said if v not in allowed)
     return (not unsupported), unsupported
 
@@ -2977,7 +3001,24 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     # attribute cases. Applying the bound rule to them would refuse two true
     # answers to catch nothing. (The count branch is taken above.)
     ok = _supported_values(records)
-    unsupported = bad_dims + [v for v in said if v not in ok]
+    if not any(_areas.is_area_record(r) for r in records or []):
+        unsupported = bad_dims + [v for v in said if v not in ok]
+        return (not unsupported), unsupported
+    # AN AREA AGREES WITH WHAT IS PRINTED, OR NEITHER IS SAID (ruling
+    # 2026-10-26, lib.plan_areas). The union holds every printed area - so a
+    # clause stating one is decided by the area check first: a figure it
+    # allows binds (the measured one included, which no quote prints), a
+    # figure it withholds is refused whatever the union holds, and anything
+    # else falls to the union as before.
+    unsupported = list(bad_dims)
+    for clause in _clauses(_areas.join_thousands("".join(rest))):
+        named, bare = _track_claim(clause)
+        vals = _values(clause)
+        if not _areas.is_area_clause(bare):
+            unsupported += [v for v in vals if v not in ok]
+            continue
+        a_add, a_drop = _areas.figures_in_clause(bare, records, named)
+        unsupported += [v for v in vals if v not in a_add and (v in a_drop or v not in ok)]
     return (not unsupported), unsupported
 
 
@@ -3079,6 +3120,10 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
     # reader is shown something as an answer.
     """
     terms = search_terms(subject)
+    # An area row is shown through its check (render_area_evidence), never
+    # as a quote: its quote is a printed figure the check may withhold.
+    everything = list(records or [])
+    records = [r for r in everything if not _areas.is_area_record(r)]
     if terms:
         records = [r for r in records if not matched_only_through_label(r, terms)]
     if not records:
@@ -3114,6 +3159,9 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
         # The record type is machinery and is gone. The sheet trails the line
         # the way a citation does, so the eye reaches the content first.
         line = f"{quote[:200]} [{where_all}]"
+        # A PRINTED AREA THE CHECK WITHHELD is not repeated as if it stood
+        # (lib.plan_areas): the line says the drawn region disagrees.
+        line += _areas.withheld_note(quote, everything)
         readings = (r.get("payload") or {}).get("count_readings")
         if readings:
             said = " and ".join(str(x.get("value")) for x in readings)

@@ -173,6 +173,17 @@ class AsyncFakeCollection:
                 n += 1
         return _Result(matched_count=n, modified_count=n)
 
+    async def insert_many(self, docs, **kw):
+        ids = [(await self.insert_one(d)).inserted_id for d in docs]
+        return _Result(inserted_ids=ids)
+
+    async def delete_many(self, flt=None, **kw):
+        keep = [d for d in self.docs if not matches(d, flt)]
+        n = len(self.docs) - len(keep)
+        self.docs[:] = keep
+        self.writes.append(("delete_many", n))
+        return _Result(deleted_count=n)
+
     async def create_index(self, *a, **k):
         return None
 
