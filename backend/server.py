@@ -79894,7 +79894,7 @@ async def list_plan_set_questions(project_id: str, current_user=Depends(get_admi
 
 
 @api_router.post("/projects/{project_id}/plan-set-questions/ask",
-                 dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def ask_plan_set_questions(project_id: str, current_user=Depends(get_admin_user)):
     """SENDS WHATSAPP MESSAGES. Ask the project's PM / Site Manager each open
     drawing-set question not yet delivered (ruling 21) - the only place a
@@ -79904,7 +79904,7 @@ async def ask_plan_set_questions(project_id: str, current_user=Depends(get_admin
 
 
 @api_router.post("/projects/{project_id}/plan-set-questions/{question_id}/answer",
-                 dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def answer_plan_set_question(project_id: str, question_id: str, body: PlanSetAnswer,
                                    current_user=Depends(get_admin_user)):
     """Record the answer to an open drawing-set question (ruling 21), as the

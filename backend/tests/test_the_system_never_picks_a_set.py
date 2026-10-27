@@ -695,7 +695,11 @@ class NothingIsSentButByTheOperator(unittest.TestCase):
         self.assertEqual(len(calls), 1, "one call site")
         i = src.index("async def ask_plan_set_questions(")
         self.assertIn("_ask_set_questions(", src[i:i + 900])
-        self.assertIn("require_project_admin_access", src[i - 300:i])
+        gate = src[i - 300:i]
+        self.assertIn("require_project_access", gate, "the company's own admin gate")
+        self.assertNotIn("require_project_admin_access", gate,
+                         "not the operator gate: it is pinned to the routes Roy ruled")
+        self.assertIn("get_admin_user", src[i:i + 200])
         sends = [m.start() for m in re.finditer(r"send_whatsapp_dm\(.{0,200}?psq\.WA_KIND", src, re.S)]
         j = src.index("async def _ask_set_questions(")
         k = src.index("\nasync def ", j + 10)
