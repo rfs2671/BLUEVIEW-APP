@@ -227,6 +227,11 @@ def validate_suite(suite: Dict[str, Any]) -> None:
             t = exp.get("tier_at_least")
             if t is not None and t not in TIER_ORDER:
                 raise SuiteError(f"{cid}: unknown tier {t!r}")
+        lr = exp.get("located_render")
+        if lr is not None and (not isinstance(lr, list) or not lr or not all(
+                isinstance(x, str) and x.strip() for x in lr)):
+            raise SuiteError(f"{cid}: located_render is a non-empty list of the "
+                             f"phrases the located-symbol render must state, or absent")
         claims = exp.get("claims")
         if claims is not None:
             if not isinstance(claims, list) or not claims:
@@ -571,7 +576,9 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
     # puts them after the ranked slice, whole, with their census. For such a
     # claim the expected sheet is where the symbols are, and the glyph rows
     # returned from it are what it rests on.
-    if any(c.get("scope") for c in claims):
+    # So does a claim on a PLAN-ONLY family (lib.plan_only): it binds at
+    # sheet scope, unscoped in the sentence, and rests on its located rows.
+    if any(c.get("scope") for c in claims) or exp.get("located_render"):
         on_sheet += [r for r in returned if r.get("record_type") == "glyph"
                      and r.get("label") and r.get("sheet_number") in sheets]
     checks["expected_sheet_in_lead"] = bool(on_sheet)
@@ -634,6 +641,18 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
 
     checks["render_carries_the_answer"] = all(
         _norm(v) in _norm(body) for v in values + list(exp.get("text") or []))
+    # ── WHAT THE MODEL IS TOLD OF THE LOCATED SYMBOLS ─────────────────────
+    #
+    # A plan-only family's answer is its render (ruling 2026-10-26: "the
+    # render states 2 + 2", labelled where it was located): the phrases a
+    # case names here must be in what render_glyph_evidence shows the model.
+    located = exp.get("located_render") or []
+    if located:
+        shown = _norm(ps.render_glyph_evidence(list(returned)))
+        for t in located:
+            checks[f"located_render:{t}"] = _norm(t) in shown
+            if _norm(t) not in shown:
+                reasons.append(f"the located-symbol render does not state {t!r}")
     return reasons, checks, render
 
 
