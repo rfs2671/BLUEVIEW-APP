@@ -53,11 +53,15 @@ export function opensContext(r) {
 export function answerState(answer) {
   if (!answer) return null;
   const claims = Array.isArray(answer.claims) ? answer.claims : [];
-  if (!claims.length) return { found: false, text: NO_SOURCE, claims: [] };
+  // The id the answer can be disputed by ("Wrong?"); null when the backend
+  // did not log it, and then there is nothing to dispute.
+  const answerLogId = typeof answer.answer_log_id === 'string' && answer.answer_log_id
+    ? answer.answer_log_id : null;
+  if (!claims.length) return { found: false, text: NO_SOURCE, claims: [], answerLogId };
   // lead: "No record that the dumpster was swapped." when the records only
   // hold a plan for something the question asks was done.
   return { found: true, timeline: answer.mode === 'timeline', claims,
-           lead: typeof answer.lead === 'string' ? answer.lead : '' };
+           lead: typeof answer.lead === 'string' ? answer.lead : '', answerLogId };
 }
 
 /** A claim's head line: the timeline date, the words, and who relayed a

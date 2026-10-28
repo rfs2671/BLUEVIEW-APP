@@ -5,6 +5,7 @@ import Constants from 'expo-constants';
 import {
   refreshedTokenFrom, unauthorizedVerdict, KEEP, VERIFY, REJECTED,
 } from './sessionSurvival';
+import { disputePath, disputeBody } from './answerDispute';
 
 // The NATIVE build's version, which is what eligibility for an OTA is keyed on.
 // Not the bundle id and not its age: an ineligible device can hold a perfectly
@@ -1866,6 +1867,17 @@ export const memoryAPI = {
   context: async (projectId, sourceId) => {
     const response = await apiClient.get(
       `/api/projects/${projectId}/memory/context/${encodeURIComponent(sourceId)}`);
+    return response.data;
+  },
+};
+
+/**
+ * "Wrong?" on an assistant answer: flags it for review. Any person in the
+ * answer's company may. The reply is only ever {status: 'Flagged for review'}.
+ */
+export const answersAPI = {
+  dispute: async (answerLogId, note) => {
+    const response = await apiClient.post(disputePath(answerLogId), disputeBody(note));
     return response.data;
   },
 };
