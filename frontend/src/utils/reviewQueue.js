@@ -49,7 +49,9 @@ export function reasonLabel(reason, kind) {
 /** The list request's query: the default view sends status=pending,
  *  priority=normal. "Show low priority" widens to every priority. */
 export function listParams({ status, reason, company, showLow, offset, limit } = {}) {
-  const p = { status: status || 'pending', priority: showLow ? 'all' : 'normal' };
+  // set_health_info is the low-priority reason: picking it shows it.
+  const low = showLow || reason === 'set_health_info';
+  const p = { status: status || 'pending', priority: low ? 'all' : 'normal' };
   if (reason) p.reason = reason;
   if (company) p.company_id = company;
   if (offset) p.offset = offset;
