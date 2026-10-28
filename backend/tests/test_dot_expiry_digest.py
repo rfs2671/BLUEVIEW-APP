@@ -151,7 +151,7 @@ class LateItems(unittest.TestCase):
         self.assertEqual((w.emails(), r.get("skipped")), ([], "before_digest_run"))
         w.expiry(_ny(self.TUE, 7))                                  # the digest takes it
         (m,) = w.emails()
-        self.assertEqual(m["permit_renewal_id"], "dot:p1:expiry_digest:-:-:2026-11-10")
+        self.assertEqual(m["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-11-10")
 
     def test_a_late_item_on_shabbos_is_held_to_havdalah(self):
         sat = date(2026, 11, 7)
@@ -188,7 +188,7 @@ class ADigestADay(unittest.TestCase):
             self.assertIn(n, m["text"])
         self.assertEqual(m["text"].count("Ends Nov 20, 2026 (in 11 days):"), 1)
         self.assertEqual(m["text"].count("Termina el 20 nov 2026 (en 11 días):"), 1)
-        self.assertEqual(m["permit_renewal_id"], "dot:p1:expiry_digest:-:-:2026-11-09")
+        self.assertEqual(m["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-11-09")
         led = [d for d in w.db.dot_alert_ledger.docs if d.get("kind") == "permit_expiry"]
         self.assertEqual(len(led), 16)                   # each permit's own row
 
@@ -229,7 +229,7 @@ class HeldOverShabbos(unittest.TestCase):
         mails = w.emails()
         self.assertEqual(len(mails), 1)
         self.assertEqual(mails[0]["metadata"]["items"][0]["permit"], "B9")
-        self.assertEqual(mails[0]["permit_renewal_id"], "dot:p1:expiry_digest:-:-:2026-11-07")
+        self.assertEqual(mails[0]["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-11-07")
 
     def test_a_project_that_does_not_keep_shabbos_gets_it_at_0700(self):
         w = _World([_row("B9", date(2026, 11, 21))], shabbos_off=False)

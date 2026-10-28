@@ -48128,12 +48128,15 @@ async def _gc_ai_line(kind: str, facts: Dict[str, str]) -> Optional[str]:
 
 
 async def _gc_digest(todo: list, project_id: str, today) -> list:
-    """The DIGEST kinds' items (wa_alerts.DIGEST_KINDS) not yet posted, as ONE
-    item per kind keyed on the day: `gc:<project>:<kind>:digest:<date>`. A
-    second run the same day finds that key taken, so the day has one post;
-    each member's own ledger row (claimed with the digest) keeps it from ever
-    posting again."""
-    out, groups = [], {}
+    """The DIGEST kinds' items (wa_alerts.DIGEST_KINDS: holiday embargo,
+    DOT permit expiry, hearing reminders) not yet posted, as ONE item a day:
+    `gc:<project>:dot_digest:digest:<date>` (ruling 2026-10-28: one DOT post
+    per project per day). A second run the same day finds that key taken, so
+    the day has one post; each member's own ledger row (claimed with the
+    digest) keeps it from ever posting again. CATCH-UP: a member whose
+    record's earlier post was a catch-up within CATCHUP_SKIP_DAYS of this
+    threshold is left out (dot_permits.catchup_skipped)."""
+    out, members = [], []
     for it, enabled in todo:
         if it["kind"] not in wa_alerts.DIGEST_KINDS:
             out.append((it, enabled))
@@ -48143,19 +48146,32 @@ async def _gc_digest(todo: list, project_id: str, today) -> list:
                 {"_id": wa_gc.ledger_id(project_id, it["kind"], it["item"])}, {"_id": 1})
         except Exception:
             done = None
-        if not done:
-            groups.setdefault(it["kind"], []).append(it)
-    for kind, members in groups.items():
-        out.append(({"kind": kind, "item": f"digest:{today.isoformat()}", "rec": members[0]["rec"],
-                     "members": members}, True))
+        if done:
+            continue
+        prior = []
+        for t, key in wa_alerts.higher_threshold_items(it):
+            try:
+                row = await db[WA_LEDGER].find_one(
+                    {"_id": wa_gc.ledger_id(project_id, it["kind"], key)}, {"days": 1})
+            except Exception:
+                row = None
+            if row and row.get("days") is not None:
+                prior.append((t, row.get("days")))
+        if dot_permits.catchup_skipped(it.get("threshold"), prior):
+            continue
+        members.append(it)
+    if members:
+        out.append(({"kind": wa_alerts.DIGEST_KIND, "item": f"digest:{today.isoformat()}",
+                     "rec": members[0]["rec"], "members": members}, True))
     return out
 
 
 async def _gc_claim_members(it: dict, project_id: str, company_id: str, lid: str) -> None:
     for m in it.get("members") or []:
+        extra = {k: m[k] for k in ("days", "threshold") if m.get(k) is not None}
         await _gc_ledger_claim(wa_gc.ledger_id(project_id, m["kind"], m["item"]),
                                kind=f"gc_{m['kind']}", project_id=project_id,
-                               company_id=company_id, status="in_digest", digest=lid)
+                               company_id=company_id, status="in_digest", digest=lid, **extra)
 
 
 async def _gc_alert_text(item: dict, address: str, today) -> str:
@@ -48896,17 +48912,13 @@ async def _dot_sync_job() -> None:
         await _dot_summons_record_alert_tick()
     except Exception as e:
         logger.error(f"[dot-summons] record alerts failed: {type(e).__name__}: {e}")
-    # A permit this sync found with <= 1 day left cannot wait for tomorrow's
-    # digest (ruling 2026-10-24); before today's 07:00 run it does nothing.
+    # A permit or hearing this sync found <= 1 day away cannot wait for
+    # tomorrow's digest (ruling 2026-10-24): one email for the project's late
+    # items; before today's 07:00 run it does nothing.
     try:
-        await _dot_permit_expiry_tick(late_only=True)
+        await _dot_daily_digest_tick(late_only=True)
     except Exception as e:
-        logger.error(f"[dot-expiry] late tick failed: {type(e).__name__}: {e}")
-    # The same for a hearing <= 1 day away.
-    try:
-        await _dot_hearing_tick(late_only=True)
-    except Exception as e:
-        logger.error(f"[dot-hearing] late tick failed: {type(e).__name__}: {e}")
+        logger.error(f"[dot-digest] late tick failed: {type(e).__name__}: {e}")
 
 
 # ── DOT HOLIDAY EMBARGO (lib/dot_embargo.py is the rule) ───────────────────
@@ -48919,14 +48931,16 @@ async def _dot_sync_job() -> None:
 #     `holiday_waiver`, `stipulations_fetched_at` on its dot_logs row. A FAILED
 #     read writes nothing, so a known waiver is never erased and an unread
 #     permit is never "no waiver".
-#   * _dot_embargo_alert_tick (daily 07:00 New York): emails the DOB-alert
-#     recipients on Nov 1 and Nov 12, and on first sight, about each exposed
-#     permit known to lack the waiver. Once per (project, permit, season,
-#     send date): the dot_alert_ledger row is inserted FIRST and an existing
-#     row means no send. Nothing sends before the project's first DOT permit
+#   * the Holiday embargo section of the ONE daily DOT digest
+#     (_dot_daily_digest_tick, 07:00 New York; ruling 2026-10-28): the
+#     DOB-alert recipients hear on Nov 1 and Nov 12, and on first sight, about
+#     each exposed permit known to lack the waiver. Once per (project, permit,
+#     season, send date): the permit's dot_alert_ledger row is inserted FIRST
+#     and an existing row means it is not sent again. Nothing sends before the project's first DOT permit
 #     pass (source_sync first_synced_at). The GC group post is the
 #     "dot_embargo" kind in lib/wa_alerts.py, posted by _gc_alerts_tick on the
-#     same due dates under the "dot_permit_alerts" switch.
+#     same due dates under the "dot_permit_alerts" switch, in the day's one
+#     DOT group post (wa_alerts.DIGEST_KINDS).
 #   * GET /projects/{project_id}/dot/embargo: the Compliance screen's banner.
 # Fixture (is_test) companies are left out of both sweeps.
 
@@ -49026,208 +49040,24 @@ def _dot_day_es(d) -> str:
     return f"{d.day} {_ES_MONTHS[d.month - 1]} {d.year}" if d else "no indicada"
 
 
-def _dot_embargo_email(project: dict, row: dict, season) -> tuple:
-    """(subject, text, html) -- English, then Spanish. Plain and
-    transactional, like _send_critical_dob_alert: no caps, no banners."""
-    import html as _html
-    permit = str(row.get("number") or "")
-    project_name = project.get("name") or "your project"
-    kind = row.get("description") or "DOT street permit"
-    start, end = dot_embargo.work_dates(row)
-    link = row.get("link") or ""
-    subject = (f"Holiday embargo: permit {permit} has no waiver / "
-               f"Embargo navideño: el permiso {permit} no tiene exención")
-    en = [
-        "Hi,",
-        f"DOT permit {permit} on {project_name} is active during NYC DOT's holiday "
-        f"construction embargo, and it has no embargo waiver (stipulation 410). "
-        f"{dot_embargo.ACTION_EN}",
-        f"Permit: {permit}",
-        f"Type: {kind}",
-        f"Work dates: {_dot_day_en(start)} - {_dot_day_en(end)}",
-        f"Embargo: {_dot_day_en(season.start)} - {_dot_day_en(season.end)}",
-        "What to do: apply to DOT (OCMC) for a holiday embargo waiver, or stop work "
-        "on this permit from Nov 15 through Jan 2.",
-    ]
-    es = [
-        "Hola,",
-        f"El permiso del DOT {permit} de {project_name} está activo durante el embargo "
-        f"navideño de construcción del DOT de NYC, y no tiene exención del embargo "
-        f"(estipulación 410). {dot_embargo.ACTION_ES}",
-        f"Permiso: {permit}",
-        f"Tipo: {kind}",
-        f"Fechas de trabajo: {_dot_day_es(start)} - {_dot_day_es(end)}",
-        f"Embargo: {_dot_day_es(season.start)} - {_dot_day_es(season.end)}",
-        "Qué hacer: solicite al DOT (OCMC) una exención del embargo navideño, o detenga "
-        "el trabajo de este permiso del 15 de noviembre al 2 de enero.",
-    ]
-    footer_en = ("You're receiving this because you're an admin of this company or the "
-                 "assigned project manager on this Levelog project.")
-    footer_es = ("Recibe este correo porque es administrador de esta empresa o el "
-                 "gerente de proyecto asignado a este proyecto en Levelog.")
-    source = f"Source: NYC DOT permit records (NYC Open Data). {link}".strip()
-    text = ("\n\n".join([en[0], en[1], "\n".join(en[2:6]), en[6]])
-            + "\n\n" + "-" * 8 + "\n\n"
-            + "\n\n".join([es[0], es[1], "\n".join(es[2:6]), es[6]])
-            + f"\n\n{source}\n\n{footer_en}\n{footer_es}\n\n- Levelog")
-
-    def _p(t, extra=""):
-        return f'<p style="margin:0 0 12px;font-size:15px;{extra}">{_html.escape(t)}</p>'
-
-    def _block(lines):
-        return ('<p style="margin:0 0 12px;font-size:15px;">'
-                + "<br>".join(_html.escape(t) for t in lines) + "</p>")
-
-    link_html = (f'<p style="margin:0 0 12px;font-size:13px;"><a href="{_html.escape(link)}" '
-                 f'style="color:#1d4ed8;text-decoration:none;">View the permit on NYC Open Data</a></p>'
-                 if link else "")
-    html_body = f"""<!DOCTYPE html>
-<html>
-<body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2937;line-height:1.55;">
-  <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" width="560" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
-    <tr><td style="padding:24px 28px;">
-      <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
-      <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">{_html.escape(f"Holiday embargo: permit {permit} has no waiver")}</h1>
-      {_p(en[0])}{_p(en[1])}{_block(en[2:6])}{_p(en[6])}
-      <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;">
-      <h2 style="margin:0 0 14px;font-size:16px;font-weight:600;color:#111827;">{_html.escape(f"Embargo navideño: el permiso {permit} no tiene exención")}</h2>
-      {_p(es[0])}{_p(es[1])}{_block(es[2:6])}{_p(es[6])}
-      {link_html}
-      <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
-      <p style="margin:0;font-size:12px;color:#6b7280;">{_html.escape(footer_en)}<br>{_html.escape(footer_es)}</p>
-    </td></tr>
-  </table>
-</body>
-</html>"""
-    return subject, text, html_body
-
-
 async def _dot_embargo_alert_tick(now: Optional[datetime] = None,
                                   project_ids: Optional[List[str]] = None,
                                   release: bool = False, as_of=None) -> dict:
-    """The 07:00 run: the emails due today (lib/dot_embargo.due_sends).
-    Held over Shabbos / Yom Tov like every date-based DOT reminder
-    (_dot_hold_if_quiet); `release` + `as_of`: the Shabbos queue delivering
-    the held day, with that day's due dates."""
-    from lib.notifications import is_email_kill_switch_on, send_notification
-    from pymongo.errors import DuplicateKeyError
-    now = now or datetime.now(timezone.utc)
-    today = as_of or dot_embargo.ny_date(now)
-    report = {"date": today.isoformat(), "projects": 0, "due": 0, "sent": 0,
-              "already": 0, "no_recipients": 0, "ledger_failed": 0,
-              "waiting_sync": 0}
-    if not dot_embargo.in_alert_window(today):
-        return report
-    # Checked BEFORE any ledger row is written, so a halted day does not burn
-    # the once-only row (send_notification checks both again at send time).
-    if not RESEND_API_KEY or is_email_kill_switch_on():
-        report["skipped"] = "no_resend_key" if not RESEND_API_KEY else "kill_switch"
-        logger.info(f"[dot-embargo] {report}")
-        return report
-    try:
-        live = await _dot_live_projects()
-    except Exception as e:
-        logger.warning(f"[dot-embargo] project read failed: {type(e).__name__}")
-        return report
-    if project_ids:
-        live = {k: v for k, v in live.items() if k in {str(x) for x in project_ids}}
-    for project_id, project in live.items():
-        # Nothing sends before the project's first full DOT permit pass
-        # (lib/source_sync.py): until then its permits are not all known, and
-        # the GC group alerts wait for the same moment.
-        try:
-            synced = await _project_first_synced(project_id)
-        except Exception as e:
-            logger.warning(f"[dot-embargo] sync state read failed: {type(e).__name__}")
-            continue
-        if source_sync.DOT_PERMITS not in synced:
-            report["waiting_sync"] += 1
-            continue
-        rows = await db.dot_logs.find({"project_id": project_id}).to_list(2000)
-        due_all = dot_embargo.due_sends(rows, today)
-        due = [d for d in due_all if not await db[dot_embargo.LEDGER].find_one(
-            {"_id": dot_embargo.ledger_id(project_id, d["permit"], d["season"].year, d["send_date"])})]
-        report["already"] += len(due_all) - len(due)
-        if not due:
-            continue
-        if await _dot_hold_if_quiet(project, project_id, "embargo", today, now, report,
-                                    release=release, as_of=today):
-            continue
-        report["projects"] += 1
-        report["due"] += len(due)
-        recipients = await _critical_dob_alert_recipients(project)
-        if not recipients:
-            report["no_recipients"] += len(due)
-            continue
-        for d in due:
-            season = d["season"]
-            lid = dot_embargo.ledger_id(project_id, d["permit"], season.year, d["send_date"])
-            try:
-                await db[dot_embargo.LEDGER].insert_one({
-                    "_id": lid, "project_id": project_id,
-                    "company_id": str(project.get("company_id") or ""),
-                    "permit": d["permit"], "season_year": season.year,
-                    "send_date": d["send_date"].isoformat(), "kind": d["kind"],
-                    "trigger_type": dot_embargo.TRIGGER_TYPE,
-                    "recipients": len(recipients), "created_at": now})
-            except DuplicateKeyError:
-                report["already"] += 1
-                continue
-            except Exception as e:
-                # No ledger row, no send: once-only cannot be promised.
-                logger.warning(f"[dot-embargo] ledger write failed: {type(e).__name__}")
-                report["ledger_failed"] += 1
-                continue
-            subject, text, html_body = _dot_embargo_email(project, d["row"], season)
-            sent = 0
-            for recipient in recipients:
-                try:
-                    await send_notification(
-                        db,
-                        permit_renewal_id=lid,
-                        trigger_type=dot_embargo.TRIGGER_TYPE,
-                        recipient=recipient,
-                        subject=subject,
-                        html=html_body,
-                        text=text,
-                        metadata={
-                            "project_id": project_id,
-                            "project_name": project.get("name"),
-                            "permit": d["permit"],
-                            "season_year": season.year,
-                            "kind": d["kind"],
-                        },
-                    )
-                    sent += 1
-                except Exception as e:
-                    logger.error(f"[dot-embargo] send failed: {type(e).__name__}")
-            report["sent"] += 1 if sent else 0
-            try:
-                await db[dot_embargo.LEDGER].update_one(
-                    {"_id": lid}, {"$set": {"sent_to": sent, "sent_at": datetime.now(timezone.utc)}})
-            except Exception:
-                pass
-    logger.info(f"[dot-embargo] {report}")
-    return report
+    """The holiday-embargo part of the ONE daily DOT digest
+    (_dot_daily_digest_tick runs every kind; this name is kept for its
+    callers). The report is the digest run's, embargo counters on top."""
+    r = await _dot_daily_digest_tick(now=now, project_ids=project_ids, release=release, as_of=as_of)
+    return {**r, **r.get("embargo", {})}
 
 
 async def _dot_embargo_alert_job() -> None:
-    """The 07:00 New York job: the holiday-embargo emails, the DOT permit
-    expiry emails (DOT Phase 1 B), then the summons hearing emails (DOT Phase
-    1 A). Each runs on its own: one failing does not stop the others."""
+    """The 07:00 New York job: the ONE DOT digest per project (holiday
+    embargo + permit expiry + hearing reminders, one section each) and the
+    pending block-match hearing emails (_dot_daily_digest_tick)."""
     try:
-        await _dot_embargo_alert_tick()
+        await _dot_daily_digest_tick()
     except Exception as e:
-        logger.error(f"[dot-embargo] tick failed: {type(e).__name__}: {e}")
-    try:
-        await _dot_permit_expiry_tick()
-    except Exception as e:
-        logger.error(f"[dot-expiry] tick failed: {type(e).__name__}: {e}")
-    # DOT Phase 1 A: hearing reminders 14/7/1 and the pending-block email.
-    try:
-        await _dot_hearing_tick()
-    except Exception as e:
-        logger.error(f"[dot-hearing] tick failed: {type(e).__name__}: {e}")
+        logger.error(f"[dot-digest] tick failed: {type(e).__name__}: {e}")
 
 
 # ── DOT PERMITS AND SETUP (DOT Phase 1 B; lib/dot_permits.py is the rule) ──
@@ -49241,13 +49071,14 @@ async def _dot_embargo_alert_job() -> None:
 #     frontage; another permittee's permit on a confirmed frontage is stored
 #     "needs confirmation" and nothing alerts on it until a person accepts it
 #     (POST .../dot/permits/{permit}/review). "Not ours" is remembered.
-#   * _dot_permit_expiry_tick (in the 07:00 job): reminders 14 and 3 days
-#     before a confirmed, active, unrenewed permit's work end -- ONE digest
-#     email per project per day, grouped by work-end date, each permit
+#   * the Permit expiring section of the ONE daily DOT digest
+#     (_dot_daily_digest_tick): reminders 14 and 3 days before a confirmed,
+#     active, unrenewed permit's work end, grouped by work-end date, each permit
 #     labelled with its TRUE days left; once per (project, permit, threshold
 #     window, work end) in dot_alert_ledger; held over Shabbos / Yom Tov to the
-#     window's end (_dot_hold_if_quiet); nothing before the project's first
-#     DOT permit pass. Reads dot_logs only.
+#     window's end (_dot_hold_if_quiet); a catch-up skips the next threshold
+#     within 2 days (dot_permits.catchup_skipped); nothing before the
+#     project's first DOT permit pass. Reads dot_logs only.
 
 
 def _dot_expiry_days_en(n: int) -> str:
@@ -49268,84 +49099,6 @@ def _dot_segment_text(seg, lang: str = "en") -> str:
     else:
         span = f" de {a} a {b}" if a and b else (f" en {a or b}" if (a or b) else "")
     return f"{seg['on']}{span}" + (f", {boro}" if boro else "")
-
-
-def _dot_expiry_digest_email(project: dict, items: list, today) -> tuple:
-    """(subject, text, html) for ONE email listing every permit due today,
-    grouped by work-end date; English, then Spanish. The subject says the
-    count; each date line says the TRUE days left."""
-    import html as _html
-    project_name = project.get("name") or "your project"
-    n = len(items)
-    subj_en = f"{n} DOT permit{'s' if n != 1 else ''} expiring on {project_name}"
-    subj_es = f"{n} permiso{'s' if n != 1 else ''} del DOT por vencer en {project_name}"
-    subject = f"{subj_en} / {subj_es}"
-    groups = dot_permits.group_by_date(items, "work_end")
-
-    def lines(lang: str) -> list:
-        out = []
-        for end, group in groups:
-            days = (end - today).days
-            if lang == "en":
-                out.append(f"Ends {_dot_day_en(end)} ({_dot_expiry_days_en(days)}):")
-            else:
-                out.append(f"Termina el {_dot_day_es(end)} ({_dot_expiry_days_es(days)}):")
-            for d in group:
-                row = d["row"]
-                kind = row.get("permit_type") or row.get("description") or (
-                    "DOT street permit" if lang == "en" else "permiso de calle del DOT")
-                series = f" ({row['series']})" if row.get("series") else ""
-                seg = _dot_segment_text(row.get("segment"), lang)
-                who = row.get("permittee") or ("not stated" if lang == "en" else "no indicado")
-                start, _e = dot_embargo.work_dates(row)
-                if lang == "en":
-                    out.append(f"  {d['permit']} · {kind}{series} · Work {_dot_day_en(start)} - "
-                               f"{_dot_day_en(end)} · Segment: {seg} · Permittee: {who}")
-                else:
-                    out.append(f"  {d['permit']} · {kind}{series} · Trabajo {_dot_day_es(start)} - "
-                               f"{_dot_day_es(end)} · Tramo: {seg} · Titular: {who}")
-        return out
-
-    en_intro = (f"{n} DOT permit{'s' if n != 1 else ''} on {project_name} "
-                f"{'end' if n != 1 else 'ends'} soon. DOT shows no renewal for "
-                f"{'any of them' if n != 1 else 'it'} yet.")
-    es_intro = (f"{n} permiso{'s' if n != 1 else ''} del DOT de {project_name} "
-                f"{'terminan' if n != 1 else 'termina'} pronto. El DOT aún no muestra una "
-                f"renovación de {'ninguno' if n != 1 else 'este permiso'}.")
-    en_act = "Renewal: renew each permit before its end date, or stop the work it covers."
-    es_act = "Renovación: renueve cada permiso antes de su fecha de término, o detenga el trabajo que cubre."
-    footer_en = ("You're receiving this because you're an admin of this company or the "
-                 "assigned project manager on this Levelog project.")
-    footer_es = ("Recibe este correo porque es administrador de esta empresa o el "
-                 "gerente de proyecto asignado a este proyecto en Levelog.")
-    source = "Source: NYC DOT permit records (NYC Open Data)."
-    en_lines, es_lines = lines("en"), lines("es")
-    text = ("Hi,\n\n" + en_intro + "\n\n" + "\n".join(en_lines) + "\n\n" + en_act
-            + "\n\n" + "-" * 8 + "\n\nHola,\n\n" + es_intro + "\n\n" + "\n".join(es_lines) + "\n\n" + es_act
-            + f"\n\n{source}\n\n{footer_en}\n{footer_es}\n\n- Levelog")
-
-    def _block(ls):
-        return ('<p style="margin:0 0 12px;font-size:15px;">'
-                + "<br>".join(_html.escape(t).replace("  ", "&nbsp;&nbsp;") for t in ls) + "</p>")
-
-    html_body = f"""<!DOCTYPE html>
-<html>
-<body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2937;line-height:1.55;">
-  <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" width="560" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
-    <tr><td style="padding:24px 28px;">
-      <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
-      <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">{_html.escape(subj_en)}</h1>
-      {_block(["Hi,"])}{_block([en_intro])}{_block(en_lines)}{_block([en_act])}
-      <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;">
-      <h2 style="margin:0 0 14px;font-size:16px;font-weight:600;color:#111827;">{_html.escape(subj_es)}</h2>
-      {_block(["Hola,"])}{_block([es_intro])}{_block(es_lines)}{_block([es_act])}
-      <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
-      <p style="margin:0;font-size:12px;color:#6b7280;">{_html.escape(source)}<br>{_html.escape(footer_en)}<br>{_html.escape(footer_es)}</p>
-    </td></tr>
-  </table>
-</body>
-</html>"""
-    return subject, text, html_body
 
 
 async def _dot_hold_if_quiet(project: dict, project_id: str, kind: str, today, now,
@@ -49378,193 +49131,27 @@ async def _dot_hold_if_quiet(project: dict, project_id: str, kind: str, today, n
 
 
 async def _dot_held_release(spec: dict, now: Optional[datetime] = None) -> bool:
-    """The Shabbos queue's delivery of a held DOT reminder: the same run, for
-    that one project, now that the window is over."""
+    """The Shabbos queue's delivery of a held DOT day: the digest run, for
+    that one project, now that the window is over. A hold queued per kind
+    ("expiry" / "embargo" / "hearing") before the one digest is delivered the
+    same way."""
     kind, pid = spec.get("kind"), str(spec.get("project_id") or "")
     as_of = dot_embargo.parse_day(spec.get("as_of"))
-    ticks = {"expiry": _dot_permit_expiry_tick, "embargo": _dot_embargo_alert_tick}
-    extra = globals().get("_dot_hearing_tick")
-    if extra is not None:
-        ticks["hearing"] = extra
-    tick = ticks.get(kind)
-    if tick is None or not pid:
+    if kind not in ("digest",) + dot_permits.DIGEST_KINDS or not pid:
         raise ValueError(f"unknown held DOT reminder {kind!r}")
-    kw = {"now": now, "project_ids": [pid], "release": True}
-    if kind == "embargo":
-        kw["as_of"] = as_of
-    await tick(**kw)
+    await _dot_daily_digest_tick(now=now, project_ids=[pid], release=True, as_of=as_of)
     return True
 
 
 async def _dot_permit_expiry_tick(now: Optional[datetime] = None,
                                   project_ids: Optional[List[str]] = None,
                                   release: bool = False, late_only: bool = False) -> dict:
-    """Part of the 07:00 New York run: ONE digest email per project listing
-    every permit expiry reminder due today (lib/dot_permits). Reads dot_logs
-    only -- no network. `release`: the Shabbos queue delivering a held day.
-    `late_only`: the run after each DOT sync -- once today's digest run has
-    gone, an item with <= 1 day left found since is sent now, on its own;
-    everything else waits for tomorrow's digest (ruling 2026-10-24)."""
-    from lib.notifications import is_email_kill_switch_on, send_notification
-    from pymongo.errors import DuplicateKeyError
-    now = now or datetime.now(timezone.utc)
-    today = dot_embargo.ny_date(now)
-    report = {"date": today.isoformat(), "projects": 0, "due": 0, "sent": 0, "digests": 0,
-              "already": 0, "no_recipients": 0, "ledger_failed": 0, "waiting_sync": 0, "held": 0,
-              "late": 0, "wait_tomorrow": 0}
-    # Checked BEFORE any ledger row is written (as the embargo run does).
-    if not RESEND_API_KEY or is_email_kill_switch_on():
-        report["skipped"] = "no_resend_key" if not RESEND_API_KEY else "kill_switch"
-        logger.info(f"[dot-expiry] {report}")
-        return report
-    marker = dot_permits.run_marker_id("expiry", today)
-    if late_only:
-        # Before today's digest run, everything is the digest's to send.
-        try:
-            if not await db.system_config.find_one({"key": marker}, {"_id": 1}):
-                report["skipped"] = "before_digest_run"
-                return report
-        except Exception as e:
-            logger.warning(f"[dot-expiry] run marker read failed: {type(e).__name__}")
-            return report
-    try:
-        live = await _dot_live_projects()
-    except Exception as e:
-        logger.warning(f"[dot-expiry] project read failed: {type(e).__name__}")
-        return report
-    if project_ids:
-        live = {k: v for k, v in live.items() if k in {str(x) for x in project_ids}}
-    for project_id, project in live.items():
-        # The rollout gate (#852's): nothing before the project's first full
-        # DOT permit pass.
-        try:
-            synced = await _project_first_synced(project_id)
-        except Exception as e:
-            logger.warning(f"[dot-expiry] sync state read failed: {type(e).__name__}")
-            continue
-        if source_sync.DOT_PERMITS not in synced:
-            report["waiting_sync"] += 1
-            continue
-        rows = await db.dot_logs.find({"project_id": project_id}).to_list(2000)
-        fresh = []
-        for d in dot_permits.expiry_due(rows, today):
-            # Once per threshold WINDOW (`bucket`), whatever day it went: a
-            # permit reminded at 2 days left is not reminded again at 1.
-            done = await db[dot_embargo.LEDGER].find_one({
-                "project_id": project_id, "kind": "permit_expiry", "permit": d["permit"],
-                "work_end": d["work_end"].isoformat(), "bucket": d["threshold"]})
-            if done:
-                report["already"] += 1
-                continue
-            fresh.append(d)
-        if not fresh:
-            continue
-        if await _dot_hold_if_quiet(project, project_id, "expiry", today, now, report, release=release):
-            continue
-        report["projects"] += 1
-        report["due"] += len(fresh)
-        recipients = await _critical_dob_alert_recipients(project)
-        if not recipients:
-            report["no_recipients"] += len(fresh)
-            continue
-        did = dot_permits.digest_id(project_id, "expiry", today)
-        digest_kind = "permit_expiry_digest"
-        try:
-            went = late_only or bool(await db[dot_embargo.LEDGER].find_one({"_id": did}, {"_id": 1}))
-        except Exception as e:
-            logger.warning(f"[dot-expiry] digest read failed: {type(e).__name__}")
-            continue
-        if went:
-            # Today's digest has gone: an item with <= 1 day left cannot wait
-            # for tomorrow's -- it goes now, in its own email. The rest wait.
-            urgent = dot_permits.late_items(fresh)
-            report["wait_tomorrow"] += len(fresh) - len(urgent)
-            if not urgent:
-                continue
-            fresh = urgent
-            did = dot_permits.late_id(project_id, "expiry", today, [d["permit"] for d in urgent])
-            digest_kind = "permit_expiry_late"
-        try:
-            await db[dot_embargo.LEDGER].insert_one({
-                "_id": did, "project_id": project_id, "company_id": str(project.get("company_id") or ""),
-                "kind": digest_kind, "send_date": today.isoformat(),
-                "trigger_type": dot_permits.TRIGGER_TYPE, "recipients": len(recipients), "created_at": now})
-        except DuplicateKeyError:
-            report["already"] += len(fresh)
-            continue
-        except Exception as e:
-            logger.warning(f"[dot-expiry] ledger write failed: {type(e).__name__}")
-            report["ledger_failed"] += 1
-            continue
-        claimed = []
-        for d in fresh:
-            # Each permit's own row FIRST, labelled with the TRUE days left.
-            try:
-                await db[dot_embargo.LEDGER].insert_one({
-                    "_id": dot_permits.expiry_ledger_id(project_id, d["permit"], d["days"], d["work_end"]),
-                    "project_id": project_id, "company_id": str(project.get("company_id") or ""),
-                    "kind": "permit_expiry", "permit": d["permit"], "bucket": d["threshold"],
-                    "days_left": d["days"], "work_end": d["work_end"].isoformat(),
-                    "send_date": today.isoformat(), "digest": did,
-                    "trigger_type": dot_permits.TRIGGER_TYPE, "created_at": now})
-                claimed.append(d)
-            except DuplicateKeyError:
-                report["already"] += 1
-            except Exception as e:
-                logger.warning(f"[dot-expiry] ledger write failed: {type(e).__name__}")
-                report["ledger_failed"] += 1
-        if not claimed:
-            continue
-        subject, text, html_body = _dot_expiry_digest_email(project, claimed, today)
-        sent = 0
-        for recipient in recipients:
-            try:
-                await send_notification(
-                    db,
-                    permit_renewal_id=did,
-                    trigger_type=dot_permits.TRIGGER_TYPE,
-                    recipient=recipient,
-                    subject=subject,
-                    html=html_body,
-                    text=text,
-                    metadata={
-                        "project_id": project_id,
-                        "project_name": project.get("name"),
-                        "count": len(claimed),
-                        "items": [{"permit": d["permit"], "days_left": d["days"],
-                                   "work_end": d["work_end"].isoformat()} for d in claimed],
-                    },
-                )
-                sent += 1
-            except Exception as e:
-                logger.error(f"[dot-expiry] send failed: {type(e).__name__}")
-        report["sent"] += len(claimed) if sent else 0
-        if digest_kind == "permit_expiry_late":
-            report["late"] += 1 if sent else 0
-        else:
-            report["digests"] += 1 if sent else 0
-        try:
-            at = datetime.now(timezone.utc)
-            await db[dot_embargo.LEDGER].update_one({"_id": did}, {"$set": {
-                "sent_to": sent, "sent_at": at, "count": len(claimed)}})
-            for d in claimed:
-                await db[dot_embargo.LEDGER].update_one(
-                    {"_id": dot_permits.expiry_ledger_id(project_id, d["permit"], d["days"], d["work_end"])},
-                    {"$set": {"sent_to": sent, "sent_at": at}})
-        except Exception:
-            pass
-    if not late_only and not project_ids:
-        # Today's digest run has gone (whether or not a project had anything):
-        # from now on the sync's late run may send <= 1-day items on their own.
-        # In system_config, not dot_alert_ledger: a run is not an alert.
-        try:
-            await db.system_config.update_one(
-                {"key": marker}, {"$setOnInsert": {"value": True, "send_date": today.isoformat(),
-                                                   "created_at": now}}, upsert=True)
-        except Exception as e:
-            logger.warning(f"[dot-expiry] run marker write failed: {type(e).__name__}")
-    logger.info(f"[dot-expiry] {report}")
-    return report
+    """The permit-expiry part of the ONE daily DOT digest
+    (_dot_daily_digest_tick runs every kind; this name is kept for its
+    callers). The report is the digest run's, expiry counters on top."""
+    r = await _dot_daily_digest_tick(now=now, project_ids=project_ids, release=release,
+                                     late_only=late_only)
+    return {**r, **r.get("expiry", {})}
 
 
 def _dot_setup_role(user) -> str:
@@ -49886,11 +49473,12 @@ async def review_dot_permit(
 #   * _dot_summons_record_alert_tick (after every 2-hourly sync): a NEW summons
 #     (own match, new to Levelog, issued by DOT within 2 days; per-company flag
 #     dot_phase1), and a confirmed summons that CHANGED to DEFAULTED/DOCKETED.
-#   * _dot_hearing_tick (in the 07:00 job): hearing reminders 14/7/1 for
-#     confirmed open summonses -- ONE digest email per project per day,
-#     grouped by hearing date, true days left -- and ONE email for a pending
-#     segment match whose hearing is within 14 days. Both held over Shabbos /
-#     Yom Tov to the window's end.
+#   * the Hearing reminders section of the ONE daily DOT digest
+#     (_dot_daily_digest_tick): hearing reminders 14/7/1 for confirmed open
+#     summonses, grouped by hearing date, true days left (a catch-up skips the
+#     next threshold within 2 days) -- and, in the same run, ONE email for a
+#     pending segment match whose hearing is within 14 days. Both held over
+#     Shabbos / Yom Tov to the window's end.
 #   Every email: dot_alert_ledger row first (an existing row = no send), the
 #   DOB-alert recipients, lib.notifications.send_notification, EN then ES.
 #   Nothing sends before the project's first DOT summons pass.
@@ -50104,24 +49692,230 @@ async def _dot_summons_record_alert_tick(now: Optional[datetime] = None,
     return report
 
 
-def _dot_hearing_digest_email(project: dict, items: list, today) -> tuple:
-    """(subject, text, html) for ONE email listing every hearing reminder due
-    today, grouped by hearing date; English, then Spanish."""
+async def _dot_hearing_tick(now: Optional[datetime] = None,
+                            project_ids: Optional[List[str]] = None,
+                            release: bool = False, late_only: bool = False) -> dict:
+    """The hearing part of the ONE daily DOT digest (_dot_daily_digest_tick
+    runs every kind; this name is kept for its callers). The report is the
+    digest run's, with the hearing counters on top."""
+    r = await _dot_daily_digest_tick(now=now, project_ids=project_ids, release=release,
+                                     late_only=late_only)
+    return {**r, **r.get("hearing", {})}
+
+
+# ── THE ONE DOT DIGEST (operator ruling 2026-10-28) ────────────────────────
+#
+#   ONE DOT email per project per day: the holiday-embargo permits, the permit
+#   expiry reminders and the hearing reminders due that day, one section each
+#   (Holiday embargo / Permit expiring / Hearing reminders), English then
+#   Spanish. A digest of one kind keeps that kind's trigger type and subject.
+#   * dot_alert_ledger: the day's digest row `dot:<p>:dot_digest:-:-:<day>` is
+#     inserted FIRST (an existing one = today's digest has gone), then ONE row
+#     per item under that item's own key (embargo: per permit x season x send
+#     date; expiry: per permit x true days x work end; hearing: per ticket x
+#     true days x hearing date), each carrying `digest`. An existing item row
+#     = that item is not sent again. A second run the same day sends nothing:
+#     anything new waits for tomorrow's digest -- except a LATE item.
+#   * LATE (ruling 2026-10-24): once today's digest has gone, a permit or
+#     hearing <= 1 day away found by a later sync goes at once, in its own
+#     email (`late_id`); the Shabbos hold still applies. Embargo items always
+#     wait for the next 07:00 digest.
+#   * CATCH-UP (ruling 2026-10-28, dot_permits.catchup_skipped): an item first
+#     reminded with fewer days left than its threshold skips each lower
+#     threshold within CATCHUP_SKIP_DAYS of that send -- in the digest and in
+#     the late run alike. The late rule never sends a skipped threshold.
+#   * SHABBOS / YOM TOV: the project's day is held ONCE (_dot_hold_if_quiet,
+#     kind "digest") and delivered whole at the window's end.
+#   * The pending block-match hearing email stays one per ticket (it asks a
+#     person to confirm the summons is theirs); it goes in the same run.
+
+DOT_DIGEST_SECTIONS = {
+    "embargo": ("Holiday embargo", "Embargo navideño"),
+    "expiry": ("Permit expiring", "Permiso por vencer"),
+    "hearing": ("Hearing reminders", "Recordatorios de audiencia"),
+}
+
+
+def _dot_embargo_lines(project_name: str, items: list, today, lang: str) -> list:
+    season = items[0]["season"]
+    n = len(items)
+    starts = (season.start - today).days
+    if lang == "en":
+        when = ("in effect now" if starts <= 0 else
+                f"starts {'tomorrow' if starts == 1 else f'in {starts} days'}")
+        out = [f"{n} DOT permit{'s' if n != 1 else ''} on {project_name} "
+               f"{'are' if n != 1 else 'is'} active during NYC DOT's holiday construction embargo, and "
+               f"{'have' if n != 1 else 'has'} no embargo waiver (stipulation 410). {dot_embargo.ACTION_EN}",
+               f"Embargo: {_dot_day_en(season.start)} - {_dot_day_en(season.end)} ({when})"]
+    else:
+        when = ("en vigor" if starts <= 0 else
+                f"empieza {'mañana' if starts == 1 else f'en {starts} días'}")
+        out = [f"{n} permiso{'s' if n != 1 else ''} del DOT de {project_name} "
+               f"{'están activos' if n != 1 else 'está activo'} durante el embargo navideño de construcción "
+               f"del DOT de NYC, y no {'tienen' if n != 1 else 'tiene'} exención del embargo "
+               f"(estipulación 410). {dot_embargo.ACTION_ES}",
+               f"Embargo: {_dot_day_es(season.start)} - {_dot_day_es(season.end)} ({when})"]
+    for d in sorted(items, key=lambda x: x["permit"]):
+        row = d["row"]
+        start, end = dot_embargo.work_dates(row)
+        kind = row.get("description") or ("DOT street permit" if lang == "en" else "permiso de calle del DOT")
+        if lang == "en":
+            out.append(f"  {d['permit']} · {kind} · Work dates: {_dot_day_en(start)} - {_dot_day_en(end)}")
+        else:
+            out.append(f"  {d['permit']} · {kind} · Fechas de trabajo: {_dot_day_es(start)} - {_dot_day_es(end)}")
+    if lang == "en":
+        out.append("What to do: apply to DOT (OCMC) for a holiday embargo waiver, or stop work on "
+                   f"{'these permits' if n != 1 else 'this permit'} from Nov 15 through Jan 2.")
+    else:
+        out.append("Qué hacer: solicite al DOT (OCMC) una exención del embargo navideño, o detenga el trabajo "
+                   f"de {'estos permisos' if n != 1 else 'este permiso'} del 15 de noviembre al 2 de enero.")
+    return out
+
+
+def _dot_expiry_lines(project_name: str, items: list, today, lang: str) -> list:
+    n = len(items)
+    if lang == "en":
+        out = [f"{n} DOT permit{'s' if n != 1 else ''} on {project_name} "
+               f"{'end' if n != 1 else 'ends'} soon. DOT shows no renewal for "
+               f"{'any of them' if n != 1 else 'it'} yet."]
+    else:
+        out = [f"{n} permiso{'s' if n != 1 else ''} del DOT de {project_name} "
+               f"{'terminan' if n != 1 else 'termina'} pronto. El DOT aún no muestra una "
+               f"renovación de {'ninguno' if n != 1 else 'este permiso'}."]
+    for end, group in dot_permits.group_by_date(items, "work_end"):
+        days = (end - today).days
+        if lang == "en":
+            out.append(f"Ends {_dot_day_en(end)} ({_dot_expiry_days_en(days)}):")
+        else:
+            out.append(f"Termina el {_dot_day_es(end)} ({_dot_expiry_days_es(days)}):")
+        for d in group:
+            row = d["row"]
+            kind = row.get("permit_type") or row.get("description") or (
+                "DOT street permit" if lang == "en" else "permiso de calle del DOT")
+            series = f" ({row['series']})" if row.get("series") else ""
+            seg = _dot_segment_text(row.get("segment"), lang)
+            who = row.get("permittee") or ("not stated" if lang == "en" else "no indicado")
+            start, _e = dot_embargo.work_dates(row)
+            if lang == "en":
+                out.append(f"  {d['permit']} · {kind}{series} · Work {_dot_day_en(start)} - "
+                           f"{_dot_day_en(end)} · Segment: {seg} · Permittee: {who}")
+            else:
+                out.append(f"  {d['permit']} · {kind}{series} · Trabajo {_dot_day_es(start)} - "
+                           f"{_dot_day_es(end)} · Tramo: {seg} · Titular: {who}")
+    out.append("Renewal: renew each permit before its end date, or stop the work it covers." if lang == "en" else
+               "Renovación: renueve cada permiso antes de su fecha de término, o detenga el trabajo que cubre.")
+    return out
+
+
+def _dot_digest_summary(sections: dict, lang: str) -> str:
+    parts = []
+    for kind in dot_permits.DIGEST_KINDS:
+        n = len(sections.get(kind) or [])
+        if not n:
+            continue
+        s = "s" if n != 1 else ""
+        if lang == "en":
+            parts.append({"embargo": f"{n} permit{s} without a holiday embargo waiver",
+                          "expiry": f"{n} permit{s} expiring",
+                          "hearing": f"{n} hearing{s} coming up"}[kind])
+        else:
+            parts.append({"embargo": f"{n} permiso{s} sin exención del embargo navideño",
+                          "expiry": f"{n} permiso{s} por vencer",
+                          "hearing": f"{n} audiencia{s} próxima{s}"}[kind])
+    return ", ".join(parts)
+
+
+def _dot_digest_subject(project_name: str, sections: dict, today) -> tuple:
+    """(subject, english part, spanish part)."""
+    kinds = [k for k in dot_permits.DIGEST_KINDS if sections.get(k)]
+    if kinds == ["embargo"]:
+        items = sections["embargo"]
+        if len(items) == 1:
+            p = items[0]["permit"]
+            en, es = (f"Holiday embargo: permit {p} has no waiver",
+                      f"Embargo navideño: el permiso {p} no tiene exención")
+        else:
+            n = len(items)
+            en, es = (f"{n} DOT permits have no holiday embargo waiver on {project_name}",
+                      f"{n} permisos del DOT no tienen exención del embargo navideño en {project_name}")
+    elif kinds == ["expiry"]:
+        n = len(sections["expiry"])
+        en = f"{n} DOT permit{'s' if n != 1 else ''} expiring on {project_name}"
+        es = f"{n} permiso{'s' if n != 1 else ''} del DOT por vencer en {project_name}"
+    elif kinds == ["hearing"]:
+        subj = dot_summons.hearing_digest_text(project_name, sections["hearing"], today)["subject"]
+        en, es = (subj.split(" / ", 1) + [""])[:2]
+    else:
+        en = f"DOT today on {project_name}: {_dot_digest_summary(sections, 'en')}"
+        es = f"DOT hoy en {project_name}: {_dot_digest_summary(sections, 'es')}"
+    return f"{en} / {es}", en, es
+
+
+def _dot_digest_trigger(sections: dict) -> str:
+    kinds = [k for k in dot_permits.DIGEST_KINDS if sections.get(k)]
+    if len(kinds) != 1:
+        return dot_permits.DIGEST_TRIGGER
+    return {"embargo": dot_embargo.TRIGGER_TYPE, "expiry": dot_permits.TRIGGER_TYPE,
+            "hearing": dot_summons.TRIGGER_HEARING}[kinds[0]]
+
+
+def _dot_digest_email(project: dict, sections: dict, today) -> tuple:
+    """(subject, text, html) of the ONE DOT email: a section per kind (Holiday
+    embargo / Permit expiring / Hearing reminders), English then Spanish, each
+    item with its permit or ticket and its TRUE days left."""
     import html as _html
-    t = dot_summons.hearing_digest_text(project.get("name") or "your project", items, today)
-    en_sub, es_sub = (t["subject"].split(" / ", 1) + [""])[:2]
+    name = project.get("name") or "your project"
+    subject, en_sub, es_sub = _dot_digest_subject(name, sections, today)
+    kinds = [k for k in dot_permits.DIGEST_KINDS if sections.get(k)]
+    blocks = {"en": [], "es": []}
+    for lang in ("en", "es"):
+        for kind in kinds:
+            items = sections[kind]
+            if kind == "embargo":
+                lines = _dot_embargo_lines(name, items, today, lang)
+            elif kind == "expiry":
+                lines = _dot_expiry_lines(name, items, today, lang)
+            else:
+                lines = dot_summons.hearing_digest_text(name, items, today)[lang]
+            blocks[lang].append((DOT_DIGEST_SECTIONS[kind][0 if lang == "en" else 1], lines))
+    overview = {lang: (f"DOT today on {name}: {_dot_digest_summary(sections, 'en')}." if lang == "en" else
+                       f"DOT hoy en {name}: {_dot_digest_summary(sections, 'es')}.")
+                for lang in ("en", "es")} if len(kinds) > 1 else {"en": "", "es": ""}
+    srcs = []
+    if "embargo" in kinds or "expiry" in kinds:
+        srcs.append("NYC DOT permit records")
+    if "hearing" in kinds:
+        srcs.append("NYC OATH hearings, DOT summonses")
+    source = f"Source: {' and '.join(srcs)} (NYC Open Data)."
     footer_en = ("You're receiving this because you're an admin of this company or the "
                  "assigned project manager on this Levelog project.")
     footer_es = ("Recibe este correo porque es administrador de esta empresa o el "
                  "gerente de proyecto asignado a este proyecto en Levelog.")
-    source = "Source: NYC OATH hearings, DOT summonses (NYC Open Data)."
-    text = ("Hi,\n\n" + t["en"][0] + "\n\n" + "\n".join(t["en"][1:]) + "\n\n" + "-" * 8
-            + "\n\nHola,\n\n" + t["es"][0] + "\n\n" + "\n".join(t["es"][1:])
+
+    def _text(lang):
+        out = ["Hi," if lang == "en" else "Hola,"]
+        if overview[lang]:
+            out.append(overview[lang])
+        for head, lines in blocks[lang]:
+            out.append(head + "\n" + "\n".join(lines))
+        return "\n\n".join(out)
+
+    text = (_text("en") + "\n\n" + "-" * 8 + "\n\n" + _text("es")
             + f"\n\n{source}\n\n{footer_en}\n{footer_es}\n\n- Levelog")
 
-    def _block(lines):
+    def _p(lines):
         return ('<p style="margin:0 0 12px;font-size:15px;">'
-                + "<br>".join(_html.escape(str(x)).replace("  ", "&nbsp;&nbsp;") for x in lines) + "</p>")
+                + "<br>".join(_html.escape(str(t)).replace("  ", "&nbsp;&nbsp;") for t in lines) + "</p>")
+
+    def _html_lang(lang):
+        out = [_p(["Hi," if lang == "en" else "Hola,"])]
+        if overview[lang]:
+            out.append(_p([overview[lang]]))
+        for head, lines in blocks[lang]:
+            out.append(f'<h3 style="margin:16px 0 8px;font-size:15px;font-weight:600;color:#111827;">'
+                       f'{_html.escape(head)}</h3>')
+            out.append(_p(lines))
+        return "".join(out)
 
     html_body = f"""<!DOCTYPE html>
 <html>
@@ -50130,176 +49924,293 @@ def _dot_hearing_digest_email(project: dict, items: list, today) -> tuple:
     <tr><td style="padding:24px 28px;">
       <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
       <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">{_html.escape(en_sub)}</h1>
-      {_block([t["en"][0]])}{_block(t["en"][1:])}
+      {_html_lang("en")}
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;">
       <h2 style="margin:0 0 14px;font-size:16px;font-weight:600;color:#111827;">{_html.escape(es_sub)}</h2>
-      {_block([t["es"][0]])}{_block(t["es"][1:])}
+      {_html_lang("es")}
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
       <p style="margin:0;font-size:12px;color:#6b7280;">{_html.escape(source)}<br>{_html.escape(footer_en)}<br>{_html.escape(footer_es)}</p>
     </td></tr>
   </table>
 </body>
 </html>"""
-    return t["subject"], text, html_body
+    return subject, text, html_body
 
 
-async def _dot_hearing_tick(now: Optional[datetime] = None,
-                            project_ids: Optional[List[str]] = None,
-                            release: bool = False, late_only: bool = False) -> dict:
-    """Part of the 07:00 New York run: ONE digest a day per project of the
-    hearing reminders 14/7/1 due (true days left), and the pending-segment
-    hearing email. Held over Shabbos / Yom Tov (_dot_hold_if_quiet); `release`:
-    the Shabbos queue delivering the held day. Reads dot_logs only. Not
-    flag-gated. `late_only`: the run after each DOT sync -- once today's
-    digest run has gone, a hearing <= 1 day away found since is sent now, on
-    its own; the rest wait for tomorrow's digest (ruling 2026-10-24)."""
-    from lib.notifications import send_notification
+def _dot_digest_item_meta(kind: str, d: dict) -> dict:
+    if kind == "embargo":
+        return {"permit": d["permit"], "embargo": d["kind"], "season_year": d["season"].year,
+                "send_date": d["send_date"].isoformat(), "embargo_start": d["season"].start.isoformat()}
+    if kind == "expiry":
+        return {"permit": d["permit"], "days_left": d["days"], "work_end": d["work_end"].isoformat()}
+    return {"ticket": d["ticket"], "days_left": d["days"], "hearing_date": d["hearing"].isoformat()}
+
+
+def _dot_digest_item_row(kind: str, d: dict, project_id: str, company_id: str, day, did: str,
+                         n_recipients: int, now) -> dict:
+    """The item's OWN dot_alert_ledger row (its key and fields as before the
+    digest), pointing at the email it went in."""
+    base = {"project_id": project_id, "company_id": company_id, "digest": did, "created_at": now}
+    if kind == "embargo":
+        season = d["season"]
+        return {**base, "_id": dot_embargo.ledger_id(project_id, d["permit"], season.year, d["send_date"]),
+                "permit": d["permit"], "season_year": season.year, "send_date": d["send_date"].isoformat(),
+                "kind": d["kind"], "trigger_type": dot_embargo.TRIGGER_TYPE, "recipients": n_recipients}
+    if kind == "expiry":
+        return {**base, "_id": dot_permits.expiry_ledger_id(project_id, d["permit"], d["days"], d["work_end"]),
+                "kind": "permit_expiry", "permit": d["permit"], "bucket": d["threshold"],
+                "days_left": d["days"], "work_end": d["work_end"].isoformat(),
+                "send_date": day.isoformat(), "trigger_type": dot_permits.TRIGGER_TYPE}
+    return {**base, "_id": dot_summons.hearing_ledger_id(project_id, d["ticket"], d["days"], d["hearing"]),
+            "kind": "hearing", "ticket": d["ticket"], "bucket": d["threshold"],
+            "days_left": d["days"], "hearing_date": d["hearing"].isoformat(),
+            "send_date": day.isoformat(), "trigger_type": dot_summons.TRIGGER_HEARING}
+
+
+def _dot_digest_report(today) -> dict:
+    sub = {"due": 0, "already": 0, "sent": 0, "waiting_sync": 0, "late": 0, "wait_tomorrow": 0,
+           "catchup_skipped": 0, "no_recipients": 0, "ledger_failed": 0}
+    return {"date": today.isoformat(), "projects": 0, "due": 0, "sent": 0, "digests": 0, "late": 0,
+            "already": 0, "no_recipients": 0, "ledger_failed": 0, "held": 0, "wait_tomorrow": 0,
+            "catchup_skipped": 0, "waiting_sync": 0,
+            "embargo": dict(sub), "expiry": dict(sub),
+            "hearing": {**sub, "hearing_due": 0, "pending_due": 0}}
+
+
+async def _dot_digest_fresh(kind: str, due: list, project_id: str, sub: dict) -> list:
+    """The day's due expiry / hearing items not yet sent in their threshold
+    window, and not skipped by the catch-up rule."""
+    out = []
+    for d in due:
+        if kind == "expiry":
+            flt = {"project_id": project_id, "kind": "permit_expiry", "permit": d["permit"],
+                   "work_end": d["work_end"].isoformat()}
+        else:
+            flt = {"project_id": project_id, "kind": "hearing", "ticket": d["ticket"],
+                   "hearing_date": d["hearing"].isoformat()}
+        prior = await db[dot_embargo.LEDGER].find(flt, {"bucket": 1, "days_left": 1}).to_list(50)
+        # Once per threshold WINDOW (`bucket`), whatever day it went.
+        if any(p.get("bucket") == d["threshold"] for p in prior):
+            sub["already"] += 1
+            continue
+        if dot_permits.catchup_skipped(d["threshold"], [(p.get("bucket"), p.get("days_left")) for p in prior]):
+            sub["catchup_skipped"] += 1
+            continue
+        out.append(d)
+    return out
+
+
+async def _dot_daily_digest_tick(now: Optional[datetime] = None,
+                                 project_ids: Optional[List[str]] = None,
+                                 release: bool = False, as_of=None,
+                                 late_only: bool = False) -> dict:
+    """The 07:00 New York run: ONE DOT email per project per day (see the
+    block comment above). Reads dot_logs only -- no network. `release` +
+    `as_of`: the Shabbos queue delivering a held day (the embargo's due dates
+    are that day's). `late_only`: the run after each DOT sync -- before
+    today's digest run it does nothing; after it, only items <= 1 day away
+    (permit expiry, hearings) are sent, in their own email."""
+    from lib.notifications import is_email_kill_switch_on, send_notification
     from pymongo.errors import DuplicateKeyError
     now = now or datetime.now(timezone.utc)
     today = dot_embargo.ny_date(now)
-    report = {"date": today.isoformat(), "projects": 0, "hearing_due": 0, "pending_due": 0,
-              "sent": 0, "digests": 0, "already": 0, "no_recipients": 0, "ledger_failed": 0,
-              "waiting_sync": 0, "held": 0, "late": 0, "wait_tomorrow": 0}
-    marker = dot_permits.run_marker_id("hearing", today)
+    day = as_of or today
+    report = _dot_digest_report(day)
+    # Checked BEFORE any ledger row is written, so a halted day does not burn
+    # the once-only rows (send_notification checks both again at send time).
+    if not RESEND_API_KEY or is_email_kill_switch_on():
+        report["skipped"] = "no_resend_key" if not RESEND_API_KEY else "kill_switch"
+        logger.info(f"[dot-digest] {report}")
+        return report
+    marker = dot_permits.run_marker_id("digest", today)
     if late_only:
-        # Before today's digest run, everything is the digest's to send.
+        # Before today's digest run, everything is the digest's to send. (The
+        # per-kind markers the runs before the one digest wrote count too.)
         try:
-            if not await db.system_config.find_one({"key": marker}, {"_id": 1}):
+            keys = [marker] + [dot_permits.run_marker_id(k, today) for k in ("expiry", "hearing")]
+            if not await db.system_config.find_one({"key": {"$in": keys}}, {"_id": 1}):
                 report["skipped"] = "before_digest_run"
                 return report
         except Exception as e:
-            logger.warning(f"[dot-hearing] run marker read failed: {type(e).__name__}")
+            logger.warning(f"[dot-digest] run marker read failed: {type(e).__name__}")
             return report
     try:
-        live, skipped = await _dot_summons_projects(project_ids)
+        live = await _dot_live_projects()
     except Exception as e:
-        logger.warning(f"[dot-hearing] project read failed: {type(e).__name__}")
+        logger.warning(f"[dot-digest] project read failed: {type(e).__name__}")
         return report
-    if live is None:
-        report["skipped"] = skipped
-        return report
+    if project_ids:
+        live = {k: v for k, v in live.items() if k in {str(x) for x in project_ids}}
     for project_id, project in live.items():
+        company_id = str(project.get("company_id") or "")
+        # Nothing before the project's first full DOT pass of the kind's
+        # source (lib/source_sync.py): permits for embargo + expiry, OATH for
+        # hearings.
         try:
             synced = await _project_first_synced(project_id)
         except Exception as e:
-            logger.warning(f"[dot-hearing] sync state read failed: {type(e).__name__}")
+            logger.warning(f"[dot-digest] sync state read failed: {type(e).__name__}")
             continue
-        if source_sync.DOT_OATH not in synced:
+        permits_ready = source_sync.DOT_PERMITS in synced
+        oath_ready = source_sync.DOT_OATH in synced
+        for k, ready in (("embargo", permits_ready), ("expiry", permits_ready), ("hearing", oath_ready)):
+            if not ready:
+                report[k]["waiting_sync"] += 1
+        if not permits_ready and not oath_ready:
             report["waiting_sync"] += 1
             continue
         rows = await db.dot_logs.find({"project_id": project_id}).to_list(5000)
-        hearing = []
-        for d in dot_summons.hearing_due(rows, today):
-            # Once per threshold WINDOW (`bucket`) per hearing date, whatever
-            # day it went.
-            if await db[dot_embargo.LEDGER].find_one({
-                    "project_id": project_id, "kind": "hearing", "ticket": d["ticket"],
-                    "hearing_date": d["hearing"].isoformat(), "bucket": d["threshold"]}):
-                report["already"] += 1
-                continue
-            hearing.append(d)
-        pending = [d for d in dot_summons.pending_hearing_due(rows, today)
-                   if not await db[dot_embargo.LEDGER].find_one({"_id": dot_summons.ledger_id(
-                       project_id, "hearing_pending", d["ticket"], "-", d["hearing"])})]
-        if late_only:
-            # Only what cannot wait: a block match whose hearing is <= 1 day
-            # away (its email is one per summons, never in a digest).
-            later = [d for d in pending
-                     if (d["hearing"] - today).days > dot_permits.LATE_SEND_MAX_DAYS]
-            report["wait_tomorrow"] += len(later)
-            pending = [d for d in pending if d not in later]
-        if not hearing and not pending:
+        sections: Dict[str, list] = {"embargo": [], "expiry": [], "hearing": []}
+        if permits_ready and not late_only:
+            due_all = dot_embargo.due_sends(rows, day)
+            for d in due_all:
+                if await db[dot_embargo.LEDGER].find_one(
+                        {"_id": dot_embargo.ledger_id(project_id, d["permit"], d["season"].year, d["send_date"])},
+                        {"_id": 1}):
+                    report["embargo"]["already"] += 1
+                else:
+                    sections["embargo"].append(d)
+        if permits_ready:
+            sections["expiry"] = await _dot_digest_fresh(
+                "expiry", dot_permits.expiry_due(rows, today), project_id, report["expiry"])
+        pending: list = []
+        if oath_ready:
+            sections["hearing"] = await _dot_digest_fresh(
+                "hearing", dot_summons.hearing_due(rows, today), project_id, report["hearing"])
+            pending = [d for d in dot_summons.pending_hearing_due(rows, today)
+                       if not await db[dot_embargo.LEDGER].find_one({"_id": dot_summons.ledger_id(
+                           project_id, "hearing_pending", d["ticket"], "-", d["hearing"])})]
+            if late_only:
+                # Only what cannot wait: a block match whose hearing is <= 1
+                # day away (its email is one per summons, never in a digest).
+                later = [d for d in pending if (d["hearing"] - today).days > dot_permits.LATE_SEND_MAX_DAYS]
+                report["hearing"]["wait_tomorrow"] += len(later)
+                pending = [d for d in pending if d not in later]
+        if not any(sections.values()) and not pending:
             continue
-        if await _dot_hold_if_quiet(project, project_id, "hearing", today, now, report, release=release):
-            continue
-        report["projects"] += 1
-        report["hearing_due"] += len(hearing)
-        report["pending_due"] += len(pending)
-        recipients = await _critical_dob_alert_recipients(project)
-        if not recipients:
-            report["no_recipients"] += len(hearing) + len(pending)
-            continue
-        did, digest_kind = dot_permits.digest_id(project_id, "hearing", today), "hearing_digest"
-        if hearing:
+        did, digest_kind = dot_permits.digest_id(project_id, "dot", day), "dot_digest"
+        if any(sections.values()):
             try:
                 went = late_only or bool(await db[dot_embargo.LEDGER].find_one({"_id": did}, {"_id": 1}))
             except Exception as e:
-                logger.warning(f"[dot-hearing] digest read failed: {type(e).__name__}")
-                went, hearing = True, []
-            if went and hearing:
-                # Today's digest has gone: a hearing <= 1 day away cannot wait
-                # for tomorrow's -- it goes now, in its own email.
-                urgent = dot_permits.late_items(hearing)
-                report["wait_tomorrow"] += len(hearing) - len(urgent)
-                hearing = urgent
-                if hearing:
-                    did = dot_permits.late_id(project_id, "hearing", today, [d["ticket"] for d in hearing])
-                    digest_kind = "hearing_late"
-        if hearing:
-            claimed = []
+                logger.warning(f"[dot-digest] digest read failed: {type(e).__name__}")
+                continue
+            if went:
+                # Today's digest has gone: an item <= 1 day away cannot wait
+                # for tomorrow's -- it goes now, in its own email. The rest
+                # (every embargo item included) wait.
+                for k in ("embargo", "expiry", "hearing"):
+                    urgent = [] if k == "embargo" else dot_permits.late_items(sections[k])
+                    report[k]["wait_tomorrow"] += len(sections[k]) - len(urgent)
+                    sections[k] = urgent
+                if any(sections.values()):
+                    kinds = [k for k in ("expiry", "hearing") if sections[k]]
+                    nums = [d.get("permit") or d.get("ticket") for k in kinds for d in sections[k]]
+                    did = dot_permits.late_id(project_id, kinds[0] if len(kinds) == 1 else "dot", today, nums)
+                    digest_kind = "dot_late"
+        if not any(sections.values()) and not pending:
+            continue
+        if await _dot_hold_if_quiet(project, project_id, "digest", today, now, report,
+                                    release=release, as_of=day):
+            continue
+        report["projects"] += 1
+        for k in ("embargo", "expiry", "hearing"):
+            report[k]["due"] += len(sections[k])
+            report["due"] += len(sections[k])
+        report["hearing"]["hearing_due"] += len(sections["hearing"])
+        report["hearing"]["pending_due"] += len(pending)
+        recipients = await _critical_dob_alert_recipients(project)
+        if not recipients:
+            for k in ("embargo", "expiry", "hearing"):
+                report[k]["no_recipients"] += len(sections[k])
+            report["hearing"]["no_recipients"] += len(pending)
+            report["no_recipients"] += sum(len(v) for v in sections.values()) + len(pending)
+            continue
+        if any(sections.values()):
+            trigger = _dot_digest_trigger(sections)
+            claimed: Dict[str, list] = {"embargo": [], "expiry": [], "hearing": []}
             try:
                 await db[dot_embargo.LEDGER].insert_one({
-                    "_id": did, "project_id": project_id, "company_id": str(project.get("company_id") or ""),
-                    "kind": digest_kind, "send_date": today.isoformat(),
-                    "trigger_type": dot_summons.TRIGGER_HEARING, "recipients": len(recipients),
-                    "created_at": now})
-                for d in hearing:
-                    try:
-                        await db[dot_embargo.LEDGER].insert_one({
-                            "_id": dot_summons.hearing_ledger_id(project_id, d["ticket"], d["days"], d["hearing"]),
-                            "project_id": project_id, "company_id": str(project.get("company_id") or ""),
-                            "kind": "hearing", "ticket": d["ticket"], "bucket": d["threshold"],
-                            "days_left": d["days"], "hearing_date": d["hearing"].isoformat(),
-                            "send_date": today.isoformat(), "digest": did,
-                            "trigger_type": dot_summons.TRIGGER_HEARING, "created_at": now})
-                        claimed.append(d)
-                    except DuplicateKeyError:
-                        report["already"] += 1
+                    "_id": did, "project_id": project_id, "company_id": company_id,
+                    "kind": digest_kind, "send_date": day.isoformat(), "trigger_type": trigger,
+                    "sections": {k: len(v) for k, v in sections.items() if v},
+                    "recipients": len(recipients), "created_at": now})
+                for k in ("embargo", "expiry", "hearing"):
+                    for d in sections[k]:
+                        # Each item's own row FIRST (true days left in its key).
+                        try:
+                            await db[dot_embargo.LEDGER].insert_one(_dot_digest_item_row(
+                                k, d, project_id, company_id, today if k != "embargo" else day, did,
+                                len(recipients), now))
+                            claimed[k].append(d)
+                        except DuplicateKeyError:
+                            report[k]["already"] += 1
+                        except Exception as e:
+                            logger.warning(f"[dot-digest] ledger write failed: {type(e).__name__}")
+                            report[k]["ledger_failed"] += 1
+                            report["ledger_failed"] += 1
             except DuplicateKeyError:
-                report["already"] += len(hearing)        # this very email already went
+                for k in ("embargo", "expiry", "hearing"):
+                    report[k]["already"] += len(sections[k])       # this very email already went
             except Exception as e:
-                logger.warning(f"[dot-hearing] ledger write failed: {type(e).__name__}")
+                logger.warning(f"[dot-digest] ledger write failed: {type(e).__name__}")
                 report["ledger_failed"] += 1
-            if claimed:
-                subject, text, html_body = _dot_hearing_digest_email(project, claimed, today)
+            if any(claimed.values()):
+                subject, text, html_body = _dot_digest_email(project, claimed, today)
+                trigger = _dot_digest_trigger(claimed)
+                items = [_dot_digest_item_meta(k, d) for k in ("embargo", "expiry", "hearing") for d in claimed[k]]
                 sent = 0
                 for recipient in recipients:
                     try:
                         await send_notification(
-                            db, permit_renewal_id=did, trigger_type=dot_summons.TRIGGER_HEARING,
-                            recipient=recipient, subject=subject, html=html_body, text=text,
+                            db, permit_renewal_id=did, trigger_type=trigger, recipient=recipient,
+                            subject=subject, html=html_body, text=text,
                             metadata={"project_id": project_id, "project_name": project.get("name"),
-                                      "count": len(claimed),
-                                      "items": [{"ticket": d["ticket"], "days_left": d["days"],
-                                                 "hearing_date": d["hearing"].isoformat()} for d in claimed]})
+                                      "count": len(items),
+                                      "sections": {k: len(v) for k, v in claimed.items() if v},
+                                      "items": items})
                         sent += 1
                     except Exception as e:
-                        logger.error(f"[dot-hearing] send failed: {type(e).__name__}")
-                report["sent"] += len(claimed) if sent else 0
-                if digest_kind == "hearing_late":
+                        logger.error(f"[dot-digest] send failed: {type(e).__name__}")
+                for k in ("embargo", "expiry", "hearing"):
+                    report[k]["sent"] += len(claimed[k]) if sent else 0
+                    if digest_kind == "dot_late" and claimed[k]:
+                        report[k]["late"] += 1 if sent else 0
+                report["sent"] += len(items) if sent else 0
+                if digest_kind == "dot_late":
                     report["late"] += 1 if sent else 0
                 else:
                     report["digests"] += 1 if sent else 0
                 try:
+                    at = datetime.now(timezone.utc)
                     await db[dot_embargo.LEDGER].update_one({"_id": did}, {"$set": {
-                        "sent_to": sent, "sent_at": datetime.now(timezone.utc), "count": len(claimed)}})
+                        "sent_to": sent, "sent_at": at, "count": len(items)}})
+                    for k in ("embargo", "expiry", "hearing"):
+                        for d in claimed[k]:
+                            await db[dot_embargo.LEDGER].update_one(
+                                {"_id": _dot_digest_item_row(k, d, project_id, company_id, day, did, 0, now)["_id"]},
+                                {"$set": {"sent_to": sent, "sent_at": at}})
                 except Exception:
                     pass
         for d in pending:
             lid = dot_summons.ledger_id(project_id, "hearing_pending", d["ticket"], "-", d["hearing"])
             await _dot_summons_send(project, project_id, d["row"], "pending",
                                     dot_summons.TRIGGER_PENDING, lid, recipients, today, now,
-                                    {"hearing_date": d["hearing"].isoformat()}, report)
+                                    {"hearing_date": d["hearing"].isoformat()}, report["hearing"])
+    for k in ("embargo", "expiry", "hearing"):
+        for f in ("already", "wait_tomorrow", "catchup_skipped"):
+            report[f] += report[k][f]
     if not late_only and not project_ids:
-        # Today's digest run has gone: the sync's late run may now send a
-        # hearing <= 1 day away on its own. system_config: a run is not an alert.
+        # Today's digest run has gone (whether or not a project had anything):
+        # from now on the sync's late run may send <= 1-day items on their own.
+        # In system_config, not dot_alert_ledger: a run is not an alert.
         try:
             await db.system_config.update_one(
                 {"key": marker}, {"$setOnInsert": {"value": True, "send_date": today.isoformat(),
                                                    "created_at": now}}, upsert=True)
         except Exception as e:
-            logger.warning(f"[dot-hearing] run marker write failed: {type(e).__name__}")
-    logger.info(f"[dot-hearing] {report}")
+            logger.warning(f"[dot-digest] run marker write failed: {type(e).__name__}")
+    logger.info(f"[dot-digest] {report}")
     return report
 
 
