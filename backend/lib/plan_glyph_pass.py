@@ -73,6 +73,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
              sweeps: Optional[Dict[Any, Any]] = None,
              plan_only: Optional[Dict[str, Dict[str, Any]]] = None,
              opening_schedules: Sequence[Dict[str, Any]] = (),
+             set_answers: Optional[Dict[str, str]] = None,
              progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None) -> Dict[str, Any]:
     """Every glyph row for the project's `track`, and what was done and
     refused.
@@ -93,6 +94,10 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     (`opening_schedules`) on the SAME floors - their units, membership maps,
     stair links and voids - and returned apart, in "opening_rows", so the
     equipment rows are exactly what they were.
+
+    `set_answers` are the stored answers to the project's drawing-set
+    questions (lib.plan_set_questions, ruling 21): {question id: include |
+    exclude}. The questions this track raises come back in "set_questions".
 
     PROGRESS (2026-10-27): `progress`, when given, is called at every step -
     progress(kind, info), kind "plan" / "stage" / "sheet" / "done" (lib.
@@ -238,7 +243,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     opening = popen.run_openings(
         floors_in, open_page, ofams, track=track, widest_door=door,
         refused=[(p, why) for p, why, role in paired["refused"]
-                 if role == derive.ROLE_ARCHITECTURAL], progress=progress)
+                 if role == derive.ROLE_ARCHITECTURAL],
+        answers=set_answers, progress=progress)
     summary["openings"] = opening["summary"]
 
     for i, f in enumerate(floors_in, 1):
@@ -303,7 +309,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     summary["rows"] = len(rows)
     tell(progress, "done")
     return {"rows": rows, "summary": summary, "areas": areas,
-            "opening_rows": opening["rows"], "opening_health": opening["health"]}
+            "opening_rows": opening["rows"], "opening_health": opening["health"],
+            "set_questions": opening.get("questions") or []}
 
 
 def sheet_steps(pages: Sequence[Dict[str, Any]], schedules: Sequence[Dict[str, Any]] = (),

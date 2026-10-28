@@ -155,6 +155,23 @@ class ProgressAdvancesPerSheetOnBothTracks(unittest.TestCase):
                                  ("filed", "A-102.00|M-102.00"): "read",
                                  ("post_co", "A-101.00|M-101.00"): "reused"})
 
+    def test_a_plan_the_set_asks_about_is_read_in_its_own_stage(self):
+        """Ruling 21: a plan numbered outside the series (A.1.1) is a question,
+        and its pages are read before the floors' openings - the stage
+        set_questions, so the status does not show the floors' reads then."""
+        _present()
+        seen = []
+        pages = FILED + [dict(_pg("pa11", "A.1.1", "FIRST FLOOR PLAN", "set2", 1), project_id=PID)]
+        with ExitStack() as st:
+            _fast(st)
+            out = G.run_pass(pages, lambda p: _Page(), SCHED, [], track="filed",
+                             plan_only=PLAN_ONLY, opening_schedules=DOORS,
+                             progress=lambda kind, info: seen.append((kind, dict(info))))
+        self.assertEqual([q["short"] for q in out["set_questions"]], ["plan A.1.1"])
+        stages = [i.get("stage") for k, i in seen if k in ("stage", "sheet")]
+        self.assertEqual(stages[stages.index("voids"):stages.index("voids") + 3],
+                         ["voids", "set_questions", "openings"])
+
     def test_the_tracker_counts_them_and_logs_a_line_a_sheet(self):
         P = _present()
         tr = P.PassProgress(PID)
@@ -383,7 +400,7 @@ class TheStatusSaysHowTheLastPassEnded(_Route):
     def test_ok_with_its_counts(self):
         _present()
 
-        async def fake(pid, progress=None):
+        async def fake(pid, actor=None, progress=None):
             return {"written": 459, "set_health": 3, "areas_written": 153, "tracks": {}}
         _out, st = self._run_route(fake)
         self.assertIn("last_result", st)
@@ -397,7 +414,7 @@ class TheStatusSaysHowTheLastPassEnded(_Route):
         _present()
         import httpx
 
-        async def fake(pid, progress=None):
+        async def fake(pid, actor=None, progress=None):
             raise httpx.ReadTimeout("")
         _out, st = self._run_route(fake)
         self.assertIn("last_result", st)
@@ -434,7 +451,7 @@ class TheStatusSaysHowTheLastPassEnded(_Route):
     def test_the_result_outlives_the_process_and_a_dead_pass_is_unknown(self):
         _present()
 
-        async def fake(pid, progress=None):
+        async def fake(pid, actor=None, progress=None):
             return {"written": 459, "set_health": 3, "areas_written": 153}
         self._run_route(fake)
         server._GLYPH_PASS_PROGRESS.pop(PID, None)          # a redeploy

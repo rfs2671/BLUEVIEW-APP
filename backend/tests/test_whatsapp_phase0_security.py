@@ -726,7 +726,7 @@ class TheWebhookRejectsAnUnauthenticatedCaller(unittest.TestCase):
         db = _Db()
         processed = []
 
-        def _spy(payload):
+        def _spy(payload, **kw):          # received_at= : when the webhook got it
             processed.append(payload)
 
             async def _noop():
