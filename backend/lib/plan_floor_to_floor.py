@@ -330,6 +330,36 @@ def _where(r: Dict[str, Any]) -> str:
     return str(r.get("sheet_number") or r.get("file_name") or "the section")
 
 
+def storeys_named(ivs: Sequence[Dict[str, Any]], asked: Sequence[str],
+                  marked: Sequence[Optional[str]]) -> List[Dict[str, Any]]:
+    """The intervals the question's levels name, bottom to top. `asked`: the
+    set's level tokens #891 mapped the question to; `marked`: the tokens of
+    the marks the section prints.
+
+    A level with a mark of its own: the interval from that mark up.
+
+    A NUMBERED FLOOR THE MARKS DO NOT PRINT: the storey directly beneath the
+    next floor's mark, when that storey starts at a datum (a mark with no
+    level token). A-300.00's lowest mark is BASE PLANE and it prints no FIRST
+    FLOOR; "1st floor" (#891: FLOOR_1) is the storey BASE PLANE to SECOND
+    FLOOR - named as the marks print it, never renamed (#900 questions 3 and
+    4, Roy's items 17 and 18, both accepted: "The first storey is BASE PLANE
+    to SECOND FLOOR"; "Never rename BASE PLANE to FIRST FLOOR"; "When #891
+    maps the question to a level, the answer names that storey"). When a
+    level token stands at the foot of that storey
+    instead, it is some other level, and nothing is guessed: every storey is
+    said."""
+    picked = set()
+    for t in asked or []:
+        own = [k for k, i in enumerate(ivs) if i.get("from_token") == t]
+        n = floor_number(t)
+        if not own and t not in set(marked or []) and n is not None:
+            own = [k for k, i in enumerate(ivs)
+                   if i.get("to_token") == f"FLOOR_{n + 1}" and not i.get("from_token")]
+        picked.update(own)
+    return [i for k, i in enumerate(ivs) if k in picked]
+
+
 def answer_line(r: Dict[str, Any]) -> str:
     """The answer, as the operator ruled it: `Ceiling height not shown;
     floor-to-floor 10'-0" (A-300.00)`. Storeys that differ are named one by
@@ -345,10 +375,10 @@ def answer_line(r: Dict[str, Any]) -> str:
         if not ivs:
             return ""
         # THE STOREY THE QUESTION NAMED (#891: "5th floor" = the mezzanine on
-        # this set): the interval from that level's mark up. A level with no
-        # mark of its own is not guessed at - every storey is said.
-        asked = set(p.get("asked_levels") or [])
-        mine = [i for i in ivs if i.get("from_token") in asked]
+        # this set): the answer names that storey (#900 question 4, Roy's
+        # item 18: accepted). See `storeys_named`.
+        mine = storeys_named(ivs, p.get("asked_levels") or [],
+                             [lv.get("token") for lv in p.get("levels") or []])
         ivs = mine or ivs
         # THE FIGURE BEFORE THE STOREY, every time: each clause after the
         # first then has nothing before its value, and so stays a
@@ -399,6 +429,6 @@ __all__ = ["RECORD_TYPE", "LEVEL_MARK", "LEVEL_MARK_QUERY", "marks", "derive", "
            "level_token", "level_label",
            "choose_section", "is_level_record", "is_level_mark_record", "is_level_evidence",
            "names_ceiling", "names_floor_to_floor", "is_level_subject",
-           "names_a_ceiling_height", "level_record", "stated_floor_to_floor",
+           "names_a_ceiling_height", "level_record", "stated_floor_to_floor", "storeys_named",
            "floor_to_floor_in", "figure_texts", "answer_line", "render_level_evidence",
            "feet_inches"]

@@ -230,21 +230,23 @@ def _server():
 class SearchLeadsWithIt(unittest.TestCase):
     """search_plans against a fake database holding production's records."""
 
-    def _search(self, subject, attribute="", intent="attribute", narrow_to=None):
+    def _search(self, subject, attribute="", intent="attribute", narrow_to=None,
+                set_pages=None, extra=()):
         server = _server()
         from tests.async_fake_mongo import AsyncFakeDB
         db = AsyncFakeDB()
         a301 = [rec(q, sheet="A-301.00", page="pg301", title="CROSS SECTIONS", ordinal=i)
                 for i, q in enumerate(MARKS)]
         plan = [rec(MARKS[5], sheet="A-101.00", page="pg101", title="SECOND FLOOR PLAN")]
-        db["plan_records"].docs = [dict(r) for r in A300 + a301 + plan + CEILINGS + [SETBACK]]
+        db["plan_records"].docs = [dict(r) for r in A300 + a301 + plan + CEILINGS + [SETBACK]
+                                   + list(extra)]
         every = sorted({r["page_id"] for r in db["plan_records"].docs})
 
         async def ids(project_id, discipline="", floor="", sheet_number=""):
             return list(narrow_to) if (narrow_to and (discipline or floor)) else every
 
         async def level_rows(project_id):  # what #891 reads the set's levels from
-            return [dict(r) for r in SET_PAGES]
+            return [dict(r) for r in (SET_PAGES if set_pages is None else set_pages)]
         with patch.object(server, "db", db), \
                 patch.object(server, "_current_record_page_ids", ids), \
                 patch.object(server, "_level_rows", level_rows):
@@ -329,6 +331,134 @@ class TheEvalCase(unittest.TestCase):
                           lambda rs, s="", limit=3: "Ceiling height 10'-0\" [A-300.00]"):
             self.assertIn("the render does not state",
                           " ".join(ev.score_case(case, returned, {})["reasons"]))
+
+
+SET_WITH_A_FIRST_FLOOR = [{"_id": "pg100", "sheet_number": "A-100.00",
+                           "sheet_title": "FIRST FLOOR PLAN", "floor": None,
+                           "floors": None}] + SET_PAGES
+# what production returns under a ceiling question besides the row (verbatim heads)
+PARTITIONS = rec("TABLE PARTITION TYPE 1 P1 INTERIOR STUD WALL (2HR FIRE RATED) MASONRY "
+                 "EQUIVALENT, STC | 3 5/8\" METAL STUD", sheet="A-500.00", page="pg500",
+                 title="PARTITION TYPES", record_type="schedule")
+FANS = rec("EXHAUST FAN SCHEDULE TAG | SERVNG | MANUF. | MODEL | CFM | EF-1 | 10\" DUCT",
+           sheet="M-200.00", page="pgm200", title="MECHANICAL SCHEDULES",
+           record_type="schedule")
+
+
+def _derived_from(marks_text, asked=(), ceiling_asked=True, printed=0):
+    """The row lib.plan_floor_to_floor derives from these marks (A-300.00)."""
+    L = levels_mod()
+    d = L.derive([m for q in marks_text for m in L.marks(q)])
+    return L.level_record(A300[0], d, [], [], ceiling_asked, printed, asked)
+
+
+class RoysItems15To23(unittest.TestCase):
+    """Roy's report items 15-23 are #900's questions 1-9, all accepted ("#900:
+    15-23 all yes"). One test per item; 21 is #894's (its question-4
+    follow-up), not this PR's."""
+
+    def test_15_the_answer_is_capitalised(self):
+        L = levels_mod()
+        self.assertEqual(L.answer_line(_derived_from(MARKS)), RULED)
+        self.assertEqual(L.answer_line(_derived_from(MARKS, ceiling_asked=False)),
+                         "Floor-to-floor 10'-0\" (A-300.00)")
+        self.assertIn(f"exactly: {RULED}", L.render_level_evidence([_derived_from(MARKS)]))
+
+    def test_16_the_ruled_sentence_is_the_whole_render(self):
+        got = ps.render_records([_derived_from(MARKS), PARTITIONS, FANS] + CEILINGS,
+                                "ceiling height")
+        self.assertEqual(got, RULED)
+
+    def test_17_storeys_are_named_as_the_marks_print_them_from_base_plane(self):
+        L = levels_mod()
+        # a set whose first storey is taller: the marks name it, from BASE PLANE
+        tall = ["BASE PLANE 33.37' 0'-0\"", "SECOND FLOOR 47.37' +14'-0\"",
+                "THIRD FLOOR 57.37' +24'-0\""]
+        row = _derived_from(tall)
+        line = L.answer_line(row)
+        self.assertEqual(line, "Ceiling height not shown; floor-to-floor 14'-0\" BASE PLANE to "
+                               "SECOND FLOOR, 10'-0\" SECOND FLOOR to THIRD FLOOR (A-300.00)")
+        self.assertEqual([lv["name"] for lv in row["payload"]["levels"]][0], "BASE PLANE")
+        # asked about the first floor, the storey is still BASE PLANE's
+        first = L.answer_line(_derived_from(tall, asked=["FLOOR_1"]))
+        self.assertEqual(first, "Ceiling height not shown; floor-to-floor 14'-0\" BASE PLANE to "
+                                "SECOND FLOOR (A-300.00)")
+        for said in (line, first, L.render_level_evidence([row])):
+            self.assertNotIn("FIRST FLOOR", said.upper())
+            self.assertNotIn("1ST FLOOR", said.upper())
+
+    def test_18_a_level_the_question_names_names_its_storey(self):
+        cases = [("1st floor ceiling", "height", ["FLOOR_1"], "BASE PLANE to SECOND FLOOR"),
+                 ("ground floor ceiling", "height", ["FLOOR_1"], "BASE PLANE to SECOND FLOOR"),
+                 ("2nd floor ceiling", "height", ["FLOOR_2"], "SECOND FLOOR to THIRD FLOOR"),
+                 ("5th floor ceiling", "height", ["MEZZANINE"], "MEZZANINE to ROOF")]
+        for subject, attribute, asked, storey in cases:
+            got = SearchLeadsWithIt()._search(subject, attribute,
+                                              set_pages=SET_WITH_A_FIRST_FLOOR)
+            self.assertEqual([r.get("record_type") for r in got[:1]], ["levels"], subject)
+            self.assertEqual(got[0]["payload"].get("asked_levels"), asked, subject)
+            said = ps.render_records(got, subject)
+            self.assertEqual(said, f"Ceiling height not shown; floor-to-floor 10'-0\" {storey} "
+                                   f"(A-300.00)", subject)
+            refused = [i or '""' for i in INTENTS if not bound(said, got, i)]
+            self.assertEqual(refused, [], (subject, said))
+        # a level at the foot of that storey is some other level: not guessed at
+        L = levels_mod()
+        cellar = ["CELLAR 33.37' 0'-0\"", "SECOND FLOOR 43.37' +10'-0\"",
+                  "THIRD FLOOR 53.37' +20'-0\""]
+        self.assertEqual(L.answer_line(_derived_from(cellar, asked=["FLOOR_1"])), RULED)
+
+    def test_19_the_narrow_trigger_brings_the_row_and_overhead_does_not(self):
+        L = levels_mod()
+        for s, a in [("ceiling", "height"), ("ceiling", "clear"), ("ceilings", "high"),
+                     ("clg", "ht"), ("ceiling", "aff"), ("floor-to-floor", ""),
+                     ("floor to floor", "height"), ("storey height", "")]:
+            self.assertTrue(L.is_level_subject(s, a), (s, a))
+        for s, a in [("overhead protection", "height"),
+                     ("sidewalk shed overhead protection", "height"), ("overhead", "clearance"),
+                     ("ceiling", "type"), ("ceiling", ""), ("building", "height")]:
+            self.assertFalse(L.is_level_subject(s, a), (s, a))
+        got = SearchLeadsWithIt()._search("overhead protection", "height")
+        self.assertFalse([r for r in got if r.get("record_type") == "levels"])
+
+    def test_20_a_ceiling_figure_at_a_floor_to_floor_or_above_is_refused(self):
+        printed = rec("CEILING HEIGHT 10'-0\" | CEILING HEIGHT 8'-6\"", sheet="A-600.00",
+                      page="pg600", title="ROOM FINISH SCHEDULE")
+        records = [_derived_from(MARKS), printed, SETBACK, rec("50'-0\" BUILDING HEIGHT",
+                                                                sheet="Z-002.01", page="pgz2")]
+        for claim in ["The ceiling height is 10'-0\".", "The ceiling height is 50'-0\".",
+                      "The ceiling height is 12'-0\"."]:
+            leaks = [i or '""' for i in INTENTS if bound(claim, records, i)]
+            self.assertEqual(leaks, [], claim)
+        # a printed ceiling height below the floor-to-floor is still a value
+        self.assertTrue(bound("The ceiling height is 8'-6\".", records, "attribute"))
+
+    def test_22_clg_ht_hgt_and_aff_are_ceiling_and_height_words(self):
+        L = levels_mod()
+        for naming in ["CLG HT", "CLG. HGT.", "CEILING A.F.F.", "CLG AFF", "CEILING HEIGHT"]:
+            self.assertTrue(L.names_a_ceiling_height(naming, ["9'-0\""]), naming)
+        for naming in ["CEILING", "CLG", "HT", "WALL HGT"]:
+            self.assertFalse(L.names_a_ceiling_height(naming, ["9'-0\""]), naming)
+        # a sheet that prints a CLG HT: "not shown" is not said
+        clg = rec("CLG HT 8'-6\"", sheet="A-600.00", page="pg600", title="ROOM FINISH SCHEDULE")
+        got = SearchLeadsWithIt()._search("ceiling", "height", extra=[clg])
+        self.assertEqual(got[0]["payload"]["ceiling_heights_printed"], 1)
+        self.assertNotIn("not shown", ps.render_records(got, "ceiling"))
+        # and a CLG HT / HGT claim at the floor-to-floor is refused
+        for claim in ["The CLG HT is 10'-0\".", "CLG HGT: 10'-0\"", "Ceiling 10'-0\" AFF."]:
+            self.assertEqual([i for i in INTENTS if bound(claim, A300 + [_derived_from(MARKS)], i)],
+                             [], claim)
+
+    def test_23_the_eval_checks_the_answer_text(self):
+        case = TheEvalCase().case()
+        self.assertEqual(case["expect"].get("render"), RULED)
+        returned = [_derived_from(MARKS)] + CEILINGS
+        out = ev.score_case(case, returned, {})
+        self.assertTrue(out["checks"].get("render_states_the_ruled_answer"), out)
+        with patch.object(ps, "render_records", lambda rs, s="", limit=3: "Floor-to-floor 10'-0\""):
+            out = ev.score_case(case, returned, {})
+        self.assertIs(out["checks"].get("render_states_the_ruled_answer"), False, out)
+        self.assertEqual(out["outcome"], "fail")
 
 
 if __name__ == "__main__":
