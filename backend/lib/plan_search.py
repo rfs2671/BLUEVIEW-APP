@@ -3733,9 +3733,11 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
 #   THE CLAIM'S SUBJECT is what its clause says before the value - "the
 #   ceiling height is 10'-0"" is about the ceiling height - in the words the
 #   search reads (search_terms: the stop words out), a citation removed
-#   first. With nothing before the value, it is what follows it ("a 42"
-#   parapet"). A clause that names nothing states a value of nothing, and it
-#   is refused, as a count naming nothing is.
+#   first - and ONLY those words (ruling 2026-10-28, 6): what follows the
+#   value is not required ("the parapet is 42" high" binds on 42" PARAPET),
+#   and it never stands in for a subject either. A clause that names nothing
+#   before its value - "a 42" parapet" - states a value of nothing, and it is
+#   refused, as a count naming nothing is.
 #
 #   ITS RECORD NAMES IT when EVERY one of those words is printed where the
 #   value is: as a word (term_pattern - the plural, a truncation with its
@@ -3872,12 +3874,20 @@ def value_parts(record: Dict[str, Any]) -> List[Tuple[List[str], str]]:
 
 
 def _claim_subject(clause: str, spans: Sequence[Tuple[int, int]]) -> List[str]:
-    """The words a clause says its values are OF: before its first value,
-    or - when nothing stands there - after its last."""
+    """The words a clause says its values are OF: the words before its first
+    value, and only those.
+
+    WHAT FOLLOWS THE VALUE IS NEVER THE SUBJECT (ruling 2026-10-28, 6). This
+    read the words after the last value when none stood before it, for "a
+    42" parapet". With counts decided by the count rule (states_a_count) it
+    named the subject of no census claim (167,746 claims, 0 changes without
+    it), and in the ceiling phrasing probe it bound 84 wrong ceiling heights:
+    "A 5/8" ceiling." on A-302.00's "1 HOUR FIRE RATED CEILING W/ ONE LAYER
+    OF 5/8" GYPSUM BOARD". "A 42" parapet." is now refused; "The parapet is
+    42"." binds."""
     if not spans:
         return []
-    before = search_terms(clause[:min(s for s, _ in spans)])
-    return before or search_terms(clause[max(e for _, e in spans):])
+    return search_terms(clause[:min(s for s, _ in spans)])
 
 
 # ── A COUNT IS NEVER AN ATTRIBUTE'S VALUE ─────────────────────────────────

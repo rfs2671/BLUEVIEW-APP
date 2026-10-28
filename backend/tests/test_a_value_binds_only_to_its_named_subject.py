@@ -91,7 +91,8 @@ class AValueBindsToTheSubjectItsRecordNames(unittest.TestCase):
         self.assertFalse(gate("The ceiling is 42\".", PARAPET))
         self.assertTrue(gate("parapet: 42.", PARAPET))
         self.assertTrue(gate("The parapet is 42\" high.", PARAPET))
-        self.assertTrue(gate("There is a 42\" parapet.", PARAPET))
+        # Nothing before the value: it states a value of nothing (ruling 6).
+        self.assertFalse(gate("There is a 42\" parapet.", PARAPET))
 
     def test_every_word_of_the_subject_is_named_where_the_value_is(self):
         """The records print CEILING beside 1/2" and 5/8": they name the
@@ -190,9 +191,9 @@ class Ruling5EveryWordOfTheSubjectIsNamed(unittest.TestCase):
 
 
 class Ruling6TheSubjectIsTheWordsBeforeTheValue(unittest.TestCase):
-    """Ruling 2026-10-28 (6): the subject is the words before the value;
-    words after it are not required. With no word before it, the subject is
-    what follows its last value ("a 42" parapet") - kept as built."""
+    """Ruling 2026-10-28 (6): the subject is the words before the value, and
+    only those. Words after it are not required, and they never stand in for
+    a subject: "a 42" parapet" names nothing before its value."""
 
     def test_trailing_words_are_not_required(self):
         self.assertTrue(gate("The parapet is 42\" high.", PARAPET))
@@ -202,10 +203,15 @@ class Ruling6TheSubjectIsTheWordsBeforeTheValue(unittest.TestCase):
         self.assertFalse(gate("The parapet height is 42\".", PARAPET))
         self.assertFalse(gate("The roof parapet is 42\".", PARAPET))
 
-    def test_nothing_before_the_value_reads_what_follows_it(self):
-        self.assertTrue(gate("A 42\" parapet.", PARAPET))
-        self.assertFalse(gate("A 42\" railing.", PARAPET))
+    def test_what_follows_the_value_never_stands_in_for_a_subject(self):
+        self.assertFalse(gate("A 42\" parapet.", PARAPET))
+        self.assertFalse(gate("42\" parapet.", PARAPET))
         self.assertFalse(gate("42\".", PARAPET))
+        # A-302.00's fire-rated ceiling note names the ceiling; 5/8" is its
+        # gypsum board, and "a 5/8" ceiling" bound on it as the ceiling's.
+        note = [rec(sheet_number="A-302.00",
+                    quote="1 HOUR FIRE RATED CEILING W/ ONE LAYER OF 5/8\" GYPSUM BOARD")]
+        self.assertFalse(gate("A 5/8\" ceiling.", note))
 
 
 class Ruling7AVisionTableNamesNothing(unittest.TestCase):
