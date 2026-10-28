@@ -137,6 +137,17 @@ class AFloorIsItsTitleNeverItsFit(unittest.TestCase):
         self.assertNotIn("S-106.00", _paired(out))
         self.assertEqual(len(out["pairs"]), 5)
 
+    def test_the_same_rule_pairs_plumbings_2xx_sheets(self):
+        """T4's P-2xx sanitary plans run one above A too (P-204 = FOURTH)."""
+        _present()
+        rows = [(n, t) for n, t in BOYLAND_FILED if n.startswith("A-")] + [
+            ("P-201.00", "FIRST FLOOR SANITARY & STORM PLAN"), ("P-204.00", "FOURTH FLOOR SANITARY & STORM PLAN"),
+            ("P-205.00", "MEZZANINE FLOOR SANITARY & STORM PLAN"), ("P-103.00", "FOURTH FLOOR DOMESTIC WATER PLAN"),
+            ("P-200.00", "FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN")]
+        out = T.pair_by_level(_pages(rows), disc="P", series="2")
+        self.assertEqual(_paired(out), {"P-201.00": "A-100.01", "P-204.00": "A-103.00", "P-205.00": "A-104.00"})
+        self.assertEqual([r["page"]["sheet_number"] for r in out["refused"]], ["P-200.00"])
+
     def test_two_a_plans_of_one_level_refuse(self):
         _present()
         out = T.pair_by_level(_pages(BOYLAND_FILED + [("A-106.00", "FOURTH FLOOR PLAN")]))

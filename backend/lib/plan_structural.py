@@ -70,8 +70,9 @@ COLLECTION = "plan_structural"
 # 1. Pairing: title level + set-wide series offset
 # ══════════════════════════════════════════════════════════════════════════
 
-#: an NCS plan-series sheet (type digit 1); the revision suffix is ignored
-PLAN_SERIES = re.compile(r"^([A-Z])-1(\d\d)(?:\.(\d\d))?$")
+#: an NCS sheet number: discipline, type digit (1 = plans; plumbing draws its
+#: sanitary plans as 2xx), sequence; the revision suffix is ignored
+PLAN_SERIES = re.compile(r"^([A-Z])-(\d)(\d\d)(?:\.(\d\d))?$")
 
 
 def title_level(title: Optional[str]) -> Optional[str]:
@@ -93,14 +94,15 @@ def title_level(title: Optional[str]) -> Optional[str]:
     return lv
 
 
-def plan_index(sheet_number: Optional[str]) -> Optional[Tuple[str, int]]:
-    """("S", 4) for S-104.00: discipline and position in the 1xx plan series."""
+def plan_index(sheet_number: Optional[str], series: str = "1") -> Optional[Tuple[str, int]]:
+    """("S", 4) for S-104.00: discipline and position in the `series`xx
+    sheets (1xx plans by default)."""
     m = PLAN_SERIES.match(str(sheet_number or "").strip().upper())
-    return (m.group(1), int(m.group(2))) if m else None
+    return (m.group(1), int(m.group(3))) if m and m.group(2) == series else None
 
 
-def pair_by_level(pages: Sequence[dict], *, disc: str = "S",
-                  arch: str = "A") -> Dict[str, Any]:
+def pair_by_level(pages: Sequence[dict], *, disc: str = "S", arch: str = "A",
+                  series: str = "1") -> Dict[str, Any]:
     """{"offset": k | None, "pairs": [{"s", "a", "level"}], "refused":
     [{"page", "reason"}]} for every `disc` plan in the track.
 
@@ -112,10 +114,13 @@ def pair_by_level(pages: Sequence[dict], *, disc: str = "S",
         HALF of the level-matched sheets agree on; a sheet whose partner sits
         at another offset breaks it -> refused. No majority -> every sheet
         refuses: the set does not state one series rule.
-    Two pages of one sheet number in the track (two revisions) -> refused."""
+    Two pages of one sheet number in the track (two revisions) -> refused.
+    `series` is the `disc` sheets' type digit (the A side is always its 1xx
+    plans): T4 pairs plumbing's P-2xx sanitary plans with series="2"."""
     plans = defaultdict(list)
     for p in pages:
-        ix = plan_index(p.get("sheet_number"))
+        sn = p.get("sheet_number")
+        ix = plan_index(sn, series) if str(sn or "").upper().startswith(disc) else plan_index(sn)
         if ix:
             plans[ix[0]].append((ix[1], p))
     refused: List[dict] = []
