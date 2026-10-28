@@ -300,6 +300,32 @@ class TheRoofBorrowsOnlyFromItsTruePeak(unittest.TestCase):
         self.assertIn("under half", res["why"])
 
 
+class RunPassCallsTheReader(unittest.TestCase):
+    """The call site, not only the function: run_pass appends mech_scale's
+    result to its summary's "mech_scales" for every pair it reads (read from
+    run_pass's syntax tree, so a comment saying so does not count)."""
+
+    def test_run_pass_appends_mech_scale_to_its_summary(self):
+        import ast
+        import inspect
+        import textwrap
+        from lib import plan_glyph_pass as gp
+        self.assertTrue(hasattr(gp, "mech_scale"), "the glyph pass reads no mechanical scale")
+        tree = ast.parse(textwrap.dedent(inspect.getsource(gp.run_pass)))
+        found = False
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "append" and node.args):
+                continue
+            tgt, arg = node.func.value, node.args[0]
+            if (isinstance(tgt, ast.Subscript) and isinstance(tgt.slice, ast.Constant)
+                    and tgt.slice.value == "mech_scales"
+                    and isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name)
+                    and arg.func.id == "mech_scale"):
+                found = True
+        self.assertTrue(found, 'run_pass never appends mech_scale(...) to summary["mech_scales"]')
+
+
 class TheGlyphPassRecordsEachMechanicalPlansScale(unittest.TestCase):
     """The reader: run_pass puts every pair's mechanical scale in its summary
     (plan_glyph_pass.mech_scale). M-103.00 on the filed A-103.00."""
