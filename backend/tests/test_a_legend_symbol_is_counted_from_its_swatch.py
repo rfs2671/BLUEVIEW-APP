@@ -402,8 +402,10 @@ class NotACountingSourceOfTheGate(unittest.TestCase):
     def test_the_gate_does_not_read_these_rows(self):
         _ls()
         src = (BACKEND / "lib" / "plan_search.py").read_text(encoding="utf-8")
-        self.assertNotIn("plan_legend_symbols", src)
-        self.assertNotIn("legend_symbol", src)
+        # word-bounded: the module, and the basis as a whole word (not as a
+        # piece of some other identifier)
+        self.assertNotRegex(src, r"plan_legend_symbols")
+        self.assertNotRegex(src, r"legend_symbol")
 
     def test_the_rows_say_sheet_scope_and_carry_every_position(self):
         m = _ls("legend_count_rows", "count_sheet")

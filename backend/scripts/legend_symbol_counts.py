@@ -29,6 +29,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import plan_legend_symbols as pls  # noqa: E402
 from lib.plan_page import PlanPage  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from probe_helpers import require_fields  # noqa: E402
+
 
 def pages_arg(s: str):
     out = []
@@ -57,6 +60,11 @@ def main(argv=None) -> int:
     for n in pages_arg(a.pages):
         page = PlanPage(a.pdf, n)
         res = pls.count_sheet(page, extra)
+        # the fields counted below are the module's own result keys; say so
+        require_fields([res], "legend_boxes", "objects", "rows")
+        counted = [r for r in res["rows"] if "refused" not in r]
+        if counted:
+            require_fields(counted, "matches", "near", "twice")
         print(f"== {Path(a.pdf).name} p{n}: {len(res['legend_boxes'])} legend(s), "
               f"{res['objects']} objects")
         for r in res["rows"]:
