@@ -3945,6 +3945,58 @@ def states_a_count(clause: str) -> bool:
     return False
 
 
+# ── A CEILING'S HEIGHT IS NAMED AS ONE ────────────────────────────────────
+#
+# Measured 2026-10-28 on this rule: 0 claims that SAY "ceiling height" bound
+# a printed value, but 204 that state one in other words did - "Ceilings are
+# 5/8" high." on A-302.00's "1 HOUR FIRE RATED CEILING W/ ONE LAYER OF 5/8"
+# GYPSUM BOARD", "The first floor has a 8 ceiling." on Z-001.01's zoning
+# table (which names FIRST FLOOR). Words after the value are not required
+# (ruling 6: "The parapet is 42" high." binds on 42" PARAPET), so HIGH and
+# the trailing CEILING were never asked of the record. The drawings print no
+# ceiling height at all.
+#
+# So, narrowly (coordinator's rule 2026-10-28, under Roy's condition (b)): a
+# clause that names a ceiling AND says a height - anywhere in it, before or
+# after the value - or puts its value directly before the ceiling ("a 9'
+# ceiling") is a CEILING-HEIGHT clause. Its subject is {ceiling, height}, in
+# whatever order it says them, plus every other word before its value (ruling
+# 6, unchanged). It binds only on a record part naming a ceiling and a height
+# where the value is. "The ceiling is 9'." says no height and is left as it
+# is. No other trailing word becomes a subject.
+#
+# THE WORDS MIRROR lib/plan_floor_to_floor.py (#900, stacked on this branch,
+# so not imported): _CEILING and _HEIGHT as #900 spells them; a claim may
+# also say TALL or "floor to ceiling". #900 reconciles when it merges this.
+_CEILING_WORD = re.compile(r"(?<![A-Za-z])(?:ceilings?|clgs?\.?)(?![A-Za-z])", re.I)
+_HEIGHT_WORD = re.compile(r"(?<![A-Za-z])(?:heights?|hights?|hgt\.?|ht\.?|high|clear(?:ance)?|"
+                          r"a\.?\s?f\.?\s?f\.?)(?![A-Za-z])", re.I)
+_HEIGHT_SAID = re.compile(r"(?<![A-Za-z])(?:tall|floor[\s\-]*to[\s\-]*ceiling)(?![A-Za-z])", re.I)
+#: A value directly before the ceiling: "a 9' ceiling", "a 9'-0" CLG", "a 8 ceiling".
+_VALUE_CEILING = re.compile(r"[\d'\"′″]\s*(?:ceilings?|clgs?\.?)(?![A-Za-z])", re.I)
+
+
+def is_ceiling_height_clause(clause: str) -> bool:
+    """Does the clause state a ceiling's height: it names a ceiling and says a
+    height, or puts its value directly before the ceiling?"""
+    c = clause or ""
+    if not _CEILING_WORD.search(c):
+        return False
+    return bool(_HEIGHT_WORD.search(c) or _HEIGHT_SAID.search(c) or _VALUE_CEILING.search(c))
+
+
+def _without_ceiling_height(text: str) -> str:
+    """`text` less the words the {ceiling, height} subject already stands for."""
+    for rx in (_HEIGHT_SAID, _CEILING_WORD, _HEIGHT_WORD):
+        text = rx.sub(" ", text)
+    return text
+
+
+def _names_ceiling_height(naming: str) -> bool:
+    """A record part naming a ceiling and a height where its value is."""
+    return bool(_CEILING_WORD.search(naming or "") and _HEIGHT_WORD.search(naming or ""))
+
+
 def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
                    citations: Sequence[str],
                    aliases: Optional[Dict[str, Dict[str, List[str]]]] = None
@@ -3963,15 +4015,23 @@ def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
     nums = [(v, sp) for v, sp in nums if v]
     if not found and not nums:
         return []
-    subject = _claim_subject(flat, [f.span for f in found] + [sp for _, sp in nums])
+    spans = [f.span for f in found] + [sp for _, sp in nums]
+    subject = _claim_subject(flat, spans)
+    # A CEILING-HEIGHT CLAUSE: {ceiling, height} plus the other words before
+    # its value, named together where the value is.
+    ceiling = is_ceiling_height_clause(masked)
+    if ceiling:
+        subject = search_terms(_without_ceiling_height(flat[:min(s for s, _ in spans)]))
     named: List[List[str]] = []
-    if subject:
+    if subject or ceiling:
         for r in records or []:
             if _vouches_for_nothing(r):
                 continue
             table = (aliases or {}).get(str(r.get("file_id") or ""))
             for texts, naming in value_parts(r):
-                if names_subject(naming, subject, table):
+                if ceiling and not _names_ceiling_height(naming):
+                    continue
+                if (not subject) or names_subject(naming, subject, table):
                     named.append(texts)
     bad = [f.text.strip() for f in found
            if not any(_dims.supported(f, _dims.evidence(t)) for t in named)]

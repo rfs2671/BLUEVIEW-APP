@@ -220,10 +220,15 @@ class Ruling7AVisionTableNamesNothing(unittest.TestCase):
     file (aliases); a returned record's grid never lends one."""
 
     def test_a_vision_abbreviations_grid_among_the_records_names_nothing(self):
-        recs = [M001, rec(sheet_number="M-101.00", file_id="MH", quote="8'-0\" CLG HGT")]
-        self.assertFalse(gate("ceiling height: 8'-0\".", recs))
-        self.assertFalse(gate("ceiling height: 8'-0\".", recs, aliases={}))
-        self.assertTrue(gate("CLG HGT: 8'-0\".", recs))
+        # (CLG and HGT name a ceiling height through the ceiling-height rule's
+        # own words, mirrored from #900 - not through this grid. So the pin
+        # uses rows the grid alone could lend: GA = GAUGE, DXF = ROOM.)
+        recs = [M001, rec(sheet_number="M-101.00", file_id="MH", quote="STUDS 20 GA"),
+                rec(sheet_number="M-102.00", file_id="MH", quote="DXF 9")]
+        self.assertFalse(gate("stud gauge: 20.", recs))
+        self.assertFalse(gate("stud gauge: 20.", recs, aliases={}))
+        self.assertFalse(gate("room: 9.", recs))
+        self.assertTrue(gate("stud ga: 20.", recs))
 
     def test_the_text_layer_reader_reads_no_vision_grid(self):
         # A grid's quote is not a text layer's alternating lines.
@@ -324,6 +329,52 @@ class ACountNeverBindsThroughTheValuePath(unittest.TestCase):
             self.assertTrue(states(c), c)
         for v in values:
             self.assertFalse(states(v), v)
+
+
+FIRE_CEILING = [rec(sheet_number="A-302.00",
+                    quote="1 HOUR FIRE RATED CEILING W/ ONE LAYER OF 5/8\" GYPSUM BOARD")]
+CLG_HT = [rec(sheet_number="A-101.00", quote="FIRST FLOOR CLG HT 9'-0\"")]
+
+
+class ACeilingsHeightIsNamedAsOne(unittest.TestCase):
+    """Condition (b), 2026-10-28: a clause naming a ceiling and saying a
+    height - before or after the value - or putting its value directly before
+    the ceiling, is about {ceiling, height}, and binds only where a record
+    names both. The drawings print no ceiling height."""
+
+    def test_a_height_said_after_the_value_is_asked_of_the_record(self):
+        for t in ("Ceilings are 5/8\" high.", "The ceilings are 5/8\" AFF.",
+                  "The ceiling is 5/8\" tall.", "The ceiling is 5/8\" high.",
+                  "Floor to ceiling: 5/8\".", "The ceiling height is 5/8\"."):
+            self.assertFalse(gate(t, FIRE_CEILING), t)
+
+    def test_a_value_directly_before_the_ceiling_is_its_height(self):
+        self.assertFalse(gate("The first floor has a 8 ceiling.", [ZONING]))
+        self.assertFalse(gate("The first floor is 8 floor to ceiling.", [ZONING]))
+        self.assertFalse(gate("A 5/8\" ceiling.", FIRE_CEILING))
+
+    def test_a_record_naming_a_ceiling_and_a_height_binds_it(self):
+        self.assertTrue(gate("A 9'-0\" ceiling.", CLG_HT))
+        self.assertTrue(gate("The first floor has a 9'-0\" ceiling.", CLG_HT))
+        self.assertTrue(gate("The first floor ceiling height is 9'-0\".", CLG_HT))
+        self.assertTrue(gate("Ceilings are 9'-0\" high.", CLG_HT))
+        # The words before the value are still the subject's (ruling 6).
+        self.assertFalse(gate("The second floor has a 9'-0\" ceiling.", CLG_HT))
+
+    def test_what_is_left_as_it_was(self):
+        # No height said: not a ceiling-height clause (open for Roy).
+        self.assertTrue(gate("The ceiling is 5/8\".", FIRE_CEILING))
+        # Ruling 6's own example: HIGH after a non-ceiling subject is not required.
+        self.assertTrue(gate("The parapet is 42\" high.", PARAPET))
+
+    def test_which_clauses_state_a_ceiling_height(self):
+        says = getattr(ps, "is_ceiling_height_clause", lambda _t: False)
+        for t in ("Ceilings are 9' high.", "The ceiling height is 9'.", "A 9' ceiling.",
+                  "The first floor has a 9'-0\" CLG.", "9' AFF to the ceiling.",
+                  "The ceiling is 9' tall.", "9' floor-to-ceiling."):
+            self.assertTrue(says(t), t)
+        for t in ("The ceiling is 9'.", "The parapet is 42\" high.", "1/2\" metal on the ceiling."):
+            self.assertFalse(says(t), t)
 
 
 class TheEvalStatesAnAttributeOfItsSubject(unittest.TestCase):
