@@ -224,7 +224,7 @@
         ],
         "located_render": [
           "RD-1 2 + RD-2 2",
-          "located on P-206.00; no schedule lists them"
+          "located on P-206.00; no schedule prints their quantity"
         ]
       },
       "truth": {

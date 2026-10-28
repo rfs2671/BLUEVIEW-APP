@@ -1659,11 +1659,15 @@ def glyph_census(kind: str, project_id: str, page_ids: Sequence[str], count: int
                  qty: Optional[Dict[str, str]] = None,
                  track: Optional[str] = None,
                  plan_only: Optional[Dict[str, Any]] = None,
-                 scope: Optional[str] = None) -> Dict[str, Any]:
+                 scope: Optional[str] = None,
+                 reads: Optional[Dict[str, Sequence[str]]] = None) -> Dict[str, Any]:
     """What the database said, at question time, about one filter - and, for
     a family, what its schedule's QTY column prints per tag (`qty`, read by
     schedule_quantities), so a building total can be checked against it.
-    One per drawing track when the rows carry one (`track`)."""
+    One per drawing track when the rows carry one (`track`); with `reads`,
+    the pages and sheet numbers that track's pass reads
+    (server._glyph_track_pages), so a track that does not read a sheet is
+    known not to (_unread_by_other_tracks)."""
     out = {"record_type": GLYPH_CENSUS, "kind": kind,
            "project_id": str(project_id), "page_ids": sorted(map(str, page_ids)),
            "family": family, "tags": sorted(tags), "count": int(count),
@@ -1677,7 +1681,10 @@ def glyph_census(kind: str, project_id: str, page_ids: Sequence[str], count: int
         # set said about it AT QUESTION TIME - which details and notes name
         # it, each tag's own words, and any figure a note prints for a tag.
         out["plan_only"] = {k: plan_only.get(k) for k in
-                            ("named_by", "tag_words", "printed", "object")}
+                            ("named_by", "tag_words", "printed", "also", "object")}
+    if reads is not None:
+        out["reads"] = {"pages": sorted(map(str, reads.get("pages") or ())),
+                        "sheets": sorted(map(str, reads.get("sheets") or ()))}
     return out
 
 
@@ -1817,21 +1824,27 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
     censuses = [r for r in records or [] if r.get("record_type") == GLYPH_CENSUS]
     ref_c = [c for c in censuses if c.get("kind") == "refusals"]
     row_tracks = {_row_track(r) for r in rows}
-    if any(isinstance(c.get("plan_only"), dict) for c in censuses):
-        # beside a plan-only family, one track's rows and a census per track
-        # (_plan_only_censuses): the other tracks' refusals must be none too
+    fam_c: Dict[str, List[Dict[str, Any]]] = {}
+    for c in censuses:
+        if c.get("kind") == "family" and c.get("family"):
+            fam_c.setdefault(c["family"], []).append(c)
+    unread = {n for n, cs in fam_c.items()
+              if len(_unread_by_other_tracks(cs, rows, row_tracks)) < len(cs)}
+    if any(isinstance(c.get("plan_only"), dict) for c in censuses) or unread:
+        # beside a plan-only family, or a family whose sheets the other
+        # tracks do not read, one track's rows and a census per track
+        # (_plan_only_censuses, _unread_by_other_tracks): the other tracks'
+        # refusals must be none too
         ref_c = _one_track(ref_c, row_tracks)
     refused = [r for r in rows if _is_refusal(r)]
     refusals_complete = (len(ref_c) == 1 and sum(
         1 for r in rows if glyph_in_census(r, ref_c[0])) == ref_c[0].get("count"))
 
-    fam_c: Dict[str, List[Dict[str, Any]]] = {}
-    for c in censuses:
-        if c.get("kind") == "family" and c.get("family"):
-            fam_c.setdefault(c["family"], []).append(c)
     families: Dict[str, GlyphFamily] = {}
     for name, cs in fam_c.items():
         cs = _plan_only_censuses(cs, row_tracks)
+        if name in unread:
+            cs = _unread_by_other_tracks(cs, rows, row_tracks)
         c = cs[0]
         mine = [r for r in rows if glyph_in_census(r, c)]
         located = [r for r in mine if not _is_refusal(r)]
@@ -2493,7 +2506,7 @@ def _clause_subjects(clause: str, book: GlyphBook
     # with a schedule's name - "roof" is a level, and "the roof has 2
     # exhaust fans" must stay the exhaust-fan schedule's (_plan_only_subjects).
     plan = [s for fam in book.families.values() if fam.plan_only is not None
-            for s in _plan_only_subjects(words, fam)]
+            for s in _plan_only_subjects(words, fam, clause)]
     sched = [n for n, f in book.families.items() if f.plan_only is None]
     hits = {name: family_words(name) & words for name in sched}
     hits = {n: h for n, h in hits.items() if h}
@@ -2506,24 +2519,45 @@ def _clause_subjects(clause: str, book: GlyphBook
     return [(fam, list(fam.tags))] + plan
 
 
-def _plan_only_subjects(words: set, fam: GlyphFamily) -> List[Tuple[GlyphFamily, List[str]]]:
+def _plan_only_subjects(words: set, fam: GlyphFamily,
+                        clause: str = "") -> List[Tuple[GlyphFamily, List[str]]]:
     """What a clause's words name of a plan-only family: the tags whose own
-    words it uses ("overflow" -> RD-2), each its own subject; else, when it
-    names the object ("roof drains"), the family as ONE subject - a combined
-    total, which _book_values refuses. A clause without the object's noun
-    names none of it ("the roof"); nor does one naming only the noun
-    ("floor drains")."""
+    words it uses ("overflow" -> RD-2), or a name the set's own note gives
+    the tag (ruling 15, 2026-10-28: "J.R. Smith", "detention" -> RD-1; only
+    names lib.plan_only.also_names found printed), each its own subject;
+    else, when it names the object ("roof drains"), the family as ONE
+    subject - a combined total, which _book_values refuses. A clause without
+    the object's noun names none of it ("the roof"); nor does one naming
+    only the noun ("floor drains")."""
+    from lib import plan_only as _po
     po = fam.plan_only or {}
     obj = [_stem(w) for w in re.findall(r"[A-Za-z]{2,}", str(po.get("object") or ""))]
     if not obj or obj[-1] not in words:
         return []
+    also = po.get("also") if isinstance(po.get("also"), dict) else {}
     own = [t for t in fam.tags
-           if {_stem(w) for w in ((po.get("tag_words") or {}).get(t) or [])} & words]
+           if {_stem(w) for w in ((po.get("tag_words") or {}).get(t) or [])} & words
+           or any(_po.name_pattern(a).search(clause or "") for a in (also.get(t) or []))]
     if own:
         return [(fam, [t]) for t in own]
     if set(obj) <= words:
         return [(fam, list(fam.tags))]
     return []
+
+
+def _joined_also_names(text: str, records: Sequence[Dict[str, Any]]) -> str:
+    """`text` with each printed other name of a plan-only family's tag
+    (census plan_only.also, ruling 15) written without its dots - 'J.R.
+    Smith' -> 'JR Smith' - so the clause splitter does not cut it at 'J.R.'
+    and leave the figure in a clause that names nothing."""
+    from lib import plan_only as _po
+    names = {a for c in records or [] if c.get("record_type") == GLYPH_CENSUS
+             and isinstance(c.get("plan_only"), dict)
+             and isinstance((c["plan_only"] or {}).get("also"), dict)
+             for al in c["plan_only"]["also"].values() for a in al or []}
+    for a in sorted(names, key=len, reverse=True):
+        text = _po.name_pattern(a).sub(lambda m: m.group(0).replace(".", ""), text)
+    return text
 
 
 def _plan_only_censuses(cs: List[Dict[str, Any]], row_tracks: set) -> List[Dict[str, Any]]:
@@ -2536,12 +2570,54 @@ def _plan_only_censuses(cs: List[Dict[str, Any]], row_tracks: set) -> List[Dict[
     censuses, and refuses.
 
     (Found 2026-10-26 emulating the rebuild against production. A schedule
-    family on one track has the same shape - asked about SAF-1, M-106.00's
-    rows are the filed track's and "The bulkhead has 1 SAF-1." refuses on
-    main - and is left as it is: that is a binding change for a ruling.)"""
+    family on one track has the same shape - SAF-1 on M-106.00 - and is
+    ruled apart: _unread_by_other_tracks, item 18.)"""
     if not all(isinstance(c.get("plan_only"), dict) for c in cs):
         return cs
     return _one_track(cs, row_tracks)
+
+
+def _unread_by_other_tracks(cs: List[Dict[str, Any]], rows: Sequence[Dict[str, Any]],
+                            row_tracks: set) -> List[Dict[str, Any]]:
+    """A TRACK THAT DOES NOT READ A SHEET DOES NOT VETO THAT SHEET'S FAMILY
+    TOTAL (ruling 2026-10-24; item 18, 2026-10-28: "SAF-1 bulkhead refusal
+    across sets").
+
+    M-106.00, the bulkhead, has no A-106 on either track, so only the filed
+    track's pass reads it (server._glyph_track_pages) and SAF-1's one row is
+    the filed track's. Asked about SAF-1, the rows in hand are that one
+    track's and the census is per track - the owner's says 0 - and read as
+    one book that was "two censuses for one schedule": "The bulkhead has 1
+    SAF-1." refused (measured on production 2026-10-28). glyph_books already
+    lets such a track stand aside when the rows of both tracks are in hand.
+
+    Here the rows' own track's census stands ONLY when every other track's
+    census of the family counted none AND says what that track reads
+    (`reads`, glyph_census) AND that track reads none of the pages or sheet
+    numbers the family's rows lie on. A track that reads the sheet and
+    counts none is a difference between the sets, not a gap - it still
+    refuses; so does a census that does not say what its track reads, and a
+    family with no rows in hand (nothing to not read). Else all of them."""
+    if len(cs) < 2 or len(row_tracks) != 1:
+        return cs
+    (t,) = row_tracks
+    own = [c for c in cs if c.get("track") == t]
+    if len(own) != 1:
+        return cs
+    mine = [r for r in rows if glyph_in_census(r, own[0])]
+    if not mine:
+        return cs
+    for c in cs:
+        if c is own[0]:
+            continue
+        reads = c.get("reads")
+        if c.get("count") != 0 or not isinstance(reads, dict):
+            return cs
+        pages, sheets = set(reads.get("pages") or ()), set(reads.get("sheets") or ())
+        if any(str(r.get("page_id")) in pages or not r.get("sheet_number")
+               or str(r.get("sheet_number")) in sheets for r in mine):
+            return cs
+    return own
 
 
 def _one_track(cs: List[Dict[str, Any]], row_tracks: set) -> List[Dict[str, Any]]:
@@ -2560,6 +2636,38 @@ def _without_object(clause: str, fam: GlyphFamily) -> str:
     from lib import plan_only as _po
     obj = str((fam.plan_only or {}).get("object") or "").split()
     return _po.object_pattern(obj).sub(" ", clause) if obj else clause
+
+
+def _plan_level(fam: GlyphFamily) -> Optional[Any]:
+    """The level a plan-only family's plan names in its own printed title
+    (P-206.00 ROOF SANITARY & STORM PLAN: 'roof'), or None - when its rows
+    are on no plan, on more than one, or the title names no level."""
+    levels = {_title_level(r.get("sheet_title")) for r in fam.rows}
+    sheets = {r.get("sheet_number") for r in fam.rows}
+    return next(iter(levels)) if len(levels) == 1 and len(sheets) == 1 else None
+
+
+def _ordinal_name(n: int) -> str:
+    return next((w for w, v in _ORDINALS.items() if v == n), f"{n}th")
+
+
+def _without_plan_level(clause: str, fam: GlyphFamily) -> str:
+    """THE PLAN'S OWN LEVEL IS NO SCOPE (ruling 14, 2026-10-28: "Can 'the
+    roof' name where RD-1 and RD-2 are?" - "yes, only the level the plan's
+    title names"). The clause less every phrase naming the level the
+    family's plan title prints: "The roof has 2 RD-1." is the sheet-scope
+    figure, located on P-206.00. Any other level stays in the clause, and
+    _sheet_scope_only refuses it ("the fourth floor has 2 RD-1")."""
+    lvl = _plan_level(fam)
+    if lvl is None:
+        return clause
+    if isinstance(lvl, int):
+        def ordinal(m):
+            w = m.group(1).lower()
+            n = _ORDINALS.get(w) or int(re.match(r"\d+", w).group(0))
+            return " " if n == lvl else m.group(0)
+        return _ORDINAL_FLOOR.sub(ordinal, clause)
+    return _NAMED_LEVEL.sub(lambda m: " " if m.group(1).lower() == lvl else m.group(0), clause)
 
 
 def _sheet_scope_only(clause: str, book: GlyphBook) -> bool:
@@ -2666,8 +2774,10 @@ def _book_values(clause: str, book: GlyphBook, zero: bool = False) -> set:
             # total refuses, and so does any floor, unit or per-unit figure -
             # the family is located on its plan and placed nowhere. Its
             # object's name is not a scope: the ROOF of "overflow roof
-            # drains" names no level.
-            if len(tags) == 1 and _sheet_scope_only(_without_object(clause, fam), book):
+            # drains" names no level. Nor is the level its plan's own title
+            # names (ruling 14, 2026-10-28): "the roof has 2 RD-1".
+            if len(tags) == 1 and _sheet_scope_only(
+                    _without_plan_level(_without_object(clause, fam), fam), book):
                 v = _plan_only_count(book, fam, tags[0])
                 if v is not None:
                     out.add(str(v))
@@ -3325,15 +3435,28 @@ def _render_plan_only(book: GlyphBook, fam: GlyphFamily) -> List[str]:
     from lib import plan_only as _po
     po = fam.plan_only or {}
     words = po.get("tag_words") or {}
-    tags = ", ".join(f"{t} ({' '.join(words[t])})" if words.get(t) else t for t in fam.tags)
+    also = po.get("also") if isinstance(po.get("also"), dict) else {}
+
+    def _tag(t):
+        # ruling 15: the names the set's own note gives the tag, as printed
+        said = [" ".join(words[t])] if words.get(t) else []
+        if also.get(t):
+            said.append("also " + ", ".join(f"'{a}'" for a in also[t]) + ", as its note prints")
+        return f"{t} ({'; '.join(said)})" if said else t
+    tags = ", ".join(_tag(t) for t in fam.tags)
     named = "; ".join(f"{n.get('where') or n.get('sheet') or n.get('file')} '{n.get('quote')}'"
                       for n in po.get("named_by") or [])
     if fam.why:
         return [f"{fam.name} ({tags}) - plan-only: NOT COUNTED - {fam.why}. "
                 f"State no count of these."]
     lab = _po.label(r.get("sheet_number") for r in fam.rows)
+    lvl = _plan_level(fam)
+    # ruling 14: the one level a figure may name is its plan title's own
+    where = (f" - for no floor or unit; the only level it may be said of is the "
+             f"{lvl if isinstance(lvl, str) else _ordinal_name(lvl) + ' floor'} (its plan's title)"
+             if lvl is not None else " - for no floor, level or unit")
     lines = [f"{fam.name} ({tags}) - plan-only, {lab}. Named in the set by: {named}. "
-             f"State each tag's figure on its own; never one total of {fam.name.lower()}:"]
+             f"State each tag's figure on its own{where}; never one total of {fam.name.lower()}:"]
     if _building_refused(book):
         lines.append(f"- NOT AVAILABLE - {len(_blocking_refusals(book))} sheet(s) that can "
                      f"carry located symbols were not counted")
@@ -3403,6 +3526,9 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     # is not a clause break (_areas.join_thousands). Without them, unchanged.
     if any(_areas.is_area_record(r) for r in records or []):
         text = _areas.join_thousands(text)
+    # "J.R. Smith" is one name (ruling 15), not a clause break at "J.R.":
+    # only with a plan-only family's printed names in hand. Without, unchanged.
+    text = _joined_also_names(text, records)
     segments = [seg for c in _clauses(_undated_set_names(text))
                 for seg in reading_segments(c, obooks)]
     for clause, spec in segments:

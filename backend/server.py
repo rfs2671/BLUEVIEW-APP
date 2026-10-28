@@ -68786,6 +68786,20 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                      await db[PLAN_RECORDS].find(
                          {"project_id": pid, "record_type": "glyph"},
                          {"payload.track": 1}).to_list(GLYPH_EVIDENCE_MAX)} - {None}) or [None]
+    # WHAT EACH TRACK READS (item 18, 2026-10-28): a track whose pass does
+    # not read a sheet does not veto that sheet's family total (SAF-1 on
+    # M-106.00, read by the filed track alone). Unread here, no census says
+    # it, and the gate refuses as before (plan_search._unread_by_other_tracks).
+    reads: Dict[Optional[str], dict] = {}
+    if want and len(tracks) > 1:
+        try:
+            for t, ps in (await _glyph_pages(pid))[0]:
+                reads[t] = {"pages": [str(p["_id"]) for p in ps],
+                            "sheets": sorted({str(p["sheet_number"]) for p in ps
+                                              if p.get("sheet_number")})}
+        except Exception as e:
+            logger.warning("glyph track reads unavailable for %s: %r", pid, e)
+            reads = {}
     checks = []
     for track in tracks:
         if want:
@@ -68836,7 +68850,9 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                                                track=track,
                                                plan_only=(plan_only.get(name)
                                                           if scope is None else None),
-                                               scope=scope))
+                                               scope=scope,
+                                               reads=(reads.get(track) if kind == "family"
+                                                      and scope is None else None)))
     return rows + census + health
 
 
