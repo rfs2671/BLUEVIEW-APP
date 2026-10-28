@@ -70072,7 +70072,7 @@ async def _check_one_sheet(project_id: str, user_words: str,
 
 
 def gate_plan_answer(text: str, records: List[dict], subject: str = "",
-                     intent: str = "") -> Tuple[str, str]:
+                     intent: str = "", sources: Any = ()) -> Tuple[str, str]:
     """(text_to_send, outcome). THE HARD GATE.
 
     Every number and dimension in a composed answer must appear in a record
@@ -70110,8 +70110,10 @@ def gate_plan_answer(text: str, records: List[dict], subject: str = "",
                 subject[:40], (text or "")[:200])
             return plan_search.NOT_FOUND, "no_records_refused"
         return text, "no_records"
+    # `sources` (plan_sources.source_of rows for the records' files): a file
+    # name or set label the answer cites is a citation, not a figure.
     grounded, unsupported = plan_search.answer_is_grounded(
-        text, records, intent=intent)
+        text, records, intent=intent, sources=sources)
     leaked = plan_search.contains_label(text, records)
     if grounded and not leaked:
         return text, "grounded"
@@ -70154,7 +70156,13 @@ async def gate_and_warrant(
     # caller that has no project (the suite, most tests) gets the gate alone
     # and identical behaviour to before.
     """
-    sent, outcome = gate_plan_answer(text, records, subject, intent=intent)
+    # The files the records came from, so the file names and set labels the
+    # model was shown (#892) are read as citations (plan_search.
+    # strip_source_citations). No project: the records' own file_name only.
+    sources = (list((await _plan_file_sources(
+        project_id, [r.get("file_id") for r in records or []])).values())
+        if project_id else [])
+    sent, outcome = gate_plan_answer(text, records, subject, intent=intent, sources=sources)
     if not project_id:
         return sent, outcome
     # TRIGGERED ON `classify_reply`, THE SAME INSTRUMENT THE BENCHMARK COUNTS

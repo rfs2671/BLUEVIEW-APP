@@ -1966,6 +1966,88 @@ def _undated_set_names(text: str) -> str:
     return text
 
 
+# ── A FILE'S NAME AND A SET'S LABEL ARE CITATIONS, NEVER FIGURES ──────────
+#
+# #892 shows the model each record's file and drawing set ("A-302 (owner's
+# set) · 588 Boyland Arch 7.2.pdf p3"), and a well-cited answer repeats them.
+# The gate read their digits as claims - "7.2" and "588" were figures no
+# record vouched for - and refused correct answers (spatial session,
+# 2026-10-28). So, before any figure is read, every file name the evidence
+# carries is removed AS TEXT, and every set label becomes its set's bare
+# name (_SET_PLAIN, which _TRACK_CLAIM reads with the answer's own "per" /
+# "in" in front of it), so a claim naming a set still binds only against
+# that set's rows (_track_claim). A label replaced by a whole phrase left a
+# second "per" behind, which reads as a per-unit scope. Exactly as _citation_texts: their digits are
+# never whitelisted - "There are 588 PTAC units" must still bind on its own
+# - and a name with no letter in it is never removed (a file called "588"
+# names nothing a reader could tell from a count).
+#
+# WHAT IS REMOVED IS ONLY WHAT CANNOT BE PROSE. Removing words can move a
+# figure's scope ("4A has 9 WH-1" without "4A" is a building figure), so:
+# a file's whole name, ".pdf" and all; its name without ".pdf" only when it
+# is a file's kind of name - a letter, a digit, a space, 10+ characters
+# ("588 Boyland Mech 7.2"); and a set label only when it carries a digit
+# (only digits were ever the problem). "filed.pdf" never takes "filed" out
+# of "in the filed set".
+
+#: A set's bare name, for a label said in its place.
+_SET_PLAIN = {_FILED: "filed set", "post_co": "owner's set"}
+
+
+def _cited_name(v: Any) -> str:
+    v = re.sub(r"\s+", " ", str(v or "")).strip()
+    return v if len(v) >= 3 and re.search(r"[A-Za-z]", v) else ""
+
+
+def _file_name_forms(name: Any) -> List[str]:
+    """A file's name as an answer may write it: whole, without ".pdf", and
+    with its underscores as spaces."""
+    whole = _cited_name(name)
+    if not whole:
+        return []
+    out = {whole}
+    stem = re.sub(r"\.pdf$", "", whole, flags=re.I).strip()
+    for f in (stem, stem.replace("_", " ")):
+        if (len(f) >= 10 and " " in f and re.search(r"\d", f) and _cited_name(f)):
+            out.add(f)
+    return sorted(out)
+
+
+def source_citations(records: Sequence[Dict[str, Any]],
+                     sources: Iterable[Dict[str, Any]] = ()) -> Tuple[List[str], List[Tuple[str, str]]]:
+    """(file-name forms, [(set label, its track)]), longest first. From each
+    record's own file_name and arch set label, and from `sources`
+    (plan_sources.source_of rows: file_name, track, label)."""
+    names: set = set()
+    labels: Dict[str, str] = {}
+    for r in records or []:
+        names.update(_file_name_forms(r.get("file_name")))
+        a = ((r.get("payload") or {}).get("arch") or {}) if isinstance(r.get("payload"), dict) else {}
+        lab, tr = _cited_name(a.get("drawing_track_label")), a.get("drawing_track")
+        if lab and tr in _SET_PLAIN and re.search(r"\d", lab):
+            labels.setdefault(lab, tr)
+    for src in sources or []:
+        if not isinstance(src, dict):
+            continue
+        names.update(_file_name_forms(src.get("file_name")))
+        lab, tr = _cited_name(src.get("label")), src.get("track")
+        if lab and tr in _SET_PLAIN and re.search(r"\d", lab):
+            labels.setdefault(lab, tr)
+    return (sorted(names, key=len, reverse=True),
+            sorted(labels.items(), key=lambda kv: len(kv[0]), reverse=True))
+
+
+def strip_source_citations(text: str, records: Sequence[Dict[str, Any]],
+                           sources: Iterable[Dict[str, Any]] = ()) -> str:
+    """`text` with every set label said as its set's phrase and every file
+    name removed: what the gate reads figures from."""
+    names, labels = source_citations(records, sources)
+    for lab, tr in labels:
+        text = re.sub(_ALNUM_BEFORE + re.escape(lab) + _ALNUM_AFTER, " " + _SET_PLAIN[tr] + " ",
+                      text, flags=re.I)
+    return _strip_citations(text, names)
+
+
 def _track_claim(clause: str) -> Tuple[frozenset, str]:
     """(the drawing tracks the clause names, the clause without those names).
     A set's name is where a figure comes from, never a figure: its date is
@@ -3626,12 +3708,17 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
 
 
 def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
-                       intent: str = "") -> Tuple[bool, List[str]]:
+                       intent: str = "",
+                       sources: Iterable[Dict[str, Any]] = ()) -> Tuple[bool, List[str]]:
     """(ok, the numbers nothing returned can vouch for).
 
     A CHECK ON THE OUTPUT, not an instruction in a prompt. The model composes;
     this decides whether what it composed may be sent. A number with nothing
-    behind it is the worst failure this product has — it looks verified."""
+    behind it is the worst failure this product has — it looks verified.
+
+    `sources` (plan_sources.source_of rows for the records' files): their
+    file names and set labels are citations (strip_source_citations)."""
+    text = strip_source_citations(text or "", records, sources)
     # ── A DIMENSION IS ONE VALUE, NOT ITS DIGITS ───────────────────────────
     #
     # "The doors are 3'-5" X 7'-0"." passed with only 3'-0" X 7'-0" printed:
