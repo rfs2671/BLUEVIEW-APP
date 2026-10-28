@@ -153,6 +153,17 @@ class TheTimeline(unittest.TestCase):
                          ["Spray foam on 5th floor ceiling?", "?"])
         self.assertEqual(data["messages"][1]["answer"]["timing"]["first_send_ms"], 5300)
 
+    def test_the_json_names_whose_answer_each_outgoing_message_carries(self):
+        # b1 answers the 10:36 question but went out after the "?": under the
+        # first message it is mine and late, under the "?" it is someone else's.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "out.json")
+            self.run_script("--json", path)
+            data = json.load(open(path, encoding="utf-8"))
+        first, second = data["messages"]
+        self.assertEqual([(o["answers_mine"], o["late"]) for o in first["outbound"]], [(True, True)])
+        self.assertEqual([(o["answers_mine"], o["late"]) for o in second["outbound"]], [(False, False)])
+
     def test_nothing_is_written(self):
         _, db = self.run_script()
         for name in ("whatsapp_messages", "whatsapp_dm_answers", "users", "whatsapp_optins"):
