@@ -1132,6 +1132,22 @@ export const ownerAPI = {
     const r = await apiClient.get(`/api/owner/deleted/${kind}/${id}/preview`);
     return r.data;
   },
+
+  // ── Owner portal: the review queue (L6.4). Operator only, 404 otherwise.
+  reviewQueue: async (params) => {
+    const r = await apiClient.get('/api/owner/review-queue', { params });
+    return r.data;
+  },
+  reviewItem: async (id) => {
+    const r = await apiClient.get(`/api/owner/review-queue/${encodeURIComponent(id)}`);
+    return r.data;
+  },
+  reviewDecide: async (id, body) => {
+    const r = await apiClient.post(
+      `/api/owner/review-queue/${encodeURIComponent(id)}/decide`,
+      body);
+    return r.data;
+  },
 };
 
 /**
