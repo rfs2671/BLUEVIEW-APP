@@ -253,6 +253,18 @@ class OneWallOnlyAcrossAnExplainedJoint(unittest.TestCase):
         self.assertEqual(res["by_type"], {"P3": 5.0})
         self.assertEqual(res["untyped_lf"], 5.0)
 
+    def test_a_door_paths_strokes_elsewhere_do_not_open_a_gap(self):
+        # one CAD path, two doors far either side: its RECTANGLE spans the
+        # gap, no stroke of it is in the gap
+        left = h_wall(100, 100, 100 + 60 * Q, 4)
+        right = h_wall(100, 100 + 96 * Q, 100 + 156 * Q, 4)
+        d, w = tag("P3", 150, 160, leader_to=(150, 100 + 4 * Q))
+        far = {"layer": DOOR, "colour": None, "rect": (20, 90, 600, 140),
+               "items": [_seg(20, 90, 20, 140), _seg(600, 90, 600, 140)]}
+        res = build([left, right, d, far], [w], door=56.0)
+        self.assertEqual(res["by_type"], {"P3": 5.0})
+        self.assertEqual(res["untyped_lf"], 5.0)
+
     def test_a_t_junction_joins_and_its_square_is_counted_once(self):
         # a 6" wall broken where a 4" wall meets it from below
         top_l = h_wall(100, 100, 300, 6)
@@ -277,6 +289,22 @@ class ARunTaggedWithTwoTypesIsCutWhereTheTypeChanges(unittest.TestCase):
         res = build([a, b, stem, d1, d2], [w1, w2])
         self.assertEqual(len(typed(res, "P2")), 1)
         self.assertEqual(len(typed(res, "P1")), 1)
+        self.assertEqual(res["ambiguous_lf"], 0.0)
+
+    def test_an_untagged_piece_goes_with_the_tag_on_its_side_of_the_one_joint(self):
+        # P2 | junction | (untagged) - drafting gap - P1: the type changes at
+        # the junction, the only joint between the tags that is not a
+        # drafting gap, so the untagged middle is P1's
+        a = h_wall(100, 100, 200, 6)
+        b = h_wall(100, 209, 400, 6)
+        c = h_wall(100, 400.5, 600, 6)
+        stem = v_wall(200, 109, 300, 6)
+        d1, w1 = tag("P2", 150, 60, leader_to=(150, 100))
+        d2, w2 = tag("P1", 500, 60, leader_to=(500, 100))
+        res = build([a, b, c, stem, d1, d2], [w1, w2])
+        p1 = typed(res, "P1")
+        self.assertEqual(len(p1), 1)
+        self.assertEqual((p1[0]["from_pt"], p1[0]["to_pt"]), (209.0, 600.0))
         self.assertEqual(res["ambiguous_lf"], 0.0)
 
     def test_two_joints_between_them_refuse_the_middle(self):
@@ -379,9 +407,10 @@ class FiledSecondFloor(unittest.TestCase):
         self.assertEqual(p3v, [17.17, 17.17])
 
     def test_a_bedroom_wall_stops_at_its_door_and_never_crosses_the_stair(self):
-        # each bedroom's P3 wall runs 11'-2" from the W1 face to its door; a
-        # door object's whole-path rectangle once joined it to the far
-        # bedroom's, 29 feet away across the stair
+        # each bedroom's P3 wall runs 11'-2" from the W1 face to its door.
+        # A doorway joins two pieces only across a gap no wider than the
+        # widest scheduled door: unbounded, door strokes in the 29-foot gap
+        # across the stair joined it to the far bedroom's wall (measured)
         p3h = [w["lf"] for w in typed(self.r, "P3") if w["axis"] == "h"]
         self.assertEqual(p3h.count(11.17), 4, p3h)
         self.assertLess(max(p3h), 12)
@@ -401,6 +430,27 @@ class FiledSecondFloor(unittest.TestCase):
         rec = pw.reconcile({"A-101.00": self.r["types_on_plan"]}, table)
         self.assertEqual(rec["on_plans_not_in_table"], {})
         self.assertEqual(rec["matched"], ["P1", "P2", "P3", "P4", "W1", "W2"])
+
+
+class FiledFirstFloor(unittest.TestCase):
+    """AR 3.28.25 A-100.00 (page 11)."""
+
+    def test_where_a_side_wall_opens_at_the_corner_the_long_wall_runs_to_the_face(self):
+        # the right W1 begins below an opening at both corners, so each W2
+        # runs from the left W1's face to the building's: 70'-0" less ONE W1
+        # (10") = 69'-2". The corner square is read as the W2's end - and
+        # 0.3" hatch strokes read as faces would block that (69'-0").
+        r = _boyland("AR - 3.28.25.pdf", 11)
+        self.assertEqual([w["lf"] for w in typed(r, "W2")], [69.17, 69.17])
+
+    def test_the_stair_wall_is_cut_where_it_leaves_the_stair(self):
+        # one 6" wall line tagged P1 along the stair and P2 past it, top and
+        # bottom: cut at the one joint each side, nothing refused
+        r = _boyland("AR - 3.28.25.pdf", 11)
+        self.assertEqual(r["ambiguous_lf"], 0.0)
+        v6 = sorted((w["type"], w["lf"]) for w in r["walls"]
+                    if w["status"] == "typed" and w["axis"] == "v" and abs(w["center_pt"] - 1277.5) < 1)
+        self.assertEqual([t for t, _ in v6], ["P1", "P2", "P2"], v6)
 
 
 class OwnersThirdFloor(unittest.TestCase):
