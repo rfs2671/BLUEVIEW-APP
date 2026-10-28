@@ -31,6 +31,15 @@ only the claims that depend on what it names:
                           partner: its per-apartment placement is refused
                           (sheet-scope floor and building totals still bind -
                           ruling 2026-10-07; M-106.00 narrow, 2026-10-26).
+  drawn_on_removal_layer  (queue item 25, ruling 2026-10-28) a door/window
+                          tag whose drawn opening is on a layer named TO
+                          REMOVE: the nearest drawn object to the tag, with
+                          that layer's ink offered beside the door/window
+                          layers', is the removal layer's. One item per
+                          (sheet, track, layer), naming the tags. A FLAG,
+                          NOT A BINDING: it refuses nothing, and no glyph row
+                          and no gate reading changes with it
+                          (lib.plan_openings.removal_layer_health).
 
 Measured 2026-10-26 on 588 Boyland: the reference rule finds exactly the
 seven real missing sheets (S-204, S-400, FO-101, FO-202, A-600, EN-003,
@@ -52,6 +61,7 @@ MENTIONED_UNLOCATED = "mentioned_unlocated"
 MISSING_REFERENCED_SHEET = "missing_referenced_sheet"
 DUPLICATE_SHEET_NUMBER = "duplicate_sheet_number"
 MECHANICAL_WITHOUT_ARCHITECTURAL = "mechanical_without_architectural"
+DRAWN_ON_REMOVAL_LAYER = "drawn_on_removal_layer"
 
 NOT_RECONCILED = "schedule present, no identifier column, not reconciled"
 

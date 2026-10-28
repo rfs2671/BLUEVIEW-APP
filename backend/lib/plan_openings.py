@@ -39,6 +39,16 @@ MEASURED ON 588 BOYLAND, 2026-10-26 (bv-worktrees/L2_doors_measure.md):
   counts on its floor (it is read, and names its type), its placement is
   refused.
 
+  DRAWN ON A LAYER NAMED TO REMOVE (queue item 25, ruling 2026-10-28). The
+  owner's A-100.00 draws 1A's post-CO bedroom door F, closet G and lower W1
+  on `XR FLOOR PLANS|TO REMOVE`: offered that layer's ink beside A-Door /
+  A-Glaz, symbol_at_label picks the removal ink for exactly those three tags
+  (measured on every sheet of both tracks: TO REMOVE is on the owner's
+  A-100.00 - A-102.00 and A-104.00 only; on A-101/A-102 it is a bedroom
+  partition no tag reaches, and the mezzanine's carries no tag at all). Such
+  a tag is a SET-HEALTH FLAG (removal_layer_health), never a binding: the
+  rows are what they were.
+
   A SYMBOL NO TAG NAMES makes its floor incomplete. The owner's mezzanine
   draws four bath doors with no tag; a door of unknown type there may be any
   door type. Each is one UNREAD row of every door family (a window, of every
@@ -64,7 +74,9 @@ log = logging.getLogger(__name__)
 #: from the mechanical symbols' (plan_search.opening_books)
 KIND = "opening"
 #: payload.opening_version: what an opening row records. 1 (2026-10-26).
-OPENING_VERSION = 1
+#: 2 (2026-10-27, ruling 21): a plan whose membership of the set is not
+#: decided is READ, its rows marked with its question (lib.plan_set_questions).
+OPENING_VERSION = 2
 
 #: a schedule of doors or windows, by its printed name
 SCHEDULE_NAME = re.compile(r"\b(DOOR|WINDOW)S?\b.*\bSCHEDULE\b", re.I)
@@ -73,6 +85,11 @@ IDEN_LAYER = re.compile(r"(?i)(?:^|\|)A-(DOOR|WINDOW|GLAZ)-IDEN$")
 #: the opening-symbol layers: A-Door, A-Glaz (and A-GLAZ-SILL ...), never a
 #: text/annotation layer (plan_symbols.is_text_layer)
 SYMBOL_LAYER = re.compile(r"(?i)(?:^|\|)A-(DOOR|GLAZ)(?:-[A-Z0-9]+)*$")
+#: a layer whose name says its ink is to be removed (queue item 25). Only
+#: TO REMOVE until the operator rules on more: A-DEMO, A-STEP-DEMO and
+#: P-Pipe-Existing occur in the Boyland set but on no architectural plan
+#: (plumbing notes legends, a site-safety section).
+REMOVAL_LAYER = re.compile(r"(?i)(?:^|\|)TO REMOVE$")
 #: a tag as these schedules print it: A, F, D1, W3
 TAG_SHAPE = re.compile(r"^[A-Z]{1,2}\d{0,2}$")
 _PANEL_HEAD = re.compile(r"^(?:NUMBER\s+([A-Z]{1,2}\d{0,2})|([A-Z]{1,2}\d{0,2})\s+NUMBER)$")
@@ -305,6 +322,105 @@ def floor_records(page, fams: Dict[str, Dict[str, Any]], units=None,
             "untagged": untagged, "unreadable": unreadable}
 
 
+def removal_layer_tags(page, fams: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """[{"text", "at", "box", "layer", "drawn_at"}] - each schedule tag whose
+    drawn opening is on a REMOVAL_LAYER: symbol_at_label, offered that
+    layer's ink beside the door/window layers' (the same search floor_records
+    runs), seeds on the removal ink. A tag the removal ink merely sits near
+    - a partition, the swing of a door that is its own - is not one: the
+    nearest drawn object decides. Reads the page; changes nothing."""
+    from lib.plan_sheet import _pts, symbol_objects
+
+    family_of = {t for f in fams.values() for t in f.get("tags") or []}
+    objs = symbol_objects(page)
+    rm = [o for o in objs if o.get("points") and REMOVAL_LAYER.search(o.get("layer") or "")]
+    if not rm:
+        return []
+    sym = [o for o in objs if o.get("points") and _symbol_kind(o.get("layer"))]
+    rm_boxes = {tuple(psym._bbox(o["points"])): o["layer"] for o in rm}
+    sym_boxes = {tuple(psym._bbox(o["points"])) for o in sym}
+    out = []
+    for t in read_tags(page):
+        if t["legend"] or t["text"] not in family_of:
+            continue
+        rep: Dict[str, Any] = {}
+        pos, _n = psym.symbol_at_label((t["x"], t["y"]), sym + rm, _pts(LABEL_SEARCH_IN),
+                                       _pts(SYMBOL_SPAN_IN), label_boxes=[t["box"]],
+                                       report=rep)
+        seed = tuple(rep["seed"]) if rep.get("seed") is not None else None
+        if pos is None or seed not in rm_boxes or seed in sym_boxes:
+            continue
+        out.append({"text": t["text"], "at": (t["x"], t["y"]), "box": t["box"],
+                    "layer": rm_boxes[seed], "drawn_at": tuple(pos)})
+    return out
+
+
+def removal_layer_health(page, sheet: str, fams: Dict[str, Dict[str, Any]], *,
+                         track: str, label: Optional[str] = None, units=None,
+                         records: Optional[Dict[str, List[Dict[str, Any]]]] = None
+                         ) -> List[Dict[str, Any]]:
+    """One set-health item (lib.plan_set_health.DRAWN_ON_REMOVAL_LAYER) per
+    removal layer of one plan whose ink is the drawn opening of a tag:
+
+      "A-100.00 (the owner's post-CO set, 6/9/26): 1A's F, G and a W1 are
+       drawn on layer TO REMOVE; their symbols are not on the door/window
+       layers"
+
+    The unit is the membership map's for the removal ink (`units`, a
+    plan_takeoff.Units, when the floor has one). "a W1" when the unit has
+    more of that tag than the removal layer draws (`records`, floor_records'
+    rows for the plan: the unit's placed tags). A flag only: it is appended
+    to the track's set health, and no row is read or written by it."""
+    from lib.plan_set_health import DRAWN_ON_REMOVAL_LAYER
+
+    hits = removal_layer_tags(page, fams)
+    if not hits:
+        return []
+    for h in hits:
+        unit = None
+        if units is not None:
+            unit, _how = units.unit_of_normal(*h["drawn_at"])
+        h["unit"] = unit if unit and not unit.startswith("non-unit:") else None
+    placed: Dict[Tuple[Any, str], int] = {}
+    hit_at = {(round(h["at"][0], 1), round(h["at"][1], 1)) for h in hits}
+    for recs in (records or {}).values():
+        for r in recs:
+            at = r.get("label_at")
+            if not r.get("tag") or not r.get("unit") or (
+                    at and (round(at[0], 1), round(at[1], 1)) in hit_at):
+                continue
+            placed[(r["unit"], r["tag"])] = placed.get((r["unit"], r["tag"]), 0) + 1
+    where = f"{sheet} ({label or (track + ' set')})"
+    out = []
+    for layer in sorted({h["layer"] for h in hits}):
+        mine = sorted((h for h in hits if h["layer"] == layer),
+                      key=lambda h: (h["unit"] or "~", h["text"], h["at"][1], h["at"][0]))
+        groups: List[str] = []
+        for unit in sorted({h["unit"] for h in mine}, key=lambda u: u or "~"):
+            texts = [h["text"] for h in mine if h["unit"] == unit]
+            words = []
+            for tx in sorted(set(texts), key=texts.index):
+                k = texts.count(tx)
+                n = k + placed.get((unit, tx), 0)
+                words.append(tx if k == n == 1 else f"a {tx}" if k == 1
+                             else f"{k} {tx}" if k == n else f"{k} of its {n} {tx}")
+            phrase = words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+            groups.append(f"{unit}'s {phrase}" if unit else f"tag {phrase}" if len(texts) == 1
+                          else f"tags {phrase}")
+        one = len(mine) == 1
+        leaf = layer.split("|")[-1]
+        out.append({"kind": DRAWN_ON_REMOVAL_LAYER, "sheet": sheet, "subject": leaf,
+                    "track": track, "layer": layer,
+                    "tags": [{"tag": h["text"], "unit": h["unit"],
+                              "at": [round(h["at"][0], 1), round(h["at"][1], 1)],
+                              "drawn_at": [round(h["drawn_at"][0], 1), round(h["drawn_at"][1], 1)]}
+                             for h in mine],
+                    "detail": f"{where}: {'; '.join(groups)} {'is' if one else 'are'} drawn on "
+                              f"layer {leaf}; {'its symbol is' if one else 'their symbols are'} "
+                              f"not on the door/window layers"})
+    return out
+
+
 def _refused_tags(space: Optional[Dict[str, Any]]) -> List[str]:
     """Units whose region the map refused or left incomplete (run_takeoff's)."""
     if not space:
@@ -317,25 +433,44 @@ def _refused_tags(space: Optional[Dict[str, Any]]) -> List[str]:
 def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any],
                  fams: Dict[str, Dict[str, Any]], *, track: str = "filed",
                  refused: Sequence[Tuple[Dict[str, Any], str]] = (),
-                 widest_door: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 widest_door: Optional[Dict[str, Any]] = None,
+                 answers: Optional[Dict[str, str]] = None,
+                 progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None) -> Dict[str, Any]:
     """Every opening row of one drawing track.
 
     `floors` are plan_glyph_pass's floors (each architectural plan with its
     units, membership map, stair links and voids, already read). `refused`
-    are the plan-titled architectural pages the pairing refused, with why:
-    each carries tags this pass did not read, so each is a refusal row that
-    blocks its track's building figures (and its floor's, when it has one).
-    A track with no door or window schedule reconciled writes nothing."""
+    are the plan-titled architectural pages the pairing refused, with why.
+
+    THE SYSTEM NEVER DECIDES WHICH DRAWINGS BELONG TO A SET (ruling 21,
+    lib.plan_set_questions). A refused plan whose number is not in the plan
+    series (A.1.1 ... A.1.7, an unnumbered roof plan) is a question, one per
+    file, and `answers` ({question id: include | exclude}, the stored
+    answers) decides it on this pass:
+      exclude   its pages are left out: no row;
+      include   they are read at sheet scope, ordinary rows of the track;
+      open      they are read at sheet scope, every row (and the refusal of
+                a page that could not be read) marked with the question, so
+                the gate counts the set with them and without them.
+    Any other refused plan (two current A-101s; an A-1xx with no mechanical
+    partner) carries tags this pass did not read: a refusal row that blocks
+    its track's building figures (and its floor's, when it has one).
+    A track with no door or window schedule reconciled writes nothing.
+    `progress` is plan_glyph_pass.run_pass's (one "openings" step a floor;
+    the set-question pages before them are the stage "set_questions")."""
+    from lib import plan_set_questions as psq
+    from lib.plan_pass_progress import tell
     from lib.plan_takeoff import Units
 
     run = {n: f for n, f in fams.items() if f["tags"]}
     rows: List[Dict[str, Any]] = []
     summary: Dict[str, Any] = {"track": track, "families": {n: f["tags"] for n, f in run.items()},
-                               "floors": [], "refused": []}
+                               "floors": [], "refused": [], "set_questions": []}
     health: List[Dict[str, Any]] = []
     if not run:
-        return {"rows": rows, "summary": summary, "health": health}
+        return {"rows": rows, "summary": summary, "health": health, "questions": []}
     door = widest_door or {"inches": None}
+    answers = answers or {}
 
     def tagged(rs):
         for r in rs:
@@ -344,17 +479,74 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
             r["payload"]["track"] = track
         return rs
 
+    project_id = next((p.get("project_id") for p, _w in refused if p.get("project_id")), None)
+    questions = psq.detect(project_id, track, refused)
+    q_of = {str(pg.get("page_id")): q for q in questions for pg in q["pages"]}
     for page, why in refused:
         sheet = page.get("sheet_number") or f"{page.get('file_name')} p{page.get('page_number')}"
+        if str(page.get("page_id")) in q_of:
+            continue
         rows += tagged([emit.sheet_refusal(page, f"doors and windows not read: {why}",
                                            pass_key=f"openings|{sheet}", role=KIND)])
         summary["refused"].append([sheet, why])
+    if questions:
+        tell(progress, "stage", stage="set_questions")
+    for q in questions:
+        ans = answers.get(q["id"])
+        summary["set_questions"].append({"id": q["id"], "label": q["label"],
+                                         "applied": ans or "open"})
+        if ans == psq.EXCLUDE:
+            continue
+        mark = {} if ans == psq.INCLUDE else {psq.ROW_KEY: q["id"], psq.ROW_LABEL: q["short"]}
+        for page, why in refused:
+            if q_of.get(str(page.get("page_id"))) is not q:
+                continue
+            sheet = page.get("sheet_number") or f"{page.get('file_name')} p{page.get('page_number')}"
+            out: List[Dict[str, Any]] = []
+            try:
+                got = floor_records(open_page(page), run, None,
+                                    f"refused: {sheet}: {why}: counted at sheet scope, not placed")
+            except Exception as e:                  # one page never sinks the pass
+                log.exception("openings %s failed: %r", sheet, e)
+                got = None
+                out = [emit.sheet_refusal(page, f"doors and windows not read: "
+                                                f"{type(e).__name__}",
+                                          pass_key=f"openings|{sheet}", role=KIND)]
+            if got is not None and got["unreadable"]:
+                out = [emit.sheet_refusal(
+                    page, f"doors and windows not read: {len(got['unreadable'])} tag "
+                          f"outline(s) with no readable tag", pass_key=f"openings|{sheet}",
+                    role=KIND)]
+            elif got is not None:
+                for t in got["orphans"]:
+                    health.append({"kind": "plan_tag_not_in_schedule", "sheet": sheet,
+                                   "subject": t["text"], "track": track,
+                                   "detail": f"{t['text']} is printed in a door/window tag on "
+                                             f"{sheet} ({track} set) but no door or window "
+                                             f"schedule lists it"})
+                for name, recs in got["records"].items():
+                    if not recs:
+                        continue
+                    res = {"records": recs, "method": "sheet_scope", "fallback_reason": None,
+                           "registration": {"dx": 0.0, "dy": 0.0, "usable": True,
+                                            "anchors": None, "refused": None},
+                           "refused_tags": []}
+                    out += emit.glyph_rows(res, mech=page, arch=page, family=name,
+                                           pass_key=f"{sheet}|openings|{name}",
+                                           units={"tags": [], "method": "sheet_scope",
+                                                  "zero_units": False, "multi_level": {}},
+                                           widest_door=door, mech_count=len(recs))
+            for r in tagged(out):
+                r["payload"].update(mark)
+            rows += out
     located: set = set()
-    for f in floors:
+    for i, f in enumerate(floors, 1):
         arch_p, a_sheet = f["arch_p"], f["a_sheet"]
+        tell(progress, "sheet", stage="openings", sheet=a_sheet, i=i, n=len(floors))
         units_ = f.get("units") or {}
         space = f.get("space")
         floor = {"arch": a_sheet, "families": {}}
+        member = None
         summary["floors"].append(floor)
         try:
             pg = open_page(arch_p)
@@ -388,6 +580,14 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
                         f"with no readable tag", pass_key=f"openings|{a_sheet}", role=KIND)])
             floor["refused"] = "unreadable tag outline"
             continue
+        # DRAWN ON A REMOVAL LAYER (queue item 25): a flag, after the rows
+        # are read - it never changes one, and never sinks the floor.
+        try:
+            health += removal_layer_health(
+                pg, a_sheet, run, track=track, label=arch_p.get("drawing_track_label"),
+                units=member, records=got["records"])
+        except Exception as e:
+            log.exception("openings %s removal layer not read: %r", a_sheet, e)
         for t in got["orphans"]:
             health.append({"kind": "plan_tag_not_in_schedule", "sheet": a_sheet,
                            "subject": t["text"], "track": track,
@@ -421,4 +621,4 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
                            "subject": t, "family": name,
                            "detail": f"{t} is listed by more than one door/window schedule; "
                                      f"it is counted in none - state no count of {t}"})
-    return {"rows": rows, "summary": summary, "health": health}
+    return {"rows": rows, "summary": summary, "health": health, "questions": questions}

@@ -88,7 +88,11 @@ def _payload(chat, body, mid="D1"):
 
 class _Harness:
     def setUp(self):
-        self.agent_calls, self.llm_calls, self.reactions = [], [], []
+        self.agent_calls, self.llm_calls, self.reactions, self.typing = [], [], [], []
+
+    async def _typing(self, chat, on=True):
+        self.typing.append(on)
+        return True
 
     def _send(self, c, chat, body, mid="D1", *, agent_delay=0.0):
         async def agent(**kw):
@@ -111,7 +115,8 @@ class _Harness:
                 patch.object(server, "_dm_llm", llm), \
                 patch.object(server, "_react_to_message", react), \
                 patch.object(server, "_dm_scope", no_scope_model), \
-                patch.object(server.wa_react, "WORKING_AFTER_SECONDS", 0.05):
+                patch.object(server, "_wa_typing", self._typing), \
+                patch.object(server, "DM_TYPING_EVERY_SECONDS", 0.02):
             _run(server._process_whatsapp_message(_payload(chat, body, mid)))
         sends = [p["message"] for p in c.wire.calls if "message" in p]
         return sends[-1] if sends else None
@@ -336,11 +341,14 @@ class KindsOfQuestion(_Harness, unittest.TestCase):
         self.assertEqual(self.reactions, ["🙏"])
         self.assertEqual(before, after)
 
-    def test_a_slow_answer_gets_eyes_first(self):
+    def test_a_slow_answer_gets_typing_never_eyes(self):
+        """Oct 27, 2026: no 👀 on a slow DM question -- "typing…" only."""
         with _Ctx(db=self._admin()) as c:
             reply = self._send(c, f"{ADMIN_PHONE}@c.us", "open items at 8 walworth",
                                agent_delay=0.2)
-        self.assertEqual(self.reactions, ["👀"])
+        self.assertEqual(self.reactions, [])
+        self.assertGreaterEqual(self.typing.count(True), 2)
+        self.assertEqual(self.typing[-1], False)
         self.assertEqual(reply, f"answer for {WALWORTH}")
 
     def test_a_voice_answer_opens_with_what_was_heard(self):

@@ -13,11 +13,15 @@ export const OWNER_NAV = [
   { key: 'companies', label: 'Companies', path: '/owner' },
   { key: 'deleted', label: 'Deleted items', path: '/owner/deleted' },
   { key: 'pending', label: 'Pending deletion', path: '/owner/pending-deletion' },
+  { key: 'review', label: 'Review queue', path: '/owner/review' },
+  { key: 'answers', label: 'Answers', path: '/owner/answers' },
   { key: 'mention', label: 'Test mention', path: '/owner/mention-test' },
 ];
 
 export function ownerNavActive(pathname) {
   const p = String(pathname || '');
+  if (p.startsWith('/owner/review')) return 'review';
+  if (p.startsWith('/owner/answers')) return 'answers';
   if (p.startsWith('/owner/deleted')) return 'deleted';
   if (p.startsWith('/owner/pending-deletion')) return 'pending';
   if (p.startsWith('/owner/mention-test')) return 'mention';

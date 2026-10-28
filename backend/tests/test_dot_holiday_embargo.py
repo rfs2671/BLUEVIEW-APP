@@ -71,7 +71,8 @@ STIP_DATASET = "gsgx-6efw"
 ACTION_EN = "No street work Nov 15 - Jan 2 unless DOT grants one."
 ACTION_ES = ("No se permite trabajo en la calle del 15 de nov al 2 de ene salvo que "
              "el DOT otorgue una exención.")
-# Coverage limit (operator copy), until DOT Phase 1 B adds segment permits.
+# The coverage limit #852 stated (operator copy). DOT Phase 1 B matches segment
+# permits (permittee + frontage) and REMOVED it: these lines must be gone.
 COVERAGE_EN = ("Checks permits matched to your address. Permits filed by street segment "
                "arrive with the next update.")
 COVERAGE_ES = ("Revisa los permisos vinculados a su dirección. Los permisos registrados por "
@@ -422,7 +423,8 @@ class TheAlertJob(unittest.TestCase):
         m = mails[0]
         self.assertEqual(m["recipient"], "admin@acme.test")
         self.assertEqual(m["trigger_type"], "dot_embargo_waiver_missing")
-        self.assertEqual(m["permit_renewal_id"], f"dot:p1:embargo:{NO_WAIVER_NUM}:2026:2026-11-01")
+        # The day's ONE DOT digest (ruling 2026-10-28); the permit keeps its own row.
+        self.assertEqual(m["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-11-01")
         self.assertIn(f"Holiday embargo: permit {NO_WAIVER_NUM} has no waiver", m["subject"])
         self.assertIn(f"Embargo navideño: el permiso {NO_WAIVER_NUM} no tiene exención", m["subject"])
         for s in (NO_WAIVER_NUM, "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
@@ -436,13 +438,16 @@ class TheAlertJob(unittest.TestCase):
             self.assertIn(line, m["text"])
             self.assertIn(line, m["html"])
         self.assertLess(m["text"].index(ACTION_EN), m["text"].index(ACTION_ES))
-        for line in (COVERAGE_EN, COVERAGE_ES):
-            self.assertIn(line, m["text"])
-            self.assertIn(line, m["html"])
-        self.assertLess(m["text"].index(COVERAGE_EN), m["text"].index("Qué hacer"))
-        self.assertLess(m["text"].index("Qué hacer"), m["text"].index(COVERAGE_ES))
-        (led,) = env.db.dot_alert_ledger.docs
+        # DOT Phase 1 B: the coverage note is gone from the email, EN and ES.
+        for line in (COVERAGE_EN, COVERAGE_ES, "Permits filed by street segment",
+                     "registrados por tramo de calle"):
+            self.assertNotIn(line, m["text"])
+            self.assertNotIn(line, m["html"])
+        self.assertFalse(hasattr(E, "COVERAGE_NOTE_EN") or hasattr(E, "COVERAGE_NOTE_ES"))
+        (led,) = [d for d in env.db.dot_alert_ledger.docs if d.get("trigger_type") == "dot_embargo_waiver_missing"
+                  and d.get("permit")]
         self.assertEqual(led["_id"], f"dot:p1:embargo:{NO_WAIVER_NUM}:2026:2026-11-01")
+        self.assertEqual(led["digest"], "dot:p1:dot_digest:-:-:2026-11-01")
 
     def test_nov_1_with_the_waiver_sends_nothing(self):
         env = self._env(REAL_PERMIT, {"M022026294C45": REAL_STIPS})
@@ -471,7 +476,8 @@ class TheAlertJob(unittest.TestCase):
         env.alerts(NOV12_7AM)
         mails = env.emails()
         self.assertEqual(len(mails), 2)
-        self.assertTrue(mails[1]["permit_renewal_id"].endswith(":2026:2026-11-12"))
+        self.assertEqual(mails[1]["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-11-12")
+        self.assertEqual([i["send_date"] for i in mails[1]["metadata"]["items"]], ["2026-11-12"])
 
     def _seeded(self, is_test, dot_synced=True):
         """The row (and sync state) the sync would have written, seeded
@@ -522,10 +528,22 @@ class TheAlertJob(unittest.TestCase):
         env.sync([fresh], {NO_WAIVER_NUM: NO_WAIVER_STIPS},
                  now=datetime(2026, 11, 20, 15, 0, tzinfo=UTC))
         env.alerts(datetime(2026, 11, 21, 12, 0, tzinfo=UTC))
+        # Saturday Nov 21, 07:00: held over Shabbos (spec decision 6, ruling
+        # 2026-10-23) and delivered by the Shabbos queue after havdalah.
+        from lib import shabbos
+        until = shabbos.quiet_until(datetime(2026, 11, 21, 12, 0, tzinfo=UTC))
+        with patch.object(server, "db", env.db), \
+                patch.object(server, "RESEND_API_KEY", "re_test_key"), \
+                patch.dict(os.environ, {"NOTIFICATIONS_KILL_SWITCH": ""}), \
+                patch("lib.notifications.send_notification", env.send):
+            _run(server._quiet_queue_tick(now=until + timedelta(minutes=1)))
         env.alerts(datetime(2026, 11, 22, 12, 0, tzinfo=UTC))
         mails = env.emails()
         self.assertEqual(len(mails), 1)
-        self.assertTrue(mails[0]["permit_renewal_id"].endswith(":2026:2026-11-20"))
+        # The first-sight item keeps its send date (Nov 20); the held digest is Saturday's.
+        self.assertEqual(mails[0]["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-11-21")
+        self.assertEqual([(i["permit"], i["send_date"]) for i in mails[0]["metadata"]["items"]],
+                         [(NO_WAIVER_NUM, "2026-11-20")])
 
 
 # ═══ WhatsApp: the GC group post (kind "dot_embargo") ════════════════════════
@@ -623,7 +641,8 @@ class TheGroupPost(unittest.TestCase):
 
 
 class TheBannerStrings(unittest.TestCase):
-    """The banner's coverage note, read from the catalogue SOURCE and the
+    """The banner's coverage note was REMOVED by DOT Phase 1 B (segment permits
+    are matched now): gone from the catalogue SOURCE, EN and ES, and from the
     screen (the node i18n test checks the EN/ES keys are identical)."""
 
     FE = Path(__file__).resolve().parents[2] / "frontend"
@@ -633,9 +652,12 @@ class TheBannerStrings(unittest.TestCase):
         i = src.index("dotEmbargo: {")
         return src[i:src.index("},", i)]
 
-    def test_the_coverage_note_is_in_en_and_es(self):
-        self.assertIn(f"coverageNote: '{COVERAGE_EN}'", self._ns("en.js"))
-        self.assertIn(f"coverageNote: '{COVERAGE_ES}'", self._ns("es.js"))
+    def test_the_coverage_note_is_gone_from_en_and_es(self):
+        for name, line in (("en.js", COVERAGE_EN), ("es.js", COVERAGE_ES)):
+            self.assertIn("banner:", self._ns(name))          # the namespace was read
+            self.assertNotIn("coverageNote:", self._ns(name), name)
+            cat = (self.FE / "src" / "i18n" / name).read_text(encoding="utf-8")
+            self.assertTrue(line not in cat, f"the coverage note is still in {name}")
 
     BANNER = "{(embargoMissing.length > 0 || embargoUnverified.length > 0) && ("
 
@@ -644,8 +666,12 @@ class TheBannerStrings(unittest.TestCase):
         i = src.index(self.BANNER)
         return src, src[i:src.index("</GlassCard>", i)]
 
-    def test_the_banner_shows_it(self):
-        self.assertIn("tEmbargo('coverageNote')", self._banner()[1])
+    def test_the_banner_no_longer_shows_it(self):
+        # DOT Phase 1 B removed the coverage note; the banner (and its
+        # "Waiver not verified" line, below) stays.
+        src, banner = self._banner()
+        self.assertIn("tEmbargo('action')", banner)
+        self.assertTrue("tEmbargo('coverageNote')" not in src, "dob-logs.jsx still renders coverageNote")
 
     def test_waiver_not_verified_is_in_en_and_es(self):
         en, es = self._ns("en.js"), self._ns("es.js")
