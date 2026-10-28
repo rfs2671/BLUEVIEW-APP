@@ -367,7 +367,7 @@ def floor_area_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str,
     """(area rows, a line per floor) - lib.plan_areas on every floor whose
     membership map was built. One floor that fails never sinks the pass: it
     is said, and writes no row."""
-    from lib import plan_areas, plan_scale
+    from lib import plan_areas
 
     rows: List[Dict[str, Any]] = []
     notes: List[str] = []
@@ -376,10 +376,7 @@ def floor_area_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str,
         if not sp or (f.get("units") or {}).get("tags") is None:
             continue
         try:
-            pg = open_page(f["arch_p"])
-            if "scale_sheet" not in f:          # kept: the floor's partner borrows from it
-                f["scale_sheet"] = plan_scale.read_sheet(pg)
-            res = plan_areas.floor_areas(pg, sp, scale_sheet=f["scale_sheet"])
+            res = plan_areas.floor_areas(open_page(f["arch_p"]), sp)
         except Exception as e:                      # one floor never sinks the pass
             log.exception("area check %s failed: %r", f.get("a_sheet"), e)
             notes.append(f"{f.get('a_sheet')}: area check failed ({type(e).__name__}) - no area rows")
