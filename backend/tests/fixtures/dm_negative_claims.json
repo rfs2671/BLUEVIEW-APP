@@ -1,0 +1,67 @@
+{
+  "_note": "DM answers for the negative-claim gate (lib/dm_negative_claims). FIXTURE TEXT: every quote below is made up for the test, not read off a real sheet.",
+  "cases": [
+    {
+      "id": "10-27-spray-foam",
+      "question": "does 588 need spray foam on the 5th floor ceiling",
+      "answer": "Nothing on the drawings calls for spray foam on the 5th floor ceiling.",
+      "trace": [
+        {"tool": "search_plans", "args": {"job": "588", "subject": "spray foam 5th floor ceiling"},
+         "result": "Records for 'spray foam 5th floor ceiling'.\n- FIXTURE TEXT: ROOF ASSEMBLY: 2-PLY MOD BIT ON RIGID INSULATION ON DECK [A-302.00]\n- FIXTURE TEXT: 5TH FLOOR REFLECTED CEILING, GWB ON RESILIENT CHANNEL [A-104.00]",
+         "records": [
+           {"sheet": "A-302.00", "quote": "FIXTURE TEXT: ROOF ASSEMBLY: 2-PLY MOD BIT ON RIGID INSULATION ON DECK"},
+           {"sheet": "A-104.00", "quote": "FIXTURE TEXT: 5TH FLOOR REFLECTED CEILING, GWB ON RESILIENT CHANNEL"}
+         ]}
+      ],
+      "expect_rewritten": true
+    },
+    {
+      "id": "quoted-note",
+      "question": "is fireproofing required at the roof",
+      "answer": "A-302.00 note: \"FIXTURE TEXT: SPRAYED FIREPROOFING NOT REQUIRED AT ROOF DECK\".",
+      "trace": [{"tool": "search_plans", "args": {},
+                 "result": "- FIXTURE TEXT: SPRAYED FIREPROOFING NOT REQUIRED AT ROOF DECK [A-302.00]",
+                 "records": [{"sheet": "A-302.00", "quote": "FIXTURE TEXT: SPRAYED FIREPROOFING NOT REQUIRED AT ROOF DECK"}]}],
+      "expect_rewritten": false
+    },
+    {
+      "id": "not-required-model-words",
+      "question": "do we need a vapor barrier at the slab",
+      "answer": "A vapor barrier is not required at the slab. The slab is on grade per S-101.00.",
+      "trace": [{"tool": "search_plans", "args": {},
+                 "result": "- FIXTURE TEXT: CONC SLAB ON GRADE [S-101.00]",
+                 "records": [{"sheet": "S-101.00", "quote": "FIXTURE TEXT: CONC SLAB ON GRADE"}]}],
+      "expect_rewritten": true
+    },
+    {
+      "id": "no-plan-tool-drawings-claim",
+      "question": "any blocking called out for the TVs",
+      "answer": "The drawings don't show any blocking for the TVs.",
+      "trace": [],
+      "expect_rewritten": true
+    },
+    {
+      "id": "attendance",
+      "question": "anyone from arkon at 588",
+      "answer": "No one from Arkon checked in at 588 today.",
+      "trace": [{"tool": "headcount", "args": {}, "result": "0 Arkon check-ins today."}],
+      "expect_rewritten": false
+    },
+    {
+      "id": "question-back",
+      "question": "spray foam?",
+      "answer": "Do you mean the roof, which isn't shown on A-104.00?",
+      "trace": [{"tool": "search_plans", "args": {}, "result": "- FIXTURE TEXT: ROOF ASSEMBLY [A-302.00]",
+                 "records": [{"sheet": "A-302.00", "quote": "FIXTURE TEXT: ROOF ASSEMBLY"}]}],
+      "expect_rewritten": false
+    },
+    {
+      "id": "spanish",
+      "question": "hay espuma en el techo del quinto piso",
+      "answer": "Los planos no indican espuma en el techo del quinto piso.",
+      "trace": [{"tool": "search_plans", "args": {}, "result": "- FIXTURE TEXT: ROOF ASSEMBLY [A-302.00]",
+                 "records": [{"sheet": "A-302.00", "quote": "FIXTURE TEXT: ROOF ASSEMBLY"}]}],
+      "expect_rewritten": true
+    }
+  ]
+}
