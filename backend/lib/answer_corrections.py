@@ -121,9 +121,18 @@ def build(row: Dict[str, Any], correct_answer: Any, note: Any, *, operator_id: A
     return doc
 
 
+#: The text fields of a row (redacted on the way out, as at insert). Ids,
+#: hashes and dates are never passed through redact: a sha256 or an
+#: ObjectId can hold 7 digits in a row, and so does an ISO date.
+TEXT_FIELDS = ("question", "wrong_answer", "correct_answer", "note")
+
+
 def view(doc: Dict[str, Any]) -> Dict[str, Any]:
     """A correction as the operator reads it (dates as ISO strings)."""
     out = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in doc.items()
            if k != "_id"}
+    for k in TEXT_FIELDS:
+        if out.get(k) is not None:
+            out[k] = answer_log.redact(out[k])
     out["id"] = str(doc.get("_id"))
-    return answer_log.redact(out)
+    return out

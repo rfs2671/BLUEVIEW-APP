@@ -273,6 +273,33 @@ class MarkWrong(_Base):
         self.assertIn("[…0200]", blob)
 
 
+class IdsAndDatesSurvive(_Base):
+    """Ids, hashes and dates are never redacted (a sha256 or an ObjectId can
+    hold 7 digits in a row): only the text fields are."""
+
+    def test_ids_hashes_and_ts_come_back_as_stored(self):
+        digit_id = "1234567" * 3 + "abc"
+        self.db.answer_log.rows.append(_answer(digit_id, A, 9, "q 2125550199?", "a"))
+        r = self.correct(digit_id, correct_answer="the right answer")
+        self.assertEqual(r.status_code, 200, r.text)
+        c = r.json()["correction"]
+        row = self.db.answer_corrections.rows[0]
+        self.assertEqual(c["answer_log_id"], digit_id)
+        self.assertEqual(c["id"], row["_id"])
+        self.assertEqual(c["content_hash"], row["content_hash"])
+        self.assertEqual(c["ts"], row["ts"].isoformat())
+        self.assertEqual(c["question"], "q […0199]?")
+        items = self.client.get("/api/owner/answers", headers=self.op()).json()["items"]
+        self.assertEqual(items[0]["answer"]["id"], digit_id)
+        self.assertEqual(self.client.get(f"/api/owner/answers/{digit_id}",
+                                         headers=self.op()).status_code, 200)
+
+    def test_past_the_offset_cap_is_a_422(self):
+        from lib import review_queue as rq
+        self.assertEqual(self.client.get("/api/owner/answers", headers=self.op(), params={
+            "offset": rq.MAX_OFFSET + 1}).status_code, 422)
+
+
 class AppendOnly(unittest.TestCase):
     def _sources(self):
         files = [BACKEND / "server.py"]

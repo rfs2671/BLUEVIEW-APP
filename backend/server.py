@@ -58212,7 +58212,9 @@ async def owner_answers(q: Optional[str] = None, company_id: Optional[str] = Non
         raise HTTPException(status_code=404, detail="Not Found")
     if surface and surface not in answer_log.SURFACES:
         raise HTTPException(status_code=422, detail="unknown surface")
-    offset = max(0, min(int(offset), review_queue.MAX_OFFSET))
+    if int(offset) > review_queue.MAX_OFFSET:
+        raise HTTPException(status_code=422, detail="offset too large: narrow the search")
+    offset = max(0, int(offset))
     limit = max(1, min(int(limit), review_queue.MAX_LIST))
     query: Dict[str, Any] = {}
     if company_id:
@@ -58227,7 +58229,8 @@ async def owner_answers(q: Optional[str] = None, company_id: Optional[str] = Non
         [("created_at", -1), ("_id", -1)]).skip(offset).to_list(limit + 1)
     memo: dict = {}
     items = [await _answer_row_view(r, memo) for r in rows[:limit]]
-    return {"items": items, "offset": offset, "limit": limit, "has_more": len(rows) > limit,
+    return {"items": items, "offset": offset, "limit": limit,
+            "has_more": len(rows) > limit and offset + limit <= review_queue.MAX_OFFSET,
             "surfaces": list(answer_log.SURFACES)}
 
 
