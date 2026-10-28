@@ -88,6 +88,7 @@ from lib import punch_batch  # noqa: E402
 from lib import dm_actions  # noqa: E402
 from lib import answer_log  # noqa: E402
 from lib import review_queue  # noqa: E402
+from lib import answer_corrections  # noqa: E402
 from lib import trades as lib_trades  # noqa: E402
 from lib import dm_brain  # noqa: E402
 from lib import dm_negative_claims  # noqa: E402
@@ -58150,6 +58151,118 @@ async def owner_review_decide(item_id: str, body: Optional[ReviewDecisionIn] = N
     return {"item": await _review_view(fresh, full=True)}
 
 
+# ── ANSWER CORRECTIONS (lib/answer_corrections.py): "Mark wrong" ───────────
+#
+# On any logged answer -- one the queue names, or one the operator found by
+# searching the answer log -- the operator marks it wrong with the correct
+# answer (required) and an optional note. Each is ONE INSERT into
+# answer_corrections (never an update: correcting again is a new row) and
+# one audit_logs row. It is the input feed for the self-learning session;
+# the schema is lib/answer_corrections.py's docstring. PLATFORM OPERATOR
+# ONLY (require_operator_404 on every route); nothing is sent to anyone.
+
+
+class AnswerCorrectionIn(BaseModel):
+    """Body for POST /owner/answers/{id}/corrections. Defaults so a malformed
+    body is the route's 422, never a hint."""
+    correct_answer: str = ""
+    note: Optional[str] = None
+
+
+async def _answer_correction_write(row: dict, *, correct_answer: str, note: Optional[str],
+                                   operator: dict) -> dict:
+    """THE ONE WRITER of answer_corrections: an insert, never an update."""
+    doc = answer_corrections.build(row, correct_answer, note, operator_id=actor_id(operator),
+                                   now=datetime.now(timezone.utc), _id=str(ObjectId()))
+    await db[answer_corrections.COLLECTION].insert_one(doc)
+    return doc
+
+
+async def _answer_corrections_of(answer_log_id: str) -> list:
+    """Every correction of one answer, oldest first (the last is current)."""
+    rows = await db[answer_corrections.COLLECTION].find(
+        {"answer_log_id": str(answer_log_id)}).sort([("ts", 1)]).to_list(200)
+    return [answer_corrections.view(r) for r in rows]
+
+
+async def _answer_row_view(row: dict, memo: dict, *, full: bool = False) -> dict:
+    cid = str(row.get("company_id") or "")
+    key = ("co", cid)
+    if cid and key not in memo:
+        memo[key] = await db.companies.find_one({"_id": to_query_id(cid)}, {"name": 1})
+    n = await db[answer_corrections.COLLECTION].count_documents(
+        {"answer_log_id": str(row.get("_id"))})
+    return {"answer": review_queue.answer_view(row, full=full),
+            "company": {"id": cid, "name": (memo.get(key) or {}).get("name")},
+            "corrections_count": n}
+
+
+@api_router.get("/owner/answers", tags=["Owner"])
+async def owner_answers(q: Optional[str] = None, company_id: Optional[str] = None,
+                        surface: Optional[str] = None, offset: int = 0, limit: int = 25,
+                        operator=Depends(require_operator_404)):
+    """The answer log, searched: newest first, across companies. `q` matches
+    the question or the answer (case-insensitive, literal). Paged."""
+    if not is_platform_operator(operator):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if surface and surface not in answer_log.SURFACES:
+        raise HTTPException(status_code=422, detail="unknown surface")
+    offset = max(0, min(int(offset), review_queue.MAX_OFFSET))
+    limit = max(1, min(int(limit), review_queue.MAX_LIST))
+    query: Dict[str, Any] = {}
+    if company_id:
+        query["company_id"] = str(company_id)
+    if surface:
+        query["surface"] = surface
+    text = " ".join(str(q or "").split())[:200]
+    if text:
+        pat = "(?i)" + re.escape(text)
+        query["$or"] = [{"question": {"$regex": pat}}, {"final_text": {"$regex": pat}}]
+    rows = await db.answer_log.find(query).sort(
+        [("created_at", -1), ("_id", -1)]).skip(offset).to_list(limit + 1)
+    memo: dict = {}
+    items = [await _answer_row_view(r, memo) for r in rows[:limit]]
+    return {"items": items, "offset": offset, "limit": limit, "has_more": len(rows) > limit,
+            "surfaces": list(answer_log.SURFACES)}
+
+
+@api_router.get("/owner/answers/{answer_log_id}", tags=["Owner"])
+async def owner_answer(answer_log_id: str, operator=Depends(require_operator_404)):
+    """One logged answer in full, with every correction of it."""
+    row = await db.answer_log.find_one({"_id": str(answer_log_id)})
+    if not row:
+        raise HTTPException(status_code=404, detail="Not Found")
+    out = await _answer_row_view(row, {}, full=True)
+    out["corrections"] = await _answer_corrections_of(answer_log_id)
+    return out
+
+
+@api_router.post("/owner/answers/{answer_log_id}/corrections", tags=["Owner"])
+async def owner_answer_correct(answer_log_id: str, body: Optional[AnswerCorrectionIn] = None,
+                               operator=Depends(require_operator_404)):
+    """Mark one logged answer wrong: the correct answer is required, a note
+    optional. Appends one correction row and one audit row."""
+    row = await db.answer_log.find_one({"_id": str(answer_log_id)})
+    if not row:
+        raise HTTPException(status_code=404, detail="Not Found")
+    body = body or AnswerCorrectionIn()
+    err = answer_corrections.check(body.correct_answer, body.note)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+    doc = await _answer_correction_write(row, correct_answer=body.correct_answer,
+                                         note=body.note, operator=operator)
+    await audit_log("answer_correction", actor_id(operator), "answer_log", str(answer_log_id),
+                    {"correction_id": doc["_id"], "company_id": doc["company_id"],
+                     "project_id": doc["project_id"], "surface": doc["surface"],
+                     "code_sha": doc["code_sha"], "model": doc["model"],
+                     "correct_answer": doc["correct_answer"], "note": doc["note"],
+                     "content_hash": doc["content_hash"]})
+    logger.info(f"[answer-correction] answer={answer_log_id} company={doc['company_id']} "
+                f"surface={doc['surface']}")
+    return {"correction": answer_corrections.view(doc),
+            "corrections": await _answer_corrections_of(answer_log_id)}
+
+
 def _dm_gates(path: str, extra: dict, fallback: bool, reason: Any) -> list:
     """What the DM checks decided, as each exposes it: the brain's number /
     claim / sender checks (stop, unverified, retries), a headcount's wording
@@ -85178,6 +85291,14 @@ async def startup_event():
     await db.review_queue.create_index([("status", 1), ("company_id", 1), ("created_at", -1)])
     await db.review_queue.create_index([("status", 1), ("kind", 1), ("created_at", -1)])
     await db.review_queue.create_index([("status", 1), ("reason", 1), ("created_at", -1)])
+    # Answer corrections (lib/answer_corrections.py): one answer's, oldest
+    # first; and the feed's reads, newest first, overall and per company.
+    await db.answer_corrections.create_index([("answer_log_id", 1), ("ts", 1)])
+    await db.answer_corrections.create_index([("ts", -1)])
+    await db.answer_corrections.create_index([("company_id", 1), ("ts", -1)])
+    # The operator's answer search (GET /owner/answers): newest first,
+    # overall and per company.
+    await db.answer_log.create_index([("created_at", -1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
     await _ensure_index_resilient(
