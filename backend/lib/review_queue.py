@@ -2,9 +2,12 @@
 
 Uncertain findings, queued for the platform operator's review queue (L6.4:
 operator-gated routes and the web screen, approve / deny with an
-explanation -- not built here). This step only INSERTS items:
-server._review_queue_add is the one writer, nothing changes a row, and no
-person is ever shown one.
+explanation -- the section at the end of this file). The feed only
+INSERTS items: server._review_queue_add is the one inserter. The one
+change ever made to a row is the operator's decision (L6.4,
+server._review_decide: status pending -> approved | denied, and again with
+a new explanation; each decision appended to `decisions`). Nobody but the
+operator is ever shown one, and nobody is notified of a decision.
 
 ONE COLLECTION, `review_queue`, for the auto-queued kinds below. Customers
 do not flag answers: every item here comes from the system's own checks.
@@ -45,8 +48,12 @@ A ROW:
                     ruling: it replaces the earlier "conflict").
   priority          "low" for set_health_info, "normal" for everything else
                     (L6.4 lists pending items by status, priority, newest)
-  status            "pending". Written once, at insert; nothing in this step
-                    changes it.
+  status            "pending" at insert. Changed by the operator's
+                    decision only (server._review_decide), to "approved" or
+                    "denied", with `decision` {decision, explanation,
+                    operator_id, decided_at} beside it (the current one) and
+                    `decisions` (every one, appended; a decided item may be
+                    decided again with a NEW explanation).
 """
 
 from __future__ import annotations
@@ -290,3 +297,147 @@ def from_plan_set_question(company_id: Any, project_id: Any, question: Dict[str,
                 reason=REASON_SET_AMBIGUITY, summary=text[:MAX_SUMMARY],
                 evidence={k: v for k, v in evidence.items() if v not in (None, "")},
                 project_id=project_id, now=now)
+
+
+# ── L6.4: THE OPERATOR'S REVIEW (routes and screen) ─────────────────────────
+#
+# The platform operator lists the queue, reads an item with its answer_log
+# row, and decides it: approve or deny, with an explanation.
+# server._review_decide is the ONE writer of a decision: a conditional
+# update of the item's own status and decision, appending the decision to
+# `decisions`. A decided item may be decided again (owner ruling) with a NEW
+# explanation: the same explanation as the current decision is a 409.
+# answer_log is never touched. Nothing here is shown to anyone but the
+# operator, and no one is notified (customers do not flag answers, so there
+# is nobody to tell).
+
+STATUS_APPROVED = "approved"
+STATUS_DENIED = "denied"
+STATUSES = (STATUS_PENDING, STATUS_APPROVED, STATUS_DENIED)
+DECISIONS = {"approve": STATUS_APPROVED, "deny": STATUS_DENIED}
+
+MIN_EXPLANATION = 10
+MAX_EXPLANATION = 2000
+MAX_LIST = 100
+MAX_OFFSET = 1000
+LIST_RECORDS = 6                    # records per answer on the list; all on the item
+
+#: The list's priority filter: "normal" (the default "Needs decision" view,
+#: low hidden), "low" only, or "all".
+PRIORITIES = (PRIORITY_NORMAL, PRIORITY_LOW)
+PRIORITY_FILTERS = (PRIORITY_NORMAL, PRIORITY_LOW, "all")
+
+
+def check_decision(decision: Any, explanation: Any) -> Optional[str]:
+    """None when the decision can be written; else what is wrong with it."""
+    if decision not in DECISIONS:
+        return "decision must be approve or deny"
+    text = " ".join(str(explanation or "").split())
+    if len(text) < MIN_EXPLANATION:
+        return f"an explanation of at least {MIN_EXPLANATION} characters is required"
+    return None
+
+
+def clean_explanation(explanation: Any) -> str:
+    return answer_log.redact(str(explanation or "").strip()[:MAX_EXPLANATION])
+
+
+def _norm_text(v: Any) -> str:
+    return " ".join(str(v or "").split()).casefold()
+
+
+def same_explanation(current: Any, explanation: Any) -> bool:
+    """A re-decision must say something new: True when `explanation` is the
+    current decision's (whitespace and case aside)."""
+    if not isinstance(current, dict):
+        return False
+    return _norm_text(current.get("explanation")) == _norm_text(clean_explanation(explanation))
+
+
+def history(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Every decision of an item, oldest first. A row decided before the
+    history existed has only `decision`: that is its history of one."""
+    hist = doc.get("decisions")
+    if isinstance(hist, list):
+        return [d for d in hist if isinstance(d, dict)]
+    return [doc["decision"]] if isinstance(doc.get("decision"), dict) else []
+
+
+def decision_entry(decision: str, explanation: Any, operator_id: Any,
+                   now: datetime) -> Dict[str, Any]:
+    """One decision: what was decided, why, by whom, when."""
+    return {"decision": decision,
+            "explanation": clean_explanation(explanation),
+            "operator_id": str(operator_id or ""),
+            "decided_at": now}
+
+
+def decision_set(decision: str, explanation: Any, operator_id: Any,
+                 now: datetime) -> Dict[str, Any]:
+    """The $set of a decision: the item's status and what decided it."""
+    return {"status": DECISIONS[decision],
+            "decision": decision_entry(decision, explanation, operator_id, now)}
+
+
+def _when(v: Any) -> Any:
+    return v.isoformat() if isinstance(v, datetime) else v
+
+
+def answer_view(row: Optional[Dict[str, Any]], *, full: bool = False) -> Optional[Dict[str, Any]]:
+    """The answer_log row an item names, as the operator reads it (the row
+    was redacted at insert; its CONTENT is redacted again on the way out --
+    never its ids, hashes or dates, which redact would mangle: a sha256 or
+    an ObjectId can hold 7 digits in a row, and so does an ISO date)."""
+    if not row:
+        return None
+    records = list(row.get("records") or [])
+    out = {
+        "id": str(row.get("_id")),
+        "surface": row.get("surface"),
+        "path": row.get("path"),
+        "question": answer_log.redact(row.get("question")),
+        "final_text": answer_log.redact(row.get("final_text")),
+        "records": answer_log.redact(records if full else records[:LIST_RECORDS]),
+        "records_total": len(records),
+        "gates": answer_log.redact(list(row.get("gates") or [])),
+        "model": row.get("model"),
+        "code_sha": row.get("code_sha"),
+        "asker_last4": row.get("asker_last4"),
+        "project_ids": list(row.get("project_ids") or []),
+        "created_at": _when(row.get("created_at")),
+    }
+    if full:
+        out["tools"] = answer_log.redact(list(row.get("tools") or []))
+        out["timing"] = row.get("timing")
+        out["content_hash"] = row.get("content_hash")
+    return out
+
+
+def item_view(doc: Dict[str, Any], *, company_name: Any = None,
+              project: Optional[Dict[str, Any]] = None,
+              answer: Optional[Dict[str, Any]] = None, full: bool = False) -> Dict[str, Any]:
+    """One queue item, for the operator only. Content (summary, evidence,
+    explanations) is redacted; ids and dates are not (see answer_view)."""
+    decision = doc.get("decision") if isinstance(doc.get("decision"), dict) else None
+
+    def dec(d):
+        return {**d, "explanation": answer_log.redact(d.get("explanation")),
+                "decided_at": _when(d.get("decided_at"))}
+    out = {
+        "id": str(doc.get("_id")),
+        "kind": doc.get("kind"),
+        "reason": doc.get("reason"),
+        "priority": PRIORITY_LOW if doc.get("priority") == PRIORITY_LOW else PRIORITY_NORMAL,
+        "company": {"id": str(doc.get("company_id") or ""), "name": company_name},
+        "project": project,
+        "created_at": _when(doc.get("created_at")),
+        "status": doc.get("status"),
+        "summary": answer_log.redact(doc.get("summary")),
+        "answer_log_id": doc.get("answer_log_id"),
+        "answer": answer_view(answer, full=full),
+        "decision": dec(decision) if decision else None,
+        "decisions": [dec(d) for d in history(doc)],
+    }
+    if full:
+        out["evidence"] = answer_log.redact(doc.get("evidence") or {})
+    return out

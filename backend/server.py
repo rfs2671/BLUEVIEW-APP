@@ -57957,6 +57957,204 @@ async def _review_queue_plan_set_question(company_id: Any, project_id: Any,
         await _review_queue_add(doc)
 
 
+# ── THE OPERATOR'S REVIEW QUEUE (L6.4; lib/review_queue.py, last section) ──
+#
+# PLATFORM OPERATOR ONLY: every route below carries require_operator_404,
+# the #790 / owner-portal gate, so a company admin, a regular user, no token
+# and a bad token all get the same bare 404 and learn nothing exists. The
+# operator reads ACROSS companies (that is the point of the queue); each
+# item's answer_log row is still read through _answer_log_get with THAT
+# item's company, so a row is never joined to another company's answer.
+#
+# ONE WRITER, ONE CHANGE. _review_decide is the only code that changes a
+# queue item, and the only change is its decision: status approved | denied,
+# `decision` (the current one) and `decisions` (each one appended). A decided
+# item may be decided again with a NEW explanation (owner ruling); the same
+# explanation as the current decision is a 409 SAME_EXPLANATION, and a
+# decision made by someone else between the read and the write is a 409
+# DECIDED_MEANWHILE (the update is conditional on the history being the
+# length that was read). answer_log stays insert-only. Every decision is its
+# own audit_logs row. Nobody is notified: customers do not flag answers.
+
+
+class ReviewDecisionIn(BaseModel):
+    """Body for POST /owner/review-queue/{id}/decide. Every field has a
+    default so a malformed body is the route's 422, never a hint."""
+    decision: str = ""
+    explanation: str = ""
+
+
+async def _review_item(item_id: str) -> dict:
+    """One queue item, for the operator. 404 for anything else."""
+    doc = await db[review_queue.COLLECTION].find_one({"_id": str(item_id)}) if item_id else None
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return doc
+
+
+async def _review_view(doc: dict, *, full: bool = False,
+                       memo: Optional[dict] = None) -> dict:
+    """An item with its company, project and answer_log row (that company's
+    only)."""
+    memo = memo if memo is not None else {}
+    cid = str(doc.get("company_id") or "")
+
+    async def once(key, load):
+        if key not in memo:
+            try:
+                memo[key] = await load()
+            except Exception as e:
+                logger.warning(f"[review-queue] view lookup failed: {type(e).__name__}")
+                memo[key] = None
+        return memo[key]
+
+    company = await once(("co", cid), lambda: db.companies.find_one(
+        {"_id": to_query_id(cid)}, {"name": 1})) if cid else None
+    answer = None
+    if doc.get("answer_log_id"):
+        answer = await once(("al", cid, doc["answer_log_id"]),
+                            lambda: _answer_log_get(cid, str(doc["answer_log_id"])))
+    pid = doc.get("project_id")
+    if not pid and answer and len(answer.get("project_ids") or []) == 1:
+        pid = answer["project_ids"][0]
+    project = None
+    if pid:
+        p = await once(("pr", str(pid)), lambda: db.projects.find_one(
+            {"_id": to_query_id(str(pid))}, {"name": 1, "company_id": 1}))
+        # The project's name is shown only when it is this item's company's.
+        if p and str(p.get("company_id") or "") == cid:
+            project = {"id": str(pid), "name": p.get("name")}
+        else:
+            project = {"id": str(pid), "name": None}
+    return review_queue.item_view(doc, company_name=(company or {}).get("name"),
+                                  project=project, answer=answer, full=full)
+
+
+async def _review_decide(item_id: str, *, decision: str, explanation: str,
+                         operator: dict, prior: dict) -> bool:
+    """THE ONE WRITER OF A REVIEW DECISION, and the only code that changes a
+    queue item: the current decision set, and appended to the item's
+    history. Conditional on the history being as long as it was in `prior`
+    (the row the route read): True when this call decided it, False when
+    someone decided it meanwhile (or it is gone)."""
+    change = review_queue.decision_set(decision, explanation, actor_id(operator),
+                                       datetime.now(timezone.utc))
+    hist = review_queue.history(prior)
+    n = len(hist)
+    guard = {"_id": str(item_id), f"decisions.{n}": {"$exists": False}}
+    if isinstance(prior.get("decisions"), list):
+        update = {"$set": change, "$push": {"decisions": change["decision"]}}
+    else:
+        # No history on the row yet (first decision, or a row decided before
+        # the history existed): it is written whole, from what was read.
+        guard["decisions"] = {"$exists": False}
+        guard["status"] = prior.get("status")
+        update = {"$set": {**change, "decisions": hist + [change["decision"]]}}
+    res = await db[review_queue.COLLECTION].update_one(guard, update)
+    return getattr(res, "modified_count", 0) == 1
+
+
+@api_router.get("/owner/review-queue", tags=["Owner"])
+async def owner_review_queue(kind: Optional[str] = None, status: str = "pending",
+                             reason: Optional[str] = None, priority: str = "normal",
+                             company_id: Optional[str] = None, offset: int = 0,
+                             limit: int = 25, operator=Depends(require_operator_404)):
+    """The queue, newest first. Filters: kind, reason, status (pending |
+    approved | denied), priority (normal | low | all), company. THE DEFAULT
+    IS "NEEDS DECISION": pending, normal priority (low hidden). Paged by
+    offset / limit."""
+    # require_operator_404 already answered everyone else; said again here
+    # because this read crosses companies on purpose.
+    if not is_platform_operator(operator):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if kind and kind not in review_queue.KINDS:
+        raise HTTPException(status_code=422, detail="unknown kind")
+    if reason and reason not in review_queue.REASONS:
+        raise HTTPException(status_code=422, detail="unknown reason")
+    if status not in review_queue.STATUSES:
+        raise HTTPException(status_code=422, detail="unknown status")
+    if priority not in review_queue.PRIORITY_FILTERS:
+        raise HTTPException(status_code=422, detail="unknown priority")
+    # Past MAX_OFFSET is a 422, never a silent clamp (a clamped offset would
+    # hand back the same page forever); has_more stops at the cap.
+    if int(offset) > review_queue.MAX_OFFSET:
+        raise HTTPException(status_code=422, detail="offset too large: narrow the filters")
+    offset = max(0, int(offset))
+    limit = max(1, min(int(limit), review_queue.MAX_LIST))
+    q: Dict[str, Any] = {"status": status}
+    if kind:
+        q["kind"] = kind
+    if reason:
+        q["reason"] = reason
+    if company_id:
+        q["company_id"] = str(company_id)
+    if priority != "all":
+        # Equality, served by (status, priority, created_at): every row
+        # carries its priority from insert (L6.3).
+        q["priority"] = priority
+    rows = await db[review_queue.COLLECTION].find(q).sort(
+        [("created_at", -1), ("_id", -1)]).skip(offset).to_list(limit + 1)
+    memo: dict = {}
+    items = [await _review_view(r, memo=memo) for r in rows[:limit]]
+    companies = []
+    for cid in sorted({str(c) for c in await db[review_queue.COLLECTION].distinct(
+            "company_id", {"status": status}) if c}):
+        co = memo.get(("co", cid))
+        if co is None:
+            co = await db.companies.find_one({"_id": to_query_id(cid)}, {"name": 1})
+        companies.append({"id": cid, "name": (co or {}).get("name")})
+    return {"items": items, "offset": offset, "limit": limit,
+            "has_more": len(rows) > limit and offset + limit <= review_queue.MAX_OFFSET,
+            "kinds": list(review_queue.KINDS),
+            "reasons": list(review_queue.REASONS),
+            "statuses": list(review_queue.STATUSES),
+            "priorities": list(review_queue.PRIORITY_FILTERS), "companies": companies}
+
+
+@api_router.get("/owner/review-queue/{item_id}", tags=["Owner"])
+async def owner_review_item(item_id: str, operator=Depends(require_operator_404)):
+    """One item with its full evidence: every record the answer was shown,
+    its tools and gates, and the evidence it was queued with."""
+    doc = await _review_item(item_id)
+    return {"item": await _review_view(doc, full=True)}
+
+
+@api_router.post("/owner/review-queue/{item_id}/decide", tags=["Owner"])
+async def owner_review_decide(item_id: str, body: Optional[ReviewDecisionIn] = None,
+                              operator=Depends(require_operator_404)):
+    """Approve or deny one item, pending or decided (a decided item may be
+    decided again, with a new explanation). The explanation is required.
+    Each decision is its own audit row."""
+    doc = await _review_item(item_id)
+    body = body or ReviewDecisionIn()
+    err = review_queue.check_decision(body.decision, body.explanation)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+    if review_queue.same_explanation(doc.get("decision"), body.explanation):
+        raise HTTPException(status_code=409, detail={
+            "code": "SAME_EXPLANATION",
+            "message": "To decide this again, write a new explanation."})
+    if not await _review_decide(item_id, decision=body.decision,
+                                explanation=body.explanation, operator=operator, prior=doc):
+        raise HTTPException(status_code=409, detail={
+            "code": "DECIDED_MEANWHILE",
+            "message": "This item was just decided by someone else. Reload it."})
+    number = len(review_queue.history(doc)) + 1
+    previous = doc.get("decision") if isinstance(doc.get("decision"), dict) else None
+    await audit_log("review_decision", actor_id(operator), "review_queue", str(item_id),
+                    {"kind": doc.get("kind"), "reason": doc.get("reason"),
+                     "company_id": str(doc.get("company_id") or ""),
+                     "answer_log_id": doc.get("answer_log_id"),
+                     "decision": body.decision,
+                     "explanation": review_queue.clean_explanation(body.explanation),
+                     "decision_number": number,
+                     "previous_decision": (previous or {}).get("decision")})
+    logger.info(f"[review-queue] decided kind={doc.get('kind')} decision={body.decision} "
+                f"number={number}")
+    fresh = await _review_item(item_id)
+    return {"item": await _review_view(fresh, full=True)}
+
+
 def _dm_gates(path: str, extra: dict, fallback: bool, reason: Any) -> list:
     """What the DM checks decided, as each exposes it: the brain's number /
     claim / sender checks (stop, unverified, retries), a headcount's wording
@@ -84980,6 +85178,11 @@ async def startup_event():
     # Pending items, normal before low, newest first (L6.4's default list).
     await db.review_queue.create_index([("status", 1), ("priority", 1), ("created_at", -1)])
     await db.review_queue.create_index([("company_id", 1), ("created_at", -1)])
+    # The operator's list (GET /owner/review-queue): one status, then
+    # optionally one company, kind or reason, newest first.
+    await db.review_queue.create_index([("status", 1), ("company_id", 1), ("created_at", -1)])
+    await db.review_queue.create_index([("status", 1), ("kind", 1), ("created_at", -1)])
+    await db.review_queue.create_index([("status", 1), ("reason", 1), ("created_at", -1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
     await _ensure_index_resilient(

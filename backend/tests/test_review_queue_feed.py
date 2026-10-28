@@ -453,11 +453,20 @@ class OneWriter(unittest.TestCase):
                 m = _WRITE.search(line)
                 if m:
                     hits.append((f.relative_to(BACKEND).as_posix(), n, m.group(1)))
-        self.assertEqual([(h[0], h[2]) for h in hits], [("server.py", "insert_one")])
+        # The insert (the feed) and, since L6.4, the operator's decision: one
+        # update_one, in _review_decide, conditional on the decision history
+        # being the length that was read (re-deciding appends to it).
+        self.assertEqual([(h[0], h[2]) for h in hits],
+                         [("server.py", "insert_one"), ("server.py", "update_one")])
         tree = ast.parse((BACKEND / "server.py").read_text(encoding="utf-8"))
-        fn = next(node for node in ast.walk(tree)
-                  if isinstance(node, ast.AsyncFunctionDef) and node.name == "_review_queue_add")
-        self.assertTrue(fn.lineno <= hits[0][1] <= fn.end_lineno)
+        fns = {node.name: node for node in ast.walk(tree)
+               if isinstance(node, ast.AsyncFunctionDef)
+               and node.name in ("_review_queue_add", "_review_decide")}
+        add, decide = fns["_review_queue_add"], fns["_review_decide"]
+        self.assertTrue(add.lineno <= hits[0][1] <= add.end_lineno)
+        self.assertTrue(decide.lineno <= hits[1][1] <= decide.end_lineno)
+        self.assertIn('f"decisions.{n}": {"$exists": False}',
+                      ast.unparse(decide).replace("'", '"'))
 
     def test_it_is_listed_by_status_and_by_company(self):
         src = (BACKEND / "server.py").read_text(encoding="utf-8")
