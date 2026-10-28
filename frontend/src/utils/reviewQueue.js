@@ -8,6 +8,9 @@
  *
  * DEFAULT VIEW "Needs decision": pending items of normal priority. Low
  * priority (set_health_info) is behind "Show low priority".
+ *
+ * A decided item may be decided again with a NEW explanation (the server
+ * keeps every decision in `decisions`; the same explanation is a 409).
  */
 
 export const MIN_EXPLANATION = 10;
@@ -20,6 +23,7 @@ export const REASON_LABEL = {
   set_health_failed: 'Set health: failed',
   set_health_info: 'Set health: info',
   registration: 'Registration refused',
+  set_ambiguity: 'Set ambiguity',
 };
 
 export const KIND_LABEL = {
@@ -59,8 +63,12 @@ export function listParams({ status, reason, company, showLow, offset, limit } =
   return p;
 }
 
-/** The decide request, or why not yet. The explanation is required. */
-export function decideRequest(decision, explanation, notify) {
+const norm = (t) => String(t || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+/** The decide request, or why not yet. The explanation is required; a
+ *  re-decision needs a new one (`previous` is the current decision's).
+ *  "Include my explanation" only counts when Notify is ticked. */
+export function decideRequest(decision, explanation, notify, includeExplanation, previous) {
   if (decision !== 'approve' && decision !== 'deny') {
     return { error: 'Choose approve or deny.' };
   }
@@ -68,7 +76,26 @@ export function decideRequest(decision, explanation, notify) {
   if (text.replace(/\s+/g, ' ').length < MIN_EXPLANATION) {
     return { error: `Write an explanation (at least ${MIN_EXPLANATION} characters).` };
   }
-  return { body: { decision, explanation: text, notify: notify === true } };
+  if (previous && norm(previous) === norm(text)) {
+    return { error: 'To decide this again, write a new explanation.' };
+  }
+  const n = notify === true;
+  return {
+    body: {
+      decision, explanation: text, notify: n,
+      include_explanation: n && includeExplanation === true,
+    },
+  };
+}
+
+function decisionView(dec) {
+  return {
+    text: dec.decision === 'approve' ? 'Approved' : 'Denied',
+    explanation: dec.explanation || '',
+    when: fmtWhen(dec.decided_at),
+    notified: dec.notify === true,
+    withExplanation: dec.include_explanation === true,
+  };
 }
 
 function fmtWhen(at) {
@@ -118,12 +145,10 @@ export function itemView(item) {
     gates: ans && Array.isArray(ans.gates) ? ans.gates.map(gateLine) : [],
     build: ans ? [ans.model, ans.code_sha].filter(Boolean).join(' · ') : '',
     evidence: it.evidence && typeof it.evidence === 'object' ? it.evidence : null,
-    decision: dec ? {
-      text: dec.decision === 'approve' ? 'Approved' : 'Denied',
-      explanation: dec.explanation || '',
-      when: fmtWhen(dec.decided_at),
-      notified: dec.notify === true,
-    } : null,
+    decision: dec ? decisionView(dec) : null,
+    // Every decision, newest first (the server keeps them oldest first).
+    history: (Array.isArray(it.decisions) ? it.decisions : [])
+      .filter((x) => x && typeof x === 'object').map(decisionView).reverse(),
   };
 }
 

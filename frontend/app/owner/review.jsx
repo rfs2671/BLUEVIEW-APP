@@ -29,7 +29,11 @@ const PAGE = 25;
  * list, newest first. Default "Needs decision": pending, normal priority.
  * An item opens with its question, answer, records and gates; Approve / Deny
  * need an explanation, and Notify (a dispute with a known person) sends them
- * one plain line. The server is the gate: /api/owner/* is 404 to anyone else.
+ * one plain note, English then Spanish ("Include my explanation" adds it). A
+ * decided item can be decided again with a new explanation; its history is
+ * shown. The Approve / Deny row is pinned at the bottom of the detail (a
+ * footer outside the scroll), so it is always in view on a phone. The server
+ * is the gate: /api/owner/* is 404 to anyone else.
  */
 export default function OwnerReviewScreen() {
   const { colors } = useTheme();
@@ -51,6 +55,7 @@ export default function OwnerReviewScreen() {
   const [open, setOpen] = useState(null);      // { item, state }
   const [explanation, setExplanation] = useState('');
   const [notify, setNotify] = useState(false);
+  const [includeExplanation, setIncludeExplanation] = useState(false);
   const [formError, setFormError] = useState('');
   const [busy, setBusy] = useState(null);
 
@@ -76,7 +81,7 @@ export default function OwnerReviewScreen() {
   useEffect(() => { load(false); }, [isOperator, status, reason, company, showLow]);
 
   const openItem = async (row) => {
-    setExplanation(''); setNotify(false); setFormError('');
+    setExplanation(''); setNotify(false); setIncludeExplanation(false); setFormError('');
     setOpen({ item: row, state: 'loading' });
     const res = await settleFetch(() => ownerAPI.reviewItem(row.source, row.id));
     setOpen((o) => (o && o.item.id === row.id
@@ -87,7 +92,9 @@ export default function OwnerReviewScreen() {
   const decide = async (decision) => {
     const it = open?.item;
     if (!it) return;
-    const req = decideRequest(decision, explanation, notify && itemView(it).canNotify);
+    const iv = itemView(it);
+    const req = decideRequest(decision, explanation, notify && iv.canNotify,
+      includeExplanation, iv.decision ? iv.decision.explanation : null);
     if (req.error) { setFormError(req.error); return; }
     setFormError('');
     setBusy(decision);
@@ -95,6 +102,7 @@ export default function OwnerReviewScreen() {
       const res = await ownerAPI.reviewDecide(it.source, it.id, req.body);
       toast.success(decision === 'approve' ? 'Approved' : 'Denied', decideResult(res));
       setOpen({ item: res?.item || it, state: 'ok' });
+      setExplanation(''); setNotify(false); setIncludeExplanation(false);
       setItems((list) => list.map((r) => (r.id === it.id && r.source === it.source
         ? (res?.item || r) : r)));
     } catch (e) {
@@ -216,7 +224,7 @@ export default function OwnerReviewScreen() {
         <Modal visible={!!open} transparent animationType="fade"
           onRequestClose={() => setOpen(null)}>
           <View style={s.backdrop}>
-            <GlassCard variant="modal" style={s.modalCard}>
+            <GlassCard variant="modal" style={s.modalCard} contentStyle={s.modalContent}>
               {ov ? (
                 <ScrollView style={s.detailScroll} contentContainerStyle={s.detail}>
                   <View style={s.rowHead}>
@@ -259,16 +267,29 @@ export default function OwnerReviewScreen() {
 
                   {ov.decision ? (
                     <View style={s.decided}>
-                      <Text style={[s.name, ov.decision.text === 'Approved'
-                        ? s.badgeOk : s.badgeNo]}>{ov.decision.text}</Text>
-                      <Text style={s.line}>{ov.decision.explanation}</Text>
-                      <Text style={s.meta}>
-                        {ov.decision.when}{ov.decision.notified ? ' · person notified' : ''}
+                      <Text style={s.section}>
+                        {ov.history.length > 1 ? `DECISIONS (${ov.history.length})` : 'DECISION'}
                       </Text>
+                      {(ov.history.length ? ov.history : [ov.decision]).map((d, i) => (
+                        <View key={`${d.when}-${i}`} style={[s.decisionRow, i > 0 && s.decisionOld]}>
+                          <Text style={[s.name, d.text === 'Approved' ? s.badgeOk : s.badgeNo]}>
+                            {d.text}{i === 0 ? '' : ' (earlier)'}
+                          </Text>
+                          <Text style={s.line}>{d.explanation}</Text>
+                          <Text style={s.meta}>
+                            {d.when}{d.notified ? ' · person notified' : ''}
+                            {d.notified && d.withExplanation ? ' with this explanation' : ''}
+                          </Text>
+                        </View>
+                      ))}
                     </View>
-                  ) : ov.pending ? (
+                  ) : null}
+                  {ov.decision || ov.pending ? (
                     <View style={s.form}>
-                      <Text style={s.section}>EXPLANATION (REQUIRED)</Text>
+                      <Text style={s.section}>
+                        {ov.decision ? 'CHANGE THE DECISION: NEW EXPLANATION (REQUIRED)'
+                          : 'EXPLANATION (REQUIRED)'}
+                      </Text>
                       <TextInput
                         value={explanation}
                         onChangeText={(t) => { setExplanation(t); setFormError(''); }}
@@ -279,7 +300,10 @@ export default function OwnerReviewScreen() {
                         accessibilityLabel="Explanation"
                       />
                       {ov.canNotify ? (
-                        <Pressable onPress={() => setNotify(!notify)} accessibilityRole="checkbox"
+                        <Pressable onPress={() => {
+                          if (notify) setIncludeExplanation(false);
+                          setNotify(!notify);
+                        }} accessibilityRole="checkbox"
                           accessibilityState={{ checked: notify }}
                           style={({ pressed }) => [s.check, pressed && s.pressed]}>
                           {notify
@@ -288,33 +312,51 @@ export default function OwnerReviewScreen() {
                           <Text style={s.checkText}>Notify the person</Text>
                         </Pressable>
                       ) : null}
+                      {ov.canNotify ? (
+                        <Pressable onPress={() => setIncludeExplanation(!includeExplanation)}
+                          disabled={!notify} accessibilityRole="checkbox"
+                          accessibilityState={{ checked: notify && includeExplanation,
+                            disabled: !notify }}
+                          style={({ pressed }) => [s.check, s.subCheck, !notify && s.disabled,
+                            pressed && s.pressed]}>
+                          {notify && includeExplanation
+                            ? <SquareCheck size={18} strokeWidth={1.75} color={colors.text.primary} />
+                            : <Square size={18} strokeWidth={1.75} color={colors.text.secondary} />}
+                          <Text style={s.checkText}>Include my explanation</Text>
+                        </Pressable>
+                      ) : null}
                       {formError ? <Text style={s.blockText}>{formError}</Text> : null}
-                      <View style={s.modalActions}>
-                        <Pressable onPress={() => decide('deny')} disabled={!!busy}
-                          accessibilityRole="button" accessibilityLabel="Deny"
-                          style={({ pressed }) => [s.cancelBtn, s.rowBtn, pressed && s.pressed]}>
-                          {busy === 'deny'
-                            ? <ActivityIndicator size="small" color={colors.text.secondary} />
-                            : <X size={15} strokeWidth={1.75} color={colors.text.primary} />}
-                          <Text style={s.btnText}>Deny</Text>
-                        </Pressable>
-                        <Pressable onPress={() => decide('approve')} disabled={!!busy}
-                          accessibilityRole="button" accessibilityLabel="Approve"
-                          style={({ pressed }) => [s.okBtn, s.rowBtn, pressed && s.pressed]}>
-                          {busy === 'approve'
-                            ? <ActivityIndicator size="small" color={colors.onPrimary} />
-                            : <Check size={15} strokeWidth={2} color={colors.onPrimary} />}
-                          <Text style={s.okText}>Approve</Text>
-                        </Pressable>
-                      </View>
                     </View>
                   ) : null}
                 </ScrollView>
               ) : null}
-              <Pressable onPress={() => setOpen(null)} style={s.cancelBtn}
-                accessibilityRole="button">
-                <Text style={s.cancelText}>Close</Text>
-              </Pressable>
+              {/* THE FOOTER: pinned below the scroll, always in view. */}
+              <View style={s.footer}>
+                {ov && (ov.decision || ov.pending) ? (
+                  <View style={s.modalActions}>
+                    <Pressable onPress={() => decide('deny')} disabled={!!busy}
+                      accessibilityRole="button" accessibilityLabel="Deny"
+                      style={({ pressed }) => [s.cancelBtn, s.rowBtn, pressed && s.pressed]}>
+                      {busy === 'deny'
+                        ? <ActivityIndicator size="small" color={colors.text.secondary} />
+                        : <X size={15} strokeWidth={1.75} color={colors.text.primary} />}
+                      <Text style={s.btnText}>Deny</Text>
+                    </Pressable>
+                    <Pressable onPress={() => decide('approve')} disabled={!!busy}
+                      accessibilityRole="button" accessibilityLabel="Approve"
+                      style={({ pressed }) => [s.okBtn, s.rowBtn, pressed && s.pressed]}>
+                      {busy === 'approve'
+                        ? <ActivityIndicator size="small" color={colors.onPrimary} />
+                        : <Check size={15} strokeWidth={2} color={colors.onPrimary} />}
+                      <Text style={s.okText}>Approve</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+                <Pressable onPress={() => setOpen(null)} style={[s.cancelBtn, s.closeBtn]}
+                  accessibilityRole="button">
+                  <Text style={s.cancelText}>Close</Text>
+                </Pressable>
+              </View>
             </GlassCard>
           </View>
         </Modal>
@@ -370,7 +412,20 @@ function buildStyles(colors) {
       alignItems: 'center', justifyContent: 'center', padding: spacing.lg,
     },
     modalCard: { padding: spacing.lg, gap: spacing.sm, width: '100%', maxWidth: 560, maxHeight: '90%' },
-    detailScroll: { flexGrow: 0 },
+    // The card's content column shrinks to the card, so the scroll (not the
+    // page) takes the overflow and the footer stays inside the card.
+    modalContent: { flexShrink: 1, minHeight: 0, gap: spacing.sm },
+    // The detail scrolls; the footer (Approve / Deny, Close) does not.
+    detailScroll: { flexGrow: 0, flexShrink: 1, minHeight: 0 },
+    footer: {
+      flexShrink: 0, gap: spacing.xs, paddingTop: spacing.sm,
+      borderTopWidth: 1, borderTopColor: colors.glass.border,
+    },
+    closeBtn: { flex: 0 },
+    subCheck: { paddingLeft: spacing.lg },
+    disabled: { opacity: 0.45 },
+    decisionRow: { gap: 2 },
+    decisionOld: { opacity: 0.7, marginTop: spacing.xs },
     detail: { gap: 4 },
     decided: { marginTop: spacing.md, gap: 4 },
     form: { marginTop: spacing.xs, gap: spacing.xs },
@@ -380,7 +435,7 @@ function buildStyles(colors) {
       color: colors.text.primary, fontSize: 15, textAlignVertical: 'top',
     },
     blockText: { fontSize: 13, color: semantic.attention, lineHeight: 18 },
-    modalActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+    modalActions: { flexDirection: 'row', gap: spacing.sm },
     rowBtn: { flexDirection: 'row', gap: 6 },
     cancelBtn: {
       flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center',

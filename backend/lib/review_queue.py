@@ -5,7 +5,8 @@ operator-gated routes and the web screen, approve / deny with an
 explanation -- the section at the end of this file). The feed only
 INSERTS items: server._review_queue_add is the one inserter. The one
 change ever made to a row is the operator's decision (L6.4,
-server._review_decide: status pending -> approved | denied, once). No
+server._review_decide: status pending -> approved | denied, and again with
+a new explanation; each decision appended to `decisions`). No
 person but the operator is ever shown one.
 
 ONE COLLECTION, `review_queue`, for the auto-queued kinds below. A dispute
@@ -50,10 +51,13 @@ A ROW:
                     ruling: it replaces the earlier "conflict").
   priority          "low" for set_health_info, "normal" for everything else
                     (L6.4 lists pending items by status, priority, newest)
-  status            "pending" at insert. Changed once, by the operator's
+  status            "pending" at insert. Changed by the operator's
                     decision only (server._review_decide), to "approved" or
                     "denied", with `decision` {decision, explanation, notify,
-                    operator_id, decided_at} beside it.
+                    include_explanation, operator_id, decided_at} beside it
+                    (the current one) and `decisions` (every one, appended;
+                    a decided item may be decided again with a NEW
+                    explanation).
 """
 
 from __future__ import annotations
@@ -302,10 +306,13 @@ def from_plan_set_question(company_id: Any, project_id: Any, question: Dict[str,
 # its answer_log row, and decides it: approve or deny, with an explanation
 # and an optional note to the person who disputed. server._review_decide is
 # the ONE writer of a decision: a conditional update of the item's own
-# status, pending -> approved | denied, once. answer_log is never touched.
+# status and decision, appending the decision to `decisions`. A decided item
+# may be decided again (owner ruling) with a NEW explanation: the same
+# explanation as the current decision is a 409. answer_log is never touched.
 # Nothing here is shown to anyone but the operator; a disputing person only
-# ever sees "Flagged for review" (and, when the operator ticks Notify, one of
-# the two plain NOTIFY_TEXT lines).
+# ever sees "Flagged for review" (and, when the operator ticks Notify, the
+# NOTIFY_TEXT line, English then Spanish, plus the explanation when the
+# operator ticks "Include my explanation").
 #
 # NOT HERE (L6.5): an approved dispute becoming a verified eval example and a
 # fix ticket, a denied one a disputed-but-confirmed example, and "under
@@ -326,12 +333,25 @@ MAX_LIST = 100
 MAX_OFFSET = 1000
 LIST_RECORDS = 6                    # records per answer on the list; all on the item
 
-#: The one line a disputing person gets when the operator ticks Notify.
-#: Plain on purpose: no status word, no reviewer, no explanation.
+#: The line a disputing person gets when the operator ticks Notify, English
+#: then Spanish in one message (as the proactive bilingual DMs are sent: the
+#: DOT embargo DM, EN block then ES block; a proactive DM has no per-person
+#: language). Plain on purpose: no status word, no reviewer; the operator's
+#: explanation only when they tick "Include my explanation".
 NOTIFY_TEXT = {
-    "approve": "Thanks — you were right; we're fixing it.",
-    "deny": "Thanks — we checked; the answer stands.",
+    "approve": {"en": "Thanks — you were right. We've logged it for a fix.",
+                "es": "Gracias — tenía razón. Lo registramos para corregirlo."},
+    "deny": {"en": "Thanks — we checked; the answer stands.",
+             "es": "Gracias — lo revisamos; la respuesta es correcta."},
 }
+
+
+def notify_text(decision: str, explanation: Any = None) -> str:
+    """EN line, ES line, then (when given) the explanation on a new line."""
+    t = NOTIFY_TEXT[decision]
+    out = f"{t['en']}\n{t['es']}"
+    extra = clean_explanation(explanation) if explanation else ""
+    return f"{out}\n{extra}" if extra else out
 
 
 def check_decision(decision: Any, explanation: Any) -> Optional[str]:
@@ -348,15 +368,44 @@ def clean_explanation(explanation: Any) -> str:
     return answer_log.redact(str(explanation or "").strip()[:MAX_EXPLANATION])
 
 
+def _norm_text(v: Any) -> str:
+    return " ".join(str(v or "").split()).casefold()
+
+
+def same_explanation(current: Any, explanation: Any) -> bool:
+    """A re-decision must say something new: True when `explanation` is the
+    current decision's (whitespace and case aside)."""
+    if not isinstance(current, dict):
+        return False
+    return _norm_text(current.get("explanation")) == _norm_text(clean_explanation(explanation))
+
+
+def history(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Every decision of an item, oldest first. A row decided before the
+    history existed has only `decision`: that is its history of one."""
+    hist = doc.get("decisions")
+    if isinstance(hist, list):
+        return [d for d in hist if isinstance(d, dict)]
+    return [doc["decision"]] if isinstance(doc.get("decision"), dict) else []
+
+
+def decision_entry(decision: str, explanation: Any, notify: bool, include_explanation: bool,
+                   operator_id: Any, now: datetime) -> Dict[str, Any]:
+    """One decision: what was decided, why, and whether the person was told."""
+    return {"decision": decision,
+            "explanation": clean_explanation(explanation),
+            "notify": bool(notify),
+            "include_explanation": bool(notify and include_explanation),
+            "operator_id": str(operator_id or ""),
+            "decided_at": now}
+
+
 def decision_set(decision: str, explanation: Any, notify: bool, operator_id: Any,
-                 now: datetime) -> Dict[str, Any]:
+                 now: datetime, include_explanation: bool = False) -> Dict[str, Any]:
     """The $set of a decision: the item's status and what decided it."""
     return {"status": DECISIONS[decision],
-            "decision": {"decision": decision,
-                         "explanation": clean_explanation(explanation),
-                         "notify": bool(notify),
-                         "operator_id": str(operator_id or ""),
-                         "decided_at": now}}
+            "decision": decision_entry(decision, explanation, notify, include_explanation,
+                                       operator_id, now)}
 
 
 #: Owner ruling (L6.4): every item has a REASON and a PRIORITY. A queue row
@@ -449,6 +498,7 @@ def item_view(source: str, doc: Dict[str, Any], *, company_name: Any = None,
         "answer": answer_view(answer, full=full),
         "decision": ({**decision, "decided_at": _when(decision.get("decided_at"))}
                      if decision else None),
+        "decisions": [{**d, "decided_at": _when(d.get("decided_at"))} for d in history(doc)],
     }
     if dispute:
         out["asker"] = {"user_id": doc.get("user_id"), "name": asker_name,

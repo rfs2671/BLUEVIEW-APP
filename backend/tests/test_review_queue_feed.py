@@ -441,7 +441,8 @@ class OneWriter(unittest.TestCase):
                 if m:
                     hits.append((f.relative_to(BACKEND).as_posix(), n, m.group(1)))
         # The insert (the feed) and, since L6.4, the operator's decision: one
-        # update_one, in _review_decide, conditional on status "pending".
+        # update_one, in _review_decide, conditional on the decision history
+        # being the length that was read (re-deciding appends to it).
         self.assertEqual([(h[0], h[2]) for h in hits],
                          [("server.py", "insert_one"), ("server.py", "update_one")])
         tree = ast.parse((BACKEND / "server.py").read_text(encoding="utf-8"))
@@ -451,7 +452,7 @@ class OneWriter(unittest.TestCase):
         add, decide = fns["_review_queue_add"], fns["_review_decide"]
         self.assertTrue(add.lineno <= hits[0][1] <= add.end_lineno)
         self.assertTrue(decide.lineno <= hits[1][1] <= decide.end_lineno)
-        self.assertIn('"status": review_queue.STATUS_PENDING',
+        self.assertIn('f"decisions.{n}": {"$exists": False}',
                       ast.unparse(decide).replace("'", '"'))
 
     def test_it_is_listed_by_status_and_by_company(self):

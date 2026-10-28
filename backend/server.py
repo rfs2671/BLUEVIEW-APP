@@ -80592,10 +80592,14 @@ async def dispute_answer(answer_log_id: str, body: Optional[AnswerDisputeIn] = N
 # item's company, so a row is never joined to another company's answer.
 #
 # ONE WRITER, ONE CHANGE. _review_decide is the only code that changes a
-# dispute or a queue item, and the only change is its status, pending ->
-# approved | denied, once (a conditional update on status "pending"; a
-# second decision is a 409). answer_log stays insert-only. Every decision
-# is an audit_logs row. Approved / denied having CONSEQUENCES (eval
+# dispute or a queue item, and the only change is its decision: status
+# approved | denied, `decision` (the current one) and `decisions` (each one
+# appended). A decided item may be decided again with a NEW explanation
+# (owner ruling); the same explanation as the current decision is a 409
+# SAME_EXPLANATION, and a decision made by someone else between the read
+# and the write is a 409 DECIDED_MEANWHILE (the update is conditional on
+# the history being the length that was read). answer_log stays
+# insert-only. Every decision is its own audit_logs row. Approved / denied having CONSEQUENCES (eval
 # examples, fix tickets, "under review" refusals) is L6.5, not here.
 
 _REVIEW_COLLECTIONS = {review_queue.SOURCE_DISPUTE: answer_disputes.COLLECTION,
@@ -80608,6 +80612,7 @@ class ReviewDecisionIn(BaseModel):
     decision: str = ""
     explanation: str = ""
     notify: bool = False
+    include_explanation: bool = False
 
 
 async def _review_item(source: str, item_id: str) -> dict:
@@ -80665,35 +80670,53 @@ async def _review_view(source: str, doc: dict, *, full: bool = False,
 
 
 async def _review_decide(source: str, item_id: str, *, decision: str, explanation: str,
-                         notify: bool, operator: dict) -> bool:
+                         notify: bool, operator: dict, prior: dict,
+                         include_explanation: bool = False) -> bool:
     """THE ONE WRITER OF A REVIEW DECISION, and the only code that changes a
-    dispute or a queue item. Conditional on status "pending": True when this
-    call decided it, False when it was already decided (or is gone)."""
+    dispute or a queue item: the current decision set, and appended to the
+    item's history. Conditional on the history being as long as it was in
+    `prior` (the row the route read): True when this call decided it, False
+    when someone decided it meanwhile (or it is gone)."""
     change = review_queue.decision_set(decision, explanation, notify, actor_id(operator),
-                                       datetime.now(timezone.utc))
-    guard = {"_id": str(item_id), "status": review_queue.STATUS_PENDING}
+                                       datetime.now(timezone.utc),
+                                       include_explanation=include_explanation)
+    hist = review_queue.history(prior)
+    n = len(hist)
+    guard = {"_id": str(item_id), f"decisions.{n}": {"$exists": False}}
+    if isinstance(prior.get("decisions"), list):
+        update = {"$set": change, "$push": {"decisions": change["decision"]}}
+    else:
+        # No history on the row yet (first decision, or a row decided before
+        # the history existed): it is written whole, from what was read.
+        guard["decisions"] = {"$exists": False}
+        guard["status"] = prior.get("status")
+        update = {"$set": {**change, "decisions": hist + [change["decision"]]}}
     if source == review_queue.SOURCE_DISPUTE:
-        res = await db[answer_disputes.COLLECTION].update_one(guard, {"$set": change})
+        res = await db[answer_disputes.COLLECTION].update_one(guard, update)
     elif source == review_queue.SOURCE_QUEUE:
-        res = await db[review_queue.COLLECTION].update_one(guard, {"$set": change})
+        res = await db[review_queue.COLLECTION].update_one(guard, update)
     else:
         return False
     return getattr(res, "modified_count", 0) == 1
 
 
-async def _review_notify(source: str, doc: dict, decision: str) -> dict:
-    """The disputing person's one plain line, through the proactive DM path
-    (send_whatsapp_dm: opt-in, eligibility and the ledger, keyed by the item
-    so it goes once). Only a dispute has someone to tell; a dispute with no
-    user_id (a group asker known by key only) gets nothing."""
+async def _review_notify(source: str, doc: dict, decision: str,
+                         explanation: Optional[str] = None, number: int = 1) -> dict:
+    """The disputing person's note (review_queue.notify_text: EN line, ES
+    line, and the operator's explanation when they chose to include it),
+    through the proactive DM path (send_whatsapp_dm: opt-in, eligibility and
+    the ledger, keyed by the item and the decision's number, so each
+    decision goes at most once). Only a dispute has someone to tell; a
+    dispute with no user_id (a group asker known by key only) gets nothing."""
     if source != review_queue.SOURCE_DISPUTE:
         return {"sent": False, "reason": "not_a_dispute"}
     uid = doc.get("user_id")
     if not uid:
         return {"sent": False, "reason": "no_asker"}
     try:
-        sent = await send_whatsapp_dm(uid, review_queue.NOTIFY_TEXT[decision],
-                                      kind="review_decision", window=f"review:{doc['_id']}")
+        sent = await send_whatsapp_dm(uid, review_queue.notify_text(decision, explanation),
+                                      kind="review_decision",
+                                      window=f"review:{doc['_id']}:{int(number)}")
     except Exception as e:
         logger.warning(f"[review-queue] notify failed: {type(e).__name__}")
         sent = None
@@ -80778,23 +80801,32 @@ async def owner_review_item(source: str, item_id: str,
 async def owner_review_decide(source: str, item_id: str,
                               body: Optional[ReviewDecisionIn] = None,
                               operator=Depends(require_operator_404)):
-    """Approve or deny one pending item. The explanation is required; notify
-    sends the disputing person one plain line (_review_notify). Audited."""
+    """Approve or deny one item, pending or decided (a decided item may be
+    decided again, with a new explanation). The explanation is required;
+    notify sends the disputing person the plain note (_review_notify), with
+    the explanation only when include_explanation is also true. Each
+    decision is its own audit row."""
     doc = await _review_item(source, item_id)
     body = body or ReviewDecisionIn()
     err = review_queue.check_decision(body.decision, body.explanation)
     if err:
         raise HTTPException(status_code=422, detail=err)
-    already = HTTPException(status_code=409, detail={
-        "code": "ALREADY_DECIDED", "message": "This item was already decided."})
-    if doc.get("status") != review_queue.STATUS_PENDING:
-        raise already
+    if review_queue.same_explanation(doc.get("decision"), body.explanation):
+        raise HTTPException(status_code=409, detail={
+            "code": "SAME_EXPLANATION",
+            "message": "To decide this again, write a new explanation."})
+    include = bool(body.notify and body.include_explanation)
     if not await _review_decide(source, item_id, decision=body.decision,
                                 explanation=body.explanation, notify=body.notify,
-                                operator=operator):
-        raise already
-    notified = (await _review_notify(source, doc, body.decision) if body.notify
-                else {"sent": False, "reason": "not_requested"})
+                                operator=operator, prior=doc, include_explanation=include):
+        raise HTTPException(status_code=409, detail={
+            "code": "DECIDED_MEANWHILE",
+            "message": "This item was just decided by someone else. Reload it."})
+    number = len(review_queue.history(doc)) + 1
+    previous = doc.get("decision") if isinstance(doc.get("decision"), dict) else None
+    notified = (await _review_notify(source, doc, body.decision,
+                                     body.explanation if include else None, number)
+                if body.notify else {"sent": False, "reason": "not_requested"})
     await audit_log("review_decision", actor_id(operator),
                     "answer_dispute" if source == review_queue.SOURCE_DISPUTE
                     else "review_queue", str(item_id),
@@ -80804,8 +80836,10 @@ async def owner_review_decide(source: str, item_id: str,
                      "answer_log_id": doc.get("answer_log_id"),
                      "decision": body.decision,
                      "explanation": review_queue.clean_explanation(body.explanation),
-                     "notify": bool(body.notify),
-                     "notified": notified["sent"], "notify_reason": notified["reason"]})
+                     "notify": bool(body.notify), "include_explanation": include,
+                     "notified": notified["sent"], "notify_reason": notified["reason"],
+                     "decision_number": number,
+                     "previous_decision": (previous or {}).get("decision")})
     logger.info(f"[review-queue] decided source={source} kind={doc.get('kind') or 'dispute'} "
                 f"decision={body.decision} notify={bool(body.notify)} sent={notified['sent']}")
     fresh = await _review_item(source, item_id)

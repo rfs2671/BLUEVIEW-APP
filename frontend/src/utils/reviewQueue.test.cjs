@@ -1,6 +1,8 @@
 /**
  * OWNER PORTAL → REVIEW QUEUE (L6.4): what the list shows, that a decision
- * needs an explanation, and that the Notify checkbox is what is sent.
+ * needs an explanation, that the Notify and "Include my explanation"
+ * checkboxes are what is sent, that a decided item can be decided again with
+ * a new explanation, and that Approve / Deny sit in a pinned footer.
  *
  * Run:  node src/utils/reviewQueue.test.cjs
  */
@@ -38,7 +40,12 @@ const LIST = {
     { source: 'dispute', id: 'd2', kind: 'dispute', reason: 'dispute', status: 'denied',
       company: { id: 'c2', name: 'OTHER CO' }, asker: { user_id: null, name: null },
       decision: { decision: 'deny', explanation: 'checked S-201', notify: false,
-        decided_at: '2026-10-28T10:00:00+00:00' } },
+        decided_at: '2026-10-28T10:00:00+00:00' },
+      decisions: [
+        { decision: 'approve', explanation: 'first look', notify: true,
+          include_explanation: true, decided_at: '2026-10-28T09:30:00+00:00' },
+        { decision: 'deny', explanation: 'checked S-201', notify: false,
+          decided_at: '2026-10-28T10:00:00+00:00' }] },
   ],
 };
 
@@ -58,6 +65,12 @@ ok(d.canNotify === true && g.canNotify === false && q.canNotify === false,
   'Notify only for a dispute with a known person');
 ok(g.decision && g.decision.text === 'Denied' && g.decision.explanation === 'checked S-201',
   'a decided item shows its decision');
+ok(g.history.length === 2 && g.history[0].text === 'Denied'
+  && g.history[1].text === 'Approved' && g.history[1].withExplanation === true,
+  'every decision, newest first');
+ok(d.history.length === 0, 'a pending item has no history');
+ok(R.reasonLabel('set_ambiguity') === 'Set ambiguity'
+  && R.REASON_FILTERS.some((f) => f.key === 'set_ambiguity'), 'set_ambiguity is a reason');
 ok(R.itemView(undefined).key === 'item:' && R.itemView({}).records.length === 0,
   'any shape renders (never throws)');
 
@@ -84,6 +97,22 @@ console.log('\nthe Notify checkbox is what is sent');
 ok(R.decideRequest('deny', 'checked it twice', true).body.notify === true, 'ticked: notify true');
 ok(R.decideRequest('deny', 'checked it twice', false).body.notify === false, 'unticked: false');
 ok(R.decideRequest('deny', 'checked it twice', 'yes').body.notify === false, 'only true is true');
+
+console.log('\n"Include my explanation" only with Notify');
+ok(R.decideRequest('deny', 'checked it twice', true, true).body.include_explanation === true,
+  'Notify + Include: true');
+ok(R.decideRequest('deny', 'checked it twice', true, false).body.include_explanation === false,
+  'Notify only: false');
+ok(R.decideRequest('deny', 'checked it twice', false, true).body.include_explanation === false,
+  'Include without Notify: false');
+ok(R.decideRequest('deny', 'checked it twice').body.include_explanation === false,
+  'default off');
+
+console.log('\na decided item can be decided again, with a new explanation');
+ok(!!R.decideRequest('approve', ' Checked  S-201 ', false, false, 'checked S-201').error,
+  'the same explanation: refused');
+ok(R.decideRequest('approve', 'rechecked S-201 rev 2', false, false, 'checked S-201').body
+  .decision === 'approve', 'a new one: sent');
 ok(/no direct chat/.test(R.decideResult({ notify: { sent: false, reason: 'no_asker' } })),
   'a group dispute says why nobody was told');
 ok(/sent the note/.test(R.decideResult({ notify: { sent: true, reason: 'sent' } })), 'sent');
@@ -93,13 +122,31 @@ const SCREEN = read('app/owner/review.jsx');
 ok(/isPlatformOperator\(user\)/.test(SCREEN) && /if \(!isOperator\) return;/.test(SCREEN),
   'fetches nothing for a non-operator');
 ok(/Platform operator access required\./.test(SCREEN), 'and shows the denial panel');
-ok(/const req = decideRequest\(decision, explanation, notify && itemView\(it\)\.canNotify\);\s*if \(req\.error\) \{ setFormError\(req\.error\); return; \}/.test(SCREEN),
+ok(/const req = decideRequest\(decision, explanation, notify && iv\.canNotify,\s*includeExplanation, iv\.decision \? iv\.decision\.explanation : null\);\s*if \(req\.error\) \{ setFormError\(req\.error\); return; \}/.test(SCREEN),
   'decide checks the explanation before any request');
 ok(/ownerAPI\.reviewDecide\(it\.source, it\.id, req\.body\)/.test(SCREEN),
   'and sends the checked body (notify included)');
 ok(/ownerAPI\.reviewQueue\(\s*listParams\(/.test(SCREEN), 'the list asks with listParams');
 ok(/accessibilityRole="checkbox"[\s\S]*Notify the person/.test(SCREEN), 'a Notify checkbox');
 ok(/Show low priority/.test(SCREEN), 'a Show low priority toggle');
+const notifyAt = SCREEN.lastIndexOf('Notify the person');
+const includeAt = SCREEN.lastIndexOf('Include my explanation');
+ok(notifyAt > 0 && includeAt > notifyAt, '"Include my explanation" sits under Notify');
+ok(/disabled=\{!notify\} accessibilityRole="checkbox"/.test(SCREEN.slice(notifyAt, includeAt)),
+  'and is enabled only when Notify is ticked');
+ok(/useState\(false\);/.test(SCREEN) && /const \[includeExplanation, setIncludeExplanation\] = useState\(false\);/.test(SCREEN),
+  'off by default');
+ok(/if \(notify\) setIncludeExplanation\(false\);/.test(SCREEN), 'unticking Notify clears it');
+const scrollEnd = SCREEN.indexOf('</ScrollView>\n              ) : null}');
+const footerAt = SCREEN.indexOf('<View style={s.footer}>');
+ok(scrollEnd > 0 && footerAt > scrollEnd
+  && SCREEN.indexOf("decide('approve')", footerAt) > footerAt
+  && SCREEN.indexOf("decide('deny')", footerAt) > footerAt,
+  'Approve / Deny are in the footer, outside the scroll (pinned)');
+ok(/detailScroll: \{ flexGrow: 0, flexShrink: 1/.test(SCREEN) && /footer: \{\s*flexShrink: 0/.test(SCREEN),
+  'the detail shrinks, the footer does not');
+ok(/\{ov\.decision \|\| ov\.pending \? \(/.test(SCREEN) && /NEW EXPLANATION \(REQUIRED\)/.test(SCREEN),
+  'a decided item shows the form again, asking for a new explanation');
 
 const API = read('src/utils/api.js');
 ok(/reviewQueue: async \(params\) => \{\s*const r = await apiClient\.get\('\/api\/owner\/review-queue', \{ params \}\);/.test(API),

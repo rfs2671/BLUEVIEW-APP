@@ -10,9 +10,12 @@
   * Default view "Needs decision": pending, normal priority (low hidden);
     reason / priority / kind / company filters.
   * Decide: an explanation is required; the decision writes status + one
-    audit row; answer_log is byte-for-byte unchanged; a second decision is
-    a 409. Notify sends exactly one plain line to a dispute's asker and
-    nothing for a group dispute (no user_id) or a queue item.
+    audit row; answer_log is byte-for-byte unchanged. A decided item may be
+    decided again with a NEW explanation (its own audit row, appended to
+    `decisions`); the same explanation again is a 409 SAME_EXPLANATION.
+    Notify sends one note, English then Spanish, to a dispute's asker (the
+    explanation only with include_explanation) and nothing for a group
+    dispute (no user_id) or a queue item.
 """
 
 from __future__ import annotations
@@ -304,23 +307,126 @@ class TheDecision(_Base):
         self.assertTrue(a["details"]["explanation"].startswith("Sheet A-101"))
         self.assertIsInstance(a["timestamp"], datetime)
         self.assertEqual(self.db.answer_log.rows, before)
-        # Decided once: a second decision is refused and writes nothing.
-        r2 = self.decide("dispute", "d_dm", self.op(), decision="deny",
-                         explanation="changing my mind on this one")
-        self.assertEqual(r2.status_code, 409)
-        self.assertEqual(len(self.db.audit_logs.rows), 1)
+        self.assertEqual(len(row["decisions"]), 1)
         self.assertEqual(len(self.sent), 1)
 
-    def test_notify_sends_exactly_one_plain_line_to_the_dm_asker(self):
+    def test_re_decide_twice_two_audit_rows_and_a_history(self):
+        before = copy.deepcopy(self.db.answer_log.rows)
+        r1 = self.decide("dispute", "d_dm", self.op(), decision="approve",
+                         explanation="Sheet A-101 says 3'-6\"; wrong door read.")
+        self.assertEqual(r1.status_code, 200, r1.text)
+        r2 = self.decide("dispute", "d_dm", self.op(), decision="deny",
+                         explanation="Rechecked: A-101 rev 2 says 3'-0\"; it stands.",
+                         notify=True)
+        self.assertEqual(r2.status_code, 200, r2.text)
+        row = next(d for d in self.db.answer_disputes.rows if d["_id"] == "d_dm")
+        self.assertEqual(row["status"], "denied")
+        self.assertEqual(row["decision"]["decision"], "deny")
+        self.assertEqual([d["decision"] for d in row["decisions"]], ["approve", "deny"])
+        self.assertEqual([d["notify"] for d in row["decisions"]], [False, True])
+        self.assertEqual([d["decision"] for d in r2.json()["item"]["decisions"]],
+                         ["approve", "deny"])
+        audits = [a for a in self.db.audit_logs.rows if a["action"] == "review_decision"]
+        self.assertEqual(len(audits), 2)
+        self.assertEqual([(a["details"]["decision"], a["details"]["decision_number"],
+                           a["details"]["previous_decision"]) for a in audits],
+                         [("approve", 1, None), ("deny", 2, "approve")])
+        self.assertEqual(len(self.sent), 1, "notify only on the decision that asked")
+        # A third time, with yet another explanation, still goes through.
+        r3 = self.decide("dispute", "d_dm", self.op(), decision="approve",
+                         explanation="Third look: the field note confirms 3'-6\".",
+                         notify=True)
+        self.assertEqual(r3.status_code, 200, r3.text)
+        row = next(d for d in self.db.answer_disputes.rows if d["_id"] == "d_dm")
+        self.assertEqual(len(row["decisions"]), 3)
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self.db.answer_log.rows, before, "answer_log never touched")
+
+    def test_re_decide_needs_a_new_explanation(self):
+        expl = "Checked A-101: the answer stands."
+        self.assertEqual(self.decide("dispute", "d_dm", self.op(), decision="deny",
+                                     explanation=expl).status_code, 200)
+        for e in (expl, "  checked a-101:   the answer STANDS. "):
+            r = self.decide("dispute", "d_dm", self.op(), decision="approve", explanation=e)
+            self.assertEqual(r.status_code, 409)
+            self.assertEqual(r.json()["detail"]["code"], "SAME_EXPLANATION")
+        r = self.decide("dispute", "d_dm", self.op(), decision="approve", explanation="short")
+        self.assertEqual(r.status_code, 422, "a missing / short explanation is still a 422")
+        row = next(d for d in self.db.answer_disputes.rows if d["_id"] == "d_dm")
+        self.assertEqual((row["status"], len(row["decisions"])), ("denied", 1))
+        self.assertEqual(len(self.db.audit_logs.rows), 1)
+
+    def test_a_row_decided_before_the_history_keeps_its_first_decision(self):
+        row = next(d for d in self.db.answer_disputes.rows if d["_id"] == "d_dm")
+        row.update(status="approved", decision={
+            "decision": "approve", "explanation": "an older decision text",
+            "notify": False, "operator_id": str(OP), "decided_at": T0})
+        r = self.decide("dispute", "d_dm", self.op(), decision="deny",
+                        explanation="A newer look at sheet A-101.")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([d["explanation"] for d in row["decisions"]],
+                         ["an older decision text", "A newer look at sheet A-101."])
+
+    def test_decided_meanwhile_is_a_409_and_writes_nothing(self):
+        real = server._review_item
+        calls = {"n": 0}
+
+        async def stale(source, item_id):
+            doc = await real(source, item_id)
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Someone else decides between this read and the write.
+                live = next(d for d in self.db.answer_disputes.rows if d["_id"] == item_id)
+                live["decisions"] = [{"decision": "deny", "explanation": "other operator"}]
+                live["status"] = "denied"
+            return doc
+        with patch.object(server, "_review_item", stale):
+            r = self.decide("dispute", "d_dm", self.op(), decision="approve",
+                            explanation="The sheet disagrees with it.")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["detail"]["code"], "DECIDED_MEANWHILE")
+        self.assertEqual(self.db.audit_logs.rows, [])
+
+    def test_notify_sends_exactly_one_note_en_then_es_to_the_dm_asker(self):
         self.decide("dispute", "d_dm", self.op(), decision="deny",
                     explanation="Checked A-101: the answer stands.", notify=True)
-        self.assertEqual(self.sent, [(str(ASKER), "Thanks — we checked; the answer stands.",
+        self.assertEqual(self.sent, [(str(ASKER), "Thanks — we checked; the answer stands.\nGracias — lo revisamos; la respuesta es correcta.",
                                       "review_decision")])
 
     def test_approve_line(self):
         self.decide("dispute", "d_dm", self.op(), decision="approve",
                     explanation="The sheet disagrees with it.", notify=True)
-        self.assertEqual([m for _, m, _ in self.sent], ["Thanks — you were right; we're fixing it."])
+        self.assertEqual([m for _, m, _ in self.sent], ["Thanks — you were right. We've logged it for a fix.\nGracias — tenía razón. Lo registramos para corregirlo."])
+
+    def test_include_explanation_appends_it_on_a_new_line(self):
+        r = self.decide("dispute", "d_dm", self.op(), decision="approve",
+                        explanation="Sheet A-101 shows 3'-6\" at door 101.", notify=True,
+                        include_explanation=True)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([m for _, m, _ in self.sent],
+                         ["Thanks — you were right. We've logged it for a fix.\nGracias — tenía razón. Lo registramos para corregirlo.\nSheet A-101 shows 3'-6\" at door 101."])
+        row = next(d for d in self.db.answer_disputes.rows if d["_id"] == "d_dm")
+        self.assertTrue(row["decision"]["include_explanation"])
+        self.assertTrue(self.db.audit_logs.rows[0]["details"]["include_explanation"])
+
+    def test_include_explanation_false_or_without_notify_sends_no_explanation(self):
+        self.decide("dispute", "d_dm", self.op(), decision="deny",
+                    explanation="Checked A-101: the answer stands.", notify=True,
+                    include_explanation=False)
+        self.assertEqual([m for _, m, _ in self.sent], ["Thanks — we checked; the answer stands.\nGracias — lo revisamos; la respuesta es correcta."])
+        self.assertNotIn("Checked A-101", self.sent[0][1])
+        # Without Notify, include_explanation means nothing: nothing is sent.
+        self.decide("dispute", "d_dm", self.op(), decision="approve",
+                    explanation="Second look: it was the wrong door.",
+                    include_explanation=True)
+        self.assertEqual(len(self.sent), 1)
+        row = next(d for d in self.db.answer_disputes.rows if d["_id"] == "d_dm")
+        self.assertFalse(row["decision"]["include_explanation"])
+
+    def test_the_spanish_text(self):
+        self.assertEqual(rq.NOTIFY_TEXT["approve"]["es"], "Gracias — tenía razón. Lo registramos para corregirlo.")
+        self.assertEqual(rq.NOTIFY_TEXT["deny"]["es"], "Gracias — lo revisamos; la respuesta es correcta.")
+        self.assertEqual(rq.notify_text("deny"), "Thanks — we checked; the answer stands.\nGracias — lo revisamos; la respuesta es correcta.")
 
     def test_no_notify_unless_asked(self):
         r = self.decide("dispute", "d_dm", self.op(), decision="deny",
@@ -330,7 +436,8 @@ class TheDecision(_Base):
 
     def test_a_group_dispute_is_never_notified(self):
         r = self.decide("dispute", "d_grp", self.op(), decision="approve",
-                        explanation="S-201 shows 10 inches.", notify=True)
+                        explanation="S-201 shows 10 inches.", notify=True,
+                        include_explanation=True)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["notify"], {"sent": False, "reason": "no_asker"})
         self.assertEqual(self.sent, [])

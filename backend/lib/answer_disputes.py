@@ -14,9 +14,11 @@ A ROW in `answer_disputes`, one per (answer, person):
   company_id, user_id, surface (dm | app)
   text              what they said, phone runs cut to the last 4 (answer_log.redact)
   created_at
-  status            "pending" at insert. Changed once, by the operator's
+  status            "pending" at insert. Changed by the operator's
                     decision only (server._review_decide, L6.4), to
-                    "approved" or "denied" with `decision` beside it.
+                    "approved" or "denied" with `decision` beside it and
+                    every decision appended to `decisions` (a decided item
+                    may be decided again, with a new explanation).
 
 THE DETECTOR (is_dispute) is deliberately narrow: the whole message must be
 a dispute ("that's wrong", "not right", "incorrect", "no it's not", "eso
