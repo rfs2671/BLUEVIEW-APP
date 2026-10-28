@@ -48,6 +48,11 @@ def _present():
     assert T is not None, "there is no lib.plan_structural: structure is not read at all"
 
 
+def _shared():
+    """The ONE offset rule every discipline pair uses (operator 2026-10-28)."""
+    assert hasattr(PS, "register_offset"),         "plan_sheet has no register_offset: S->A and P->A have no shared offset rule"
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 1. pairing by title level + series offset
 # ══════════════════════════════════════════════════════════════════════════
@@ -180,18 +185,20 @@ class TheOffsetIsTheUniqueBestPeakOrRefused(unittest.TestCase):
 
     def test_the_true_offset_is_used(self):
         _present()
+        _shared()
         A = _cloud()
         B = A + np.array([7.0, -242.0])
-        r = T.register_pair({"corners": A}, {"corners": B}, span_pt=SPAN)
+        r = PS.register_offset({"corners": A}, {"corners": B}, span_pt=SPAN)
         self.assertTrue(r["usable"], r["refused"])
         self.assertAlmostEqual(r["dx"], 7.0, delta=0.2)
         self.assertAlmostEqual(r["dy"], -242.0, delta=0.2)
 
     def test_the_census_agrees_with_plan_sheet(self):
         _present()
+        _shared()
         A = _cloud()
         B = np.vstack([A + np.array([40.0, -30.0]), _cloud(60, 9)])
-        c = T.peak_census(A, B, span_pt=SPAN)
+        c = PS.peak_census(A, B, span_pt=SPAN)
         n, xy = PS.offset_census(A, B, span_pt=SPAN)
         self.assertEqual(c["best"][0], n)
         self.assertEqual(tuple(c["best"][1]), tuple(xy))
@@ -201,6 +208,7 @@ class TheOffsetIsTheUniqueBestPeakOrRefused(unittest.TestCase):
         S-104/A-103: 95 anchors, 2.5ft off; true 204): refused, though its
         residuals are under an inch."""
         _present()
+        _shared()
         A = _cloud()
         true, decoy = np.array([40.0, -30.0]), np.array([75.0, 0.0])
         B = np.vstack([A + true, A[:60] + decoy])
@@ -214,7 +222,7 @@ class TheOffsetIsTheUniqueBestPeakOrRefused(unittest.TestCase):
             return tuple(decoy), A_[ok], B_[jj[ok]], dist[ok]
         try:
             PS.best_translation = wrong
-            r = T.register_pair({"corners": A}, {"corners": B}, span_pt=SPAN)
+            r = PS.register_offset({"corners": A}, {"corners": B}, span_pt=SPAN)
         finally:
             PS.best_translation = real
         self.assertAlmostEqual(r["dx"], decoy[0], delta=0.01)
@@ -225,25 +233,110 @@ class TheOffsetIsTheUniqueBestPeakOrRefused(unittest.TestCase):
 
     def test_two_tied_peaks_are_refused(self):
         _present()
+        _shared()
         A = _cloud()
         B = np.vstack([A + np.array([40.0, -30.0]), A + np.array([90.0, 0.0])])
-        r = T.register_pair({"corners": A}, {"corners": B}, span_pt=SPAN)
+        r = PS.register_offset({"corners": A}, {"corners": B}, span_pt=SPAN)
         self.assertFalse(r["usable"])
         self.assertIn("two peaks tie", r["refused"])
 
     def test_too_few_anchors_are_refused(self):
         _present()
+        _shared()
         A = _cloud(12)
         B = np.vstack([A[:6] + np.array([40.0, -30.0]), _cloud(6, 5)])      # 6 match, 6 do not
-        r = T.register_pair({"corners": A}, {"corners": B}, span_pt=SPAN)
+        r = PS.register_offset({"corners": A}, {"corners": B}, span_pt=SPAN)
         self.assertFalse(r["usable"])
         self.assertIn("only", r["refused"])
 
     def test_a_polygon_moves_by_minus_d_and_not_at_all_when_refused(self):
         _present()
+        _shared()
         rg = {"usable": True, "dx": 6.0, "dy": -242.0}
         self.assertEqual(T.to_arch([[10.0, 300.0]], rg), [[4.0, 542.0]])
         self.assertIsNone(T.to_arch([[10.0, 300.0]], dict(rg, usable=False)))
+
+
+class TheWallsMustChooseTheOffset(unittest.TestCase):
+    """S only (operator 2026-10-28): after the offset, the share of S shear +
+    bearing wall length on A-Wall lines within 2pt, at the offset and at the
+    runner-up peak; the pair refuses when the runner-up scores as well."""
+
+    WALLS = [{"element": "shear_wall", "polygon": [[100, 100], [109, 100], [109, 277], [100, 277]]},
+             {"element": "bearing_wall", "polygon": [[200, 300], [500, 300], [500, 309], [200, 309]]},
+             {"element": "post", "polygon": [[0, 0], [9, 0], [9, 9], [0, 9]]}]
+
+    @staticmethod
+    def _arch(d, extra_d=None):
+        """A-Wall lines where the S walls land at offset d (and at extra_d)."""
+        att = []
+        for dd in [d] + ([extra_d] if extra_d else []):
+            dx, dy = dd
+            for x in (100, 109):
+                att.append(((x - dx, 100 - dy, x - dx, 277 - dy), "XR FLOOR PLANS|A-Wall"))
+            for y in (300, 309):
+                att.append(((200 - dx, y - dy, 500 - dx, y - dy), "XR FLOOR PLANS|A-Wall"))
+        att.append(((0, 0, 900, 0), "A-Anno-Dims"))
+        return {"att": att}
+
+    def test_the_walls_choose_the_offset(self):
+        _present()
+        rg = {"dx": 6.0, "dy": -242.0, "second_peak": [6.0, -196.0], "usable": True}
+        wc = T.wall_check(self.WALLS, self._arch((6.0, -242.0)), rg)
+        self.assertTrue(wc["ok"], wc["why"])
+        self.assertEqual(wc["wall_share_best"], 1.0)
+        self.assertLess(wc["wall_share_second"], 0.5)        # a 46pt shift leaves part of one wall on its own line
+        self.assertTrue(T.with_wall_check(rg, wc)["usable"])
+
+    def test_a_runner_up_as_good_on_the_walls_refuses(self):
+        """The architect's walls repeat 46pt apart: the runner-up offset puts
+        the structure on walls exactly as well - the walls do not choose."""
+        _present()
+        rg = {"dx": 6.0, "dy": -242.0, "second_peak": [6.0, -196.0], "usable": True, "refused": None}
+        wc = T.wall_check(self.WALLS, self._arch((6.0, -242.0), (6.0, -196.0)), rg)
+        self.assertEqual(wc["wall_share_best"], wc["wall_share_second"])
+        self.assertFalse(wc["ok"])
+        got = T.with_wall_check(rg, wc)
+        self.assertFalse(got["usable"])
+        self.assertIn("the walls do not choose it", got["refused"])
+        self.assertEqual(rg["usable"], True)          # the shared verdict is not rewritten
+
+    def test_only_shear_and_bearing_walls_on_wall_layers_count(self):
+        _present()
+        rg = {"dx": 0.0, "dy": 0.0, "second_peak": [40.0, 0.0]}
+        arch = {"att": [((100, 100, 100, 277), "A-Anno-Dims"), ((109, 100, 109, 277), "A-Anno-Dims")]}
+        wc = T.wall_check(self.WALLS[:1], arch, rg)
+        self.assertFalse(wc["ok"])
+        self.assertIn("no wall layer", wc["why"])
+
+
+class TheOwnersSetUsesTheFiledStructure(unittest.TestCase):
+    """Operator 2026-10-28: the owner's set has no S sheets; it uses the
+    filed set's, and every row says so."""
+
+    def test_the_label(self):
+        _present()
+        self.assertEqual(T.structure_note({"sheet_number": "S-104.00"}, "post_co", "filed"),
+                         "structure per filed set S-104.00; the owner's set has no structural sheets")
+        self.assertIsNone(T.structure_note({"sheet_number": "S-104.00"}, "filed", None))
+
+    def test_a_track_without_s_sheets_borrows_the_filed_ones(self):
+        _present()
+        filed = _pages(BOYLAND_FILED)
+        owners = [dict(p, page_id="own-" + p["sheet_number"]) for p in _pages(BOYLAND_FILED)
+                  if p["sheet_number"].startswith("A-")]
+        seen = {}
+        real = T.run_track
+        try:
+            T.run_track = lambda pages, op, track=None, borrowed_from=None: seen.setdefault(
+                track, (sorted(p["sheet_number"] for p in pages), borrowed_from))
+            T.run_tracks([("filed", filed), ("post_co", owners)], None)
+        finally:
+            T.run_track = real
+        self.assertIsNone(seen["filed"][1])
+        self.assertEqual(seen["post_co"][1], "filed")
+        self.assertIn("S-104.00", seen["post_co"][0])
+        self.assertIn("A-103.00", seen["post_co"][0])
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -506,7 +599,8 @@ class OnTheBoylandSet(unittest.TestCase):
 
     def test_s104_registers_on_its_true_peak(self):
         _present()
-        r = T.register_pair(_sheet(*self.A103), _sheet(*self.ST))
+        _shared()
+        r = PS.register_offset(_sheet(*self.A103), _sheet(*self.ST))
         self.assertTrue(r["usable"], r["refused"])
         self.assertLess(np.hypot(r["dx"] - 7.0, r["dy"] + 242.5), 1.5, (r["dx"], r["dy"]))
 
@@ -514,11 +608,26 @@ class OnTheBoylandSet(unittest.TestCase):
         """The 2.5ft-wrong offset register() reported before #743, with
         residuals under an inch: this check refuses it on its own."""
         _present()
-        r = T.register_pair(_sheet(*self.A103), _sheet(*self.ST), coarse_pt=4.0)
+        _shared()
+        r = PS.register_offset(_sheet(*self.A103), _sheet(*self.ST), coarse_pt=4.0)
         self.assertGreater(abs(r["dy"] + 242.5), 30, (r["dx"], r["dy"]))
         self.assertLess(r["max_in"], 1.0)
         self.assertFalse(r["usable"])
         self.assertIn("from the best peak", r["refused"])
+
+    def test_s104_walls_choose_the_offset_over_the_runner_up(self):
+        _present()
+        _shared()
+        a, s = _sheet(*self.A103), _sheet(*self.ST)
+        r = PS.register_offset(a, s)
+        pg = _page(*self.ST)
+        try:
+            els = T.read_elements(pg)["elements"]
+        finally:
+            pg.close()
+        wc = T.wall_check(els, a, r)
+        self.assertTrue(wc["ok"], wc["why"])
+        self.assertGreater(wc["wall_share_best"], wc["wall_share_second"])
 
     def test_s104_reads_seven_shear_walls_and_sw1(self):
         _present()

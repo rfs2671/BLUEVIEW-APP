@@ -15,7 +15,7 @@ import logging
 import math
 import re
 from collections import defaultdict, deque
-from typing import Dict, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -458,3 +458,117 @@ def register(arch: dict, mech: dict) -> dict:
             "best_peak": [float(best_xy[0]), float(best_xy[1])],
             "spread": None if spread is None else [float(v) for v in spread],
             "refused": "; ".join(refused) or None}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ONE OFFSET RULE FOR EVERY DISCIPLINE PAIR (operator ruling 2026-10-28)
+# ══════════════════════════════════════════════════════════════════════════
+#
+#   "one function, T3's rule (single best peak agreeing with the exact 1pt
+#   search, >=8 anchors) for all pairs, with each pair's margin shown on its
+#   row. ... No tuned ratio threshold."
+#
+# register_offset is that function, for S->A and P->A (lib.plan_structural,
+# lib.plan_stacks). register() above is unchanged: the glyph pass's M->A
+# placements keep the rule they were rebuilt under.
+
+#: the second peak is the strongest cell farther than this from the best.
+#: Every peak measured on Boyland is NARROW (2pt off, 4-16% of its height):
+#: one peak's own shoulder lies within the match radius plus one lattice
+#: cell (2.5pt), so 6pt (4 real inches) is beyond any one peak.
+SECOND_PEAK_EXCL_PT = 6.0
+
+
+def peak_census(A, B, span_pt: float = 360.0, radius_in: float = 1.0,
+                chunk: int = 64) -> dict:
+    """offset_census's exact 1pt vote grid, read for its two strongest
+    SEPARATED peaks: {"best": (n, (dx, dy)), "second": (n, (dx, dy))}."""
+    A, B = np.asarray(A, dtype=float), np.asarray(B, dtype=float)
+    r = _pts(radius_in)
+    seed = _seed(A, B)
+    S = int(span_pt)
+    n = 2 * S + 1
+    k = np.arange(-int(math.floor(r)), int(math.floor(1 + r)) + 1)
+    offs = np.array([(i, j) for i in k for j in k])
+    votes = np.zeros(n * n, dtype=np.int64)
+    for s in range(0, len(A), chunk):
+        a = A[s:s + chunk]
+        d = B[None, :, :] - a[:, None, :] - seed
+        who = np.broadcast_to(np.arange(len(a))[:, None], d.shape[:2])
+        near = (np.abs(d) <= S + r + 1).all(-1)
+        d, who = d[near], who[near]
+        cells = np.floor(d).astype(np.int64)[:, None, :] + offs[None, :, :]
+        ok = (np.hypot(*(cells - d[:, None, :]).transpose(2, 0, 1)) <= r) \
+            & (np.abs(cells) <= S).all(-1)
+        cell = (cells[..., 0] + S) * n + (cells[..., 1] + S)
+        key = np.unique(np.broadcast_to(who[:, None], ok.shape)[ok] * (n * n) + cell[ok])
+        votes += np.bincount(key % (n * n), minlength=n * n)
+    g = votes.reshape(n, n)
+    bi, bj = np.unravel_index(int(np.argmax(g)), g.shape)
+    ii, jj = np.ogrid[:n, :n]
+    masked = np.where(np.hypot(ii - bi, jj - bj) > SECOND_PEAK_EXCL_PT, g, -1)
+    si, sj = np.unravel_index(int(np.argmax(masked)), g.shape)
+
+    def at(i, j):
+        return (float(seed[0] + i - S), float(seed[1] + j - S))
+    return {"best": (int(g[bi, bj]), at(bi, bj)),
+            "second": (max(int(masked[si, sj]), 0), at(si, sj))}
+
+
+def register_offset(arch: dict, other: dict, *, coarse_pt: Optional[float] = None,
+                    span_pt: float = 360.0) -> dict:
+    """Translation arch -> other (other = arch + d) between two sheets
+    ALREADY PAIRED BY TITLE (the fit never picks a floor), and whether it
+    may be used. `arch` / `other` are load_sheet dicts ("corners").
+
+    USABLE (one rule, any discipline; operator 2026-10-28):
+      R1  the offset best_translation finds IS the exact census' best peak:
+          within one match radius of it (the pre-#743 4pt search put S-104
+          on A-103 45pt off, residuals under an inch - refused here)
+      R2  that peak is SINGLE: the strongest cell beyond SECOND_PEAK_EXCL_PT
+          holds fewer anchors (a tie is two placements the drawings support
+          equally)
+      R3  at least plan_registration.MIN_ANCHORS anchors
+    No ratio threshold: `margin` (best / second) is reported, never compared.
+    Residuals are recorded and decide nothing (usable_for cannot fail: they
+    are taken within ANCHOR_MATCH_RADIUS_IN).
+
+    Returns {"dx", "dy", "anchors", "rms_in", "max_in", "best_peak_anchors",
+    "best_peak": [x, y], "second_peak_anchors", "second_peak": [x, y],
+    "margin", "offset_from_best_pt", "sweep", "usable", "refused"}.
+    `coarse_pt` runs the old search (tests); `span_pt` narrows the window."""
+    A = np.asarray(arch["corners"], dtype=float).reshape(-1, 2)
+    B = np.asarray(other["corners"], dtype=float).reshape(-1, 2)
+    out: Dict[str, Any] = {"dx": None, "dy": None, "anchors": 0, "usable": False,
+                           "margin": None}
+    if len(A) < reg.MIN_ANCHORS or len(B) < reg.MIN_ANCHORS:
+        out["refused"] = f"too few corners to register ({len(A)} / {len(B)})"
+        return out
+    kw = {} if coarse_pt is None else {"coarse_pt": coarse_pt}
+    (dx, dy), _m, _b, dist = best_translation(A, B, span_pt=span_pt,
+                                              radius_in=reg.ANCHOR_MATCH_RADIUS_IN, **kw)
+    c = peak_census(A, B, span_pt=span_pt, radius_in=reg.ANCHOR_MATCH_RADIUS_IN)
+    (bn, bxy), (sn, sxy) = c["best"], c["second"]
+    n = int(len(dist))
+    res = np.array([inches(x) for x in dist]) if n else np.array([np.inf])
+    off_best = float(math.hypot(dx - bxy[0], dy - bxy[1]))
+    refused = []
+    if off_best > _pts(reg.ANCHOR_MATCH_RADIUS_IN):
+        refused.append(f"the offset ({dx:.1f}, {dy:.1f}) holds {n} anchors and is "
+                       f"{off_best:.1f}pt from the best peak ({bxy[0]:.1f}, {bxy[1]:.1f}), "
+                       f"which holds {bn}")
+    if sn >= bn:
+        refused.append(f"two peaks tie: {bn} anchors at ({bxy[0]:.1f}, {bxy[1]:.1f}) and "
+                       f"{sn} at ({sxy[0]:.1f}, {sxy[1]:.1f})")
+    if n < reg.MIN_ANCHORS:
+        refused.append(f"only {n} anchors, need {reg.MIN_ANCHORS}")
+    out.update({"dx": float(dx), "dy": float(dy), "anchors": n,
+                "rms_in": float(math.sqrt((res ** 2).mean())), "max_in": float(res.max()),
+                "best_peak_anchors": bn, "best_peak": [bxy[0], bxy[1]],
+                "second_peak_anchors": sn, "second_peak": [sxy[0], sxy[1]],
+                "margin": round(bn / sn, 3) if sn else None,
+                "offset_from_best_pt": round(off_best, 2),
+                "sweep": f"exact 1pt census over +/-{span_pt:.0f}pt, radius "
+                         f"{reg.ANCHOR_MATCH_RADIUS_IN}in",
+                "usable": not refused, "refused": "; ".join(refused) or None})
+    return out

@@ -23,8 +23,11 @@ and a page opener (the contract plan_glyph_pass.run_pass takes).
 Measured (bv-worktrees/pairing_matrix.json, 2026-10-26): every wrong-floor
 S/A pair registers "usable", and A-103.00 holds MORE anchors against S-105
 (271) than against its own floor's S-104 (209). So registration here is used
-for ONE thing - the offset between two sheets already paired by title - and
-it carries its own check that can fail (`register_pair`).
+for ONE thing - the offset between two sheets already paired by title -
+through the one rule every discipline pair uses (plan_sheet.register_offset:
+the offset is the exact census' single best peak, >= MIN_ANCHORS; margin
+reported, never thresholded), PLUS an S-only check that reads something else:
+whether the structure's walls then stand on the architect's (`wall_check`).
 
 ── WHAT THE FRAMING PLANS DRAW (ST - 7.29.26, S-101..S-106; measured) ───────
 
@@ -175,105 +178,114 @@ def pair_by_level(pages: Sequence[dict], *, disc: str = "S", arch: str = "A",
 # 2. Registration: only the offset, and a check that can fail
 # ══════════════════════════════════════════════════════════════════════════
 
-#: the second peak is the strongest cell farther than this from the best.
-#: Every peak measured on Boyland is NARROW (2pt off, 4-16% of its height):
-#: a peak's own shoulder lies within the match radius plus one lattice cell
-#: (2.5pt), so 6pt (4 real inches) is beyond any one peak.
-SECOND_PEAK_EXCL_PT = 6.0
-
-
-def peak_census(A, B, span_pt: float = 360.0,
-                radius_in: float = reg.ANCHOR_MATCH_RADIUS_IN, chunk: int = 64) -> dict:
-    """The exact 1pt vote grid plan_sheet.offset_census takes its maximum
-    of, read for its two strongest separated peaks:
-    {"best": (n, (dx, dy)), "second": (n, (dx, dy))}."""
-    A, B = np.asarray(A, dtype=float), np.asarray(B, dtype=float)
-    r = PS._pts(radius_in)
-    seed = PS._seed(A, B)
-    S = int(span_pt)
-    n = 2 * S + 1
-    k = np.arange(-int(math.floor(r)), int(math.floor(1 + r)) + 1)
-    offs = np.array([(i, j) for i in k for j in k])
-    votes = np.zeros(n * n, dtype=np.int64)
-    for s in range(0, len(A), chunk):
-        a = A[s:s + chunk]
-        d = B[None, :, :] - a[:, None, :] - seed
-        who = np.broadcast_to(np.arange(len(a))[:, None], d.shape[:2])
-        near = (np.abs(d) <= S + r + 1).all(-1)
-        d, who = d[near], who[near]
-        cells = np.floor(d).astype(np.int64)[:, None, :] + offs[None, :, :]
-        ok = (np.hypot(*(cells - d[:, None, :]).transpose(2, 0, 1)) <= r) \
-            & (np.abs(cells) <= S).all(-1)
-        cell = (cells[..., 0] + S) * n + (cells[..., 1] + S)
-        key = np.unique(np.broadcast_to(who[:, None], ok.shape)[ok] * (n * n) + cell[ok])
-        votes += np.bincount(key % (n * n), minlength=n * n)
-    g = votes.reshape(n, n)
-    bi, bj = np.unravel_index(int(np.argmax(g)), g.shape)
-    ii, jj = np.ogrid[:n, :n]
-    masked = np.where(np.hypot(ii - bi, jj - bj) > SECOND_PEAK_EXCL_PT, g, -1)
-    si, sj = np.unravel_index(int(np.argmax(masked)), g.shape)
-    at = lambda i, j: (float(seed[0] + i - S), float(seed[1] + j - S))   # noqa: E731
-    return {"best": (int(g[bi, bj]), at(bi, bj)),
-            "second": (max(int(masked[si, sj]), 0), at(si, sj))}
+#: the census and the one offset rule live in plan_sheet (operator ruling
+#: 2026-10-28: ONE function for every discipline pair); these names stay so
+#: callers of this module read them here too
+peak_census = PS.peak_census
 
 
 def register_pair(arch: dict, struct: dict, *, coarse_pt: Optional[float] = None,
                   span_pt: float = 360.0) -> dict:
-    """Translation A -> S (S = A + d) by plan_sheet.best_translation, the
-    search every registration in the reader uses, and whether it may be
-    used. `arch`/`struct` are plan_sheet.load_sheet dicts.
+    """plan_sheet.register_offset - the shared rule (R1 the offset is the
+    exact census' best peak, R2 that peak is single, R3 MIN_ANCHORS), with
+    the margin reported. The S-only wall check is `wall_check`, applied by
+    run_track once the sheet's walls are read."""
+    return PS.register_offset(arch, struct, coarse_pt=coarse_pt, span_pt=span_pt)
 
-    USABLE IS A CHECK THAT CAN FAIL. plan_registration.usable_for cannot:
-    its residuals are taken over anchors within ANCHOR_MATCH_RADIUS_IN, so
-    any offset passes (the 2.5ft wrong S-104/A-103 offset had max 0.95in).
-    What separated the wrong peak from the true one (measured 2026-10-10)
-    was the anchor count, read against an independent exact sweep:
 
-      R1  the offset IS the census' best peak: within one match radius of
-          it. The old 4pt search's (6.3, -287.4) is 45pt from the true
-          (6.1, -242.5) and refuses here.
-      R2  the best peak is UNIQUE: the strongest cell beyond
-          SECOND_PEAK_EXCL_PT holds fewer votes. A tie is two placements the
-          drawings support equally - no offset to report.
-      R3  at least plan_registration.MIN_ANCHORS anchors.
+#: a structural wall face lies ON an architectural wall line within this
+#: (operator 2026-10-28: "within 2pt")
+WALL_ON_PT = 2.0
+#: S wall faces are sampled every this many pt; the share is of LENGTH
+FACE_STEP_PT = 1.0
+WALL_ELEMENTS = ("shear_wall", "bearing_wall")
 
-    No margin constant: R1 and R2 compare two readings of the same sheets.
-    The residuals are recorded as evidence and do not decide (see above).
-    `coarse_pt` exists so a test can run the old 4pt search; `span_pt` is
-    plan_sheet's search window (+/-360pt), narrowed only by a test."""
-    A = np.asarray(arch["corners"], dtype=float)
-    B = np.asarray(struct["corners"], dtype=float)
-    out: Dict[str, Any] = {"dx": None, "dy": None, "anchors": 0, "usable": False}
-    if len(A) < reg.MIN_ANCHORS or len(B) < reg.MIN_ANCHORS:
-        out["refused"] = f"too few corners to register ({len(A)} / {len(B)})"
+
+def _arch_wall_points(arch_sheet: dict) -> np.ndarray:
+    """Points every 0.5pt along the A plan's WALL-layer lines (plan_space_layers)."""
+    from lib.plan_space_layers import role_of
+    pts = []
+    for (x1, y1, x2, y2), layer in arch_sheet.get("att") or ():
+        if role_of(layer) != "wall":
+            continue
+        n = max(int(math.hypot(x2 - x1, y2 - y1) / 0.5), 1)
+        t = np.linspace(0.0, 1.0, n + 1)
+        pts.append(np.stack([x1 + t * (x2 - x1), y1 + t * (y2 - y1)], 1))
+    return np.vstack(pts) if pts else np.zeros((0, 2))
+
+
+def _wall_faces(elements: Sequence[dict]) -> np.ndarray:
+    """Points every FACE_STEP_PT along the two long faces of every S shear
+    and bearing wall (S display pt)."""
+    pts = []
+    for e in elements:
+        if e["element"] not in WALL_ELEMENTS:
+            continue
+        x0, y0, x1, y1 = _bbox(e["polygon"])
+        if (y1 - y0) >= (x1 - x0):
+            ys = np.arange(y0, y1 + 1e-9, FACE_STEP_PT)
+            pts += [np.stack([np.full_like(ys, x), ys], 1) for x in (x0, x1)]
+        else:
+            xs = np.arange(x0, x1 + 1e-9, FACE_STEP_PT)
+            pts += [np.stack([xs, np.full_like(xs, y)], 1) for y in (y0, y1)]
+    return np.vstack(pts) if pts else np.zeros((0, 2))
+
+
+def wall_share(faces: np.ndarray, arch_walls: np.ndarray, d) -> float:
+    """Share of the S wall-face length that lies within WALL_ON_PT of an A
+    wall line once moved into A by -d."""
+    if not len(faces) or not len(arch_walls):
+        return 0.0
+    from scipy.spatial import cKDTree
+    dist, _ = cKDTree(arch_walls).query(faces - np.asarray(d, dtype=float),
+                                        distance_upper_bound=WALL_ON_PT)
+    return float(np.isfinite(dist).mean())
+
+
+def with_wall_check(registration: dict, wc: dict) -> dict:
+    """The S pair's verdict: the shared offset rule AND the wall check.
+    A copy; the shared function's own fields are kept as they were."""
+    rg = dict(registration, wall_share_best=wc["wall_share_best"],
+              wall_share_second=wc["wall_share_second"], wall_length_pt=wc["wall_length_pt"],
+              wall_check=wc["ok"])
+    if not wc["ok"]:
+        rg["refused"] = "; ".join(x for x in (rg.get("refused"), f"wall check: {wc['why']}") if x)
+        rg["usable"] = False
+    return rg
+
+
+def wall_check(elements: Sequence[dict], arch_sheet: dict, registration: dict) -> dict:
+    """THE S-ONLY INDEPENDENT CHECK (operator 2026-10-28): "after the offset,
+    the share of S shear+bearing wall length lying on A-Wall lines (within
+    2pt) ... refuse a pair where the runner-up peak's offset scores as well
+    as the best. No tuned ratio threshold."
+
+    A different reading from the anchor count: corners vote for an offset;
+    this asks whether the STRUCTURE's walls then stand on the ARCHITECT'S
+    walls, at the chosen offset and at the census' runner-up peak.
+    {"wall_share_best", "wall_share_second", "wall_length_pt", "ok", "why"}."""
+    faces = _wall_faces(elements)
+    aw = _arch_wall_points(arch_sheet)
+    out = {"wall_length_pt": round(len(faces) * FACE_STEP_PT, 1), "wall_share_best": None,
+           "wall_share_second": None, "ok": False, "why": None}
+    if registration.get("dx") is None or registration.get("second_peak") is None:
+        out["why"] = "no registration to check"
         return out
-    kw = {} if coarse_pt is None else {"coarse_pt": coarse_pt}
-    (dx, dy), _m, _b, dist = PS.best_translation(A, B, span_pt=span_pt,
-                                                 radius_in=reg.ANCHOR_MATCH_RADIUS_IN, **kw)
-    c = peak_census(A, B, span_pt=span_pt, radius_in=reg.ANCHOR_MATCH_RADIUS_IN)
-    (bn, bxy), (sn, sxy) = c["best"], c["second"]
-    n = int(len(dist))
-    res = np.array([PS.inches(x) for x in dist]) if n else np.array([np.inf])
-    r_pt = PS._pts(reg.ANCHOR_MATCH_RADIUS_IN)
-    off_best = float(math.hypot(dx - bxy[0], dy - bxy[1]))
-    refused = []
-    if off_best > r_pt:
-        refused.append(f"the offset ({dx:.1f}, {dy:.1f}) holds {n} anchors and is "
-                       f"{off_best:.1f}pt from the best peak ({bxy[0]:.1f}, {bxy[1]:.1f}), "
-                       f"which holds {bn}")
-    if sn >= bn:
-        refused.append(f"two peaks tie: {bn} anchors at ({bxy[0]:.1f}, {bxy[1]:.1f}) and "
-                       f"{sn} at ({sxy[0]:.1f}, {sxy[1]:.1f})")
-    if n < reg.MIN_ANCHORS:
-        refused.append(f"only {n} anchors, need {reg.MIN_ANCHORS}")
-    out.update({"dx": float(dx), "dy": float(dy), "anchors": n,
-                "rms_in": float(math.sqrt((res ** 2).mean())), "max_in": float(res.max()),
-                "best_peak_anchors": bn, "best_peak": [bxy[0], bxy[1]],
-                "second_peak_anchors": sn, "second_peak": [sxy[0], sxy[1]],
-                "margin": round(bn / sn, 3) if sn else None,
-                "offset_from_best_pt": round(off_best, 2),
-                "sweep": f"exact 1pt census over +/-{span_pt:.0f}pt, radius {reg.ANCHOR_MATCH_RADIUS_IN}in",
-                "usable": not refused, "refused": "; ".join(refused) or None})
+    if not len(faces):
+        out["why"] = "the S sheet has no shear or bearing wall to check"
+        return out
+    if not len(aw):
+        out["why"] = "the A plan has no wall layer to check against"
+        return out
+    best = wall_share(faces, aw, (registration["dx"], registration["dy"]))
+    second = wall_share(faces, aw, registration["second_peak"])
+    out.update(wall_share_best=round(best, 4), wall_share_second=round(second, 4))
+    if second >= best:
+        out["why"] = (f"the runner-up peak ({registration['second_peak'][0]:.1f}, "
+                      f"{registration['second_peak'][1]:.1f}) puts {second:.1%} of the S wall "
+                      f"length on A walls, the offset {best:.1%}: the walls do not choose it")
+    else:
+        out["ok"] = True
     return out
 
 
@@ -1000,10 +1012,16 @@ def _page_ref(p: dict) -> dict:
 
 
 def run_track(pages: Sequence[dict], open_page: Callable[[dict], Any], *,
-              track: Optional[str] = None) -> Dict[str, Any]:
+              track: Optional[str] = None, borrowed_from: Optional[str] = None) -> Dict[str, Any]:
     """Every structural element of one drawing track, as rows. `pages` are
     the track's index rows (sheet_number, sheet_title, page_id, ...) and
     `open_page(row)` a PlanPage - plan_glyph_pass.run_pass's contract.
+
+    A PAIR IS USABLE when the shared offset rule holds (plan_sheet.
+    register_offset) AND the S-only wall check does (`wall_check`).
+
+    `borrowed_from` names the track the S sheets came from when this
+    track has none of its own (`run_tracks`): every row then says so.
 
     THE ENTRY POINT. Nothing in the server calls it yet: it writes nothing,
     and a pass that stores its rows waits for the operator (see the PR)."""
@@ -1033,11 +1051,13 @@ def run_track(pages: Sequence[dict], open_page: Callable[[dict], Any], *,
         spg, apg = open_page(s), open_page(a)
         try:
             ssheet, asheet = PS.load_sheet(spg), PS.load_sheet(apg)
-            rg = register_pair(asheet, ssheet)
+            rg = dict(register_pair(asheet, ssheet))
             got = read_elements(spg)
+            wc = wall_check(got["elements"], asheet, rg)
         finally:
             spg.close()
             apg.close()
+        rg = with_wall_check(rg, wc)
         els = got["elements"]
         els += hold_down_zones(els, [{"text": h["text"], "detail": h["detail"], "sheet": h["sheet"]}
                                      for h in hold_notes])
@@ -1059,11 +1079,55 @@ def run_track(pages: Sequence[dict], open_page: Callable[[dict], Any], *,
                          "polygon_a": pa,
                          "placement": "placed" if pa is not None else "refused",
                          "refused": None if pa is not None else (rg.get("refused") or "not registered"),
-                         "registration": {k: rg.get(k) for k in ("dx", "dy", "anchors", "best_peak_anchors",
-                                                                 "second_peak_anchors", "margin", "usable")},
+                         "registration": {k: rg.get(k) for k in (
+                             "dx", "dy", "anchors", "best_peak_anchors", "second_peak_anchors", "margin",
+                             "wall_share_best", "wall_share_second", "usable")},
+                         "structure_note": structure_note(s, track, borrowed_from),
                          "attrs": e["attrs"], "evidence": e["evidence"]})
     return {"rows": rows, "summary": summary, "schedule": {f"{k[0]}|{k[1]}": v for k, v in schedule.items()},
             "hold_down_notes": hold_notes}
+
+
+#: what every row borrowed into the owner's set says (operator, 2026-10-28,
+#: verbatim but for the sheet number): "structure per filed set S-1xx; the
+#: owner's set has no structural sheets"
+OWNER_SET_NOTE = "structure per filed set {sheet}; the owner's set has no structural sheets"
+
+
+def structure_note(s_page: dict, track: Optional[str], borrowed_from: Optional[str]) -> Optional[str]:
+    """None for a track's own structure; the borrowed-structure label else."""
+    if not borrowed_from:
+        return None
+    sheet = s_page.get("sheet_number")
+    if track == "post_co" and borrowed_from == "filed":
+        return OWNER_SET_NOTE.format(sheet=sheet)
+    return (f"structure per {borrowed_from} set {sheet}; the {track} set has no "
+            f"structural sheets")
+
+
+def _structural_pages(pages: Sequence[dict]) -> List[dict]:
+    return [p for p in pages if str(p.get("sheet_number") or "").upper().startswith("S-")]
+
+
+def run_tracks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable[[dict], Any],
+               *, source: str = "filed") -> Dict[str, Dict[str, Any]]:
+    """run_track per drawing track (server._glyph_pages' (track, pages)).
+
+    A TRACK WITH NO STRUCTURAL SHEETS USES `source`'S (operator 2026-10-28):
+    the owner's post-CO set prints no S sheet, so its plans are read against
+    the filed set's S-1xx - and every row says "structure per filed set
+    S-1xx; the owner's set has no structural sheets"."""
+    by = {t: list(ps) for t, ps in tracks}
+    out = {}
+    for t, ps in tracks:
+        own = _structural_pages(ps)
+        if own or t == source or source not in by:
+            out[t] = run_track(ps, open_page, track=t)
+        else:
+            borrowed = [p for p in _structural_pages(by[source])
+                        if str(p.get("page_id")) not in {str(q.get("page_id")) for q in ps}]
+            out[t] = run_track(list(ps) + borrowed, open_page, track=t, borrowed_from=source)
+    return out
 
 
 def rows_for_store(rows: Iterable[dict], *, project_id: str, company_id: Optional[str]) -> List[dict]:
@@ -1079,6 +1143,7 @@ __all__ = [
     "EMIT_VERSION", "COLLECTION", "title_level", "plan_index", "pair_by_level",
     "peak_census", "register_pair", "read_elements", "hold_down_zones",
     "read_shear_wall_schedule", "read_hold_down_notes", "size_posts_from_schedule",
-    "to_arch", "run_track", "plan_extent",
+    "to_arch", "run_track", "run_tracks", "plan_extent", "wall_check", "wall_share", "with_wall_check",
+    "structure_note", "OWNER_SET_NOTE",
     "rows_for_store", "bands", "legend_entries", "sw_tags",
 ]
