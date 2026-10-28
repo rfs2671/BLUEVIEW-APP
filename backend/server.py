@@ -87,6 +87,7 @@ from lib import punch_brain  # noqa: E402
 from lib import punch_batch  # noqa: E402
 from lib import dm_actions  # noqa: E402
 from lib import answer_log  # noqa: E402
+from lib import review_queue  # noqa: E402
 from lib import trades as lib_trades  # noqa: E402
 from lib import dm_brain  # noqa: E402
 from lib import dm_negative_claims  # noqa: E402
@@ -53108,17 +53109,20 @@ async def _handle_dm_start(chat_id: str, body: str = "START",
         profile = wa_dm.phone_digits(u.get("phone") or "")
         if not profile:
             await _reply_dm(chat, wa_dm.PHONE_MISSING_TEXT, "start_phone_missing")
+            await _review_queue_registration([u], "phone_missing", chat)
             return
         if phone and phone not in [wa_dm.phone_digits(v) for v in
                                    _contact_phone_variants(u.get("phone") or "")]:
             _security_event("whatsapp_optin_refused", reason="code_phone_mismatch",
                             jid_kind=kind)
             await _reply_dm(chat, wa_dm.WRONG_PHONE_TEXT, "start_wrong_phone")
+            await _review_queue_registration([u], "code_phone_mismatch", chat)
             return
         others = [x for x in await _find_users_by_phone(profile)
                   if str(x.get("_id")) != str(u.get("_id"))]
         if others:
             await _reply_dm(chat, wa_dm.PHONE_SHARED_TEXT, "start_phone_shared")
+            await _review_queue_registration([u] + others, "phone_shared", chat)
             return
         await _record_optin(u, profile, chat, chat_digits,
                             phone_verified=bool(phone), source="start_code")
@@ -53134,12 +53138,17 @@ async def _handle_dm_start(chat_id: str, body: str = "START",
         _security_event("whatsapp_optin_refused", reason="ambiguous",
                         row_count=len(users), jid_kind=kind)
         await _reply_dm(chat, wa_dm.PHONE_SHARED_TEXT, "start_phone_shared")
+        await _review_queue_registration(users, "ambiguous", chat)
         return
     if len(users) != 1 or not wa_dm.is_dm_eligible(users[0]):
         _security_event("whatsapp_optin_refused",
                         reason="no_user" if not users else "role_not_eligible",
                         row_count=len(users), jid_kind=kind)
         await _reply_dm(chat, wa_dm.NOT_ELIGIBLE_TEXT, "start_not_eligible")
+        # A known person whose role may not use it: queued (no user: no
+        # company to queue it under).
+        if users:
+            await _review_queue_registration(users, "role_not_eligible", chat)
         return
     await _record_optin(users[0], phone, chat, chat_digits,
                         phone_verified=True, source="start")
@@ -57794,6 +57803,7 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
     an answer goes out whether or not its row is written."""
     turn = _ANSWER_TURN.get() or {}
     noted, turn_gates = list(turn.get("records") or []), list(turn.get("gates") or [])
+    shown = list(records or []) + noted
     if turn:
         turn["records"], turn["gates"] = [], []
     try:
@@ -57807,7 +57817,7 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
             "project_ids": answer_log.project_ids(project_ids),
             "asker_last4": answer_log.last4(asker_phone),
             "group_id": group_id if group_id and str(group_id).endswith("@g.us") else None,
-            "records": answer_log.records_snapshot(list(records or []) + noted)
+            "records": answer_log.records_snapshot(shown)
                        + [answer_log.source_snapshot(s) for s in sources or []],
             "tools": answer_log.tools_snapshot(tools),
             "gates": answer_log.redact(list(gates or []) + turn_gates),
@@ -57823,10 +57833,13 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
         }
         row["content_hash"] = answer_log.content_hash(row)
         await db.answer_log.insert_one(row)
-        return row["_id"]
     except Exception as e:
         logger.warning(f"[answer-log] write failed surface={surface}: {type(e).__name__}")
         return None
+    # An answer its checks refused or doubted is queued for review, naming
+    # this row (lib/review_queue: conflicting_sources). Never raises.
+    await _review_queue_answer(row, shown)
+    return row["_id"]
 
 
 async def _answer_log_get(company_id: Any, log_id: str) -> Optional[dict]:
@@ -57846,6 +57859,102 @@ async def _answer_log_rows(company_id: Any, *, surface: Optional[str] = None,
         q["surface"] = surface
     return await db.answer_log.find(q).sort([("created_at", -1)]) \
         .to_list(max(1, min(int(limit), 500)))
+
+
+# ── THE REVIEW QUEUE (lib/review_queue.py; L6 step 3: the feed only) ──────
+# Uncertain findings for the operator's review (L6.4): a doubted or refused
+# answer, a set-health finding, a refused START, a set-membership question.
+# INSERT ONLY: _review_queue_add is the one writer; an item's _id is derived
+# from what it is about, so the same finding twice is one row. Per company:
+# every item carries its company, and one without is not queued. Nothing
+# here is ever shown to a user, and nothing here changes a row's status.
+
+async def _review_queue_add(doc: Optional[dict]) -> Optional[bool]:
+    """Queue one item (lib/review_queue builds it). True: queued (or already
+    queued); False: nothing to queue; None: the write failed. Never raises:
+    whatever produced the finding goes on either way."""
+    try:
+        if not doc or not doc.get("company_id") or doc.get("kind") not in review_queue.QUEUED_KINDS:
+            return False
+        from pymongo.errors import DuplicateKeyError
+        dup = False
+        try:
+            await db[review_queue.COLLECTION].insert_one(doc)
+        except DuplicateKeyError:
+            dup = True
+        logger.info(f"[review-queue] kind={doc['kind']} reason={doc.get('reason')} "
+                    f"company={doc['company_id']}{' duplicate=true' if dup else ''}")
+        return True
+    except Exception as e:
+        logger.warning(f"[review-queue] write failed kind={(doc or {}).get('kind')}: "
+                       f"{type(e).__name__}")
+        return None
+
+
+async def _review_queue_answer(row: dict, raw_records: list) -> None:
+    """A logged answer whose checks refused or doubted it (conflicting_sources)."""
+    try:
+        doc = review_queue.from_answer(row, raw_records, now=datetime.now(timezone.utc))
+    except Exception as e:
+        logger.warning(f"[review-queue] answer item failed: {type(e).__name__}")
+        return
+    if doc:
+        await _review_queue_add(doc)
+
+
+async def _review_queue_set_health(project_id: str, items: list) -> None:
+    """Each set-health finding of one pass, once per project (set_health)."""
+    try:
+        findings = [it for it in items or []
+                    if isinstance(it, dict) and it.get("kind") not in review_queue.HEALTHY]
+        if not findings:
+            return
+        proj = await db.projects.find_one({"_id": to_query_id(str(project_id))},
+                                          {"company_id": 1})
+        cid = (proj or {}).get("company_id")
+        if not cid:
+            return
+        now = datetime.now(timezone.utc)
+        docs = [review_queue.from_set_health(str(cid), str(project_id), it, now=now)
+                for it in findings]
+    except Exception as e:
+        logger.warning(f"[review-queue] set health items failed: {type(e).__name__}")
+        return
+    for doc in docs:
+        if doc:
+            await _review_queue_add(doc)
+
+
+async def _review_queue_registration(users: list, reason: str, chat: str) -> None:
+    """A START refused for a person the system knows: one item per company
+    of the people it names (registration_refusal). No company, no item."""
+    try:
+        now = datetime.now(timezone.utc)
+        docs = [review_queue.from_registration(
+                    str(u.get("company_id") or ""), u.get("_id"), reason, chat=chat,
+                    role=u.get("role"), now=now)
+                for u in users or [] if isinstance(u, dict) and u.get("company_id")]
+    except Exception as e:
+        logger.warning(f"[review-queue] registration item failed: {type(e).__name__}")
+        return
+    for doc in docs:
+        if doc:
+            await _review_queue_add(doc)
+
+
+async def _review_queue_plan_set_question(company_id: Any, project_id: Any,
+                                          question: dict) -> None:
+    """A set-membership question for the PM (PR #889), queued for the
+    operator too (plan_set_question, reason set_ambiguity).
+    _store_set_questions calls this for each question it opens."""
+    try:
+        doc = review_queue.from_plan_set_question(company_id, project_id, question,
+                                                  now=datetime.now(timezone.utc))
+    except Exception as e:
+        logger.warning(f"[review-queue] plan set question failed: {type(e).__name__}")
+        return
+    if doc:
+        await _review_queue_add(doc)
 
 
 def _dm_gates(path: str, extra: dict, fallback: bool, reason: Any) -> list:
@@ -65082,6 +65191,7 @@ async def _store_set_questions(pid: str, detected: List[dict], opening_rows: Lis
         await audit_log("plan_set_question_opened", actor, "plan_set_question", d["id"],
                         {"project_id": pid, "code": d["code"], "label": d["label"],
                          "track": d["track"], "figures": d["figures"]})
+        await _review_queue_plan_set_question(company_id, pid, doc)
     for d in plan["refresh"]:
         fields = {"last_seen_at": now}
         if status_of.get(d["id"]) == psq.OPEN:
@@ -65295,6 +65405,8 @@ async def _write_set_health(project_id: str, items: List[dict]) -> int:
     now = datetime.now(timezone.utc)
     docs = [dict(it, project_id=pid, record_type="set_health", created_at=now) for it in items]
     await db[COLLECTION].insert_many(docs)
+    # Each finding queued for review once (lib/review_queue: set_health).
+    await _review_queue_set_health(pid, items)
     return len(docs)
 
 
@@ -84862,6 +84974,12 @@ async def startup_event():
     await db.whatsapp_dm_answers.create_index([("created_at", -1), ("fallback", 1)])
     # The answer log (lib/answer_log.py): one company's answers, newest first.
     await db.answer_log.create_index([("company_id", 1), ("created_at", -1)])
+    # The review queue (lib/review_queue.py): L6.4 lists it by status, newest
+    # first, across companies (the operator), and one company's newest first.
+    await db.review_queue.create_index([("status", 1), ("created_at", -1)])
+    # Pending items, normal before low, newest first (L6.4's default list).
+    await db.review_queue.create_index([("status", 1), ("priority", 1), ("created_at", -1)])
+    await db.review_queue.create_index([("company_id", 1), ("created_at", -1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
     await _ensure_index_resilient(
