@@ -32,6 +32,12 @@ KINDS (the producers, each in server.py):
                         lib/plan_set_questions): server._store_set_questions
                         queues each question it opens through
                         server._review_queue_plan_set_question.
+  takeoff               a takeoff line not verified or refused (reason
+                        takeoff_refused), queued by the takeoff export through
+                        server._review_queue_takeoff (from_takeoff).
+  clash                 a clash between two elements (reason clash), queued by
+                        the spatial lane's clash pass through
+                        server._review_queue_clash (from_clash).
 
 A ROW:
   _id               sha256 of kind|company|subject key: the same finding
@@ -43,7 +49,8 @@ A ROW:
   created_at
   reason            why it is queued (owner's ruling, L6.3): conflict |
                     replaced | unverified | set_health_failed |
-                    set_health_info | registration | set_ambiguity (REASONS
+                    set_health_info | registration | set_ambiguity |
+                    takeoff_refused | clash (REASONS
                     below). A plan-set question is set_ambiguity (owner's
                     ruling: it replaces the earlier "conflict").
   priority          "low" for set_health_info, "normal" for everything else
@@ -72,8 +79,14 @@ KIND_CONFLICTING_SOURCES = "conflicting_sources"
 KIND_SET_HEALTH = "set_health"
 KIND_REGISTRATION_REFUSAL = "registration_refusal"
 KIND_PLAN_SET_QUESTION = "plan_set_question"
+#: A takeoff line that could not be verified or was refused (T5: the export's
+#: "not verified / refused" section), and a clash between two elements
+#: (the spatial lane's clash detection). Queued by their producers through
+#: server._review_queue_takeoff / _review_queue_clash.
+KIND_TAKEOFF = "takeoff"
+KIND_CLASH = "clash"
 KINDS = (KIND_CONFLICTING_SOURCES, KIND_SET_HEALTH,
-         KIND_REGISTRATION_REFUSAL, KIND_PLAN_SET_QUESTION)
+         KIND_REGISTRATION_REFUSAL, KIND_PLAN_SET_QUESTION, KIND_TAKEOFF, KIND_CLASH)
 #: The kinds this collection holds: all of them.
 QUEUED_KINDS = KINDS
 
@@ -103,8 +116,11 @@ REASON_SET_HEALTH_FAILED = "set_health_failed"
 REASON_SET_HEALTH_INFO = "set_health_info"
 REASON_REGISTRATION = "registration"
 REASON_SET_AMBIGUITY = "set_ambiguity"      # #889: which drawings belong to the set
+REASON_TAKEOFF_REFUSED = "takeoff_refused"  # a takeoff line refused / not verified
+REASON_CLASH = "clash"                      # two elements in conflict
 REASONS = (REASON_CONFLICT, REASON_REPLACED, REASON_UNVERIFIED, REASON_SET_HEALTH_FAILED,
-           REASON_SET_HEALTH_INFO, REASON_REGISTRATION, REASON_SET_AMBIGUITY)
+           REASON_SET_HEALTH_INFO, REASON_REGISTRATION, REASON_SET_AMBIGUITY,
+           REASON_TAKEOFF_REFUSED, REASON_CLASH)
 #: An answer that hits several: the first of these wins.
 ANSWER_PRECEDENCE = (REASON_CONFLICT, REASON_REPLACED, REASON_UNVERIFIED)
 PRIORITY_LOW = "low"
@@ -296,6 +312,56 @@ def from_plan_set_question(company_id: Any, project_id: Any, question: Dict[str,
     return item(KIND_PLAN_SET_QUESTION, company_id, f"{project_id}|{qid}",
                 reason=REASON_SET_AMBIGUITY, summary=text[:MAX_SUMMARY],
                 evidence={k: v for k, v in evidence.items() if v not in (None, "")},
+                project_id=project_id, now=now)
+
+
+
+# ── takeoff and clash (their producers queue them; nothing here finds them) ──
+
+def _clean(v: Any, n: int = MAX_QUOTE) -> Optional[str]:
+    v = " ".join(str(v or "").split())[:n]
+    return v or None
+
+
+def from_takeoff(company_id: Any, project_id: Any, *, trade: Any, item_name: Any,
+                 scope: Any = None, track: Any = None, reason: Any, sheets: Iterable[Any] = (),
+                 now: datetime) -> Optional[Dict[str, Any]]:
+    """A takeoff line that could not be verified, or was refused: one item
+    per (project, trade, item, scope, set). `reason` is the line's own
+    reason as the export states it. None without a project, trade, item or
+    reason: an item names what it is about."""
+    trade, name, why = _clean(trade, 60), _clean(item_name, 120), _clean(reason, MAX_SUMMARY)
+    if not project_id or not trade or not name or not why:
+        return None
+    scope, track = _clean(scope, 120), _clean(track, 60)
+    sh = sorted({s for s in (_clean(x, 40) for x in sheets or ()) if s})[:MAX_EVIDENCE]
+    key = "|".join([str(project_id), _norm(trade), _norm(name), _norm(scope), _norm(track)])
+    where = " · ".join(x for x in (scope, track) if x)
+    summary = f"{trade}: {name}" + (f" ({where})" if where else "") + f" - {why}"
+    evidence = {"trade": trade, "item": name, "scope": scope, "track": track,
+                "reason": why, "sheets": sh}
+    return item(KIND_TAKEOFF, company_id, key, reason=REASON_TAKEOFF_REFUSED,
+                summary=summary[:MAX_SUMMARY],
+                evidence={k: v for k, v in evidence.items() if v not in (None, "", [])},
+                project_id=project_id, now=now)
+
+
+def from_clash(company_id: Any, project_id: Any, *, a: Any, b: Any, where: Any = None,
+               detail: Any = None, sheets: Iterable[Any] = (), now: datetime) -> Optional[Dict[str, Any]]:
+    """A clash between two elements: one item per (project, the pair, where),
+    the pair in either order. None without a project or both elements."""
+    a, b = _clean(a, 120), _clean(b, 120)
+    if not project_id or not a or not b:
+        return None
+    where, detail = _clean(where, 120), _clean(detail, MAX_SUMMARY)
+    pair = sorted([a, b], key=_norm)
+    sh = sorted({s for s in (_clean(x, 40) for x in sheets or ()) if s})[:MAX_EVIDENCE]
+    key = "|".join([str(project_id), _norm(pair[0]), _norm(pair[1]), _norm(where)])
+    summary = f"{pair[0]} clashes with {pair[1]}" + (f" at {where}" if where else "") + (
+        f" - {detail}" if detail else "")
+    evidence = {"a": pair[0], "b": pair[1], "where": where, "detail": detail, "sheets": sh}
+    return item(KIND_CLASH, company_id, key, reason=REASON_CLASH, summary=summary[:MAX_SUMMARY],
+                evidence={k: v for k, v in evidence.items() if v not in (None, "", [])},
                 project_id=project_id, now=now)
 
 
