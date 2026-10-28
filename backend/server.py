@@ -57944,9 +57944,9 @@ async def _review_queue_registration(users: list, reason: str, chat: str) -> Non
 
 async def _review_queue_plan_set_question(company_id: Any, project_id: Any,
                                           question: dict) -> None:
-    """THE L7 HOOK (PR #889, not on main): a set-membership question for the
-    PM, queued for the operator too (plan_set_question). #889's
-    _store_set_questions calls this for each question it stores."""
+    """A set-membership question for the PM (PR #889), queued for the
+    operator too (plan_set_question, reason set_ambiguity).
+    _store_set_questions calls this for each question it opens."""
     try:
         doc = review_queue.from_plan_set_question(company_id, project_id, question,
                                                   now=datetime.now(timezone.utc))
@@ -65191,6 +65191,7 @@ async def _store_set_questions(pid: str, detected: List[dict], opening_rows: Lis
         await audit_log("plan_set_question_opened", actor, "plan_set_question", d["id"],
                         {"project_id": pid, "code": d["code"], "label": d["label"],
                          "track": d["track"], "figures": d["figures"]})
+        await _review_queue_plan_set_question(company_id, pid, doc)
     for d in plan["refresh"]:
         fields = {"last_seen_at": now}
         if status_of.get(d["id"]) == psq.OPEN:
