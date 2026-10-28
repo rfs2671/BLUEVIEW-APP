@@ -243,8 +243,14 @@ class Ruling8AndRuling9WhereAnAlternativeNameComesFrom(unittest.TestCase):
         params = inspect.signature(ps.answer_is_grounded).parameters
         self.assertEqual(list(params), ["text", "records", "intent", "aliases", "sources"])
         self.assertFalse(any(p.kind is p.VAR_KEYWORD for p in params.values()))
-        src = inspect.getsource(ps._attribute_answer_is_bound) + inspect.getsource(ps._subject_bound)
-        self.assertNotIn("also", src.replace("also\"", ""))
+        # No name in the attribute path's code is `also` (comments aside).
+        import ast
+        import textwrap
+        names = {n.id if isinstance(n, ast.Name) else n.arg
+                 for f in (ps._attribute_answer_is_bound, ps._subject_bound)
+                 for n in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(f))))
+                 if isinstance(n, (ast.Name, ast.arg))}
+        self.assertEqual(sorted(n for n in names if n == "also"), [])
 
 
 class Ruling12AGridWithoutAnIdentifier(unittest.TestCase):
