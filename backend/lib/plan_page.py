@@ -63,6 +63,7 @@ class PlanPage:
                                    else (uw, uh))
         self._drawings = None
         self._words = None
+        self._word_boxes = None
 
     # ── frames ────────────────────────────────────────────────────────────
     def _to_display(self, x: float, y: float) -> Tuple[float, float]:
@@ -227,14 +228,25 @@ class PlanPage:
         horizontally and its height vertically; the direction is what tells
         the two apart (plan_derive.widest_door_in)."""
         if self._words is None:
+            self._words = [(t, (x0 + x1) / 2, (top + bottom) / 2, d)
+                           for t, x0, top, x1, bottom, d in self.directed_word_boxes]
+        return self._words
+
+    @property
+    def directed_word_boxes(self) -> List[Tuple[str, float, float, float, float, str]]:
+        """[(text, x0, top, x1, bottom, direction)] - the same words as
+        `directed_words`, keeping each one's box. A dimension string sits ON
+        its dimension line, and which edge of the box faces the line depends
+        on the direction (lib.plan_scale)."""
+        if self._word_boxes is None:
             import pdfplumber
             with pdfplumber.open(self.path) as pdf:
                 page = pdf.pages[self.page_number - 1]
                 try:
-                    self._words = _words_by_direction(page)
+                    self._word_boxes = _word_boxes_by_direction(page)
                 finally:
                     page.close()
-        return self._words
+        return self._word_boxes
 
     # ── rendering ─────────────────────────────────────────────────────────
     def render(self, clip: Tuple[float, float, float, float], dpi: int):
@@ -277,6 +289,11 @@ def _char_dir(c) -> str:
 
 
 def _words_by_direction(page) -> List[Tuple[str, float, float, str]]:
+    return [(t, (x0 + x1) / 2, (top + bottom) / 2, d)
+            for t, x0, top, x1, bottom, d in _word_boxes_by_direction(page)]
+
+
+def _word_boxes_by_direction(page) -> List[Tuple[str, float, float, float, float, str]]:
     groups = {}
     for c in page.chars:
         groups.setdefault(_char_dir(c), set()).add(id(c))
@@ -289,8 +306,7 @@ def _words_by_direction(page) -> List[Tuple[str, float, float, str]]:
                                    char_dir_rotated=char_dir,
                                    line_dir_rotated=line_dir,
                                    use_text_flow=True):
-            out.append((w["text"], (w["x0"] + w["x1"]) / 2,
-                        (w["top"] + w["bottom"]) / 2, d))
+            out.append((w["text"], w["x0"], w["top"], w["x1"], w["bottom"], d))
     return out
 
 

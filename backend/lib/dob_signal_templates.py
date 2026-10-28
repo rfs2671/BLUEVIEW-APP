@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from lib import datefmt
+from lib import datefmt, dob_penalty
 
 
 # ── Severity constants ────────────────────────────────────────────
@@ -248,7 +248,8 @@ def _render_violation_ecb(log: dict) -> Dict[str, Any]:
     vnum = _get(log, "violation_number", default="?")
     hearing = _safe_date_only(log.get("disposition_date"))
     penalty = _get(log, "penalty_amount", default="")
-    extra = f" Penalty: ${penalty}." if penalty else ""
+    # Not final before the hearing: "$1,250 (hearing pending)" (lib/dob_penalty).
+    extra = f" Penalty: {dob_penalty.with_note(f'${penalty}', log)}." if penalty else ""
     return {
         "title": f"⚖️ ECB/OATH violation (#{vnum})",
         "body": (

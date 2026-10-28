@@ -1661,6 +1661,56 @@ def schedules_from_tables(tables: List[Dict[str, Any]], width: float, height: fl
     return out[:12]
 
 
+# ── A TABLE WITH NO TITLE TAKES THE HEADING PRINTED OVER IT ────────────────
+#
+# A-400.00 on 588 Boyland draws its door schedule as elevations: doors A to E,
+# each with its width across and its height up the side. The finder read the
+# grid and found no cell saying SCHEDULE, so the table was named "TABLE", and
+# the heading "INTERIOR DOOR SCHEDULE" printed 15 pt over its top-left corner
+# became a separate line of text. Asked for the door schedule, the record
+# that prints 3'-0" X 7'-0" matched one word of two and ranked ninth of eight
+# (2026-10-25).
+#
+# So a table named "TABLE" takes the ONE line directly above it (ruling
+# 2026-10-25): left edges aligned, a small gap, nothing printed in between,
+# and a word in it. Measured on all 26 such tables in production: the three
+# on A-400.00 get WINDOW, INTERIOR DOOR and EXTERIOR DOOR SCHEDULE; a floor
+# label 16 pt off the corner of a zoning diagram, a dimension over an
+# elevation, and everything farther away get nothing, and stay "TABLE".
+_HEADING_WORD = re.compile(r"[A-Za-z]{3,}")
+
+
+def name_untitled_tables(schedules: List[Dict[str, Any]],
+                         blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """`schedules` with each one named "TABLE" given the heading directly
+    above it, when there is exactly one."""
+    lines = [(t, bb) for b in blocks or []
+             for t, bb in zip(b.get("lines") or [], b.get("line_bboxes") or [])
+             if t and bb]
+    out = []
+    for s in schedules or []:
+        if s.get("name") != "TABLE" or not any(s.get("bbox") or ()):
+            out.append(s)
+            continue
+        x0, y0, x1, _y1 = s["bbox"]
+
+        def between(top: float) -> bool:
+            # Anything printed across the table's width, below the heading
+            # and above the table.
+            return any(b0 >= top - 1 and b1 <= y0 + 1 and a0 < x1 and a1 > x0
+                       for _t, (a0, b0, a1, b1) in lines)
+
+        heads = []
+        for text, (a0, b0, a1, b1) in lines:
+            h = b1 - b0
+            if h <= 0 or not _HEADING_WORD.search(text):
+                continue
+            if -1 <= y0 - b1 <= h and abs(a0 - x0) <= h / 4 and not between(b1):
+                heads.append(text.strip())
+        out.append(dict(s, name=heads[0][:120]) if len(heads) == 1 else s)
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Tags
 # ══════════════════════════════════════════════════════════════════════════
@@ -1815,8 +1865,12 @@ def fields_from_layout(layout: Dict[str, Any], boilerplate: FrozenSet[str] = fro
                    for i, b in enumerate(blocks) if i not in used]
     tags = count_tags({"blocks": blocks}, tag_vocab, frozenset(used))
     out = {
-        "schedules": schedules_from_tables(layout.get("tables") or [],
-                                           layout.get("width") or 0, layout.get("height") or 0),
+        # The raw blocks, not the boilerplate-stripped ones: they keep each
+        # line's box, and "nothing printed in between" means anything printed.
+        "schedules": name_untitled_tables(
+            schedules_from_tables(layout.get("tables") or [],
+                                  layout.get("width") or 0, layout.get("height") or 0),
+            layout.get("blocks") or []),
         "notes": notes,
         "legend": legend,
         "callouts": callouts_from_text(text),
@@ -2135,6 +2189,6 @@ __all__ = [
     "filing_id", "document_type", "issue_date",
     "headings", "classify_block", "notes_from_blocks", "legend_from_blocks",
     "callouts_from_text", "elements_from_evidence", "dimensions_from_text", "material_lines",
-    "schedules_from_tables", "ruled_grids", "SEED_TAGS", "TAG_SOURCE", "tag_vocabulary", "count_tags",
+    "schedules_from_tables", "name_untitled_tables", "ruled_grids", "SEED_TAGS", "TAG_SOURCE", "tag_vocabulary", "count_tags",
     "fields_from_layout",
 ]

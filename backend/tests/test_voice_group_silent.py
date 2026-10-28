@@ -190,7 +190,11 @@ class _Base(unittest.TestCase):
             await asyncio.sleep(0)
 
     def group_posts(self):
-        return [p for p in self.c.wire.calls if p.get("chatId") == GROUP]
+        """What was POSTED to the group. A bare {chatId} is the "typing…"
+        chat action while the agent works (Oct 27: it replaced the 👀),
+        not a post."""
+        return [p for p in self.c.wire.calls
+                if p.get("chatId") == GROUP and set(p) != {"chatId"}]
 
     def reviews(self):
         return [i for i in self.db.attention_items.rows if i["type"] == "voice_review"]

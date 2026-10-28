@@ -1,6 +1,6 @@
 /**
  * Where a callout portal's camera starts and what it may reach. Shared by the React
- * portal (Skia / web) and the WebView page so they cannot drift.
+ * portal (web) and the WebView page so they cannot drift.
  *
  * THE WHOLE TARGET SHEET IS LOADED; THE CROP ONLY FRAMES THE FIRST VIEW. The crop is an
  * estimate (`crop_exact: false`), so clipping to it would cut off whatever the estimate

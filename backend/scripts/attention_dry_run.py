@@ -274,8 +274,8 @@ async def run(sc: dict, scripted: bool = False) -> dict:
         return {l: lid_phones.get(str(l).split("@")[0]) for l in lids}
     patches.append(patch.object(server, "_waapi_lid_phones", fake_get_lid))
     llm = Scripted(sc) if scripted else None
-    if not scripted and not server.OPENAI_API_KEY:
-        raise ScenarioError("no OPENAI_API_KEY: run under `railway run`, or pass --scripted")
+    if not scripted and not server.LLM_API_KEY:
+        raise ScenarioError("no model key (LLM_API_KEY, else QWEN_API_KEY): run under `railway run`, or pass --scripted")
 
     msgs = sorted(sc["messages"], key=lambda m: (_at(sc, m["at"]), m["n"]))
     times = [_at(sc, m["at"]) for m in msgs]

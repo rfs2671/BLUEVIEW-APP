@@ -216,13 +216,24 @@ class NotTheirCompanysToChange(unittest.TestCase):
                    "resolve_compliance_alert",
                    "list_failed_plan_index_jobs", "register_dropbox_webhook")
 
+    # STRICTER THAN THE SEAT since security audit P3 (2026-10-13): these are
+    # platform-wide, so not any company's admin either. require_operator_404
+    # refuses the full PM a fortiori; test_operator_gate.py proves the 404
+    # over HTTP for a company admin.
+    OPERATOR_ROUTES = ("admin_list_feature_flags", "admin_create_feature_flag",
+                       "admin_update_feature_flag", "admin_delete_feature_flag",
+                       "admin_sentry_test")
+
     def test_platform_wide_and_unscoped_routes_need_the_admin_seat(self):
         import inspect
         for name in self.SEAT_ROUTES:
             with self.subTest(name):
                 deps = [p.default.dependency for p in inspect.signature(getattr(server, name)).parameters.values()
                         if hasattr(p.default, "dependency")]
-                self.assertIn(server.get_admin_seat_user, deps)
+                gate = (server.require_operator_404 if name in self.OPERATOR_ROUTES
+                        else server.get_admin_seat_user)
+                self.assertIn(gate, deps)
+                self.assertNotIn(server.get_admin_user, deps)
         _refused(self, server.get_admin_seat_user(PM_FULL))
         self.assertEqual(_run(server.get_admin_seat_user(ADMIN)), ADMIN)
 

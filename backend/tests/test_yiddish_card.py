@@ -5,7 +5,7 @@
 - A Yiddish group note stores voice.english_direct; any other note does not
   call it. A failed translation leaves the card the translated transcript.
 - The Attention list gives a Yiddish voice item {original, english}.
-- scripts/voice_lang_eval.py: the "whisper-1 translate" row, scored against
+- scripts/voice_lang_eval.py: the "whisper translate" row, scored against
   each clip's .en.txt; the card's two lines in --verbose.
 """
 
@@ -52,8 +52,9 @@ class TheTranslationsEndpoint(unittest.TestCase):
         got = asyncio.run(voice_ingest.translate_whisper(
             b"OggS" + b"\0" * 40, openai_api_key="k", http_client=http))
         self.assertEqual(got, ENGLISH)
-        self.assertEqual(http.urls, [("https://api.openai.com/v1/audio/translations",
-                                      "whisper-1", "voice.ogg")])
+        from lib import llm_provider   # DeepInfra's Whisper since 2026-10-26
+        self.assertEqual(http.urls, [(llm_provider.TRANSLATE_URL,
+                                      llm_provider.WHISPER_MODEL, "voice.ogg")])
 
     def test_one_retry(self):
         http = self._Http(fail=1)
@@ -153,8 +154,7 @@ class TheEvalsTranslationRow(unittest.TestCase):
         class A:
             clips, hint, job, concurrency, verbose = str(d), "off", None, 2, True
             json = str(d / "out.json")
-        os.environ.setdefault("OPENAI_API_KEY", "k")
-        with patch.object(v, "transcribe", fake):
+        with patch.object(v, "transcribe", fake), patch.object(v.llm_provider, "API_KEY", "k"):
             self.assertEqual(asyncio.run(v.main_async(A)), 0)
         import json
         rows = json.loads((d / "out.json").read_text(encoding="utf-8"))

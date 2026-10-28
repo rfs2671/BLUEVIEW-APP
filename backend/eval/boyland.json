@@ -4,12 +4,12 @@
     "id": "6a5f63bc147407d3261df2c7",
     "name": "588 Thomas S Boyland Street, Brooklyn",
     "baseline": {
-      "_note": "The corpus as it stood on 2026-10-07, ACCEPTED AS-IS by operator ruling rather than re-indexed. Its makeup, measured read-only: (1) ONE whole-project page pass, 2026-09-20 22:00-23:59Z - all 155 current pages carry an indexed_at in that window, and no file was uploaded after 2026-09-02; (2) FIVE WHOLE-PAGE RECORD REWRITES after that pass - FA-001 and SP-003.00/SP-004.00 at 2026-09-21 23:19Z, P-400.00 and SP-002.00 at 2026-09-22 20:12Z, 257 records in all, each page's records written in one minute with nothing from the 09-20 pass left beside them, so every page's records are still one write; (3) 84 GLYPH ROWS from the placement pass of 2026-10-07 12:50Z (#660, rebuilt after #664), read back identical by content to the reviewed local run; (4) THE SECOND ARCHITECT'S SET BECAME CURRENT in the 09-20 pass - '588 THOMAS BOYLAND ST SET_UPDATED .pdf', 44 pages in A.x numbering, which is the whole of the 111 -> 155 change in current pages. 3,347 records sit on non-current pages and are read by nothing. Scored on this corpus, the suite gives 25/30 IDENTICALLY on the code before #664 (357de57c), on #664 (feaa0da6) and on #666 (63395a9d), so the two verdicts that moved since the last recorded run (2026-09-20, 211f7489, on the 2026-09-19 corpus) moved with the corpus and not with the gate: door-size pass -> fail (known failure a_second_set_takes_the_slot) and packaged-terminal-air-conditioners fail -> pass. WHAT THIS BASELINE CLAIMS: that nothing writes into the project between the start and end of a scored run, and that the page set is this one. Any later write - a re-index, or the placement pass run again - moves newest_record_created_at, and the runner refuses until a new baseline is recorded.",
-      "pages": 173,
-      "current_pages": 155,
-      "records": 20495,
-      "newest_page_indexed_at": "2026-09-20 23:15:24.380000",
-      "newest_record_created_at": "2026-10-07 13:03:23.679000"
+      "_note": "The corpus as it stood on 2026-10-26 after the operator's re-index of 'AR - 3.28.25.pdf' (#873's call, queued 18:24:16Z, last page 18:35:29Z) and the glyph rebuild that followed (rows written 20:10:05Z). Measured read-only against the 2026-10-25 baseline (20593): AR 3.28.25's 26 pages re-indexed, 12 current, its records 4981 -> 4917 (-64); glyph rows 181 -> 181, read back key for key against expected_rows_v8 (only payload.arch.page_id moved, on 64 rows: the re-index's new page ids for the same sheets); set health 35 items, identical; no other file's pages or records written since. 20593 - 64 = 20529. An earlier glyph pass (19:01:48Z) ran DURING the re-index and wrote 221 rows; it was replaced by the 20:10Z rebuild and is not in this corpus. PREVIOUS NOTE: The corpus as it stood on 2026-10-23, after #747's rebuild - PROPOSED AS-IS, for the operator's acceptance, on the same terms as the 2026-10-07 ruling. Measured read-only: against the 2026-10-07 baseline it adds (1) ONE NON-PLAN PAGE - '588 Thomas S Boyland Street Brooklyn sf.pdf' p1, 'Inspection Letter', indexed 2026-10-22 17:18Z, one text record; (2) the glyph rows rebuilt twice - 84 -> 95, all emit_version 5 since 2026-10-23 22:10Z (#743 registration, #747 stair seeding), read back field by field against the local pass. No plan page was re-indexed and no plan record rewritten, so the page records are still the 2026-09-20 pass plus the five whole-page rewrites recorded below. 20495 + 1 + 11 = 20507. PREVIOUS NOTE (2026-10-07): The corpus as it stood on 2026-10-07, ACCEPTED AS-IS by operator ruling rather than re-indexed. Its makeup, measured read-only: (1) ONE whole-project page pass, 2026-09-20 22:00-23:59Z - all 155 current pages carry an indexed_at in that window, and no file was uploaded after 2026-09-02; (2) FIVE WHOLE-PAGE RECORD REWRITES after that pass - FA-001 and SP-003.00/SP-004.00 at 2026-09-21 23:19Z, P-400.00 and SP-002.00 at 2026-09-22 20:12Z, 257 records in all, each page's records written in one minute with nothing from the 09-20 pass left beside them, so every page's records are still one write; (3) 84 GLYPH ROWS from the placement pass of 2026-10-07 12:50Z (#660, rebuilt after #664), read back identical by content to the reviewed local run; (4) THE SECOND ARCHITECT'S SET BECAME CURRENT in the 09-20 pass - '588 THOMAS BOYLAND ST SET_UPDATED .pdf', 44 pages in A.x numbering, which is the whole of the 111 -> 155 change in current pages. 3,347 records sit on non-current pages and are read by nothing. Scored on this corpus, the suite gives 25/30 IDENTICALLY on the code before #664 (357de57c), on #664 (feaa0da6) and on #666 (63395a9d), so the two verdicts that moved since the last recorded run (2026-09-20, 211f7489, on the 2026-09-19 corpus) moved with the corpus and not with the gate: door-size pass -> fail (known failure a_second_set_takes_the_slot) and packaged-terminal-air-conditioners fail -> pass. WHAT THIS BASELINE CLAIMS: that nothing writes into the project between the start and end of a scored run, and that the page set is this one. Any later write - a re-index, or the placement pass run again - moves newest_record_created_at, and the runner refuses until a new baseline is recorded. RE-RECORDED 2026-10-25 after the two-track rebuild (#859, #861, #860, #866, #867 merged; glyph pass run by the operator at 1d55ec3a): the ONLY change is the glyph rows, 95 -> 181 (filed 95, owner's post-CO 86, all emit_version 8, read back field by field against the local run) - records 20507 -> 20593 (+86), newest_record_created_at the rebuild's write; pages 174 and current pages 156 unchanged.",
+      "pages": 174,
+      "current_pages": 156,
+      "records": 20529,
+      "newest_page_indexed_at": "2026-10-26 18:35:29.403000",
+      "newest_record_created_at": "2026-10-26 20:10:05.766000"
     },
     "stale": {
       "_note": "Measured on the 2026-09-19 clean corpus with plan_eval.stale_index. All three classes ZERO and the total stale record count is ZERO, so no case is excluded from scoring. Read off the module rather than assumed: an earlier census in this session reported zero because the function name was wrong, which is the same lie as a probe reading the wrong field.",
@@ -125,6 +125,7 @@
       "question": "what is the capacity of the duct electric heater",
       "subject": "duct electric heater",
       "intent": "attribute",
+      "attribute": "capacity",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -195,7 +196,7 @@
           "P-206.00"
         ],
         "values": [
-          4
+          2
         ],
         "text": [
           "RD-1",
@@ -204,14 +205,32 @@
         "claims": [
           {
             "subject": "RD-1",
-            "value": 4
+            "value": 2
+          },
+          {
+            "subject": "RD-2",
+            "value": 2
           }
+        ],
+        "refused": [
+          {
+            "subject": "roof drains",
+            "value": 4
+          },
+          {
+            "subject": "roof drains",
+            "value": 2
+          }
+        ],
+        "located_render": [
+          "RD-1 2 + RD-2 2",
+          "located on P-206.00; no schedule lists them"
         ]
       },
       "truth": {
         "how": "by_eye",
-        "source": "PL - 6.29.26.pdf p14 (P-206.00), ROOF SANITARY & STORM PLAN",
-        "evidence": "FOUR roof drains: RD-1 and RD-2 on each side of the bulkhead, each a round drain symbol with its mark printed beside it and RD-1 carrying (72 GPM). Read off a 400 dpi render 2026-09-19. THIS CASE IS EXPECTED TO FAIL and is recorded that way on purpose. The marks are OUTLINED VECTOR TEXT, not a text layer: P-206.00's text layer is 1,481 characters and contains zero occurrences of RD, RD-1, RD-2, GPM, DOWNSPOUT, FD-1 or VTR - only 42\" PARAPET, SLOPE DN, AD, PASSIVE RECREATION, DN 16 and HWH ROOM. So no text-layer method can see them and the tag vocabulary cannot contain RD for this sheet. THE CASE IT REPLACED WAS WRONG: it named A-105.01 with value 2 and glyph_scope family, which is the ARCHITECTURAL roof plan - the FLOOR/AREA/ROOF DRAIN legend glyph counted twice there. Roof drains live on the P set. A case that passes by counting a different symbol on a different sheet is worse than a case that fails honestly. It passes when outlined text is read - see the geometric bounding work, which fixes this and EN-001.00's compliance tables together."
+        "source": "PL - 6.29.26.pdf p14 (P-206.00), ROOF SANITARY & STORM PLAN; P-400.00 PLUMBING ROUGH-IN SCHEDULE and ROOF DRAIN DETAIL; SD1-2 - 4.1.25.pdf p4; P-302.00 STORM RISER DIAGRAM",
+        "evidence": "RESTATED 2026-10-26 ONTO THE OPERATOR'S RULING: \"Roof drains: plan-only family allowed at sheet scope when a detail/note in the set names the object (P-400 detail, SD1-2 note), labeled 'located on P-206; no schedule lists them'. Bind per tag only: RD-1 (roof drain, J.R. Smith detention) and RD-2 (overflow). A combined total refuses; the render states 2 + 2. SD1-2's '2' is a printed figure for RD-1: agree binds, disagree withholds both.\" By eye, P-206.00 draws FOUR round drains, a pair each side of the bulkhead: the upper of each pair labelled RD-1 (72 GPM), the lower RD-2 - 2 x RD-1 and 2 x RD-2. P-302.00's storm riser draws the same 3\"RD-1 / 3\"RD-2 pair twice; P-400.00's rough-in table lists RD-1 ROOF DRAIN and RD-2 OVERFLOW ROOF DRAIN (no quantity column) and its detail 6 is the ROOF DRAIN DETAIL; SD1-2 p4 prints '2 J.R. Smith Special Purpose (Model 1010-83) Roof Drains' - RD-1's figure, and it agrees. So the true answer is per tag - RD-1 2, RD-2 2 - and a single total of roof drains (4, or 2) is refused. THE CASE IT REPLACES expected 4 bound to RD-1 and was recorded failing on purpose: the labels are outlined vector text, P-206.00 is /Rotate 270 (the sweep refused it), and both RD-1 labels are crossed by the SLOPE DN arrows. Measured 2026-10-26 (L3): the plain sweep reads both RD-2 and no RD-1, and snaps FD-1 (a floor drain) to RD-1 - RD-1 1 + RD-2 1 by cancellation; ink-only exact reads with the symbol never the grey pen locate all four, each within 2 pt of its drain. The case passes only after a glyph rebuild writes the four rows (EMIT_VERSION 9). Before it a census of the family finds no located rows and every figure refuses."
       }
     },
     {
@@ -219,6 +238,7 @@
       "question": "how high is the parapet",
       "subject": "parapet",
       "intent": "attribute",
+      "attribute": "height",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -296,6 +316,7 @@
       "question": "how big is the passive recreation area",
       "subject": "passive recreation",
       "intent": "attribute",
+      "attribute": "area",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -385,6 +406,9 @@
       "id": "ac-type",
       "question": "what type of AC units are in the building",
       "subject": "AC units",
+      "also": [
+        "PTAC"
+      ],
       "intent": "identify",
       "kind": "answer",
       "expect": {
@@ -400,12 +424,17 @@
         ],
         "forbid_text": [
           "PACKAGE TERMINAL AIR CONDITIONER"
+        ],
+        "forbid_returned": [
+          "MINI-CONDENSATE PUMP",
+          "REFRIGERANT PIPES UP TO ROOF",
+          "REFRIGERANT HOT GAS PIPING"
         ]
       },
       "truth": {
         "how": "text_layer",
         "source": "PyMuPDF text of the current pages; M-200.00 and EN-001.00 by eye",
-        "evidence": "PTAC is printed on GN-001.00, A-100.01, A-201.01, scheduled on M-200.00, and listed on EN-001.00 under 'ELECTRICALLY OPERATED PACKAGED TERMINAL AIR CONDITIONERS'. The vision label 'PACKAGE TERMINAL AIR CONDITIONER' (no D, singular) is printed nowhere and must not be said. Confirmed by the project team 2026-09-17: PTACs only, no split systems. The 'each AC unit ... refrigerant pipes to roof' notes on M-100.00-M-105.00 are unstripped boilerplate, not a second system."
+        "evidence": "PTAC is printed on GN-001.00, A-100.01, A-201.01, scheduled on M-200.00, and listed on EN-001.00 under 'ELECTRICALLY OPERATED PACKAGED TERMINAL AIR CONDITIONERS'. The vision label 'PACKAGE TERMINAL AIR CONDITIONER' (no D, singular) is printed nowhere and must not be said. Confirmed by the project team 2026-09-17: PTACs only, no split systems. The 'each AC unit ... refrigerant pipes to roof' notes on M-100.00-M-105.00 are unstripped boilerplate, not a second system. RULING 2026-10-25: the set never prints AC beside PTAC, so the agent names PTAC as another name for what was asked (`also`); the case requires PTAC and FAILS if any returned record is that split-system boilerplate, since an answer may cite anything returned."
       }
     },
     {
@@ -436,6 +465,7 @@
       "question": "what gauge are the metal studs",
       "subject": "metal stud gauge",
       "intent": "attribute",
+      "attribute": "gauge",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -459,6 +489,7 @@
       "question": "how high is the sidewalk shed",
       "subject": "sidewalk shed",
       "intent": "attribute",
+      "attribute": "height",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -635,6 +666,7 @@
       "question": "what size are the doors",
       "subject": "door schedule",
       "intent": "attribute",
+      "attribute": "size",
       "kind": "answer",
       "expect": {
         "sheets": [
@@ -655,19 +687,21 @@
       "question": "what is the ceiling height in the apartments",
       "subject": "ceiling height",
       "intent": "attribute",
+      "attribute": "height",
       "kind": "answer",
       "expect": {
         "sheets": [
-          "A-200.00"
+          "A-300.00"
         ],
         "text": [
-          "CEILING"
-        ]
+          "10'-0\""
+        ],
+        "no_stated_value": true
       },
       "truth": {
         "how": "by_eye",
-        "source": "the AR elevations and the structural set",
-        "evidence": "The operator states ceiling heights are on the AR elevations and the structural set, and the bot answered 'not specified'. MEASURED 2026-09-19: 77 records mention CEILING and NOT ONE is a height - they are drawing-list entries and radiation-damper notes. 'CLG' appears three times, all inside an abbreviations table. So the content is NOT in the corpus and this is EXTRACTION, not retrieval. It is the outlined-vector-text class: the heights are dimension text on elevations, which the text layer does not carry. EXPECTED TO FAIL until outlined text can be read."
+        "source": "AR - 3.28.25.pdf p20, A-300.00 (building section/elevation): level marks and the dimensions between them",
+        "evidence": "RULED 2026-10-27 (operator): truth = floor-to-floor 10'-0\" (A-300.00); ceiling height not shown on the drawings. A-300.00 prints the levels SECOND FLOOR 43.37' +10'-0\", THIRD FLOOR 53.37' +20'-0\", FOURTH FLOOR 63.37' +30'-0\" and six 10'-0\" dimensions between them; no sheet prints a ceiling height (2026-09-19: 77 records mention CEILING, none a height; CLG only in the abbreviations table). The case expects A-300.00's 10'-0\" and FAILS IF ANY CEILING HEIGHT VALUE IS STATED: every dimension the returned records print is put to the gate as the ceiling height and must be refused (no_stated_value). Measured 2026-10-27: search for 'ceiling height' does not return A-300.00 (it prints neither word), and the gate binds 'The ceiling height is 10'-0\".' on A-300.00's floor-to-floor dimension - both open."
       }
     },
     {
@@ -698,15 +732,16 @@
       "kind": "answer",
       "expect": {
         "sheets": [
-          "M-103.00"
+          "M-103.00",
+          "M-104.00"
         ],
         "values": [
-          2
+          3
         ],
         "claims": [
           {
             "subject": "exhaust fans",
-            "value": 2,
+            "value": 3,
             "scope": {
               "floor": "A-103.00",
               "per": "unit"
@@ -714,6 +749,14 @@
           }
         ],
         "refused": [
+          {
+            "subject": "exhaust fans",
+            "value": 2,
+            "scope": {
+              "floor": "A-103.00",
+              "per": "unit"
+            }
+          },
           {
             "subject": "EF-1",
             "value": 2
@@ -726,8 +769,54 @@
       },
       "truth": {
         "how": "by_eye",
-        "source": "MH - 7.2.26.pdf p5 (M-103.00, FOURTH FLOOR HVAC PLANS) against AR - 8.18.26.pdf (A-103.00, FOURTH FLOOR PLAN)",
-        "evidence": "M-103.00 prints 8 exhaust-fan symbols, each labelled beside it: four EF-1(50) at bathrooms and four EF-2(100) at kitchenettes. A-103.00's occupancy table lists four apartments, 4A-4D, each with one bathroom and one kitchenette. Pinned from render reads in tests/test_a_unit_is_answered_or_refused_never_wrong.py, TRUTH['A-103.00']: EF-1 and EF-2 once each in 4A, 4B, 4C and 4D. Re-read by eye 2026-10-07 on the placement review renders review_06/07.png, tiles #55-#62 - the kitchenette tiles show APT 4A, 4B, 4C, 4D printed beside the EF-2 placement. So 2 per unit, and the claim is SCOPED: the building total is not claimable, because M-104.00 (mezzanine, no unit tags) and M-106.00 (no architectural partner) were refused by the pass. Hence the two refused claims: 'There are 2 EF-1.' is the partial count the gate bound on 2026-10-06 (2 of 16 rows returned), and 32 is a building total over refused sheets."
+        "source": "MH - 7.2.26.pdf p5 (M-103.00) and p6 (M-104.00) against Owners set - 6.9.26.pdf p4 (A-103.00) and p5 (A-104.00)",
+        "evidence": "4A-4D are DUPLEXES. A-103.00 prints each '1 BEDROOM APT. LOWER' with a private stair labelled UP; A-104.00 (MEZZANINE PLAN, Owners set p5) names no unit, and M-104.00 (MEZZANINE FLOOR HVAC PLANS, MH - 7.2.26.pdf p6) prints one EF-1(50) in each of its four quadrants - read by eye 2026-10-07 on m104_crop.png, and placed into 4A-4D by stair seeding (#747), render-checked 2026-10-11 on stair_seed_A104.png: one quadrant per unit. On A-103.00 each of 4A-4D has one EF-1(50) at the bathroom and one EF-2(100) at the kitchenette (TRUTH['A-103.00'] in tests/test_a_unit_is_answered_or_refused_never_wrong.py; review_06/07.png tiles #55-#62). So each apartment has 3 exhaust fans: EF-1 2, EF-2 1. A unit is the whole apartment (operator ruling 2026-10-07), and a floor named alongside says which units, not which part - so 'each apartment on the fourth floor' is 3. REWRITTEN 2026-10-23: it claimed 2 per unit (A-103.00's half of each apartment); #671 made that refuse by design, and #747 made the whole apartment answerable. 2 per unit is now a refused claim. 'There are 2 EF-1.' is the partial count the gate bound on 2026-10-06; 32 is a building total that is not the building's (36 since the rebuilds)."
+      }
+    },
+    {
+      "id": "exhaust-fans-in-duplex-4a",
+      "question": "how many exhaust fans does apartment 4A have",
+      "subject": "exhaust fans",
+      "intent": "count",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "M-103.00",
+          "M-104.00"
+        ],
+        "values": [
+          3
+        ],
+        "claims": [
+          {
+            "subject": "exhaust fans",
+            "value": 3,
+            "scope": {
+              "unit": "4A"
+            }
+          }
+        ],
+        "refused": [
+          {
+            "subject": "exhaust fans",
+            "value": 2,
+            "scope": {
+              "unit": "4A"
+            }
+          },
+          {
+            "subject": "exhaust fans",
+            "value": 1,
+            "scope": {
+              "unit": "4A"
+            }
+          }
+        ]
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p5 (M-103.00) and p6 (M-104.00) against Owners set - 6.9.26.pdf p4 (A-103.00) and p5 (A-104.00)",
+        "evidence": "4A-4D are DUPLEXES. A-103.00 prints each '1 BEDROOM APT. LOWER' with a private stair labelled UP; A-104.00 (MEZZANINE PLAN, Owners set p5) names no unit, and M-104.00 (MEZZANINE FLOOR HVAC PLANS, MH - 7.2.26.pdf p6) prints one EF-1(50) in each of its four quadrants - read by eye 2026-10-07 on m104_crop.png, and placed into 4A-4D by stair seeding (#747), render-checked 2026-10-11 on stair_seed_A104.png: one quadrant per unit. On A-103.00 each of 4A-4D has one EF-1(50) at the bathroom and one EF-2(100) at the kitchenette (TRUTH['A-103.00'] in tests/test_a_unit_is_answered_or_refused_never_wrong.py; review_06/07.png tiles #55-#62). So each apartment has 3 exhaust fans: EF-1 2, EF-2 1. 4A: EF-1 and EF-2 on A-103.00 (2), EF-1 on A-104.00 (1) = 3. The two halves are refused: 2 is A-103.00's part alone (what the gate bound before #671), 1 is A-104.00's."
       }
     },
     {
@@ -735,18 +824,42 @@
       "question": "how many vent fans are there",
       "subject": "exhaust fan",
       "intent": "count",
-      "kind": "absent",
+      "kind": "answer",
       "expect": {
+        "sheets": [
+          "M-200.00"
+        ],
         "text": [
           "EF-1"
         ],
-        "no_unscoped_count": true
+        "values": [
+          36
+        ],
+        "claims": [
+          {
+            "subject": "exhaust fans",
+            "value": 36
+          }
+        ],
+        "refused": [
+          {
+            "subject": "exhaust fans",
+            "value": 3
+          },
+          {
+            "subject": "exhaust fans",
+            "value": 2
+          }
+        ]
       },
       "truth": {
-        "how": "absent",
-        "source": "MH - 7.2.26.pdf p9 (M-200.00), EXHAUST FAN SCHEDULE",
-        "evidence": "The EXHAUST FAN SCHEDULE has NO QTY COLUMN - its headers are TAG, SERVING, MANUF., MODEL, CFM, DRIVE, SP, TYPE ARRANGEMENT, SONES, AMP - so EF-1 and EF-2 are TYPES and the sheet states no quantity. The element records agree: both carry count_if_stated None with basis not_stated, and only SAF-1, whose FAN SCHEDULE does have a QTY column, carries count 1. LIVE FAILURE 2026-09-19: the bot answered '3 vent fans' on a building with 10+ units, by counting schedule ROWS. Extraction was correct throughout; composition was not. A row is a type.",
-        "narrowed": "NARROWED, NOT DELETED, 2026-10-07 (operator ruling). This case said nothing may state a count of exhaust fans. Since the placement pass (#660, rebuilt 2026-10-07) the located symbols state SCOPED counts - each unit on the fourth floor has 2 - and an absence forbidding those would be false. What stays true, and is the thing worth protecting: no sheet prints a QUANTITY of exhaust fans, so no returned record may carry one, and no number may bind to 'exhaust fan' at building scope. no_unscoped_count checks both - the record check that no_stated_count made, and the gate, for every number the returned records carry and 1 to 40. The live failure this case was written for, '3 vent fans' counted off schedule rows, is an unscoped count and is still refused."
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p2-p6 (M-100.00 to M-104.00), the located exhaust-fan symbols; p9 (M-200.00), EXHAUST FAN SCHEDULE",
+        "evidence": "36 exhaust fans are LOCATED: EF-1 20 and EF-2 16 - 8 on each of M-100.00 to M-103.00 (one EF-1 at each bathroom, one EF-2 at each kitchenette) and 4 EF-1 on M-104.00 (the mezzanine bathrooms), every symbol named by its label and placed; the placements were rendered and read (2026-10-06/07), and M-104.00's were placed by stair seeding (#747, rebuilt 2026-10-23). No sheet PRINTS a quantity: the EXHAUST FAN SCHEDULE has no QTY column, so EF-1 and EF-2 are TYPES. REFUSED: 3 - the live failure of 2026-09-19, '3 vent fans' counted off schedule rows; 2 - the number of fan types. REWRITTEN 2026-10-23 (operator ruling) from an absence: since #679 a refused sheet that cannot carry the symbols no longer blocks a building total, so the located 36 binds at building scope, and it is true. What the absence protected - no count made of schedule rows - is now its refused claims.",
+        "history": {
+          "absent": "The EXHAUST FAN SCHEDULE has NO QTY COLUMN - its headers are TAG, SERVING, MANUF., MODEL, CFM, DRIVE, SP, TYPE ARRANGEMENT, SONES, AMP - so EF-1 and EF-2 are TYPES and the sheet states no quantity. The element records agree: both carry count_if_stated None with basis not_stated, and only SAF-1, whose FAN SCHEDULE does have a QTY column, carries count 1. LIVE FAILURE 2026-09-19: the bot answered '3 vent fans' on a building with 10+ units, by counting schedule ROWS. Extraction was correct throughout; composition was not. A row is a type.",
+          "narrowed": "NARROWED, NOT DELETED, 2026-10-07 (operator ruling). This case said nothing may state a count of exhaust fans. Since the placement pass (#660, rebuilt 2026-10-07) the located symbols state SCOPED counts - each unit on the fourth floor has 2 - and an absence forbidding those would be false. What stays true, and is the thing worth protecting: no sheet prints a QUANTITY of exhaust fans, so no returned record may carry one, and no number may bind to 'exhaust fan' at building scope. no_unscoped_count checks both - the record check that no_stated_count made, and the gate, for every number the returned records carry and 1 to 40. The live failure this case was written for, '3 vent fans' counted off schedule rows, is an unscoped count and is still refused."
+        }
       }
     }
   ],
@@ -756,7 +869,7 @@
       "cases": [
         "ac-type"
       ],
-      "status": "partly addressed, not closed",
+      "status": "ac-type answered by `also` (ruling 2026-10-25); the ranking half stays open for a question asked without the other name",
       "what": "Generic prose that repeats more of the question's words outranks the specific record that answers it. 'AC units' is led by the note 'EACH AC UNIT SHALL HAVE A MINI-CONDENSATE PUMP', which matches both words, while the PTAC schedule matches one. HALF OF IT WAS THE SLOTS, NOT THE RANKING: asked about the AC units, five of the eight records returned were two notes repeated, and the PTAC schedule sat at positions six to eight. A note is now one record across the sheets it is stamped on (dedupe_quotes), and the schedule reaches the lead.",
       "why_it_is_not_tuned_away": "Ranking is similarity-first by design (#589). Special-casing this question would teach the ranker the suite rather than fix the class.",
       "evidence": "The note is printed identically on M-100.00 through M-105.00 and is vision-read (the M-sheet notes are outlined). The project team confirmed on 2026-09-17 that 588 Boyland has PTACs only and no split systems: it is engineer boilerplate that was not stripped. After the collapse, 2026-09-17: ac-type's lead is M-100.00, M-101.00 and two M-200.00 schedule cells, so the case is no longer scored as a failure — it is STALE, because the schedule cells that answer it are the three known-stale PTAC elements. Whether it PASSES is not known until the re-index clears them.",

@@ -31,7 +31,7 @@ import re
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-from lib import dot_embargo, dot_sync, wa_gc
+from lib import dob_penalty, dot_embargo, dot_sync, wa_gc
 
 # ── The kinds and their switches ────────────────────────────────────────────
 
@@ -504,7 +504,14 @@ FACT_FIELDS = (
 
 
 def facts(rec: Dict[str, Any]) -> Dict[str, str]:
-    return {k: _t(rec.get(k)) for k in FACT_FIELDS if _t(rec.get(k))}
+    """The fields the AI line may state. A penalty whose hearing has not
+    happened is LEFT OUT: the checker then refuses any amount, so the line can
+    never show a pending penalty without its "(hearing pending)" note
+    (lib/dob_penalty); the template line is used instead."""
+    out = {k: _t(rec.get(k)) for k in FACT_FIELDS if _t(rec.get(k))}
+    if "penalty_amount" in out and dob_penalty.hearing_pending(rec):
+        del out["penalty_amount"]
+    return out
 
 
 def nice_date(d: Optional[date]) -> str:

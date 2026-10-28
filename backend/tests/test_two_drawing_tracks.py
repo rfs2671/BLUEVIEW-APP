@@ -208,7 +208,8 @@ class ThePassRunsOncePerTrack(unittest.TestCase):
             db.document_page_index.docs.append(dict(p, project_id=str(proj)))
         calls = []
 
-        def fake_pass(pages, open_page, schedules, door_pages, track="filed", sweeps=None):
+        def fake_pass(pages, open_page, schedules, door_pages, track="filed", sweeps=None,
+                      plan_only=None):
             calls.append((track, id(sweeps), len(pages)))
             return {"rows": [{"page_id": "pg-m100", "ordinal": i, "payload": {"track": track}}
                              for i in range(3)], "summary": {}}
@@ -221,9 +222,14 @@ class ThePassRunsOncePerTrack(unittest.TestCase):
         async def write(_pid, rows):
             written["rows"] = rows
             return len(rows)
+
+        async def write_health(_pid, items):
+            written["health"] = items
+            return len(items)
         with patch.object(server, "db", db), patch.object(server, "_live_plan_file_ids", live), \
                 patch("lib.plan_glyph_pass.run_pass", fake_pass), \
-                patch.object(server, "_write_glyph_records", write):
+                patch.object(server, "_write_glyph_records", write), \
+                patch.object(server, "_write_set_health", write_health):
             summary = asyncio.run(server._plan_glyph_pass(str(proj)))
         self.assertEqual([c[0] for c in calls], ["filed", "post_co"])
         self.assertEqual(len({c[1] for c in calls}), 1, "each track swept the sheets again")

@@ -56,6 +56,7 @@ import json
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from lib import plan_dimensions
 from lib import plan_refusal
 from lib import plan_search as ps
 from lib.plan_extract import TIER_SCHEDULE_CELL
@@ -205,6 +206,15 @@ def validate_suite(suite: Dict[str, Any]) -> None:
             raise SuiteError(f"{cid}: kind {c.get('kind')!r}")
         if not (c.get("subject") or "").strip():
             raise SuiteError(f"{cid}: no subject")
+        also = c.get("also")
+        if also is not None and (not isinstance(also, list) or not also or not all(
+                isinstance(a, str) and a.strip() and a != c["subject"] for a in also)):
+            raise SuiteError(f"{cid}: also is a non-empty list of other names, or absent")
+        attr = c.get("attribute")
+        if attr is not None and (not isinstance(attr, str) or not attr.strip()
+                                 or c.get("intent") != "attribute"):
+            raise SuiteError(f"{cid}: attribute names the property an attribute "
+                             f"question asks about, or is absent")
         truth = c.get("truth") or {}
         if truth.get("how") not in TRUTH_KINDS or not truth.get("evidence"):
             raise SuiteError(f"{cid}: truth must say how it was established, "
@@ -218,6 +228,14 @@ def validate_suite(suite: Dict[str, Any]) -> None:
             t = exp.get("tier_at_least")
             if t is not None and t not in TIER_ORDER:
                 raise SuiteError(f"{cid}: unknown tier {t!r}")
+        lr = exp.get("located_render")
+        if lr is not None and (not isinstance(lr, list) or not lr or not all(
+                isinstance(x, str) and x.strip() for x in lr)):
+            raise SuiteError(f"{cid}: located_render is a non-empty list of the "
+                             f"phrases the located-symbol render must state, or absent")
+        nsv = exp.get("no_stated_value")
+        if nsv is not None and (nsv is not True or c.get("intent") != "attribute"):
+            raise SuiteError(f"{cid}: no_stated_value is true on an attribute case, or absent")
         claims = exp.get("claims")
         if claims is not None:
             if not isinstance(claims, list) or not claims:
@@ -259,19 +277,26 @@ def validate_suite(suite: Dict[str, Any]) -> None:
 #: What a claim's scope may say. A located-symbol count binds only at the
 #: scope its clause names (plan_search.glyph_values), so a case that claims
 #: one says which: the floor, by its architectural sheet number, and
-#: optionally `per: unit` for a figure every apartment on it shares.
-SCOPE_KEYS = ("floor", "per")
+#: optionally `per: unit` for a figure every apartment on it shares - or ONE
+#: APARTMENT by its tag (`unit: "4A"`), whose count is the whole apartment
+#: across every sheet its stair links (2026-10-11, #747).
+SCOPE_KEYS = ("floor", "per", "unit")
 
 
 def _check_scope(cid: str, claim: Dict[str, Any]) -> None:
     scope = claim.get("scope")
     if scope is None:
         return
-    if (not isinstance(scope, dict) or set(scope) - set(SCOPE_KEYS)
-            or not str(scope.get("floor") or "").strip()
-            or scope.get("per") not in (None, "unit")):
-        raise SuiteError(f"{cid}: a claim's scope is {{floor, per: unit}}; "
-                         f"got {scope!r}")
+    ok = isinstance(scope, dict) and not (set(scope) - set(SCOPE_KEYS))
+    if ok and "unit" in scope:
+        # one apartment, alone: a floor beside it says which units, not
+        # which part, so it would add nothing the claim could be checked by
+        ok = set(scope) == {"unit"} and bool(str(scope["unit"] or "").strip())
+    elif ok:
+        ok = bool(str(scope.get("floor") or "").strip()) and scope.get("per") in (None, "unit")
+    if not ok:
+        raise SuiteError(f"{cid}: a claim's scope is {{floor, per: unit}} or "
+                         f"{{unit}}; got {scope!r}")
 
 
 def known_failure_classes(suite: Dict[str, Any]) -> Dict[str, str]:
@@ -320,6 +345,8 @@ def _sentence(anchor: str, value: Any, scope: Optional[Dict[str, Any]] = None) -
     # only at the scope its clause names, so "exhaust fans: 2." is refused
     # whatever the number - the check would be about the sentence's shape,
     # which is the vacuous-probe mistake _invented_number's note records.
+    if scope and anchor and scope.get("unit"):
+        return f"{scope['unit']} has {value} {anchor}."
     if scope and anchor:
         floor = str(scope["floor"])
         if scope.get("per") == "unit":
@@ -418,6 +445,13 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
         if _norm(bad) in _norm(body):
             checks[f"forbid:{bad}"] = False
             reasons.append(f"the render's records say {bad!r}")
+    # AN ANSWER MAY CITE ANY RECORD RETURNED, not only the three the render
+    # prints, so text that must never be cited is checked against them all.
+    for bad in exp.get("forbid_returned") or []:
+        hits = [r.get("sheet_number") for r in returned if _norm(bad) in _norm(r.get("quote"))]
+        checks[f"forbid_returned:{bad}"] = not hits
+        if hits:
+            reasons.append(f"a returned record says {bad!r} ({hits[:3]})")
 
     # THE LABEL NEVER PRINTS AND STILL SPEAKS. Measured on the first run:
     # 'kicker' returned two legend entries whose quotes are 'KE 1' and 'KE 2'
@@ -425,7 +459,11 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
     # render printed no label — and still read 'Kicker — on the drawings:
     # M-104.00 KE 1', which asserts the invented meaning outright.
     if lead:
-        via_label = [r for r in lead if not _matches_without_label(r, terms)]
+        # Under ANY name the case searched (`also`): a record found by its
+        # other name prints that name, and that is not a label match.
+        names = [ps.search_terms(n) for n in [subject] + list(case.get("also") or [])]
+        via_label = [r for r in lead
+                     if not any(_matches_without_label(r, t) for t in names if t)]
         checks["lead_matched_only_through_labels"] = len(via_label)
         if len(via_label) == len(lead):
             reasons.append(
@@ -495,6 +533,29 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
         if ok:
             reasons.append(f"the gate allowed {sent!r}, which the case says is wrong")
 
+    # ── NO VALUE OF IT IS STATED ───────────────────────────────────────────
+    #
+    # For a property the drawings do not show (ceiling height, ruled
+    # 2026-10-27: "floor-to-floor 10'-0" (A-300.00); ceiling height not shown
+    # on the drawings"). An answer may state a value only when the gate binds
+    # it, so every dimension a returned record prints is put to the gate as
+    # the subject's value, and any that binds fails the case. Measured the day
+    # it was written: the gate bound "The ceiling height is 10'-0"." on
+    # A-300.00's floor-to-floor dimension. The count of values put to the gate
+    # is recorded: with none printed, the check holds vacuously and says so.
+    if exp.get("no_stated_value"):
+        texts = plan_dimensions.record_texts(list(returned), ps._vouches_for_nothing)
+        printed = sorted({f.text.strip() for t in texts
+                          for f in plan_dimensions.find(plan_dimensions.unreverse(t)) if f.dims})
+        bound = [d for d in printed
+                 if ps.answer_is_grounded(_sentence(subject, d), returned, intent=intent)[0]]
+        checks["printed_values_put_to_the_gate"] = len(printed)
+        checks["no_value_binds"] = not bound
+        if bound:
+            reasons.append(f"the gate allowed {len(bound)} printed value(s) as the "
+                           f"{subject}, which the drawings do not show: "
+                           + " | ".join(_sentence(subject, d) for d in bound[:4]))
+
     # ── NO UNSCOPED COUNT ──────────────────────────────────────────────────
     #
     # NARROWED FROM `no_stated_count` (2026-10-07). The drawings state no
@@ -542,7 +603,9 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
     # puts them after the ranked slice, whole, with their census. For such a
     # claim the expected sheet is where the symbols are, and the glyph rows
     # returned from it are what it rests on.
-    if any(c.get("scope") for c in claims):
+    # So does a claim on a PLAN-ONLY family (lib.plan_only): it binds at
+    # sheet scope, unscoped in the sentence, and rests on its located rows.
+    if any(c.get("scope") for c in claims) or exp.get("located_render"):
         on_sheet += [r for r in returned if r.get("record_type") == "glyph"
                      and r.get("label") and r.get("sheet_number") in sheets]
     checks["expected_sheet_in_lead"] = bool(on_sheet)
@@ -605,6 +668,18 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
 
     checks["render_carries_the_answer"] = all(
         _norm(v) in _norm(body) for v in values + list(exp.get("text") or []))
+    # ── WHAT THE MODEL IS TOLD OF THE LOCATED SYMBOLS ─────────────────────
+    #
+    # A plan-only family's answer is its render (ruling 2026-10-26: "the
+    # render states 2 + 2", labelled where it was located): the phrases a
+    # case names here must be in what render_glyph_evidence shows the model.
+    located = exp.get("located_render") or []
+    if located:
+        shown = _norm(ps.render_glyph_evidence(list(returned)))
+        for t in located:
+            checks[f"located_render:{t}"] = _norm(t) in shown
+            if _norm(t) not in shown:
+                reasons.append(f"the located-symbol render does not state {t!r}")
     return reasons, checks, render
 
 

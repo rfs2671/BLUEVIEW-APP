@@ -4,7 +4,7 @@
  *   - `fetchTile(desc, signal)` -> bytes (an ArrayBuffer / Uint8Array / Blob); the
  *     caller adds the Authorization header, so no token ever rides in a URL.
  *   - `decode(bytes, desc)` -> {image, bytes: <decoded size>} (an ImageBitmap on
- *     web, a Skia image on native).
+ *     web page and phone WebView page alike).
  *   - `disk` (optional) -> {get(desc) -> bytes|null, put(desc, bytes)}: the
  *     progressive offline cache. A tile seen once is never fetched again.
  *   - `dispose(image)` frees a decoded image when it is evicted.

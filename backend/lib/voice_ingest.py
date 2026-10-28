@@ -77,6 +77,8 @@ import math
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Dict, Optional
 
+from lib import llm_provider
+
 from lib.server_http import ServerHttpClient
 
 logger = logging.getLogger(__name__)
@@ -368,6 +370,7 @@ async def transcribe_whisper(
     audio_mime: Optional[str] = None,
     prompt: Optional[str] = None,
     language: Optional[str] = None,
+    model_refused: Optional[Callable[[int, Any], Any]] = None,
 ) -> WhisperResult:
     """Call OpenAI Whisper in verbose_json mode so we get
     no_speech_prob per segment. Auto-detects language. Retries
@@ -390,7 +393,7 @@ async def transcribe_whisper(
     if not audio_bytes:
         raise RuntimeError("empty audio_bytes — caller should short-circuit")
 
-    url = "https://api.openai.com/v1/audio/transcriptions"
+    url = llm_provider.TRANSCRIBE_URL
     headers = {"Authorization": f"Bearer {openai_api_key}"}
     # Named for what the bytes ARE: Whisper reads the format from the file
     # name, and a forwarded MP3/M4A sent as "voice.ogg" is refused.
@@ -402,7 +405,7 @@ async def transcribe_whisper(
     # verbose_json so segments[].no_speech_prob is in the response.
     files = {
         "file": (audio_filename, audio_bytes, audio_mime),
-        "model": (None, "whisper-1"),
+        "model": (None, llm_provider.WHISPER_MODEL),
         "response_format": (None, "verbose_json"),
         "temperature": (None, "0"),
     }
@@ -452,6 +455,18 @@ async def transcribe_whisper(
             )
         except Exception as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
+            # A refusal someone must fix (no credits, a bad key) is told to
+            # the caller's hook, which decides whether it is one (server:
+            # lib/model_outage) - the note still fails as it always did.
+            if model_refused is not None and status and int(status) >= 401:
+                try:
+                    try:
+                        refused_body = e.response.json()
+                    except Exception:
+                        refused_body = None
+                    await model_refused(int(status), refused_body)
+                except Exception:
+                    pass
             if status == 400 and "language" in files:
                 # A language Whisper refuses (the API's list is narrower than
                 # the model's): the note is heard without the hint rather than
@@ -501,10 +516,10 @@ async def translate_whisper(
         raise RuntimeError("openai_api_key required for Whisper")
     if not audio_bytes:
         raise RuntimeError("empty audio_bytes")
-    url = "https://api.openai.com/v1/audio/translations"
+    url = llm_provider.TRANSLATE_URL
     headers = {"Authorization": f"Bearer {openai_api_key}"}
     name, mime = audio_name(audio_bytes)
-    files = {"file": (name, audio_bytes, mime), "model": (None, "whisper-1"),
+    files = {"file": (name, audio_bytes, mime), "model": (None, llm_provider.WHISPER_MODEL),
              "response_format": (None, "json"), "temperature": (None, "0")}
     attempt = 0
     while True:
@@ -557,13 +572,13 @@ async def translate_to_english(
             english=text, tokens_in=0, tokens_out=0, cost_usd=0.0,
         )
 
-    url = "https://api.openai.com/v1/chat/completions"
+    url = llm_provider.CHAT_URL
     headers = {
         "Authorization": f"Bearer {openai_api_key}",
         "Content-Type": "application/json",
     }
     body = {
-        "model": "gpt-4o-mini",
+        "model": llm_provider.CHAT_MODEL,
         "temperature": 0,
         "messages": [
             {"role": "system", "content": TRANSLATE_SYSTEM_PROMPT},
@@ -647,6 +662,7 @@ async def process_voice_note(
     translate_fn: Optional[Callable[..., Any]] = None,
     prompt: Optional[str] = None,
     language: Optional[str] = None,
+    model_refused: Optional[Callable[[int, Any], Any]] = None,
 ) -> VoiceIngestResult:
     """Full pipeline: Whisper → freshness check → translate.
 
@@ -697,6 +713,7 @@ async def process_voice_note(
             audio_bytes,
             openai_api_key=openai_api_key,
             http_client=http_client,
+            **({"model_refused": model_refused} if model_refused else {}),
             **({"prompt": prompt} if prompt else {}),
             **({"language": language} if language else {}),
         )

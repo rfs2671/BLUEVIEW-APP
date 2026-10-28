@@ -638,7 +638,10 @@ export default function DOBLogsScreen() {
           {log.penalty_amount && subtype === 'ECB' && (
             <View style={{ backgroundColor: semantic.criticalBg, borderRadius: 8, padding: 10, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Text style={{ fontSize: 18, fontWeight: '700', color: '#f97316' }}>${log.penalty_amount}</Text>
-              <Text style={{ fontSize: 12, color: '#f97316', opacity: 0.8 }}>Penalty Amount</Text>
+              <Text style={{ fontSize: 12, color: '#f97316', opacity: 0.8 }}>
+                {/* Not final before the hearing (backend lib/dob_penalty). */}
+                {log.penalty_hearing_pending ? `Penalty Amount ${tc('penaltyHearingPending')}` : 'Penalty Amount'}
+              </Text>
             </View>
           )}
           {isExpanded && (
@@ -669,7 +672,8 @@ export default function DOBLogsScreen() {
               {log.violation_type && <DetailRow label="Type" value={log.violation_type} colors={colors} />}
               {log.violation_category && <DetailRow label="Category" value={log.violation_category} colors={colors} />}
               {log.description && <DetailRow label="Description" value={log.description} colors={colors} />}
-              {log.penalty_amount && <DetailRow label="Penalty" value={`$${log.penalty_amount}`} colors={colors} />}
+              {log.penalty_amount && <DetailRow label="Penalty" value={log.penalty_hearing_pending
+                ? `$${log.penalty_amount} ${tc('penaltyHearingPending')}` : `$${log.penalty_amount}`} colors={colors} />}
               {log.respondent && <DetailRow label="Respondent" value={log.respondent} colors={colors} />}
               {log.disposition_date && <DetailRow label="Disposition" value={formatDate(log.disposition_date)} colors={colors} />}
               {log.status && <DetailRow label="Status" value={log.status} colors={colors} />}
