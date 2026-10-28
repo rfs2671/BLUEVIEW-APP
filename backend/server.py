@@ -78941,6 +78941,237 @@ async def dispute_answer(answer_log_id: str, body: Optional[AnswerDisputeIn] = N
     return answer_disputes.user_view()
 
 
+# ── THE OPERATOR'S REVIEW QUEUE (L6.4; lib/review_queue.py, last section) ──
+#
+# PLATFORM OPERATOR ONLY: every route below carries require_operator_404,
+# the #790 / owner-portal gate, so a company admin, a regular user, no token
+# and a bad token all get the same bare 404 and learn nothing exists. The
+# operator reads ACROSS companies (that is the point of the queue); each
+# item's answer_log row is still read through _answer_log_get with THAT
+# item's company, so a row is never joined to another company's answer.
+#
+# ONE WRITER, ONE CHANGE. _review_decide is the only code that changes a
+# dispute or a queue item, and the only change is its status, pending ->
+# approved | denied, once (a conditional update on status "pending"; a
+# second decision is a 409). answer_log stays insert-only. Every decision
+# is an audit_logs row. Approved / denied having CONSEQUENCES (eval
+# examples, fix tickets, "under review" refusals) is L6.5, not here.
+
+_REVIEW_COLLECTIONS = {review_queue.SOURCE_DISPUTE: answer_disputes.COLLECTION,
+                       review_queue.SOURCE_QUEUE: review_queue.COLLECTION}
+
+
+class ReviewDecisionIn(BaseModel):
+    """Body for POST /owner/review-queue/{source}/{id}/decide. Every field
+    has a default so a malformed body is the route's 422, never a hint."""
+    decision: str = ""
+    explanation: str = ""
+    notify: bool = False
+
+
+async def _review_item(source: str, item_id: str) -> dict:
+    """One item of one source, for the operator. 404 for anything else."""
+    coll = _REVIEW_COLLECTIONS.get(source)
+    doc = await db[coll].find_one({"_id": str(item_id)}) if coll and item_id else None
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return doc
+
+
+async def _review_view(source: str, doc: dict, *, full: bool = False,
+                       memo: Optional[dict] = None) -> dict:
+    """An item with its company, project, asker and answer_log row (that
+    company's only)."""
+    memo = memo if memo is not None else {}
+    cid = str(doc.get("company_id") or "")
+
+    async def once(key, load):
+        if key not in memo:
+            try:
+                memo[key] = await load()
+            except Exception as e:
+                logger.warning(f"[review-queue] view lookup failed: {type(e).__name__}")
+                memo[key] = None
+        return memo[key]
+
+    company = await once(("co", cid), lambda: db.companies.find_one(
+        {"_id": to_query_id(cid)}, {"name": 1})) if cid else None
+    answer = None
+    if doc.get("answer_log_id"):
+        answer = await once(("al", cid, doc["answer_log_id"]),
+                            lambda: _answer_log_get(cid, str(doc["answer_log_id"])))
+    pid = doc.get("project_id")
+    if not pid and answer and len(answer.get("project_ids") or []) == 1:
+        pid = answer["project_ids"][0]
+    project = None
+    if pid:
+        p = await once(("pr", str(pid)), lambda: db.projects.find_one(
+            {"_id": to_query_id(str(pid))}, {"name": 1, "company_id": 1}))
+        # The project is shown only when it is this item's company's.
+        if p and str(p.get("company_id") or "") == cid:
+            project = {"id": str(pid), "name": p.get("name")}
+        else:
+            project = {"id": str(pid), "name": None}
+    asker_name = None
+    if source == review_queue.SOURCE_DISPUTE and doc.get("user_id"):
+        u = await once(("us", str(doc["user_id"])), lambda: db.users.find_one(
+            {"_id": to_query_id(str(doc["user_id"]))}, {"name": 1, "company_id": 1}))
+        if u and str(u.get("company_id") or "") == cid:
+            asker_name = u.get("name")
+    return review_queue.item_view(source, doc, company_name=(company or {}).get("name"),
+                                  project=project, answer=answer, asker_name=asker_name,
+                                  full=full)
+
+
+async def _review_decide(source: str, item_id: str, *, decision: str, explanation: str,
+                         notify: bool, operator: dict) -> bool:
+    """THE ONE WRITER OF A REVIEW DECISION, and the only code that changes a
+    dispute or a queue item. Conditional on status "pending": True when this
+    call decided it, False when it was already decided (or is gone)."""
+    change = review_queue.decision_set(decision, explanation, notify, actor_id(operator),
+                                       datetime.now(timezone.utc))
+    guard = {"_id": str(item_id), "status": review_queue.STATUS_PENDING}
+    if source == review_queue.SOURCE_DISPUTE:
+        res = await db[answer_disputes.COLLECTION].update_one(guard, {"$set": change})
+    elif source == review_queue.SOURCE_QUEUE:
+        res = await db[review_queue.COLLECTION].update_one(guard, {"$set": change})
+    else:
+        return False
+    return getattr(res, "modified_count", 0) == 1
+
+
+async def _review_notify(source: str, doc: dict, decision: str) -> dict:
+    """The disputing person's one plain line, through the proactive DM path
+    (send_whatsapp_dm: opt-in, eligibility and the ledger, keyed by the item
+    so it goes once). Only a dispute has someone to tell; a dispute with no
+    user_id (a group asker known by key only) gets nothing."""
+    if source != review_queue.SOURCE_DISPUTE:
+        return {"sent": False, "reason": "not_a_dispute"}
+    uid = doc.get("user_id")
+    if not uid:
+        return {"sent": False, "reason": "no_asker"}
+    try:
+        sent = await send_whatsapp_dm(uid, review_queue.NOTIFY_TEXT[decision],
+                                      kind="review_decision", window=f"review:{doc['_id']}")
+    except Exception as e:
+        logger.warning(f"[review-queue] notify failed: {type(e).__name__}")
+        sent = None
+    return {"sent": bool(sent), "reason": "sent" if sent else "not_reachable"}
+
+
+@api_router.get("/owner/review-queue", tags=["Owner"])
+async def owner_review_queue(kind: Optional[str] = None, status: str = "pending",
+                             reason: Optional[str] = None, priority: str = "normal",
+                             company_id: Optional[str] = None, offset: int = 0,
+                             limit: int = 25, operator=Depends(require_operator_404)):
+    """Both sources side by side, newest first: answer_disputes (kind and
+    reason "dispute", priority normal) and review_queue (every other kind).
+    Filters: kind, reason, status (pending | approved | denied), priority
+    (normal | low | all), company. THE DEFAULT IS "NEEDS DECISION": pending,
+    normal priority (low hidden). Paged by offset / limit."""
+    # require_operator_404 already answered everyone else; said again here
+    # because this read crosses companies on purpose (the tenant census).
+    if not is_platform_operator(operator):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if kind and kind not in review_queue.KINDS:
+        raise HTTPException(status_code=422, detail="unknown kind")
+    if reason and reason not in review_queue.REVIEW_REASONS:
+        raise HTTPException(status_code=422, detail="unknown reason")
+    if status not in review_queue.STATUSES:
+        raise HTTPException(status_code=422, detail="unknown status")
+    if priority not in review_queue.PRIORITY_FILTERS:
+        raise HTTPException(status_code=422, detail="unknown priority")
+    offset = max(0, min(int(offset), review_queue.MAX_OFFSET))
+    limit = max(1, min(int(limit), review_queue.MAX_LIST))
+    lists, memo = [], {}
+    want = offset + limit + 1
+    sources = review_queue.sources_for(kind, reason, priority)
+    if review_queue.SOURCE_DISPUTE in sources:
+        dq: Dict[str, Any] = {"status": status}
+        if company_id:
+            dq["company_id"] = str(company_id)
+        rows = await db.answer_disputes.find(dq).sort([("created_at", -1)]).to_list(want)
+        lists.append([await _review_view(review_queue.SOURCE_DISPUTE, r, memo=memo)
+                      for r in rows])
+    if review_queue.SOURCE_QUEUE in sources:
+        qq: Dict[str, Any] = {"status": status}
+        if kind:
+            qq["kind"] = kind
+        if reason:
+            qq["reason"] = reason
+        if company_id:
+            qq["company_id"] = str(company_id)
+        if priority == review_queue.PRIORITY_LOW:
+            qq["priority"] = review_queue.PRIORITY_LOW
+        elif priority == review_queue.PRIORITY_NORMAL:
+            # A row queued before priorities existed counts as normal.
+            qq["priority"] = {"$ne": review_queue.PRIORITY_LOW}
+        rows = await db.review_queue.find(qq).sort([("created_at", -1)]).to_list(want)
+        lists.append([await _review_view(review_queue.SOURCE_QUEUE, r, memo=memo)
+                      for r in rows])
+    page = review_queue.merge_newest(lists, offset, limit + 1)
+    companies = []
+    for cid in sorted({str(c) for coll in _REVIEW_COLLECTIONS.values()
+                       for c in await db[coll].distinct("company_id", {"status": status})
+                       if c}):
+        co = memo.get(("co", cid))
+        if co is None:
+            co = await db.companies.find_one({"_id": to_query_id(cid)}, {"name": 1})
+        companies.append({"id": cid, "name": (co or {}).get("name")})
+    return {"items": page[:limit], "offset": offset, "limit": limit,
+            "has_more": len(page) > limit, "kinds": list(review_queue.KINDS),
+            "reasons": list(review_queue.REVIEW_REASONS),
+            "statuses": list(review_queue.STATUSES),
+            "priorities": list(review_queue.PRIORITY_FILTERS), "companies": companies}
+
+
+@api_router.get("/owner/review-queue/{source}/{item_id}", tags=["Owner"])
+async def owner_review_item(source: str, item_id: str,
+                            operator=Depends(require_operator_404)):
+    """One item with its full evidence: every record the answer was shown,
+    its tools and gates, and (a queue item) the evidence it was queued with."""
+    doc = await _review_item(source, item_id)
+    return {"item": await _review_view(source, doc, full=True)}
+
+
+@api_router.post("/owner/review-queue/{source}/{item_id}/decide", tags=["Owner"])
+async def owner_review_decide(source: str, item_id: str,
+                              body: Optional[ReviewDecisionIn] = None,
+                              operator=Depends(require_operator_404)):
+    """Approve or deny one pending item. The explanation is required; notify
+    sends the disputing person one plain line (_review_notify). Audited."""
+    doc = await _review_item(source, item_id)
+    body = body or ReviewDecisionIn()
+    err = review_queue.check_decision(body.decision, body.explanation)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+    already = HTTPException(status_code=409, detail={
+        "code": "ALREADY_DECIDED", "message": "This item was already decided."})
+    if doc.get("status") != review_queue.STATUS_PENDING:
+        raise already
+    if not await _review_decide(source, item_id, decision=body.decision,
+                                explanation=body.explanation, notify=body.notify,
+                                operator=operator):
+        raise already
+    notified = (await _review_notify(source, doc, body.decision) if body.notify
+                else {"sent": False, "reason": "not_requested"})
+    await audit_log("review_decision", actor_id(operator),
+                    "answer_dispute" if source == review_queue.SOURCE_DISPUTE
+                    else "review_queue", str(item_id),
+                    {"kind": review_queue.KIND_DISPUTE if source == review_queue.SOURCE_DISPUTE
+                     else doc.get("kind"),
+                     "company_id": str(doc.get("company_id") or ""),
+                     "answer_log_id": doc.get("answer_log_id"),
+                     "decision": body.decision,
+                     "explanation": review_queue.clean_explanation(body.explanation),
+                     "notify": bool(body.notify),
+                     "notified": notified["sent"], "notify_reason": notified["reason"]})
+    logger.info(f"[review-queue] decided source={source} kind={doc.get('kind') or 'dispute'} "
+                f"decision={body.decision} notify={bool(body.notify)} sent={notified['sent']}")
+    fresh = await _review_item(source, item_id)
+    return {"item": await _review_view(source, fresh, full=True), "notify": notified}
+
+
 def _memory_source_view(src: dict, admin: bool = False) -> dict:
     """One result for the app: the chip (who · group · when) and the words.
     The sender's number: full for a company admin, the last 4 otherwise."""
@@ -83482,6 +83713,14 @@ async def startup_event():
     # first, across companies (the operator), and one company's newest first.
     await db.review_queue.create_index([("status", 1), ("created_at", -1)])
     await db.review_queue.create_index([("company_id", 1), ("created_at", -1)])
+    # The operator's list (GET /owner/review-queue): always one status, then
+    # optionally one company or one kind, newest first -- both collections.
+    await db.review_queue.create_index([("status", 1), ("company_id", 1), ("created_at", -1)])
+    await db.review_queue.create_index([("status", 1), ("kind", 1), ("created_at", -1)])
+    await db.review_queue.create_index([("status", 1), ("reason", 1), ("created_at", -1)])
+    await db.answer_disputes.create_index([("status", 1), ("created_at", -1)])
+    await db.answer_disputes.create_index([("status", 1), ("company_id", 1),
+                                           ("created_at", -1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
     await _ensure_index_resilient(

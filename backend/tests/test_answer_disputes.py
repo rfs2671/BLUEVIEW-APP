@@ -335,13 +335,21 @@ class App(unittest.TestCase):
 
 class Surface(unittest.TestCase):
     def test_no_writer_changes_a_dispute(self):
-        """Capture only: the one write is the insert; status is never set
-        after it (the operator's review is L6.4)."""
+        """Capture inserts; the ONE change ever made to a dispute is the
+        operator's decision (L6.4): a single update_one, inside
+        server._review_decide, conditional on status "pending". Nothing
+        else updates, replaces or deletes one."""
         src = (BACKEND / "server.py").read_text(encoding="utf-8")
         mut = re.compile(r"(?:answer_disputes|answer_disputes\.COLLECTION\])\s*\.\s*"
                          r"(update_one|update_many|replace_one|delete_one|delete_many|"
                          r"find_one_and_\w+|bulk_write)\b")
-        self.assertIsNone(mut.search(src))
+        hits = [(src.count("\n", 0, m.start()) + 1, m.group(1)) for m in mut.finditer(src)]
+        self.assertEqual([h[1] for h in hits], ["update_one"])
+        import ast
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.AsyncFunctionDef) and n.name == "_review_decide")
+        self.assertTrue(fn.lineno <= hits[0][0] <= fn.end_lineno)
+        self.assertIn('"status": review_queue.STATUS_PENDING', ast.unparse(fn).replace("'", '"'))
         self.assertEqual(len(re.findall(r"db\[answer_disputes\.COLLECTION\]\.insert_one", src)), 1)
 
 

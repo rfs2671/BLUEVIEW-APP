@@ -2,9 +2,11 @@
 
 Uncertain findings, queued for the platform operator's review queue (L6.4:
 operator-gated routes and the web screen, approve / deny with an
-explanation -- not built here). This step only INSERTS items:
-server._review_queue_add is the one writer, nothing changes a row, and no
-person is ever shown one.
+explanation -- the section at the end of this file). The feed only
+INSERTS items: server._review_queue_add is the one inserter. The one
+change ever made to a row is the operator's decision (L6.4,
+server._review_decide: status pending -> approved | denied, once). No
+person but the operator is ever shown one.
 
 ONE COLLECTION, `review_queue`, for the auto-queued kinds below. A dispute
 (a person saying an answer is wrong) stays where L6.2 put it, in
@@ -41,8 +43,10 @@ A ROW:
   evidence          record ids, sheets, outcomes, short quotes of the plan
                     records -- never anybody's chat words
   created_at
-  status            "pending". Written once, at insert; nothing in this step
-                    changes it.
+  status            "pending" at insert. Changed once, by the operator's
+                    decision only (server._review_decide), to "approved" or
+                    "denied", with `decision` {decision, explanation, notify,
+                    operator_id, decided_at} beside it.
 """
 
 from __future__ import annotations
@@ -232,3 +236,178 @@ def from_plan_set_question(company_id: Any, project_id: Any, question: Dict[str,
                 summary=text[:MAX_SUMMARY],
                 evidence={k: v for k, v in evidence.items() if v not in (None, "")},
                 project_id=project_id, now=now)
+
+
+# ── L6.4: THE OPERATOR'S REVIEW (routes and screen) ─────────────────────────
+#
+# The platform operator lists both collections side by side (a dispute from
+# answer_disputes, every other kind from review_queue), reads an item with
+# its answer_log row, and decides it: approve or deny, with an explanation
+# and an optional note to the person who disputed. server._review_decide is
+# the ONE writer of a decision: a conditional update of the item's own
+# status, pending -> approved | denied, once. answer_log is never touched.
+# Nothing here is shown to anyone but the operator; a disputing person only
+# ever sees "Flagged for review" (and, when the operator ticks Notify, one of
+# the two plain NOTIFY_TEXT lines).
+#
+# NOT HERE (L6.5): an approved dispute becoming a verified eval example and a
+# fix ticket, a denied one a disputed-but-confirmed example, and "under
+# review" refusals while an item is pending.
+
+SOURCE_DISPUTE = "dispute"          # a row of answer_disputes
+SOURCE_QUEUE = "queue"              # a row of review_queue
+SOURCES = (SOURCE_DISPUTE, SOURCE_QUEUE)
+
+STATUS_APPROVED = "approved"
+STATUS_DENIED = "denied"
+STATUSES = (STATUS_PENDING, STATUS_APPROVED, STATUS_DENIED)
+DECISIONS = {"approve": STATUS_APPROVED, "deny": STATUS_DENIED}
+
+MIN_EXPLANATION = 10
+MAX_EXPLANATION = 2000
+MAX_LIST = 100
+MAX_OFFSET = 1000
+LIST_RECORDS = 6                    # records per answer on the list; all on the item
+
+#: The one line a disputing person gets when the operator ticks Notify.
+#: Plain on purpose: no status word, no reviewer, no explanation.
+NOTIFY_TEXT = {
+    "approve": "Thanks — you were right; we're fixing it.",
+    "deny": "Thanks — we checked; the answer stands.",
+}
+
+
+def check_decision(decision: Any, explanation: Any) -> Optional[str]:
+    """None when the decision can be written; else what is wrong with it."""
+    if decision not in DECISIONS:
+        return "decision must be approve or deny"
+    text = " ".join(str(explanation or "").split())
+    if len(text) < MIN_EXPLANATION:
+        return f"an explanation of at least {MIN_EXPLANATION} characters is required"
+    return None
+
+
+def clean_explanation(explanation: Any) -> str:
+    return answer_log.redact(str(explanation or "").strip()[:MAX_EXPLANATION])
+
+
+def decision_set(decision: str, explanation: Any, notify: bool, operator_id: Any,
+                 now: datetime) -> Dict[str, Any]:
+    """The $set of a decision: the item's status and what decided it."""
+    return {"status": DECISIONS[decision],
+            "decision": {"decision": decision,
+                         "explanation": clean_explanation(explanation),
+                         "notify": bool(notify),
+                         "operator_id": str(operator_id or ""),
+                         "decided_at": now}}
+
+
+#: Owner ruling (L6.4): every item has a REASON and a PRIORITY. A queue row
+#: carries both (set at insert by the feed); a dispute is reason "dispute",
+#: priority normal. Low priority is set_health_info only.
+REASON_DISPUTE = "dispute"
+REVIEW_REASONS = (REASON_DISPUTE, "conflict", "replaced", "unverified",
+                  "set_health_failed", "set_health_info", "registration")
+PRIORITY_NORMAL = "normal"
+PRIORITY_LOW = "low"
+PRIORITIES = (PRIORITY_NORMAL, PRIORITY_LOW)
+#: The list's priority filter: "normal" (the default "Needs decision" view,
+#: low hidden), "low" only, or "all".
+PRIORITY_FILTERS = (PRIORITY_NORMAL, PRIORITY_LOW, "all")
+
+
+def sources_for(kind: Optional[str], reason: Optional[str] = None,
+                priority: Optional[str] = None) -> List[str]:
+    """Which collections a filter reads: a dispute is answer_disputes' row,
+    every other kind and reason is review_queue's, and no dispute is low."""
+    out = list(SOURCES)
+    if kind:
+        out = [s for s in out if (s == SOURCE_DISPUTE) == (kind == KIND_DISPUTE)]
+    if reason:
+        out = [s for s in out if (s == SOURCE_DISPUTE) == (reason == REASON_DISPUTE)]
+    if priority == PRIORITY_LOW:
+        out = [s for s in out if s == SOURCE_QUEUE]
+    return out
+
+
+def reason_of(source: str, doc: Dict[str, Any]) -> Optional[str]:
+    if source == SOURCE_DISPUTE:
+        return REASON_DISPUTE
+    return doc.get("reason")
+
+
+def priority_of(source: str, doc: Dict[str, Any]) -> str:
+    if source == SOURCE_DISPUTE:
+        return PRIORITY_NORMAL
+    return PRIORITY_LOW if doc.get("priority") == PRIORITY_LOW else PRIORITY_NORMAL
+
+
+def _when(v: Any) -> Any:
+    return v.isoformat() if isinstance(v, datetime) else v
+
+
+def answer_view(row: Optional[Dict[str, Any]], *, full: bool = False) -> Optional[Dict[str, Any]]:
+    """The answer_log row an item names, as the operator reads it (the row
+    was redacted at insert; it is redacted again on the way out)."""
+    if not row:
+        return None
+    records = list(row.get("records") or [])
+    out = {
+        "id": str(row.get("_id")),
+        "surface": row.get("surface"),
+        "path": row.get("path"),
+        "question": row.get("question"),
+        "final_text": row.get("final_text"),
+        "records": records if full else records[:LIST_RECORDS],
+        "records_total": len(records),
+        "gates": list(row.get("gates") or []),
+        "model": row.get("model"),
+        "code_sha": row.get("code_sha"),
+        "asker_last4": row.get("asker_last4"),
+        "created_at": _when(row.get("created_at")),
+    }
+    if full:
+        out["tools"] = list(row.get("tools") or [])
+        out["timing"] = row.get("timing")
+        out["content_hash"] = row.get("content_hash")
+    return answer_log.redact(out)
+
+
+def item_view(source: str, doc: Dict[str, Any], *, company_name: Any = None,
+              project: Optional[Dict[str, Any]] = None,
+              answer: Optional[Dict[str, Any]] = None,
+              asker_name: Any = None, full: bool = False) -> Dict[str, Any]:
+    """One item of either collection, in one shape, for the operator only."""
+    dispute = source == SOURCE_DISPUTE
+    decision = doc.get("decision") if isinstance(doc.get("decision"), dict) else None
+    out = {
+        "source": source,
+        "id": str(doc.get("_id")),
+        "kind": KIND_DISPUTE if dispute else doc.get("kind"),
+        "reason": reason_of(source, doc),
+        "priority": priority_of(source, doc),
+        "company": {"id": str(doc.get("company_id") or ""), "name": company_name},
+        "project": project,
+        "created_at": _when(doc.get("created_at")),
+        "status": doc.get("status"),
+        "summary": doc.get("text") if dispute else doc.get("summary"),
+        "answer_log_id": doc.get("answer_log_id"),
+        "answer": answer_view(answer, full=full),
+        "decision": ({**decision, "decided_at": _when(decision.get("decided_at"))}
+                     if decision else None),
+    }
+    if dispute:
+        out["asker"] = {"user_id": doc.get("user_id"), "name": asker_name,
+                        "surface": doc.get("surface")}
+    if full and not dispute:
+        out["evidence"] = doc.get("evidence") or {}
+    return answer_log.redact(out)
+
+
+def merge_newest(lists: Iterable[List[Dict[str, Any]]], offset: int,
+                 limit: int) -> List[Dict[str, Any]]:
+    """Items of several newest-first lists, newest first, one page."""
+    rows = [r for rows in lists for r in rows]
+    rows.sort(key=lambda r: (str(r.get("created_at") or ""), str(r.get("id") or "")),
+              reverse=True)
+    return rows[offset:offset + limit]

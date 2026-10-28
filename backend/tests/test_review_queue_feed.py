@@ -9,8 +9,9 @@ step 3: the items and their producers only).
   * Per company: an item carries its company, one without is not queued, and
     two companies' findings are two companies' rows.
   * The writer never raises.
-  * INSERT ONLY, ONE WRITER: nothing in server.py, lib/ or scripts/ writes the
-    collection outside _review_queue_add.
+  * TWO WRITERS, EACH ONE WRITE: _review_queue_add inserts, and the operator's
+    decision (L6.4, _review_decide) is the one update; nothing else in
+    server.py, lib/ or scripts/ writes the collection.
 """
 
 from __future__ import annotations
@@ -355,11 +356,19 @@ class OneWriter(unittest.TestCase):
                 m = _WRITE.search(line)
                 if m:
                     hits.append((f.relative_to(BACKEND).as_posix(), n, m.group(1)))
-        self.assertEqual([(h[0], h[2]) for h in hits], [("server.py", "insert_one")])
+        # The insert (the feed) and, since L6.4, the operator's decision: one
+        # update_one, in _review_decide, conditional on status "pending".
+        self.assertEqual([(h[0], h[2]) for h in hits],
+                         [("server.py", "insert_one"), ("server.py", "update_one")])
         tree = ast.parse((BACKEND / "server.py").read_text(encoding="utf-8"))
-        fn = next(node for node in ast.walk(tree)
-                  if isinstance(node, ast.AsyncFunctionDef) and node.name == "_review_queue_add")
-        self.assertTrue(fn.lineno <= hits[0][1] <= fn.end_lineno)
+        fns = {node.name: node for node in ast.walk(tree)
+               if isinstance(node, ast.AsyncFunctionDef)
+               and node.name in ("_review_queue_add", "_review_decide")}
+        add, decide = fns["_review_queue_add"], fns["_review_decide"]
+        self.assertTrue(add.lineno <= hits[0][1] <= add.end_lineno)
+        self.assertTrue(decide.lineno <= hits[1][1] <= decide.end_lineno)
+        self.assertIn('"status": review_queue.STATUS_PENDING',
+                      ast.unparse(decide).replace("'", '"'))
 
     def test_it_is_listed_by_status_and_by_company(self):
         src = (BACKEND / "server.py").read_text(encoding="utf-8")

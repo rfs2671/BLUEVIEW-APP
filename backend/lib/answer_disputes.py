@@ -3,7 +3,8 @@
 A person who says a bot answer is wrong gets exactly one thing back:
 "Flagged for review". Nothing else is ever shown to them: no status, no
 approve / deny, no reviewer. Only the platform operator reviews a dispute
-(L6.4, not built here); this step only records it.
+(L6.4: the /owner/review-queue routes, lib/review_queue's last section);
+this module only records it.
 
 A ROW in `answer_disputes`, one per (answer, person):
   _id               sha256 of answer_log_id + user_id: the same person
@@ -13,8 +14,9 @@ A ROW in `answer_disputes`, one per (answer, person):
   company_id, user_id, surface (dm | app)
   text              what they said, phone runs cut to the last 4 (answer_log.redact)
   created_at
-  status            "pending". Written once, at insert; nothing in this step
-                    changes it (the operator will, in L6.4 / L6.5).
+  status            "pending" at insert. Changed once, by the operator's
+                    decision only (server._review_decide, L6.4), to
+                    "approved" or "denied" with `decision` beside it.
 
 THE DETECTOR (is_dispute) is deliberately narrow: the whole message must be
 a dispute ("that's wrong", "not right", "incorrect", "no it's not", "eso
