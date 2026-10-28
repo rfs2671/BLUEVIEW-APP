@@ -31,7 +31,7 @@ import re
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-from lib import dob_penalty, dot_embargo, dot_sync, wa_gc
+from lib import dob_penalty, dot_embargo, dot_summons, dot_sync, wa_gc
 
 # ── The kinds and their switches ────────────────────────────────────────────
 
@@ -48,6 +48,12 @@ KIND_SWITCH = {
     "dot_permit": "dot_permit_alerts",
     # The holiday embargo is about a DOT permit: the DOT permit switch.
     "dot_embargo": "dot_permit_alerts",
+    # DOT Phase 1 A (lib/dot_summons): hearing reminders 14/7/1, the one post
+    # for a block match whose hearing is near, and a summons that defaulted
+    # or was docketed. All about a DOT summons: the DOT summons switch.
+    "dot_hearing": "dot_violation_alerts",
+    "dot_hearing_pending": "dot_violation_alerts",
+    "dot_default": "dot_violation_alerts",
     # An update that issued a Stop Work Order or vacate order, and the one
     # summary for a newly added BIN (lib/dob_alert_gate, ruling 2026-10-22).
     "order": "swo_alerts",
@@ -61,7 +67,12 @@ SWITCHES = tuple(dict.fromkeys(KIND_SWITCH.values()))
 LEGACY_KINDS = ("violation", "permit")
 NEW_KINDS = tuple(k for k in KIND_SWITCH if k not in LEGACY_KINDS)
 # Fed by the DOT sync, not DOB: they wait for the project's first DOT pass.
-DOT_KINDS = ("dot_violation", "dot_permit", "dot_embargo")
+DOT_KINDS = ("dot_violation", "dot_permit", "dot_embargo",
+             "dot_hearing", "dot_hearing_pending", "dot_default")
+
+#: Kinds posted as ONE group post per project per day (operator ruling
+#: 2026-10-23): every item of the kind due that day, grouped by date.
+DIGEST_KINDS = ("dot_permit", "dot_hearing")
 
 RED, ORANGE, GREEN = "🔴", "🟠", "🟢"
 
@@ -416,12 +427,24 @@ def collect(dob_rows: List[Dict[str, Any]], dot_rows: List[Dict[str, Any]],
         rt = _t(r.get("record_type")).lower()
         rid = _t(r.get("raw_id"))
         if rt == "dot_violation" and not is_closed(r):
+            # DOT Phase 1 A, the email's rules: only a summons that is the
+            # project's on its own evidence (BBL / address / permit). A block
+            # match never posts as new -- not while pending, and not after it
+            # is accepted. (The 2-day rule is dob_alert_gate.gc_refusal.)
+            if not dot_sync.record_confirmed(r) or dot_summons.how(r) not in (
+                    dot_sync.OWN_MATCHES + ("",)):
+                continue
             out.append({"kind": "dot_violation", "item": rid, "rec": r})
         elif rt == "dot_permit":
             # Only an active permit ("ISSUED & PRINTED"). A row DOT already
             # shows as EXPIRED / VOIDED / DELINQUENT gets nothing; "expired"
             # below is an active permit whose end date has passed.
             if not dot_sync.permit_is_active(r.get("status")):
+                continue
+            # A permit by another permittee on the project's block is not the
+            # project's until a person says so (dot_sync.permit_confirmed):
+            # pending and rejected permits post nothing.
+            if not dot_sync.permit_confirmed(r):
                 continue
             exp = wa_gc.parse_dob_date(r.get("expiration_date"))
             if exp is None:
@@ -441,6 +464,22 @@ def collect(dob_rows: List[Dict[str, Any]], dot_rows: List[Dict[str, Any]],
         rid = _t(d["row"].get("raw_id")) or f"dotpermit:{d['permit']}"
         out.append({"kind": "dot_embargo", "rec": d["row"], "season": d["season"],
                     "item": f"{rid}:embargo:{d['season'].year}:{d['send_date'].isoformat()}"})
+
+    # DOT Phase 1 A: the summons emails' rules, for the group too.
+    latest_dot = latest_per_record(dot_rows, key="raw_id")
+    for d in dot_summons.hearing_due(latest_dot, today):
+        rid = _t(d["row"].get("raw_id"))
+        out.append({"kind": "dot_hearing", "rec": d["row"], "days": d["days"],
+                    "hearing": d["hearing"],
+                    "item": f"{rid}:hearing:{d['threshold']}:{d['hearing'].isoformat()}"})
+    for d in dot_summons.pending_hearing_due(latest_dot, today):
+        rid = _t(d["row"].get("raw_id"))
+        out.append({"kind": "dot_hearing_pending", "rec": d["row"], "hearing": d["hearing"],
+                    "item": f"{rid}:pending:{d['hearing'].isoformat()}"})
+    for d in dot_summons.default_due(latest_dot, today):
+        rid = _t(d["row"].get("raw_id"))
+        out.append({"kind": "dot_default", "rec": d["row"], "result": d["result"],
+                    "item": f"{rid}:default"})
     return out
 
 
@@ -452,7 +491,7 @@ def baseline_items(items: List[Dict[str, Any]], kind: str, today: date) -> List[
     for it in items:
         if it["kind"] != kind:
             continue
-        if kind == "dot_embargo":
+        if kind in ("dot_embargo", "dot_hearing", "dot_hearing_pending"):
             # Dated reminders, each due on its own day: there is no backlog to
             # hide, so a project baselined on Nov 1 still gets Nov 1's post.
             continue
@@ -474,6 +513,8 @@ LABEL = {
     "swo_rescinded": "Stop-work order", "permit": "Permit",
     "permit_status": "Permit", "dot_violation": "DOT summons",
     "dot_permit": "DOT permit", "dot_embargo": "DOT permit", "bin_added": "BIN",
+    "dot_hearing": "DOT summons", "dot_hearing_pending": "DOT summons",
+    "dot_default": "DOT summons",
 }
 ICON = {
     "violation": RED, "complaint": RED, "swo": RED, "dot_violation": RED,
@@ -481,6 +522,7 @@ ICON = {
     "permit": ORANGE, "dot_permit": ORANGE, "dot_embargo": ORANGE,
     "order": RED, "bin_added": ORANGE,
     "order_lifted": GREEN,
+    "dot_hearing": ORANGE, "dot_hearing_pending": ORANGE, "dot_default": RED,
 }
 # Kinds whose "what happened" line may be an AI sentence (checked). The others
 # are status or date changes, said exactly by a template.
@@ -549,6 +591,23 @@ def template_line(kind: str, rec: Dict[str, Any], *, today: date,
                 f"{dot_embargo.ACTION_EN}\n"
                 f"Embargo navideño: este permiso del DOT no tiene exención. "
                 f"{dot_embargo.ACTION_ES}")
+    if kind == "dot_hearing":
+        hd = dot_summons.hearing_day(rec)
+        n = (hd - today).days if hd else None
+        if n is None:
+            return "DOT hearing coming up on this summons.\nAudiencia del DOT próxima de esta citación."
+        return (f"DOT hearing {dot_summons.days_label(n, 'en') if n == 0 else 'in ' + dot_summons.days_label(n, 'en')}"
+                f" ({nice_date(hd)}) on this summons.\n"
+                f"Audiencia del DOT {dot_summons.days_label(n, 'es') if n == 0 else 'en ' + dot_summons.days_label(n, 'es')}"
+                f" ({dot_summons.date_label(hd, 'es')}) de esta citación.")
+    if kind == "dot_hearing_pending":
+        hd = dot_summons.hearing_day(rec)
+        return (dot_summons.COPY["en"]["intro_pending"].format(date=nice_date(hd)) + "\n"
+                + dot_summons.COPY["es"]["intro_pending"].format(date=dot_summons.date_label(hd, "es")))
+    if kind == "dot_default":
+        res = dot_sync.default_result(rec) or "DEFAULTED"
+        return (f"This DOT summons was marked {res}.\n"
+                f"Esta citación del DOT fue marcada como {dot_summons.RESULT_ES.get(res, res)}.")
     if kind == "order":
         which = _t((rec.get("order_issued") or {}).get("kind"))
         return "DOB issued a vacate order." if which == "vacate" else "DOB issued a stop-work order."
@@ -598,6 +657,56 @@ def alert_message(kind: str, rec: Dict[str, Any], *, address: str,
                   what: str) -> str:
     return "\n".join([f"{ICON.get(kind, ORANGE)} {address}", what,
                       record_line(kind, rec), source_line(kind, rec)])
+
+
+_ES_MON = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
+
+
+def _es_date(d: date) -> str:
+    return f"{d.day} {_ES_MON[d.month - 1]} {d.year}"
+
+
+def _days_en(n: int) -> str:
+    return "today" if n == 0 else ("tomorrow" if n == 1 else f"in {n} days")
+
+
+def _days_es(n: int) -> str:
+    return "hoy" if n == 0 else ("mañana" if n == 1 else f"en {n} días")
+
+
+def digest_message(kind: str, items: List[Dict[str, Any]], *, address: str, today: date) -> str:
+    """ONE group post for every item of a DIGEST kind due today, grouped by
+    date, English then Spanish."""
+    n = len(items)
+    if kind == "dot_permit":
+        head = [f"{n} DOT permits: expiry reminders.", f"{n} permisos del DOT: avisos de vencimiento."]
+        key = "exp"
+    elif kind == "dot_hearing":
+        head = [f"{n} DOT hearings coming up.", f"{n} audiencias del DOT próximas."]
+        key = "hearing"
+    else:
+        head = [f"{n} DOT records.", f"{n} registros del DOT."]
+        key = "exp"
+    groups: Dict[Any, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault(it.get(key), []).append(it)
+    lines = []
+    for d in sorted(groups, key=lambda x: (x is None, x or date.max)):
+        nums = ", ".join(f"#{record_number(it['rec'])}" for it in
+                         sorted(groups[d], key=lambda it: record_number(it["rec"])))
+        if d is None:
+            lines.append(nums)
+            continue
+        days = (d - today).days
+        if kind == "dot_permit" and days < 0:
+            lines.append(f"Expired on {nice_date(d)} / Venció el {_es_date(d)}: {nums}")
+        elif kind == "dot_hearing":
+            lines.append(f"Hearing {nice_date(d)} ({_days_en(days)}) / Audiencia el {_es_date(d)} "
+                         f"({_days_es(days)}): {nums}")
+        else:
+            lines.append(f"Ends {nice_date(d)} ({_days_en(days)}) / Termina el {_es_date(d)} "
+                         f"({_days_es(days)}): {nums}")
+    return "\n".join([f"{ICON.get(kind, ORANGE)} {address}"] + head + lines + ["Source: DOT"])
 
 
 def postable(kind: str, rec: Dict[str, Any]) -> bool:

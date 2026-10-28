@@ -272,6 +272,13 @@ def gc_refusal(item: Dict[str, Any], today: date) -> Optional[str]:
             return REFUSED_NO_DATE
         if too_old(rec, today):
             return REFUSED_TOO_OLD
+    if kind == "dot_violation":
+        # DOT Phase 1 A: a new DOT summons posts only if DOT issued it within
+        # NEW_RECORD_MAX_AGE_DAYS (undated counts as old) -- the email's rule.
+        if received_date(rec) is None:
+            return REFUSED_NO_DATE
+        if too_old(rec, today):
+            return REFUSED_TOO_OLD
     if kind in (ORDER_KIND, ORDER_LIFTED_KIND):
         field = "order_issued" if kind == ORDER_KIND else "order_lifted"
         d = wa_gc.parse_dob_date(((rec.get(field) or {}).get("at")))
