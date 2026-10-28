@@ -33,6 +33,23 @@ Purpose (Model 1010-83) Roof Drains". So:
   - a note's printed figure for one tag (`printed`) must agree with the
     located count, or neither is stated.
 
+Rulings 2026-10-28 (operator, verbatim, with the questions they answer):
+
+  13  "The label 'no schedule lists them' isn't literally true: P-400 lists
+      RD-1 and RD-2 without a count." - 'yes: "no schedule prints their
+      quantity"'. So LABEL.
+  14  "Can 'the roof' name where RD-1 and RD-2 are?" - "yes, only the level
+      the plan's title names". A figure is still at sheet scope; the one
+      level a clause may name is the level printed in the family plan's own
+      title (P-206.00 ROOF SANITARY & STORM PLAN: the roof) - plan_search.
+  15  "Should 'J.R. Smith', 'detention' or 'controlled-flow' refer to
+      RD-1?" - "yes, SD1-2's own words". A candidate (`also`) names a tag
+      only where the note that prints that tag's figure prints it itself
+      (`also_names`). Measured 2026-10-28: SD1-2 p4 prints "J.R. Smith" and
+      "Detention" in RD-1's line; "controlled flow" only in another note
+      ("... by means of controlled flow device & roof detention"), which
+      names no roof drain - so it names nothing.
+
 What a plan-only family adds to the reader and what it does not: no
 database access here. The server hands in records; plan_glyph_pass locates;
 plan_search binds.
@@ -54,11 +71,17 @@ PLAN_ONLY: Dict[str, Dict[str, Any]] = {
         # diagram (P-302.00 draws the same RD-1/RD-2 a second time).
         "sheet_prefix": "P-",
         "plan_title": re.compile(r"\bROOF\b.*\b(?:STORM|DRAIN(?:AGE)?)\b.*\bPLANS?\b", re.I),
+        # OTHER NAMES A TAG MAY GO BY (ruling 15, 2026-10-28): candidates
+        # only. Each names a tag only where the note printing that tag's
+        # figure prints it (also_names) - never from a vision read, and a
+        # candidate the set does not print there names nothing.
+        "also": ("J.R. Smith", "detention", "controlled-flow"),
     },
 }
 
-#: How the render and every row label the family (the ruling's wording).
-LABEL = "located on {sheets}; no schedule lists them"
+#: How the render and every row label the family (ruling 13, 2026-10-28:
+#: P-400.00's rough-in table LISTS RD-1 and RD-2, with no quantity column).
+LABEL = "located on {sheets}; no schedule prints their quantity"
 
 #: The SLOPE DN fix (plan_takeoff.ink_only): on P-206.00 the labels are black
 #: (0), the drain symbols dark grey (~64-80) and the SLOPE DN arrows and their
@@ -149,19 +172,57 @@ def printed_figures(names: Sequence[Dict[str, Any]], tags: Dict[str, str],
     description is the bare object (RD-1, ROOF DRAIN - ruling 2026-10-26); a
     note carrying another tag's word ('2 overflow roof drains') is that tag's;
     a note that fits no single tag lends nothing."""
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for n, m, tag in _figures(names, words, obj):
+        src = f"{n.get('file') or n.get('sheet')} p{n.get('page')}"
+        out.setdefault(tag, []).append({"value": m.group(1), "source": src,
+                                        "quote": n["quote"][:120]})
+    return out
+
+
+def _figures(names: Sequence[Dict[str, Any]], words: Dict[str, List[str]],
+             obj: Sequence[str]) -> List[tuple]:
+    """[(naming, figure match, tag)]: each 'N ... <object>s' a naming prints,
+    with the one tag it is for (printed_figures' rule)."""
     rx = re.compile(r"(?<![\w.])(\d{1,3})\s+(.{0,80}?)" + object_pattern(obj).pattern, re.I)
     bare = [t for t, w in words.items() if not w]
-    out: Dict[str, List[Dict[str, Any]]] = {}
+    out = []
     for n in names:
         for m in rx.finditer(n["quote"]):
             between = {_stem(w) for w in re.findall(r"[A-Za-z]{3,}", m.group(2))}
             hit = [t for t, w in words.items() if w and set(w) & between]
             tag = hit[0] if len(hit) == 1 else (bare[0] if not hit and len(bare) == 1 else None)
             if tag:
-                src = f"{n.get('file') or n.get('sheet')} p{n.get('page')}"
-                out.setdefault(tag, []).append({"value": m.group(1), "source": src,
-                                                "quote": n["quote"][:120]})
+                out.append((n, m, tag))
     return out
+
+
+def name_pattern(name: str) -> "re.Pattern[str]":
+    """A candidate name as printed: its letters and digits in order, with any
+    spaces, dots or hyphens between them ('J.R. Smith', 'JR Smith';
+    'controlled-flow', 'controlled flow')."""
+    parts = re.findall(r"[A-Za-z0-9]+", name)
+    return re.compile(r"(?<![A-Za-z0-9])" + r"[\s.\-]*".join(map(re.escape, parts))
+                      + r"(?![A-Za-z0-9])", re.I)
+
+
+def also_names(names: Sequence[Dict[str, Any]], words: Dict[str, List[str]],
+               obj: Sequence[str], candidates: Sequence[str]) -> Dict[str, List[str]]:
+    """tag -> the candidates (ruling 15) that the note printing the tag's
+    figure prints ITSELF. SD1-2 p4's '2 J.R. Smith Special Purpose (Model
+    1010-83) Roof Drains @ 3.57gpm @3" Detention' is RD-1's figure, so RD-1
+    goes by 'J.R. Smith' and 'detention'; 'controlled-flow' is not in it.
+    The notes are namings (named_by): text-layer details and notes, never a
+    vision read. A candidate two tags' notes print names neither."""
+    found: Dict[str, set] = {}
+    for n, _m, tag in _figures(names, words, obj):
+        for c in candidates:
+            if name_pattern(c).search(n["quote"]):
+                found.setdefault(tag, set()).add(c)
+    shared = {c for t, cs in found.items() for c in cs
+              if any(c in o for u, o in found.items() if u != t)}
+    return {t: [c for c in candidates if c in cs and c not in shared]
+            for t, cs in sorted(found.items()) if cs - shared}
 
 
 #: A crossing pen erased from a label leaves a gap in its hyphen, read as two:
@@ -197,7 +258,7 @@ def exact_label_reads(reads: Iterable[Sequence[Any]], tags: Sequence[str]) -> Li
 
 def families(records: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """name -> {"tags", "tag_names", "tag_words", "named_by", "printed",
-    "object"} for every plan-only family the set allows: it names the object
+    "also", "object"} for every plan-only family the set allows: it names the object
     in a detail or note, and prints tags for it. A family the set does not
     name is absent - never present and empty."""
     records = list(records or [])
@@ -210,7 +271,8 @@ def families(records: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         words = tag_words(tags, d["object"])
         out[name] = {"tags": sorted(tags), "tag_names": tags, "tag_words": words,
                      "named_by": names, "object": " ".join(d["object"]),
-                     "printed": printed_figures(names, tags, words, d["object"])}
+                     "printed": printed_figures(names, tags, words, d["object"]),
+                     "also": also_names(names, words, d["object"], d.get("also") or ())}
     return out
 
 
@@ -238,6 +300,6 @@ def record_query(project_id: str, page_ids: Sequence[str]) -> Dict[str, Any]:
             "record_type": {"$ne": "glyph"}, "$or": ors}
 
 
-__all__ = ["PLAN_ONLY", "LABEL", "INK_BELOW", "families", "mend_hyphen", "exact_label_reads", "tag_rows", "tag_words",
+__all__ = ["PLAN_ONLY", "LABEL", "INK_BELOW", "families", "also_names", "name_pattern", "mend_hyphen", "exact_label_reads", "tag_rows", "tag_words",
            "named_by", "printed_figures", "is_family_plan", "label", "object_pattern",
            "record_query"]

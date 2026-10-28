@@ -156,10 +156,12 @@ class PerTagOnly(unittest.TestCase):
                 self.assertFalse(_ok(s, recs), s)
 
     def test_a_floor_or_unit_figure_refuses(self):
-        """Sheet scope: located on its plan, placed nowhere."""
+        """Sheet scope: located on its plan, placed nowhere. The roof - the
+        level P-206.00's own title names - is the one level a figure may be
+        said of (ruling 14, 2026-10-28; tests/test_saf1_and_roof_drain_rulings)."""
         recs = _records()
         self.assertTrue(_ok("There are 2 RD-1.", recs))
-        for s in ("The roof has 2 RD-1.", "Each unit has 2 RD-1.", "4A has 2 RD-2.",
+        for s in ("The mezzanine has 2 RD-1.", "Each unit has 2 RD-1.", "4A has 2 RD-2.",
                   "The fourth floor has 2 RD-2."):
             self.assertFalse(_ok(s, recs), s)
 
@@ -217,7 +219,7 @@ class TheRender(unittest.TestCase):
     def test_it_states_two_plus_two_with_the_label(self):
         out = S.render_glyph_evidence(_records())
         self.assertIn("RD-1 2 + RD-2 2", out)
-        self.assertIn("located on P-206.00; no schedule lists them", out)
+        self.assertIn("located on P-206.00; no schedule prints their quantity", out)
         self.assertIn("never one total", out)
         self.assertNotIn("4 in all", out)
 
@@ -394,7 +396,7 @@ class OnP206(unittest.TestCase):
             self.assertIsNone(r["unit"])
             self.assertEqual(r["payload"]["mech_count"], 4)
             self.assertEqual(r["payload"]["plan_only"]["label"],
-                             "located on P-206.00; no schedule lists them")
+                             "located on P-206.00; no schedule prints their quantity")
         for r in rows:
             r["payload"]["track"] = "filed"
         recs = _records(rows=rows)
