@@ -4,7 +4,7 @@ step 3: the items and their producers only).
   * Each producer queues one item with its kind and company and no phone:
     a refused / doubted answer (from _answer_log_write), a set-health finding
     (from _write_set_health), a refused START (from _handle_dm_start), and the
-    L7 set-membership question hook.
+    set-membership question #889's _store_set_questions opens.
   * The same finding twice is one row (the _id is derived from it).
   * Per company: an item carries its company, one without is not queued, and
     two companies' findings are two companies' rows.
@@ -317,7 +317,7 @@ class Registration(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# plan_set_question: the L7 (#889) hook
+# plan_set_question: #889's questions (reason set_ambiguity)
 # ══════════════════════════════════════════════════════════════════════════
 
 class PlanSetQuestion(unittest.TestCase):
@@ -335,13 +335,39 @@ class PlanSetQuestion(unittest.TestCase):
         self.assertEqual((rows[0]["kind"], rows[0]["company_id"], rows[0]["project_id"]),
                          (rq.KIND_PLAN_SET_QUESTION, CO_A, "proj_a"))
         self.assertEqual(rows[0]["evidence"]["sheets"], ["A.1.1", "A.1.2"])
-        self.assertEqual((rows[0]["reason"], rows[0]["priority"]), ("conflict", "normal"))
+        self.assertEqual((rows[0]["reason"], rows[0]["priority"]), ("set_ambiguity", "normal"))
+        self.assertIn(rq.REASON_SET_AMBIGUITY, rq.REASONS)
 
     def test_no_company_no_item(self):
         db = FakeDb()
         with patch.object(server, "db", db):
             _run(server._review_queue_plan_set_question(None, "proj_a", dict(self.Q)))
         self.assertEqual(_rows(db), [])
+
+    def test_the_store_path_queues_each_opened_question(self):
+        """#889's _store_set_questions: each question it opens is queued once,
+        set_ambiguity / normal, with its sheets; a second pass (nothing new
+        opened) queues nothing more."""
+        from lib import plan_set_questions as psq
+        from tests import test_the_system_never_picks_a_set as T
+        t = T.StoredOnceAskedOnce()
+        db, wire = T._db(), T._NoWire()
+        det = T._detected()
+        self.assertTrue(det)
+        t._with(db, wire, lambda: server._store_set_questions(T.PID, T._detected(), [], "op"))
+        t._with(db, wire, lambda: server._store_set_questions(T.PID, T._detected(), [], "op"))
+        rows = db[rq.COLLECTION].docs
+        self.assertEqual(len(rows), len(det))
+        r = rows[0]
+        self.assertEqual((r["kind"], r["reason"], r["priority"], r["status"]),
+                         (rq.KIND_PLAN_SET_QUESTION, "set_ambiguity", "normal", "pending"))
+        self.assertEqual((r["company_id"], r["project_id"]), (T.CID, T.PID))
+        self.assertEqual(r["evidence"]["question_id"], det[0]["id"])
+        self.assertEqual(r["evidence"]["code"], db[psq.COLLECTION].docs[0]["code"])
+        self.assertEqual(r["evidence"]["sheets"],
+                         [p["sheet_number"] for p in det[0]["pages"] if p.get("sheet_number")])
+        self.assertEqual(r["summary"], det[0]["label"][:rq.MAX_SUMMARY])
+        self.assertEqual(wire.dms + wire.messages + wire.raw, [], "queueing sends nothing")
 
 
 # ══════════════════════════════════════════════════════════════════════════
