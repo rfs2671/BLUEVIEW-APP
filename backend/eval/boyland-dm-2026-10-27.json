@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "kind": "dm_answers",
+  "about": "Every plans question the owner asked in DM on 2026-10-27 about 588 Thomas S Boyland St, with what the owner said the right answer must and must not say. Scored by scripts/dm_answer_eval.py against a scripts/dm_thread_timeline.py --json file (the answers he got) or a replay. A case with `pending` is FAILING-PENDING until the missing fact is read off the drawings and written in: it is reported every run and never counted as a pass. Only expectations the owner's own spec justifies are written; everything else is pending, with how to find it out.",
+  "project": {
+    "id": "6a5f63bc147407d3261df2c7",
+    "name": "588 Thomas S Boyland Street, Brooklyn"
+  },
+  "asked_on": "2026-10-27",
+  "tz": "America/New_York",
+  "cases": [
+    {
+      "id": "spray-foam-5th-floor-ceiling",
+      "question": "588 do I need spray foam on 5th floor ceiling",
+      "question_verbatim": true,
+      "match": "spray\\s*foam.*5th\\s+floor\\s+ceiling",
+      "expect": {
+        "text": ["Mezzanine", "A-104.00", "roof assembly", "A-302.00"],
+        "regex": [
+          "5th\\s+floor\\b.{0,60}\\bmezzanine|\\bmezzanine\\b.{0,60}\\b5th\\s+floor",
+          "ceiling.{0,120}roof\\s+assembly|roof\\s+assembly.{0,120}ceiling",
+          "\\bdetail\\s*#?\\s*4\\b|\\b4\\s*/\\s*a-302"
+        ],
+        "quote": null
+      },
+      "forbid": {
+        "text": ["not required", "nothing calls for", "no spray foam", "doesn't require"]
+      },
+      "pending": "exact A-302.00 detail 4 text — run scripts/plan_sheet_text.py --sheet A-302.00 --contains 'ROOF ASSEMBLY'",
+      "truth": {
+        "how": "owner_spec",
+        "source": "owner, 2026-10-27, on the live answer to this question",
+        "evidence": "The 5th floor is the Mezzanine (A-104.00); its ceiling is the roof assembly; the answer quotes A-302.00 detail 4 (ROOF ASSEMBLY DETAIL) insulation text. Any 'not required' / 'nothing calls for' / 'no spray foam' / 'doesn't require' is wrong. The quote itself is not read yet (we cannot reach production from the authoring session), so expect.quote is null and the case is pending."
+      }
+    },
+    {
+      "id": "roof-details",
+      "question": "roof details",
+      "question_verbatim": false,
+      "match": "\\broof\\b.*\\bdetails?\\b|\\bdetails?\\b.*\\broof\\b",
+      "expect": {},
+      "forbid": {},
+      "pending": "the owner's exact words and what the right answer is were not given — read the question off scripts/dm_thread_timeline.py --date 2026-10-27, and the roof details off scripts/plan_sheet_text.py --sheet A-302.00 --contains 'ROOF'",
+      "truth": {
+        "how": "owner_spec",
+        "source": "owner, 2026-10-27",
+        "evidence": "Listed by the owner among the day's questions with no expected answer stated. Nothing is asserted until it is."
+      }
+    },
+    {
+      "id": "kitchen-soffits",
+      "question": "kitchen soffits",
+      "question_verbatim": false,
+      "match": "\\bkitchen\\b.*\\bsoffits?\\b|\\bsoffits?\\b.*\\bkitchen\\b",
+      "expect": {
+        "text": ["soffit"],
+        "regex": [
+          "\\b(interior|ceiling|dropped|drop|furred|kitchen)\\b[^.\\n]{0,60}\\bsoffits?\\b|\\bsoffits?\\b[^.\\n]{0,60}\\b(ceiling|cabinets?|ducts?|ductwork|interior)\\b"
+        ]
+      },
+      "forbid": {
+        "regex": [
+          "\\bbulkheads?\\s*(\\(|/|=|,?\\s*(or|aka|a\\.k\\.a\\.|also called|i\\.e\\.|is|are|means)\\b)\\s*(an?\\s+|the\\s+)?soffits?\\b",
+          "\\bsoffits?\\s*(\\(|/|=|,?\\s*(or|aka|a\\.k\\.a\\.|also called|i\\.e\\.|is|are|means)\\b)\\s*(an?\\s+|the\\s+)?bulkheads?\\b"
+        ]
+      },
+      "pending": "the owner's exact words, and which sheet(s) show the kitchen soffits and what they print, were not given — read them with scripts/plan_sheet_text.py --contains 'SOFFIT' on the kitchen plans / RCPs",
+      "truth": {
+        "how": "owner_spec",
+        "source": "owner, 2026-10-27",
+        "evidence": "The answer covers the interior soffit meaning (a kitchen soffit is an interior one), not the exterior eave; and it never treats the bulkhead and soffit meanings as one thing. The interior-meaning check is a pattern for the words that mean it; the forbidden patterns are an answer equating bulkhead with soffit. 'Not the exterior eave' is held by requiring the interior meaning, not by banning the word: an answer may name the eave to set it aside."
+      }
+    },
+    {
+      "id": "en-001-en-002",
+      "question": "EN-001/EN-002",
+      "question_verbatim": false,
+      "match": "\\ben-?\\s*00[12]\\b",
+      "expect": {
+        "text": ["EN-001", "EN-002"]
+      },
+      "forbid": {},
+      "pending": "each sheet's title-block title, its drawing-list title where different, and which listed EN sheets are not uploaded — run scripts/plan_sheet_text.py --sheet EN-001 (and EN-002) and the drawing list; the owner's exact words were not given",
+      "truth": {
+        "how": "owner_spec",
+        "source": "owner, 2026-10-27",
+        "evidence": "The sheet's own title-block title wins; the drawing-list title is mentioned when it differs; a sheet that is listed but not uploaded is named as such. The titles themselves are not read yet."
+      }
+    },
+    {
+      "id": "what-file-is-it-on",
+      "question": "what file is it on",
+      "question_verbatim": true,
+      "match": "^\\W*what\\s+file\\s+is\\s+it\\s+on\\W*$",
+      "expect": {
+        "regex": ["\\.pdf\\b", "\\bset\\b"]
+      },
+      "forbid": {},
+      "pending": "which file and set — 'it' is the sheet of the answer before; read the file name and set off that turn's search_plans records in scripts/dm_thread_timeline.py --date 2026-10-27",
+      "truth": {
+        "how": "owner_spec",
+        "source": "owner, 2026-10-27",
+        "evidence": "The answer names the file and the set. The project's plan files are PDFs named like 'AR - 3.28.25.pdf', so a named file carries '.pdf'; the set is said as a set. Which file and set is not established here."
+      }
+    },
+    {
+      "id": "send-me-the-pdf",
+      "question": "send me the PDF",
+      "question_verbatim": true,
+      "match": "^\\W*send\\s+me\\s+the\\s+pdf\\W*$",
+      "expect": {
+        "tools_any": ["send_plan_file"]
+      },
+      "forbid": {
+        "text": ["can't send files", "cannot send files", "can not send files", "unable to send files"]
+      },
+      "truth": {
+        "how": "owner_spec",
+        "source": "owner, 2026-10-27",
+        "evidence": "send_plan_file runs (the tool that sends the plan file itself); the answer never says it can't send files. send_sheet sends a JPEG of one sheet, not the PDF, and does not satisfy this. On main at 66ed6748 the DM brain has no send_plan_file tool, so this case FAILS until it ships."
+      }
+    }
+  ]
+}
