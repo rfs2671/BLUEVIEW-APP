@@ -65,6 +65,26 @@ ACTOR_COMPANY_ROUTES = (
 )
 
 
+#: THE RULED LIST, written out (operator rulings 2026-10-23 and 2026-10-27):
+#: the routes that admit the platform operator, and no other.
+RULED_ROUTES = (
+    ("PUT", "/api/projects/{project_id}"),
+    ("DELETE", "/api/projects/{project_id}/nfc-tags/{tag_id}"),
+    ("GET", "/api/projects/{project_id}/site-devices"),
+    ("POST", "/api/projects/{project_id}/safety-staff"),
+    ("GET", "/api/projects/{project_id}/whatsapp/people"),
+    ("PUT", "/api/projects/{project_id}/whatsapp/people/{key}"),
+    ("PUT", "/api/projects/{project_id}/whatsapp/people/{key}/language"),
+    ("DELETE", "/api/projects/{project_id}/whatsapp/people/{key}"),
+    ("POST", "/api/projects/{project_id}/plan-glyphs/run"),
+    ("POST", "/api/projects/{project_id}/plan-index/{file_id}/retry"),
+    # ruling 33, 2026-10-27: drawing-set questions, "view + ask only" - the
+    # operator never answers one (.../{question_id}/answer is not here)
+    ("GET", "/api/projects/{project_id}/plan-set-questions"),
+    ("POST", "/api/projects/{project_id}/plan-set-questions/ask"),
+)
+
+
 def _present():
     assert hasattr(server, "require_project_admin_access"), \
         "no project gate admits the operator on an admin action in this tree"
@@ -93,6 +113,14 @@ class TheGateIsCarriedExactlyWhereRuled(unittest.TestCase):
             self.assertIn(key, routes, key)
             self.assertIn("require_project_admin_access", routes[key], key)
             self.assertNotIn("require_project_access", routes[key], key)
+
+    def test_the_ruled_list_is_the_twelve(self):
+        _present()
+        self.assertEqual(len(RULED_ROUTES), 12)
+        self.assertEqual(set(server.OPERATOR_PROJECT_ADMIN_ROUTES), set(RULED_ROUTES))
+        self.assertEqual(len(server.OPERATOR_PROJECT_ADMIN_ROUTES), 12)
+        self.assertNotIn(("POST", "/api/projects/{project_id}/plan-set-questions/{question_id}/answer"),
+                         server.OPERATOR_PROJECT_ADMIN_ROUTES, "view + ask only: never answer")
 
     def test_no_other_route_carries_it(self):
         _present()

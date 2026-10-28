@@ -59,6 +59,7 @@ KIND_SOURCE = {
     "dot_violation": DOT_OATH,
     "dot_permit": DOT_PERMITS,
     "dot_embargo": DOT_PERMITS,
+    "dot_hearing": DOT_OATH, "dot_hearing_pending": DOT_OATH, "dot_default": DOT_OATH,
     "order": DOB_VIOLATIONS, "order_lifted": DOB_VIOLATIONS, "bin_added": DOB_VIOLATIONS,
 }
 

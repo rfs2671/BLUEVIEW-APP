@@ -62,18 +62,26 @@ jobs:
           set -e
           # Sync httpx never appears in backend today; this guard
           # keeps it that way. ServerHttpClient is async-only.
+          # dot_phase1_dry_run.py names httpx.Client only to PATCH its
+          # send so every outbound request is refused (its guard); it
+          # never sends with it.
           if git grep -nE 'httpx\.Client\b|httpx\.(get|post|put|delete|patch|head|request)\(' \
                -- 'backend/' \
                ':!backend/lib/server_http.py' \
+               ':!backend/scripts/dot_phase1_dry_run.py' \
                ':!backend/tests/'; then
             echo "ERROR: Sync httpx call found in backend/. Use ServerHttpClient (async)."
             exit 1
           fi
           # Direct httpx.AsyncClient instantiation outside the wrapper
           # bypasses the blocklist. Codemod-then-rule.
+          # dot_phase1_dry_run.py opens one AsyncClient only for its guard
+          # self-check: a POST to example.invalid that must be refused
+          # before anything is read.
           if git grep -nE 'httpx\.AsyncClient\(' \
                -- 'backend/' \
                ':!backend/lib/server_http.py' \
+               ':!backend/scripts/dot_phase1_dry_run.py' \
                ':!backend/tests/'; then
             echo "ERROR: Direct httpx.AsyncClient(...) call in backend/."
             echo "Use ServerHttpClient from backend/lib/server_http.py instead."
