@@ -57882,8 +57882,8 @@ async def _review_queue_add(doc: Optional[dict]) -> Optional[bool]:
             await db[review_queue.COLLECTION].insert_one(doc)
         except DuplicateKeyError:
             dup = True
-        logger.info(f"[review-queue] kind={doc['kind']} company={doc['company_id']}"
-                    f"{' duplicate=true' if dup else ''}")
+        logger.info(f"[review-queue] kind={doc['kind']} reason={doc.get('reason')} "
+                    f"company={doc['company_id']}{' duplicate=true' if dup else ''}")
         return True
     except Exception as e:
         logger.warning(f"[review-queue] write failed kind={(doc or {}).get('kind')}: "
@@ -84976,6 +84976,8 @@ async def startup_event():
     # The review queue (lib/review_queue.py): L6.4 lists it by status, newest
     # first, across companies (the operator), and one company's newest first.
     await db.review_queue.create_index([("status", 1), ("created_at", -1)])
+    # Pending items, normal before low, newest first (L6.4's default list).
+    await db.review_queue.create_index([("status", 1), ("priority", 1), ("created_at", -1)])
     await db.review_queue.create_index([("company_id", 1), ("created_at", -1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.

@@ -95,6 +95,7 @@ class ConflictingSources(unittest.TestCase):
                          (rq.KIND_CONFLICTING_SOURCES, CO_A, "proj_a", rq.STATUS_PENDING))
         self.assertEqual(row["answer_log_id"], log_id)
         self.assertEqual(row["evidence"]["reasons"], ["plan_gate:ungrounded"])
+        self.assertEqual((row["reason"], row["priority"]), ("replaced", "normal"))
         self.assertEqual(row["evidence"]["record_ids"], ["r1"])
         self.assertEqual(row["evidence"]["sheets"], ["A-101"])
         self.assertTrue(row["summary"].startswith("plan_gate:ungrounded on type F doors"))
@@ -113,6 +114,7 @@ class ConflictingSources(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         ev = rows[0]["evidence"]
         self.assertEqual(ev["reasons"], ["records_contested"])
+        self.assertEqual((rows[0]["reason"], rows[0]["priority"]), ("conflict", "normal"))
         self.assertEqual(ev["record_ids"], ["r9"])
         self.assertEqual(ev["quotes"], [{"id": "r9", "sheet": "M-101",
                                          "text": "PTAC-2 QTY (readings disagree)"}])
@@ -122,6 +124,35 @@ class ConflictingSources(unittest.TestCase):
         _write_answer(db, gates=[{"gate": "dm_brain", "stop": "unverified"}])
         self.assertEqual([r["evidence"]["reasons"] for r in _rows(db)],
                          [["dm_brain:unverified"]])
+        self.assertEqual([(r["reason"], r["priority"]) for r in _rows(db)],
+                         [("unverified", "normal")])
+
+    def test_precedence_conflict_then_replaced_then_unverified(self):
+        contested = [{"_id": "r9", "sheet_number": "M-101",
+                      "quote": "PTAC-2 QTY (readings disagree)"}]
+        replaced = {"gate": "plan_answer_gate", "outcome": "refusal_overturned",
+                    "subject": "PTAC-2 count"}
+        unverified = {"gate": "dm_brain", "stop": "unsupported_claim"}
+        for gates, records, want in (
+                ([replaced, unverified], contested, "conflict"),
+                ([unverified, replaced], None, "replaced"),
+                ([unverified], None, "unverified")):
+            with self.subTest(want=want):
+                db = FakeDb()
+                _write_answer(db, gates=gates, records=records)
+                self.assertEqual([r["reason"] for r in _rows(db)], [want])
+        self.assertEqual(rq.answer_reason(["unverified", "conflict", "replaced"]), "conflict")
+        self.assertEqual(rq.answer_reason(["unverified", "replaced"]), "replaced")
+        self.assertIsNone(rq.answer_reason([]))
+
+    def test_the_log_line_names_kind_reason_and_company_only(self):
+        db = FakeDb()
+        with self.assertLogs(server.logger, level="INFO") as logs:
+            _write_answer(db, note_gate=self.GATE)
+        lines = [m for m in logs.output if "[review-queue]" in m]
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(f"kind=conflicting_sources reason=replaced company={CO_A}" in lines[0])
+        self.assertIsNone(re.search(re.escape(ADMIN_PHONE[-7:]), lines[0]))
 
     def test_a_grounded_answer_queues_nothing(self):
         db = FakeDb()
@@ -191,9 +222,29 @@ class SetHealth(unittest.TestCase):
                          {(rq.KIND_SET_HEALTH, CO_A, "proj_a")})
         self.assertEqual(sorted(r["evidence"]["finding"] for r in rows),
                          ["duplicate_sheet_number", "missing_referenced_sheet"])
+        self.assertEqual({(r["reason"], r["priority"]) for r in rows},
+                         {("set_health_failed", "normal")})
         self.assertEqual(sorted(r["summary"] for r in rows),
                          ["duplicate_sheet_number on A-102",
                           "missing_referenced_sheet on A-101: S-204"])
+
+    def test_failed_checks_are_normal_and_informational_ones_low(self):
+        from lib import plan_set_health as H
+        db = _health_db()
+        items = [H.unavailable(RuntimeError("x"), NOW),
+                 {"kind": "family_not_reconciled", "sheet": "M-601", "subject": "DIFFUSERS"},
+                 {"kind": "mentioned_unlocated", "sheet": "M-101", "subject": "DH-1"},
+                 {"kind": "schedule_tag_not_located", "sheet": "M-601", "subject": "DH-1"},
+                 {"kind": "tag_in_two_schedules", "sheet": "A-601", "subject": "D7"}]
+        self._pass(db, "proj_a", items)
+        got = {r["evidence"]["finding"]: (r["reason"], r["priority"]) for r in _rows(db)}
+        self.assertEqual(got, {
+            "set_health_unavailable": ("set_health_failed", "normal"),
+            "family_not_reconciled": ("set_health_failed", "normal"),
+            "tag_in_two_schedules": ("set_health_failed", "normal"),
+            "mentioned_unlocated": ("set_health_info", "low"),
+            "schedule_tag_not_located": ("set_health_info", "low"),
+        })
 
     def test_a_clean_set_queues_nothing(self):
         db = _health_db()
@@ -232,6 +283,7 @@ class Registration(unittest.TestCase):
         row = rows[0]
         self.assertEqual((row["kind"], row["company_id"], row["project_id"]),
                          (rq.KIND_REGISTRATION_REFUSAL, CO_A, None))
+        self.assertEqual((row["reason"], row["priority"]), ("registration", "normal"))
         self.assertEqual(row["evidence"], {"reason": "role_not_eligible", "user_id": "u_cp",
                                            "chat_last4": CP_PHONE[-4:], "role": "cp"})
         self.assertEqual(row["summary"],
@@ -283,6 +335,7 @@ class PlanSetQuestion(unittest.TestCase):
         self.assertEqual((rows[0]["kind"], rows[0]["company_id"], rows[0]["project_id"]),
                          (rq.KIND_PLAN_SET_QUESTION, CO_A, "proj_a"))
         self.assertEqual(rows[0]["evidence"]["sheets"], ["A.1.1", "A.1.2"])
+        self.assertEqual((rows[0]["reason"], rows[0]["priority"]), ("conflict", "normal"))
 
     def test_no_company_no_item(self):
         db = FakeDb()
@@ -297,17 +350,22 @@ class PlanSetQuestion(unittest.TestCase):
 
 class Writer(unittest.TestCase):
     def test_the_id_is_kind_company_subject(self):
-        a = rq.item(rq.KIND_SET_HEALTH, CO_A, "k", summary="s", now=NOW)
+        a = rq.item(rq.KIND_SET_HEALTH, CO_A, "k", reason=rq.REASON_SET_HEALTH_FAILED,
+                    summary="s", now=NOW)
         self.assertEqual(a["_id"], rq.item_id(rq.KIND_SET_HEALTH, CO_A, "k"))
         self.assertNotEqual(a["_id"], rq.item_id(rq.KIND_SET_HEALTH, CO_B, "k"))
-        self.assertIsNone(rq.item(rq.KIND_DISPUTE, CO_A, "k", summary="s", now=NOW))
+        self.assertIsNone(rq.item(rq.KIND_DISPUTE, CO_A, "k", reason=rq.REASON_CONFLICT,
+                                  summary="s", now=NOW))
+        self.assertIsNone(rq.item(rq.KIND_SET_HEALTH, CO_A, "k", reason="other",
+                                  summary="s", now=NOW))
 
     def test_it_never_raises(self):
         class Boom:
             async def insert_one(self, doc):
                 raise RuntimeError("down")
         db = FakeDb()
-        doc = rq.item(rq.KIND_SET_HEALTH, CO_A, "k", summary="s", now=NOW)
+        doc = rq.item(rq.KIND_SET_HEALTH, CO_A, "k", reason=rq.REASON_SET_HEALTH_FAILED,
+                    summary="s", now=NOW)
         with patch.object(server, "db", {rq.COLLECTION: Boom()}):
             self.assertIsNone(_run(server._review_queue_add(doc)))
         with patch.object(server, "db", db):
@@ -366,6 +424,8 @@ class OneWriter(unittest.TestCase):
         self.assertTrue('db.review_queue.create_index([("status", 1), ("created_at", -1)])' in src)
         self.assertTrue('db.review_queue.create_index([("company_id", 1), ("created_at", -1)])'
                         in src)
+        self.assertTrue('db.review_queue.create_index([("status", 1), ("priority", 1), '
+                        '("created_at", -1)])' in src)
 
 
 if __name__ == "__main__":
