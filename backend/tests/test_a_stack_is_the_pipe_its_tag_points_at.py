@@ -259,11 +259,14 @@ class ReadTheTag(unittest.TestCase):
         calls = {"n": 0}
 
         def reader(png):
-            # the first composed read of each tag says V-5, every other V-3:
-            # both tags print the same 3, so the 3 wins on both
+            # the first tag's four renderings read 3; the second's read 5, 5,
+            # nothing, 3 - alone it would be V-5 (2 votes to 1), but it prints
+            # the same 3 as the first, and pooled the 3 wins (5 to 2)
             calls["n"] += 1
+            n = calls["n"]
             w = _width(png)        # the letter's slot, then the digit's (plan_stacks._layout)
-            return [(0.2 * w, 10, "V", 0.9), (0.55 * w, 10, "5" if calls["n"] in (1, 5) else "3", 0.6)]
+            digit = {5: "5", 6: "5", 7: None}.get(n, "3")
+            return [(0.2 * w, 10, "V", 0.9)] + ([(0.55 * w, 10, digit, 0.6)] if digit else [])
         PS.read_tags(a + b, reader)
         self.assertEqual([t["id"] for t in a + b], ["V-3", "V-3"])
 
@@ -334,13 +337,16 @@ class PairByTitleLevel(unittest.TestCase):
 
     def test_a_title_naming_no_level_or_two_refuses(self):
         PS = _ps("pair_by_title_level")
+        # P-202 titled for two floors: the level table alone reads it as the
+        # SECOND floor, and the series offset (+1 to A-101) would hold
+        two = [p if p["sheet_number"] != "P-202.00"
+               else _pg("P-202.00", "FIRST & SECOND FLOOR SANITARY & STORM PLAN") for p in P2]
         got = PS.pair_by_title_level(
-            [_pg("P-200.00", "FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN"),
-             _pg("P-209.00", "FIRST & SECOND FLOOR SANITARY PLAN")] + P2, ARCH)
+            [_pg("P-200.00", "FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN")] + two, ARCH)
         refused = dict((p["sheet_number"], w) for p, w in got["refused"])
         self.assertIn("names no level", refused["P-200.00"])
-        self.assertIn("P-209.00", refused)
-        self.assertEqual(len(got["pairs"]), 5)
+        self.assertIn("does not name one floor", refused["P-202.00"])
+        self.assertEqual(len(got["pairs"]), 4)
 
     def test_a_level_no_architectural_plan_is_titled_at_refuses(self):
         PS = _ps("pair_by_title_level")
@@ -484,6 +490,26 @@ class TheRowsC1Reads(unittest.TestCase):
         (row,) = PS.stack_rows("filed", _pg("P-204.00", "x"), _pg("A-103.00", "y"), [t],
                                {"dx": 0, "dy": 0}, True, [])
         self.assertTrue(row["findings"])
+
+
+class ThePassKeepsWhatItCannotPlace(unittest.TestCase):
+
+    def test_a_sheet_whose_title_names_no_level_keeps_its_stacks_with_the_reason(self):
+        PS = _ps("run_stacks")
+        page, _pc = _sheet_with_one_stack()
+        p = {"sheet_number": "P-200.00", "sheet_title": "FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN",
+             "page_id": "p200", "file_name": "PL.pdf", "page_number": 8}
+        a = {"sheet_number": "A-100.01", "sheet_title": "FIRST FLOOR PLAN", "page_id": "a100"}
+        w = _width
+
+        def reader(png):
+            return [(0.2 * w(png), 10, "V", 0.9), (0.55 * w(png), 10, "3", 0.9)]
+        got = PS.run_stacks([("filed", [p, a])], lambda pg: page, reader=reader, place=False)
+        (row,) = [r for r in got["rows"] if r.get("record_type") == "stack"]
+        self.assertEqual(row["status"], "located")
+        self.assertIsNone(row["footprint_arch"])
+        self.assertIn("names no level", row["placement_refused"])
+        self.assertEqual(row["tag_id"], "V-3")
 
 
 class AStackInAWallNamesBothSides(unittest.TestCase):
