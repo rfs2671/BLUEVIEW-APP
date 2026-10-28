@@ -197,9 +197,14 @@ def from_answer(row: Dict[str, Any], raw_records: Iterable[Dict[str, Any]] = (),
     if not reasons:
         return None
     projects = sorted(str(p) for p in row.get("project_ids") or [])
-    key = "|".join(projects) + "|" + _norm(subject or row.get("question"))
     sheets = sorted({str(r["sheet"]) for r in contested_recs if r.get("sheet")}) or sorted(
         {str(r["sheet"]) for r in row.get("records") or [] if r.get("sheet")})
+    # The finding is the project(s), the subject, the question AND the sheets
+    # it rests on: the same subject asked about on another floor or sheet is
+    # another finding (search_plans takes floor / sheet apart from subject),
+    # while the same question on the same sheets again is one row.
+    key = "|".join([",".join(projects), _norm(subject), _norm(row.get("question")),
+                    ",".join(sheets)])
     evidence = {
         "reasons": reasons,
         "surface": row.get("surface"),
@@ -380,7 +385,9 @@ def _when(v: Any) -> Any:
 
 def answer_view(row: Optional[Dict[str, Any]], *, full: bool = False) -> Optional[Dict[str, Any]]:
     """The answer_log row an item names, as the operator reads it (the row
-    was redacted at insert; it is redacted again on the way out)."""
+    was redacted at insert; its CONTENT is redacted again on the way out --
+    never its ids, hashes or dates, which redact would mangle: a sha256 or
+    an ObjectId can hold 7 digits in a row, and so does an ISO date)."""
     if not row:
         return None
     records = list(row.get("records") or [])
@@ -388,11 +395,11 @@ def answer_view(row: Optional[Dict[str, Any]], *, full: bool = False) -> Optiona
         "id": str(row.get("_id")),
         "surface": row.get("surface"),
         "path": row.get("path"),
-        "question": row.get("question"),
-        "final_text": row.get("final_text"),
-        "records": records if full else records[:LIST_RECORDS],
+        "question": answer_log.redact(row.get("question")),
+        "final_text": answer_log.redact(row.get("final_text")),
+        "records": answer_log.redact(records if full else records[:LIST_RECORDS]),
         "records_total": len(records),
-        "gates": list(row.get("gates") or []),
+        "gates": answer_log.redact(list(row.get("gates") or [])),
         "model": row.get("model"),
         "code_sha": row.get("code_sha"),
         "asker_last4": row.get("asker_last4"),
@@ -400,17 +407,22 @@ def answer_view(row: Optional[Dict[str, Any]], *, full: bool = False) -> Optiona
         "created_at": _when(row.get("created_at")),
     }
     if full:
-        out["tools"] = list(row.get("tools") or [])
+        out["tools"] = answer_log.redact(list(row.get("tools") or []))
         out["timing"] = row.get("timing")
         out["content_hash"] = row.get("content_hash")
-    return answer_log.redact(out)
+    return out
 
 
 def item_view(doc: Dict[str, Any], *, company_name: Any = None,
               project: Optional[Dict[str, Any]] = None,
               answer: Optional[Dict[str, Any]] = None, full: bool = False) -> Dict[str, Any]:
-    """One queue item, for the operator only."""
+    """One queue item, for the operator only. Content (summary, evidence,
+    explanations) is redacted; ids and dates are not (see answer_view)."""
     decision = doc.get("decision") if isinstance(doc.get("decision"), dict) else None
+
+    def dec(d):
+        return {**d, "explanation": answer_log.redact(d.get("explanation")),
+                "decided_at": _when(d.get("decided_at"))}
     out = {
         "id": str(doc.get("_id")),
         "kind": doc.get("kind"),
@@ -420,13 +432,12 @@ def item_view(doc: Dict[str, Any], *, company_name: Any = None,
         "project": project,
         "created_at": _when(doc.get("created_at")),
         "status": doc.get("status"),
-        "summary": doc.get("summary"),
+        "summary": answer_log.redact(doc.get("summary")),
         "answer_log_id": doc.get("answer_log_id"),
         "answer": answer_view(answer, full=full),
-        "decision": ({**decision, "decided_at": _when(decision.get("decided_at"))}
-                     if decision else None),
-        "decisions": [{**d, "decided_at": _when(d.get("decided_at"))} for d in history(doc)],
+        "decision": dec(decision) if decision else None,
+        "decisions": [dec(d) for d in history(doc)],
     }
     if full:
-        out["evidence"] = doc.get("evidence") or {}
-    return answer_log.redact(out)
+        out["evidence"] = answer_log.redact(doc.get("evidence") or {})
+    return out

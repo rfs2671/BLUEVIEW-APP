@@ -58076,7 +58076,11 @@ async def owner_review_queue(kind: Optional[str] = None, status: str = "pending"
         raise HTTPException(status_code=422, detail="unknown status")
     if priority not in review_queue.PRIORITY_FILTERS:
         raise HTTPException(status_code=422, detail="unknown priority")
-    offset = max(0, min(int(offset), review_queue.MAX_OFFSET))
+    # Past MAX_OFFSET is a 422, never a silent clamp (a clamped offset would
+    # hand back the same page forever); has_more stops at the cap.
+    if int(offset) > review_queue.MAX_OFFSET:
+        raise HTTPException(status_code=422, detail="offset too large: narrow the filters")
+    offset = max(0, int(offset))
     limit = max(1, min(int(limit), review_queue.MAX_LIST))
     q: Dict[str, Any] = {"status": status}
     if kind:
@@ -58101,7 +58105,8 @@ async def owner_review_queue(kind: Optional[str] = None, status: str = "pending"
             co = await db.companies.find_one({"_id": to_query_id(cid)}, {"name": 1})
         companies.append({"id": cid, "name": (co or {}).get("name")})
     return {"items": items, "offset": offset, "limit": limit,
-            "has_more": len(rows) > limit, "kinds": list(review_queue.KINDS),
+            "has_more": len(rows) > limit and offset + limit <= review_queue.MAX_OFFSET,
+            "kinds": list(review_queue.KINDS),
             "reasons": list(review_queue.REASONS),
             "statuses": list(review_queue.STATUSES),
             "priorities": list(review_queue.PRIORITY_FILTERS), "companies": companies}

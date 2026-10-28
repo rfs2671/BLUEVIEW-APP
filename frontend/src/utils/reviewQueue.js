@@ -154,3 +154,24 @@ export function itemView(item) {
       .filter((x) => x && typeof x === 'object').map(decisionView).reverse(),
   };
 }
+
+/** The list after a decision: the decided item replaced, or dropped when
+ *  its new status no longer matches the status filter being shown. */
+export function reconcileAfterDecision(list, id, fresh, statusFilter) {
+  const rows = Array.isArray(list) ? list : [];
+  if (!fresh || typeof fresh !== 'object') return rows;
+  if (statusFilter && fresh.status && fresh.status !== statusFilter) {
+    return rows.filter((r) => r.id !== id);
+  }
+  return rows.map((r) => (r.id === id ? fresh : r));
+}
+
+/** The company chips: the companies with items, plus the selected one when
+ *  it has none in this status (so it can always be seen and cleared). */
+export function companyChoices(companies, selected) {
+  const list = Array.isArray(companies) ? companies.filter((c) => c && c.id) : [];
+  if (selected && !list.some((c) => c.id === selected)) {
+    return list.concat([{ id: selected, name: null }]);
+  }
+  return list;
+}

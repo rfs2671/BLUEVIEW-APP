@@ -296,7 +296,7 @@ class TheDecision(_Base):
         self.assertEqual([i["id"] for i in self.get("", self.op(), status="approved")
                           .json()["items"]], ["q_conf"])
 
-    def test_re_decide_twice_two_audit_rows_and_a_history(self):
+    def test_decide_again_twice_two_audit_rows_and_a_history(self):
         before = copy.deepcopy(self.db.answer_log.rows)
         r1 = self.decide("q_conf", self.op(), decision="approve",
                          explanation="Sheet A-101 says 3'-6\"; wrong door read.")
@@ -321,7 +321,7 @@ class TheDecision(_Base):
         self.assertEqual(self.db.answer_log.rows, before, "answer_log never touched")
         self.assertEqual(self.sent, [])
 
-    def test_re_decide_needs_a_new_explanation(self):
+    def test_deciding_again_needs_a_new_explanation(self):
         expl = "Checked A-101: the answer stands."
         self.assertEqual(self.decide("q_conf", self.op(), decision="deny",
                                      explanation=expl).status_code, 200)
@@ -372,6 +372,49 @@ class TheDecision(_Base):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(next(q for q in self.db.review_queue.rows
                               if q["_id"] == "q_info")["status"], "denied")
+
+
+class IdsAndDatesSurvive(_Base):
+    """Codex #905: redaction must touch content only. An id with 7+ digits
+    in a row (a sha256, an ObjectId) and an ISO date come back as stored,
+    and such an item can be opened and decided."""
+    DIGIT_ID = "a" + "1234567" * 4 + "b"
+
+    def setUp(self):
+        super().setUp()
+        self.db.review_queue.rows.append(
+            {"_id": self.DIGIT_ID, "kind": "set_health", "company_id": A,
+             "answer_log_id": "al_a", "summary": "call 2125550199 about A-101",
+             "reason": "set_health_failed", "priority": "normal", "evidence": {},
+             "created_at": T0 + timedelta(minutes=40), "status": "pending"})
+
+    def test_ids_and_dates_are_not_redacted(self):
+        it = self.get("", self.op()).json()["items"][0]
+        self.assertEqual(it["id"], self.DIGIT_ID)
+        self.assertEqual(it["created_at"], (T0 + timedelta(minutes=40)).isoformat())
+        self.assertTrue(it["answer"]["created_at"].startswith("2026-10-28T"))
+        self.assertEqual(it["summary"], "call […0199] about A-101", "content still redacted")
+        r = self.get(f"/{it['id']}", self.op())
+        self.assertEqual(r.status_code, 200)
+        d = self.decide(it["id"], self.op(), decision="deny",
+                        explanation="Checked; the set is fine on 2026-10-28.")
+        self.assertEqual(d.status_code, 200, d.text)
+        self.assertTrue(d.json()["item"]["decision"]["decided_at"].startswith("20"))
+
+
+class Paging(_Base):
+    def test_past_the_cap_is_a_422_and_has_more_stops_at_it(self):
+        self.assertEqual(self.get("", self.op(), offset=rq.MAX_OFFSET + 1).status_code, 422)
+        for i in range(30):
+            self.db.review_queue.rows.append(
+                {"_id": f"bulk{i}", "kind": "set_health", "company_id": A, "summary": "s",
+                 "reason": "set_health_failed", "priority": "normal", "evidence": {},
+                 "created_at": T0 - timedelta(minutes=i), "status": "pending"})
+        with patch.object(rq, "MAX_OFFSET", 10):
+            out = self.get("", self.op(), offset=10, limit=5).json()
+            self.assertEqual(len(out["items"]), 5)
+            self.assertFalse(out["has_more"], "the next page would be past the cap")
+            self.assertTrue(self.get("", self.op(), offset=5, limit=5).json()["has_more"])
 
 
 class Pure(unittest.TestCase):

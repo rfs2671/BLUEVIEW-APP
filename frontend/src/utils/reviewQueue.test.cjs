@@ -99,6 +99,17 @@ ok(!!R.decideRequest('approve', ' Checked  S-201 ', 'checked S-201').error,
 ok(R.decideRequest('approve', 'rechecked S-201 rev 2', 'checked S-201').body
   .decision === 'approve', 'a new one: sent');
 
+console.log('\nthe list after a decision, and the company filter');
+const L = [{ id: 'a', status: 'pending' }, { id: 'b', status: 'pending' }];
+ok(R.reconcileAfterDecision(L, 'a', { id: 'a', status: 'approved' }, 'pending')
+  .map((r) => r.id).join() === 'b', 'decided out of the pending view: dropped');
+ok(R.reconcileAfterDecision([{ id: 'a', status: 'approved' }], 'a',
+  { id: 'a', status: 'approved', x: 1 }, 'approved')[0].x === 1, 'still matching: replaced');
+ok(R.reconcileAfterDecision(L, 'a', null, 'pending').length === 2, 'no fresh item: unchanged');
+ok(R.companyChoices([{ id: 'c2', name: 'B' }], 'c1').map((c) => c.id).join() === 'c2,c1',
+  'a selected company with no items stays selectable');
+ok(R.companyChoices([{ id: 'c1' }, { id: 'c2' }], 'c1').length === 2, 'no duplicate');
+
 console.log('\nthe screen');
 const SCREEN = read('app/owner/review.jsx');
 ok(/isPlatformOperator\(user\)/.test(SCREEN) && /if \(!isOperator\) return;/.test(SCREEN),
@@ -107,6 +118,10 @@ ok(/Platform operator access required\./.test(SCREEN), 'and shows the denial pan
 ok(/const req = decideRequest\(decision, explanation,\s*iv\.decision \? iv\.decision\.explanation : null\);\s*if \(req\.error\) \{ setFormError\(req\.error\); return; \}/.test(SCREEN),
   'decide checks the explanation before any request');
 ok(/ownerAPI\.reviewDecide\(it\.id, req\.body\)/.test(SCREEN), 'and sends the checked body');
+ok(/reconcileAfterDecision\(list, it\.id, res\?\.item, status\)/.test(SCREEN),
+  'the list is reconciled with the status filter after a decision');
+ok(/companies\.length > 1 \|\| company \?/.test(SCREEN),
+  'the company reset stays visible while a company is selected');
 ok(/ownerAPI\.reviewQueue\(\s*listParams\(/.test(SCREEN), 'the list asks with listParams');
 ok(!/[Nn]otify/.test(SCREEN), 'no Notify anywhere on the screen');
 ok(/Show low priority/.test(SCREEN), 'a Show low priority toggle');
