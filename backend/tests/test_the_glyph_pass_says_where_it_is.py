@@ -316,7 +316,9 @@ class _Route(unittest.TestCase):
         st.enter_context(patch("lib.plan_page.PlanPage", lambda path, n: _Page()))
         for n, fn in (("rows", "_write_glyph_records"), ("health", "_write_set_health"),
                       ("areas", "_write_area_records"), ("walls", "_write_wall_records")):
-            st.enter_context(patch.object(server, fn, writer(n)))
+            # create=True: on a tree without the walls writer the patch still
+            # applies, and the test fails by its assertion, not at patch time
+            st.enter_context(patch.object(server, fn, writer(n), create=True))
         return written
 
     def _run_route(self, fake_pass):
@@ -386,6 +388,7 @@ class TheStatusSaysWhereARunningPassIs(_Route):
 
         self.assertFalse(after["running"])
         self.assertEqual(after["last_result"]["result"], "ok")
+        self.assertIn("walls", written, "the wall rows were never handed to their writer")
         self.assertEqual(after["last_result"]["summary"],
                          {"written": written["rows"], "set_health": written["health"],
                           "areas_written": written["areas"], "walls_written": written["walls"]})
