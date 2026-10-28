@@ -458,3 +458,17 @@ def register(arch: dict, mech: dict) -> dict:
             "best_peak": [float(best_xy[0]), float(best_xy[1])],
             "spread": None if spread is None else [float(v) for v in spread],
             "refused": "; ".join(refused) or None}
+
+
+def matched_anchors(arch: dict, mech: dict, registration: dict):
+    """(arch corners, mech corners), pairwise: the anchors `registration`'s
+    offset matches within ANCHOR_MATCH_RADIUS_IN - the same set register()
+    took its residuals over (best_translation's final match)."""
+    A = np.asarray(arch["corners"], dtype=float).reshape(-1, 2)
+    B = np.asarray(mech["corners"], dtype=float).reshape(-1, 2)
+    if not len(A) or not len(B):
+        return A[:0], B[:0]
+    d, jj = cKDTree(B).query(A + np.array([registration["dx"], registration["dy"]]),
+                             distance_upper_bound=_pts(reg.ANCHOR_MATCH_RADIUS_IN))
+    ok = np.isfinite(d)
+    return A[ok], B[jj[ok]]

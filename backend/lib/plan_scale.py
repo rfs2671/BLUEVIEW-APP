@@ -8,8 +8,9 @@ measured on that viewport; refuse a viewport that doesn't verify."
 Every answer that turns a length on paper into a length in the building (an
 apartment's area, a run of wall) needs this. The plan reader so far assumes
 1/4" = 1'-0" everywhere (plan_registration.PLAN_SCALE_DENOM); this module is
-what replaces the assumption. NOTHING CALLS IT YET: it is the prerequisite
-for the area lane, and no answer path reads it in this change.
+what replaces the assumption. Its readers: lib.plan_areas (each A floor
+plan's own verified scale), and the glyph pass's record of each mechanical
+plan's scale, borrowed from its architectural partner (`borrow`).
 
 ── WHAT WENT WRONG BEFORE, AND THE RULE EACH ONE GAVE ─────────────────────
 
@@ -72,7 +73,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -488,18 +489,23 @@ class Viewport:
     dimensions: List[Dimension] = field(default_factory=list)
     agreeing: int = 0
     verified: bool = False
-    pt_per_in: Optional[float] = None                # set ONLY when verified
+    pt_per_in: Optional[float] = None                # set ONLY when verified or borrowed
     refusal: str = ""
     body: int = 0                                    # label of its ink in Sheet.labels
+    #: set ONLY by `borrow`: where the scale came from. `verified` stays False
+    #: - the drawing's own dimensions did not back a note - and a borrowed
+    #: scale is never lent on (`borrow` lends only a viewport's own).
+    borrowed: Optional[dict] = None
 
     @property
     def scale_text(self) -> str:
         return self.note.text if self.note else ""
 
     def real_inches(self, pt: float) -> float:
-        """A paper length in points as real inches. Refuses an unverified
-        viewport by raising: there is no scale to use."""
-        if not self.verified or not self.pt_per_in:
+        """A paper length in points as real inches. Refuses a viewport with
+        no verified and no borrowed scale by raising: there is no scale to
+        use."""
+        if not self.pt_per_in or not (self.verified or self.borrowed):
             raise ValueError(f"no verified scale for this viewport: {self.refusal}")
         return pt / self.pt_per_in
 
@@ -669,6 +675,141 @@ def read_sheet(page) -> Sheet:
     return Sheet(viewports=vps, labels=lab, width=page.width, height=page.height)
 
 
-__all__ = ["AGREE_TOL", "MIN_AGREEING", "MIN_DISTINCT", "ScaleNote", "Dimension", "Viewport", "Sheet",
+# ── a borrowed scale (Roy, ruling 5, 2026-10-28) ─────────────────────────
+#
+# "M/P borrow the A sheet's verified scale only when registration to it is
+# usable." The M and P plans of 588 Boyland carry the architectural plan as
+# a screened underlay and print almost no dimension of their own (M-100 to
+# M-106: 0 to 6 measured, none agreeing), so their own note never verifies.
+# A registration is a TRANSLATION ONLY (plan_registration: the underlay is
+# the same drawing placed twice), so hundreds of corners matching within an
+# inch after a pure shift ARE the evidence that the two sheets share a paper
+# scale - the scale the architectural viewport's own dimensions verified.
+#
+# What makes it a borrow and not an assumption, each a condition that fails:
+#   1. only M or P borrows, and only from A (sheet numbers);
+#   2. the registration is USABLE (plan_sheet.register: the offset holds at
+#      least half the best peak's anchors, >= MIN_ANCHORS, spread over the
+#      plan) - the roof's old wrong peak (108 of 239) is refused there;
+#   3. the lender viewport VERIFIED ON ITS OWN DIMENSIONS - never a borrowed
+#      scale, never an unverified one (A-105.x's 3/32" BULKHEAD PLAN);
+#   4. more than half of the matched anchors join ONE lender viewport to ONE
+#      viewport of the borrower: that is the drawing that borrows;
+#   5. the shift bounds the scale: two anchors D apart that both match within
+#      r after a pure shift differ in scale by at most 2r/D. That bound, over
+#      the anchors of the joined views, must be inside AGREE_TOL;
+#   6. a note the borrower prints in its text layer must agree with the
+#      lent scale (a contradiction refuses), and a note that says there is
+#      no scale refuses. A borrower with no note in its text layer (the P
+#      sheets' SHX title bars) borrows: that is the case the ruling is for.
+# A borrower viewport that verified on its own keeps its own scale.
+
+BORROWERS = ("M", "P")
+LENDERS = ("A",)
+
+
+def _discipline(sheet_number: str) -> str:
+    m = re.match(r"^\s*([A-Z]+)[-.]", (sheet_number or "").upper())
+    return m.group(1) if m else ""
+
+
+def _vp_brief(v: Optional[Viewport]) -> Optional[dict]:
+    if v is None:
+        return None
+    return {"title": v.title, "note": v.scale_text, "verified": v.verified,
+            "agreeing": v.agreeing, "pt_per_in": v.pt_per_in}
+
+
+def borrow(borrower_number: str, borrower: Sheet, lender_number: str, lender: Sheet,
+           registration: dict, lender_pts, borrower_pts) -> Tuple[Optional[Viewport], dict]:
+    """(the borrower's scaled viewport or None, the scale result).
+
+    `registration` is plan_sheet.register(lender's sheet, borrower's sheet);
+    `lender_pts` / `borrower_pts` are its matched anchors, pairwise
+    (plan_sheet.matched_anchors). The result always names the sheet, the
+    status - "own" | "borrowed" | "refused" - and why not, and for a borrow
+    the provenance: the lender's sheet and viewport and the registration's
+    evidence. The rules are the block above, in order."""
+    from lib.plan_registration import ANCHOR_MATCH_RADIUS_IN
+    reg_keys = ("dx", "dy", "anchors", "best_peak_anchors", "best_peak", "spread",
+                "rms_in", "max_in", "usable", "refused")
+    out: Dict[str, object] = {
+        "sheet": borrower_number, "status": "refused", "pt_per_in": None, "viewport": None,
+        "from": {"sheet": lender_number, "viewport": None},
+        "registration": {k: registration.get(k) for k in reg_keys}, "why": ""}
+
+    def refuse(why):
+        out["why"] = why
+        return None, out
+
+    # 1
+    if _discipline(borrower_number) not in BORROWERS or _discipline(lender_number) not in LENDERS:
+        return refuse(f"only {'/'.join(BORROWERS)} sheets borrow, and only from "
+                      f"{'/'.join(LENDERS)}: {borrower_number} from {lender_number}")
+    # 2
+    if not registration.get("usable"):
+        return refuse(f"the registration to {lender_number} is not usable: "
+                      f"{registration.get('refused') or 'refused'}")
+    A = np.asarray(lender_pts, dtype=float).reshape(-1, 2)
+    B = np.asarray(borrower_pts, dtype=float).reshape(-1, 2)
+    if not len(A) or len(A) != len(B):
+        return refuse("no matched anchors to place the borrow")
+    # 4: which drawing joins which
+    keys = []
+    vps = {}
+    for (ax, ay), (bx, by) in zip(A, B):
+        va, vb = lender.at(float(ax), float(ay)), borrower.at(float(bx), float(by))
+        if va is None or vb is None:
+            keys.append(None)
+            continue
+        vps[id(va)], vps[id(vb)] = va, vb
+        keys.append((id(va), id(vb)))
+    pairs = Counter(k for k in keys if k is not None)
+    if not pairs:
+        return refuse("no matched anchor lies in a drawing on both sheets")
+    (ka, kb), n = pairs.most_common(1)[0]
+    va, vb = vps[ka], vps[kb]
+    out["viewport"] = _vp_brief(vb)
+    out["from"] = {"sheet": lender_number, "viewport": _vp_brief(va)}
+    out["anchors_in_view"], out["anchors_matched"] = n, len(A)
+    if 2 * n <= len(A):
+        return refuse(f"the matched anchors do not join one drawing to one: the most, {n} of "
+                      f"{len(A)}, join {va.title or 'an untitled view'} to "
+                      f"{vb.title or 'an untitled view'}")
+    if vb.verified:
+        out.update(status="own", pt_per_in=vb.pt_per_in)
+        return vb, out
+    # 3
+    if not va.verified or va.borrowed or not va.pt_per_in:
+        return refuse(f"{lender_number}'s {va.title or 'untitled view'} has no scale of its own "
+                      f"to lend: {va.refusal or 'its scale is borrowed'}")
+    # 5
+    sel = np.array([k == (ka, kb) for k in keys])
+    a_in, b_in = A[sel], B[sel]
+    shift = np.array([registration.get("dx", 0.0), registration.get("dy", 0.0)], dtype=float)
+    r_pt = max(float(np.hypot(*(b_in - (a_in + shift)).T).max()), 1e-9)
+    span = float((a_in.max(0) - a_in.min(0)).max())
+    bound = 2 * r_pt / span if span else math.inf
+    out["scale_bound"] = round(bound, 5)
+    if bound > AGREE_TOL:
+        return refuse(f"the shift bounds the scale only to {bound:.1%} (worst anchor "
+                      f"{r_pt:.2f}pt over {span:.0f}pt); {AGREE_TOL:.0%} needed")
+    # 6
+    if vb.note is not None:
+        if vb.note.nts or not vb.note.pt_per_in:
+            return refuse(f"{borrower_number}'s view says it has no scale ({vb.note.text})")
+        if abs(vb.note.pt_per_in / va.pt_per_in - 1) > AGREE_TOL:
+            return refuse(f"{borrower_number} prints {vb.note.text}; {lender_number}'s "
+                          f"{va.title or 'view'} verifies {va.scale_text}: they contradict")
+    prov = {"sheet": lender_number, "viewport": va.title, "note": va.scale_text,
+            "agreeing": va.agreeing, "anchors_in_view": n, "anchors_matched": len(A),
+            "scale_bound": out["scale_bound"], "match_radius_in": ANCHOR_MATCH_RADIUS_IN,
+            "registration": out["registration"]}
+    lent = replace(vb, pt_per_in=va.pt_per_in, borrowed=prov)
+    out.update(status="borrowed", pt_per_in=va.pt_per_in)
+    return lent, out
+
+
+__all__ = ["BORROWERS", "LENDERS", "borrow", "AGREE_TOL", "MIN_AGREEING", "MIN_DISTINCT", "ScaleNote", "Dimension", "Viewport", "Sheet",
            "parse_scale_note", "find_scale_notes", "text_lines", "dimension_words",
            "measure_dimension", "verify", "claimed_viewport", "read_sheet"]

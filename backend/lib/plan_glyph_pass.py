@@ -74,7 +74,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
              plan_only: Optional[Dict[str, Dict[str, Any]]] = None,
              opening_schedules: Sequence[Dict[str, Any]] = (),
              set_answers: Optional[Dict[str, str]] = None,
-             progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None) -> Dict[str, Any]:
+             progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+             scale_sheets: Optional[Dict[Any, Any]] = None) -> Dict[str, Any]:
     """Every glyph row for the project's `track`, and what was done and
     refused.
 
@@ -104,7 +105,13 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     plan_pass_progress, whose tracker the server hands in). It is called
     from this function's thread; one that raises is logged and ignored
     (plan_pass_progress.tell). It reads nothing the pass computes with, so
-    the rows are the same with it or without it."""
+    the rows are the same with it or without it.
+
+    MECHANICAL SCALES (ruling 5, 2026-10-28): every pair's mechanical plan's
+    scale - its own, or borrowed from its architectural partner (mech_scale)
+    - is in the summary's "mech_scales". No row reads it. `scale_sheets`
+    (page id -> plan_scale.Sheet) lets a caller share the mechanical reads
+    across tracks, as `sweeps` does."""
     from lib import plan_openings as popen
     from lib.plan_pass_progress import tell
     from lib.plan_sheet import load_sheet
@@ -116,6 +123,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                                "families": {}, "skipped_families": [], "door": None,
                                "floors": [], "mech_counts": {}}
     sweeps = {} if sweeps is None else sweeps
+    scale_sheets = {} if scale_sheets is None else scale_sheets
 
     def reads_of(mech_p, mech_pg, segs):
         k = mech_p.get("page_id") or (mech_p.get("file_id"), mech_p.get("page_number"))
@@ -247,10 +255,13 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         answers=set_answers, progress=progress)
     summary["openings"] = opening["summary"]
 
+    summary["mech_scales"] = []
     for i, f in enumerate(floors_in, 1):
         arch_p, mech_p, a_sheet, m_sheet = f["arch_p"], f["mech_p"], f["a_sheet"], f["m_sheet"]
         tell(progress, "sheet", stage="takeoff", sheet=f"{a_sheet}|{m_sheet}", i=i,
              n=len(floors_in), sweep=_sweep_state(mech_p, sweeps) if run_fams else None)
+        if run_fams and "data" in f:
+            summary["mech_scales"].append(mech_scale(f, open_page, scale_sheets))
         if not run_fams:
             rows.append(emit.sheet_refusal(
                 mech_p, "no equipment schedule with an identifier column",
@@ -356,7 +367,7 @@ def floor_area_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str,
     """(area rows, a line per floor) - lib.plan_areas on every floor whose
     membership map was built. One floor that fails never sinks the pass: it
     is said, and writes no row."""
-    from lib import plan_areas
+    from lib import plan_areas, plan_scale
 
     rows: List[Dict[str, Any]] = []
     notes: List[str] = []
@@ -365,7 +376,10 @@ def floor_area_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str,
         if not sp or (f.get("units") or {}).get("tags") is None:
             continue
         try:
-            res = plan_areas.floor_areas(open_page(f["arch_p"]), sp)
+            pg = open_page(f["arch_p"])
+            if "scale_sheet" not in f:          # kept: the floor's partner borrows from it
+                f["scale_sheet"] = plan_scale.read_sheet(pg)
+            res = plan_areas.floor_areas(pg, sp, scale_sheet=f["scale_sheet"])
         except Exception as e:                      # one floor never sinks the pass
             log.exception("area check %s failed: %r", f.get("a_sheet"), e)
             notes.append(f"{f.get('a_sheet')}: area check failed ({type(e).__name__}) - no area rows")
@@ -659,6 +673,39 @@ def _level_words(f: Dict[str, Any], u: str) -> List[str]:
             if w in ("LOWER", "UPPER"):
                 out.append(w)
     return out
+
+
+def mech_scale(f: Dict[str, Any], open_page, scale_sheets: Dict[Any, Any]) -> Dict[str, Any]:
+    """The floor's mechanical plan's scale: its own where its drawing
+    verifies, else BORROWED from the floor's architectural plan - only when
+    their registration is usable (plan_sheet.register) and the architectural
+    viewport verified on its own dimensions (plan_scale.borrow, ruling 5).
+    The result names the lender and the registration's evidence, or why
+    there is no scale. Recorded in the pass summary ("mech_scales"); a read
+    that fails is said there and never sinks the pass."""
+    from lib import plan_scale as ps
+    from lib.plan_sheet import matched_anchors
+    a_sheet, m_sheet = f.get("a_sheet"), f.get("m_sheet")
+    try:
+        reg_ = _partner_registration(f, open_page)
+        if "scale_sheet" not in f:
+            f["scale_sheet"] = ps.read_sheet(open_page(f["arch_p"]))
+        mech_p = f["mech_p"]
+        k = mech_p.get("page_id") or (mech_p.get("file_id"), mech_p.get("page_number"))
+        if k not in scale_sheets:
+            scale_sheets[k] = ps.read_sheet(open_page(mech_p))
+        a_pts, m_pts = matched_anchors(f["data"], f["mech_data"], reg_)
+        _v, res = ps.borrow(m_sheet, scale_sheets[k], a_sheet, f["scale_sheet"], reg_,
+                            a_pts, m_pts)
+    except Exception as e:                          # one floor never sinks the pass
+        log.exception("mechanical scale %s / %s failed: %r", m_sheet, a_sheet, e)
+        res = {"sheet": m_sheet, "status": "refused", "pt_per_in": None,
+               "from": {"sheet": a_sheet, "viewport": None},
+               "why": f"scale read failed: {type(e).__name__}"}
+    log.info("glyph pass mechanical scale: %s %s%s", m_sheet, res["status"],
+             f" from {a_sheet}" if res["status"] == "borrowed" else
+             (f" - {res.get('why')}" if res.get("why") else ""))
+    return res
 
 
 def _partner_registration(f: Dict[str, Any], open_page) -> Dict[str, Any]:
