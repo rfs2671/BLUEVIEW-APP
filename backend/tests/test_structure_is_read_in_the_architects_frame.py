@@ -462,11 +462,12 @@ class TheScheduleIsReadByItsRules(unittest.TestCase):
     def test_rows_columns_and_a_merged_cell(self):
         _present()
         got = T.read_shear_wall_schedule(self._table())["rows"]
-        self.assertEqual(got[("FLOOR_4", "SW 1")]["END MEMBERS"], "(3) 6J10")
-        self.assertEqual(got[("MEZZANINE", "SW 1")]["END MEMBERS"], "(2) 6J14")
-        self.assertEqual(got[("FLOOR_4", "SW 1")]["DIAGONALS"], "12 GA STRAP")
-        self.assertEqual(got[("MEZZANINE", "SW 1")]["DIAGONALS"], "12 GA STRAP")
-        self.assertEqual(got[("ROOF", "SW 1")]["END MEMBERS"], "-")
+        cell = lambda lv, f: got.get((lv, "SW 1"), {}).get(f)          # noqa: E731
+        self.assertEqual(cell("FLOOR_4", "END MEMBERS"), "(3) 6J10")
+        self.assertEqual(cell("MEZZANINE", "END MEMBERS"), "(2) 6J14")
+        self.assertEqual(cell("FLOOR_4", "DIAGONALS"), "12 GA STRAP")
+        self.assertEqual(cell("MEZZANINE", "DIAGONALS"), "12 GA STRAP")
+        self.assertEqual(cell("ROOF", "END MEMBERS"), "-")
 
 
 # ══════════════════════════════════════════════════════════════════════════
