@@ -65434,6 +65434,21 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         except Exception as e:
             logger.exception("plan set health %s failed: %r", pid, e)
             health = [_health.unavailable(e, datetime.now(timezone.utc))]
+        # PLUMBING STACKS (lane T4, lib.plan_stacks), while the PDFs are still
+        # here: every stack the P plans tag, placed on each track's
+        # architectural plan paired BY TITLE LEVEL - the rows clash v1 reads.
+        # Their own collection: search and the count gate never read them.
+        # A failure writes one marker row, never sinks the pass.
+        from lib import plan_stacks as _stacks
+        if progress is not None:
+            progress.server_stage("stacks")
+        try:
+            door_in = ((summary["tracks"].get("filed") or {}).get("door") or {}).get("inches")
+            got = await asyncio.to_thread(_stacks.run_stacks, by_track, open_page, None, door_in)
+            stacks = got["rows"] + [_stacks.crosscheck_row(got)]
+        except Exception as e:
+            logger.exception("plan stacks %s failed: %r", pid, e)
+            stacks = [_stacks.unavailable(e, datetime.now(timezone.utc))]
     # one numbering across the tracks: a row is (page_id, ordinal), and every
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
@@ -65452,6 +65467,7 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         return summary
     summary["written"] = await _write_glyph_records(pid, rows)
     summary["set_health"] = await _write_set_health(pid, health)
+    summary["stacks_written"] = await _write_stack_rows(pid, stacks)
     summary["areas_written"] = await _write_area_records(pid, areas)
     try:
         summary["set_questions"] = await _store_set_questions(
@@ -65739,6 +65755,21 @@ async def _write_set_health(project_id: str, items: List[dict]) -> int:
     # Each finding queued for review once (lib/review_queue: set_health).
     await _review_queue_set_health(pid, items)
     return len(docs)
+
+
+async def _write_stack_rows(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's plumbing-stack rows with one pass's
+    (lib.plan_stacks.COLLECTION - their own collection, like set health:
+    no plan record, so search never returns them). WHOLE-PROJECT REPLACE,
+    because the pass is: the pairing and the tag reading are set-wide."""
+    from lib.plan_stacks import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    await db[COLLECTION].insert_many([dict(r, project_id=pid, created_at=now) for r in rows])
+    return len(rows)
 
 
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
