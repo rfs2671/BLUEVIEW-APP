@@ -118,6 +118,7 @@ from lib import status_history as status_hist  # noqa: E402
 from lib import dot_sync  # noqa: E402
 from lib import dot_embargo  # noqa: E402
 from lib import dot_permits  # noqa: E402
+from lib import dot_summons  # noqa: E402
 from lib import dob_site_bins  # noqa: E402
 from lib import dob_alert_gate  # noqa: E402
 from lib import source_sync  # noqa: E402
@@ -48227,7 +48228,10 @@ async def _gc_project_records(project_id: str, company_id: str) -> Tuple[list, l
         "project_id": project_id,
         "company_id": _company_id_filter(company_id),
     }).to_list(2000)
-    return dob, _dot_confirmed_rows(dot)
+    # Every DOT row, pending and rejected included: lib/wa_alerts.collect asks
+    # dot_sync.record_confirmed per kind -- and a PENDING block-matched summons
+    # is exactly what the dot_hearing_pending post is about.
+    return dob, dot
 
 
 async def _gc_marker_redate(lid: str) -> bool:
@@ -48395,6 +48399,7 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             items = [it for it in items if it["kind"] not in unbaselined]
 
         todo = []
+        dot_flag_on = None
         for it in items:
             why = dob_alert_gate.gc_refusal(it, today)
             if why:
@@ -48404,6 +48409,17 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
                         company_id=company_id, status=f"not_posted_{why}"):
                     report["not_posted"] = report.get("not_posted", 0) + 1
                 continue
+            # A new summons matched only through its permit waits for the
+            # dot_phase1 flag, like its email (ruling 2026-10-23). Left
+            # UNCLAIMED: if the flag comes on inside the 2-day window it
+            # posts, and after that gc_refusal refuses it as too old.
+            if dot_summons.gc_flag_gated(it):
+                if dot_flag_on is None:
+                    dot_flag_on = await feature_flags.is_feature_enabled(
+                        db, dot_summons.FLAG, company_id=company_id or None)
+                if not dot_flag_on:
+                    report["flag_off"] = report.get("flag_off", 0) + 1
+                    continue
             if not wa_alerts.postable(it["kind"], it["rec"]):
                 report["no_number"] += 1
                 continue
@@ -48522,9 +48538,11 @@ SOURCE_SYNC_STATE = "source_sync_state"
 
 
 async def _mark_sources_synced(project_id: str, company_id: str,
-                               sources) -> None:
-    """Stamp each source's synced_at, and first_synced_at the first time."""
-    now = datetime.now(timezone.utc)
+                               sources, now: Optional[datetime] = None) -> None:
+    """Stamp each source's synced_at, and first_synced_at the first time.
+    `now`: the sync tick's clock (the DOT sync passes it, so the summons
+    baseline and each row's detected_at come from the same clock)."""
+    now = now or datetime.now(timezone.utc)
     for s in sorted(set(sources)):
         try:
             await db[SOURCE_SYNC_STATE].update_one(
@@ -48550,11 +48568,13 @@ async def _project_first_synced(project_id: str) -> dict:
 
 def _dot_confirmed_rows(rows) -> list:
     """The project's own DOT rows: summonses, and permits whose match is
-    CONFIRMED (dot_sync.permit_confirmed). A permit by another permittee on
+    CONFIRMED (dot_sync.record_confirmed). A permit by another permittee on
     the project's block that nobody has accepted (DOT Phase 1 B), or one
     rejected as "not ours", is left out of every alert, brief, report and
     answer -- only the DOT tab's "needs confirmation" list shows it."""
-    return [r for r in rows or [] if dot_sync.permit_confirmed(r)]
+    # DOT Phase 1 A: a summons matched only by the block (segment) is not the
+    # project's until accepted either.
+    return [r for r in rows or [] if dot_sync.record_confirmed(r)]
 
 
 async def _dot_fetch(dataset: str, params: dict) -> Optional[list]:
@@ -48573,7 +48593,7 @@ async def _dot_fetch(dataset: str, params: dict) -> Optional[list]:
 
 
 async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
-                     now: datetime) -> str:
+                     now: datetime, first_pass: bool = False) -> str:
     """'new' | 'changed' | 'same'.
 
     status_history (lib/status_history): DEFECT MEASURED (2026 audit) - a
@@ -48590,6 +48610,15 @@ async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
     match = log.get("match") if isinstance(log.get("match"), dict) else None
     if not existing:
         extra = {}
+        if first_pass:
+            # DOT Phase 1 A: stored by the project's first summons pass -- it
+            # never emails as new (lib/dot_summons.new_due), whatever its date.
+            extra["first_pass"] = True
+        if log.get("record_type") == "dot_violation":
+            # DOT Phase 1 A: this row's own detection is by the Phase 1 sync
+            # (insert only). A row stored before Phase 1 never carries it, so
+            # it never emails as new (lib/dot_summons.new_due).
+            extra[dot_summons.PHASE1_MARK] = True
         if match and match.get("state") == dot_sync.STATE_NEEDS:
             # DOT Phase 1 B: another permittee's permit on a confirmed
             # frontage. Nothing alerts on it until a person accepts it.
@@ -48605,7 +48634,7 @@ async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
     if match:
         decided = ((existing.get("review") or {}).get("state")
                    if isinstance(existing.get("review"), dict) else None)
-        if match.get("how") == dot_sync.MATCH_OTHER and decided in ("accepted", "rejected"):
+        if match.get("state") == dot_sync.STATE_NEEDS and decided in ("accepted", "rejected"):
             # A person's "yours" / "not ours" stands: the sync re-finding the
             # same permit on the block never makes it pending again.
             fields["match"] = existing.get("match")
@@ -48617,6 +48646,14 @@ async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
             # Now the project's by address or by its own permittee: the
             # question is moot.
             fields["review"] = {"state": "superseded", "at": now}
+    if (log.get("record_type") == "dot_violation" and not existing.get("default_event")
+            and dot_sync.default_result(log) and not dot_sync.default_result(existing)
+            and dot_sync.record_confirmed({**existing, **fields})):
+        # DOT Phase 1 A: the update exception. A CONFIRMED summons whose
+        # hearing result / status CHANGED to DEFAULTED or DOCKETED emails and
+        # posts once (lib/dot_summons.default_due). Never at first sight: the
+        # insert above stamps nothing.
+        fields["default_event"] = {"result": dot_sync.default_result(log), "at": now}
     changed = (log.get("status") or None) != (existing.get("status") or None)
     had_history = isinstance(existing.get("status_history"), list) \
         and bool(existing.get("status_history"))
@@ -48648,7 +48685,8 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
     fetch = fetch or _dot_fetch
     report = {"projects": 0, "requests": 0, "failed": 0, "records": 0,
               "matched": 0, "new": 0, "changed": 0, "stipulations_read": 0,
-              "needs_confirmation": 0, "chain_requests": 0, "renewals": 0}
+              "needs_confirmation": 0, "chain_requests": 0, "renewals": 0,
+              "summons_by": {"bbl": 0, "address": 0, "permit": 0, "segment": 0}}
     today = dot_embargo.ny_date(now)
     named = set()
     try:
@@ -48679,14 +48717,32 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
         setup = p.get("dot_setup") if isinstance(p.get("dot_setup"), dict) else {}
         # The address requests, then one per confirmed frontage's street
         # (DOT Phase 1 B: segment permits, matched by permittee + frontage).
-        reqs = dot_sync.queries(pk) + dot_sync.segment_queries(setup, today)
+        project_id, company_id = str(p.get("_id")), str(p.get("company_id"))
+        # DOT Phase 1 A: the summonses linked (dot_nov_permits, from the daily
+        # ydkf-mpxb read) to this project's CONFIRMED permits, and one OATH
+        # request per confirmed frontage street.
+        try:
+            nov_links = await _dot_project_nov_links(project_id)
+        except Exception as e:
+            logger.warning(f"[dot-sync] nov link read failed: {type(e).__name__}")
+            nov_links = {}
+        # Read BEFORE the pass: was the project's first DOT summons pass
+        # already complete? If not, every summons this pass stores is backfill.
+        try:
+            oath_done = source_sync.DOT_OATH in await _project_first_synced(project_id)
+        except Exception:
+            oath_done = False
+        reqs = (dot_sync.queries(pk) + dot_sync.segment_queries(setup, today)
+                + dot_sync.summons_segment_queries(setup, today))
+        # Every linked ticket, in batches of 100 (dot_sync.ticket_queries).
+        reqs += dot_sync.ticket_queries(nov_links, rotation=today.toordinal())
         if not reqs:
             continue
         report["projects"] += 1
-        project_id, company_id = str(p.get("_id")), str(p.get("company_id"))
         answered: Dict[str, bool] = {}
         failed_types = set()
         permits_seen: set = set()
+        tickets_seen: set = set()
         for q in reqs:
             report["requests"] += 1
             recs = await fetch(q["dataset"], q["params"])
@@ -48716,13 +48772,31 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
                         continue
                     how, state = got
                     permits_seen.add(num)
+                    via = None
                 else:
-                    how, state = dot_sync.match(q["kind"], pk, rec), None
+                    # First match wins: BBL (a different BBL stops), address,
+                    # the permit behind the summons, then the block (needs
+                    # confirmation). The same ticket can come back from
+                    # several requests: classified and stored once per pass.
+                    ticket = str(rec.get("ticket_number") or "").strip()
+                    if ticket in tickets_seen:
+                        continue
+                    got = dot_sync.classify_summons(pk, setup, rec, nov_links)
+                    if not got:
+                        continue
+                    how, state, via = got
+                    tickets_seen.add(ticket)
                 if not how:
                     continue
                 log = dot_sync.to_log(q["kind"], rec)
                 if not log:
                     continue
+                if q["kind"] == "dot_violation":
+                    log["match"] = {"how": how, "state": state,
+                                    **({"permit_number": via} if via else {})}
+                    report["summons_by"][how] = report["summons_by"].get(how, 0) + 1
+                    if state == dot_sync.STATE_NEEDS:
+                        report["needs_confirmation"] += 1
                 if q["kind"] == "dot_permit":
                     log["match"] = {"how": how, "state": state}
                     if state == dot_sync.STATE_NEEDS:
@@ -48733,7 +48807,8 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
                         log.get("permittee")) == company_names.get(company_id)
                 report["matched"] += 1
                 try:
-                    res = await _dot_store(project_id, company_id, log, how, now)
+                    res = await _dot_store(project_id, company_id, log, how, now,
+                                           first_pass=(q["kind"] == "dot_violation" and not oath_done))
                 except Exception as e:
                     logger.warning(f"[dot-sync] store failed: {type(e).__name__}")
                     failed_types.add(q["kind"])
@@ -48753,9 +48828,23 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
                 logger.warning(f"[dot-sync] renewal chain failed: {type(e).__name__}")
         await _mark_sources_synced(
             project_id, company_id,
-            source_sync.answered_sources(answered, failed_types))
+            source_sync.answered_sources(answered, failed_types), now=now)
     logger.info(f"[dot-sync] {report}")
     return report
+
+
+async def _dot_project_nov_links(project_id: str) -> Dict[str, str]:
+    """{ticket_number: permit_number} for the summonses DOT wrote against this
+    project's CONFIRMED permits (dot_nov_permits, filled daily from
+    ydkf-mpxb by _dot_nov_links_tick)."""
+    rows = await db.dot_logs.find({"project_id": project_id}).to_list(5000)
+    permits = sorted({str(r.get("number")) for r in rows
+                      if r.get("record_type") == "dot_permit" and r.get("number")
+                      and dot_sync.record_confirmed(r)})
+    if not permits:
+        return {}
+    links = await db[DOT_NOV_PERMITS].find({"permit_number": {"$in": permits}}).to_list(5000)
+    return {str(x["_id"]): str(x.get("permit_number")) for x in links if x.get("_id")}
 
 
 async def _dot_complete_chains(project_id: str, fetch, report: dict) -> None:
@@ -48799,12 +48888,24 @@ async def _dot_sync_job() -> None:
         await _dot_sync_tick()
     except Exception as e:
         logger.error(f"[dot-sync] tick failed: {type(e).__name__}: {e}")
+    # DOT Phase 1 A: the record emails the pass made due (a new summons, a
+    # summons that defaulted). Stateless: re-runs find only what the ledger
+    # has not sent.
+    try:
+        await _dot_summons_record_alert_tick()
+    except Exception as e:
+        logger.error(f"[dot-summons] record alerts failed: {type(e).__name__}: {e}")
     # A permit this sync found with <= 1 day left cannot wait for tomorrow's
     # digest (ruling 2026-10-24); before today's 07:00 run it does nothing.
     try:
         await _dot_permit_expiry_tick(late_only=True)
     except Exception as e:
         logger.error(f"[dot-expiry] late tick failed: {type(e).__name__}: {e}")
+    # The same for a hearing <= 1 day away.
+    try:
+        await _dot_hearing_tick(late_only=True)
+    except Exception as e:
+        logger.error(f"[dot-hearing] late tick failed: {type(e).__name__}: {e}")
 
 
 # ── DOT HOLIDAY EMBARGO (lib/dot_embargo.py is the rule) ───────────────────
@@ -49110,9 +49211,9 @@ async def _dot_embargo_alert_tick(now: Optional[datetime] = None,
 
 
 async def _dot_embargo_alert_job() -> None:
-    """The 07:00 New York job: the holiday-embargo emails, then the DOT
-    permit expiry emails (DOT Phase 1 B). Each runs on its own: one failing
-    does not stop the other."""
+    """The 07:00 New York job: the holiday-embargo emails, the DOT permit
+    expiry emails (DOT Phase 1 B), then the summons hearing emails (DOT Phase
+    1 A). Each runs on its own: one failing does not stop the others."""
     try:
         await _dot_embargo_alert_tick()
     except Exception as e:
@@ -49121,6 +49222,11 @@ async def _dot_embargo_alert_job() -> None:
         await _dot_permit_expiry_tick()
     except Exception as e:
         logger.error(f"[dot-expiry] tick failed: {type(e).__name__}: {e}")
+    # DOT Phase 1 A: hearing reminders 14/7/1 and the pending-block email.
+    try:
+        await _dot_hearing_tick()
+    except Exception as e:
+        logger.error(f"[dot-hearing] tick failed: {type(e).__name__}: {e}")
 
 
 # ── DOT PERMITS AND SETUP (DOT Phase 1 B; lib/dot_permits.py is the rule) ──
@@ -49766,6 +49872,493 @@ async def review_dot_permit(
     await audit_log("dot_permit_review", actor, "project", pid,
                     {"permit": str(permit), "decision": decision, "permittee": row.get("permittee")})
     return {"permit": str(permit), "state": state, "review": review["state"]}
+
+
+# ── DOT SUMMONSES (DOT Phase 1 A; lib/dot_summons.py is the rule) ──────────
+#
+#   * _dot_sync_tick matches DOT OATH summonses by BBL, address, the permit
+#     behind them (dot_nov_permits), then the block (needs confirmation).
+#   * _dot_nov_links_tick (daily 05:45 New York): ydkf-mpxb inspections of
+#     every live project's confirmed permits that carry a summons ->
+#     dot_nov_permits {_id: ticket, permit_number, ...}. The source is
+#     published monthly; a daily read finds each load the day it lands.
+#   * _dot_summons_record_alert_tick (after every 2-hourly sync): a NEW summons
+#     (own match, new to Levelog, issued by DOT within 2 days; per-company flag
+#     dot_phase1), and a confirmed summons that CHANGED to DEFAULTED/DOCKETED.
+#   * _dot_hearing_tick (in the 07:00 job): hearing reminders 14/7/1 for
+#     confirmed open summonses -- ONE digest email per project per day,
+#     grouped by hearing date, true days left -- and ONE email for a pending
+#     segment match whose hearing is within 14 days. Both held over Shabbos /
+#     Yom Tov to the window's end.
+#   Every email: dot_alert_ledger row first (an existing row = no send), the
+#   DOB-alert recipients, lib.notifications.send_notification, EN then ES.
+#   Nothing sends before the project's first DOT summons pass.
+
+DOT_NOV_PERMITS = "dot_nov_permits"
+
+
+async def _dot_nov_links_tick(now: Optional[datetime] = None, fetch=None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    fetch = fetch or _dot_fetch
+    report = {"projects": 0, "permits": 0, "requests": 0, "failed": 0, "links": 0}
+    try:
+        live = await _dot_live_projects()
+    except Exception as e:
+        logger.warning(f"[dot-nov] project read failed: {type(e).__name__}")
+        return report
+    for project_id in live:
+        rows = await db.dot_logs.find({"project_id": project_id}).to_list(5000)
+        permits = sorted({str(r.get("number")) for r in rows
+                          if r.get("record_type") == "dot_permit" and r.get("number")
+                          and dot_sync.record_confirmed(r)})
+        if not permits:
+            continue
+        report["projects"] += 1
+        report["permits"] += len(permits)
+        for i in range(0, len(permits), dot_sync.TICKET_CAP):
+            params = dot_sync.nov_link_params(permits[i:i + dot_sync.TICKET_CAP])
+            if not params:
+                continue
+            report["requests"] += 1
+            recs = await fetch(dot_sync.NOV_DATASET, params)
+            if recs is None:
+                report["failed"] += 1
+                continue
+            for rec in recs:
+                doc = dot_sync.nov_link_row(rec) if isinstance(rec, dict) else None
+                if not doc or doc["permit_number"] not in permits:
+                    continue
+                try:
+                    await db[DOT_NOV_PERMITS].update_one(
+                        {"_id": doc["_id"]},
+                        {"$set": {"permit_number": doc["permit_number"],
+                                  "inspection_date": doc["inspection_date"],
+                                  "inspection_type": doc["inspection_type"],
+                                  "inspection_result": doc["inspection_result"],
+                                  "nov_code": doc["nov_code"], "fetched_at": now}},
+                        upsert=True)
+                    report["links"] += 1
+                except Exception as e:
+                    logger.warning(f"[dot-nov] store failed: {type(e).__name__}")
+    logger.info(f"[dot-nov] {report}")
+    return report
+
+
+async def _dot_nov_links_job() -> None:
+    try:
+        await _dot_nov_links_tick()
+    except Exception as e:
+        logger.error(f"[dot-nov] tick failed: {type(e).__name__}: {e}")
+
+
+def _dot_summons_email(project: dict, row: dict, kind: str, today, result=None) -> tuple:
+    """(subject, text, html): English, then Spanish (lib/dot_summons.COPY)."""
+    import html as _html
+    t = dot_summons.email_text(kind, row, project.get("name") or "your project", today, result)
+    link = row.get("link") or ""
+    footer_en = ("You're receiving this because you're an admin of this company or the "
+                 "assigned project manager on this Levelog project.")
+    footer_es = ("Recibe este correo porque es administrador de esta empresa o el "
+                 "gerente de proyecto asignado a este proyecto en Levelog.")
+    source = f"Source: NYC OATH hearings, DOT summonses (NYC Open Data). {link}".strip()
+    text = ("Hi,\n\n" + t["en"][0] + "\n\n" + "\n".join(t["en"][1:])
+            + "\n\n" + "-" * 8 + "\n\nHola,\n\n" + t["es"][0] + "\n\n" + "\n".join(t["es"][1:])
+            + f"\n\n{source}\n\n{footer_en}\n{footer_es}\n\n- Levelog")
+
+    def _block(lines):
+        return ('<p style="margin:0 0 12px;font-size:15px;">'
+                + "<br>".join(_html.escape(str(x)) for x in lines) + "</p>")
+
+    en_sub, es_sub = (t["subject"].split(" / ", 1) + [""])[:2]
+    link_html = (f'<p style="margin:0 0 12px;font-size:13px;"><a href="{_html.escape(link)}" '
+                 f'style="color:#1d4ed8;text-decoration:none;">View the summons on NYC Open Data</a></p>'
+                 if link else "")
+    html_body = f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2937;line-height:1.55;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" width="560" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
+    <tr><td style="padding:24px 28px;">
+      <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
+      <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">{_html.escape(en_sub)}</h1>
+      {_block([t["en"][0]])}{_block(t["en"][1:])}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;">
+      <h2 style="margin:0 0 14px;font-size:16px;font-weight:600;color:#111827;">{_html.escape(es_sub)}</h2>
+      {_block([t["es"][0]])}{_block(t["es"][1:])}
+      {link_html}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
+      <p style="margin:0;font-size:12px;color:#6b7280;">{_html.escape(footer_en)}<br>{_html.escape(footer_es)}</p>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    return t["subject"], text, html_body
+
+
+async def _dot_summons_send(project: dict, project_id: str, row: dict, kind: str,
+                            trigger: str, lid: str, recipients: list, today, now,
+                            ledger: dict, report: dict, result=None) -> None:
+    """Ledger row FIRST (an existing one = no send), then every recipient."""
+    from lib.notifications import send_notification
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await db[dot_embargo.LEDGER].insert_one({
+            "_id": lid, "project_id": project_id,
+            "company_id": str(project.get("company_id") or ""),
+            "ticket": str(row.get("number") or ""), "kind": kind, "trigger_type": trigger,
+            "send_date": today.isoformat(), "recipients": len(recipients),
+            "created_at": now, **ledger})
+    except DuplicateKeyError:
+        report["already"] += 1
+        return
+    except Exception as e:
+        logger.warning(f"[dot-summons] ledger write failed: {type(e).__name__}")
+        report["ledger_failed"] += 1
+        return
+    subject, text, html_body = _dot_summons_email(project, row, kind, today, result)
+    sent = 0
+    for recipient in recipients:
+        try:
+            await send_notification(
+                db, permit_renewal_id=lid, trigger_type=trigger, recipient=recipient,
+                subject=subject, html=html_body, text=text,
+                metadata={"project_id": project_id, "project_name": project.get("name"),
+                          "ticket": str(row.get("number") or ""), "kind": kind, **ledger})
+            sent += 1
+        except Exception as e:
+            logger.error(f"[dot-summons] send failed: {type(e).__name__}")
+    report["sent"] += 1 if sent else 0
+    try:
+        await db[dot_embargo.LEDGER].update_one(
+            {"_id": lid}, {"$set": {"sent_to": sent, "sent_at": datetime.now(timezone.utc)}})
+    except Exception:
+        pass
+
+
+async def _dot_summons_projects(project_ids=None):
+    """(live projects, email possible?) -- the shared preamble of the ticks.
+    `project_ids`: only those (the Shabbos queue releasing one project)."""
+    from lib.notifications import is_email_kill_switch_on
+    if not RESEND_API_KEY or is_email_kill_switch_on():
+        return None, ("no_resend_key" if not RESEND_API_KEY else "kill_switch")
+    live = await _dot_live_projects()
+    if project_ids:
+        live = {k: v for k, v in live.items() if k in set(map(str, project_ids))}
+    return live, None
+
+
+async def _dot_summons_record_alert_tick(now: Optional[datetime] = None,
+                                         project_ids: Optional[List[str]] = None) -> dict:
+    """NEW SUMMONS (flag dot_phase1) and DEFAULTED/DOCKETED, from dot_logs."""
+    now = now or datetime.now(timezone.utc)
+    today = dot_embargo.ny_date(now)
+    report = {"date": today.isoformat(), "projects": 0, "new_due": 0, "default_due": 0,
+              "sent": 0, "already": 0, "no_recipients": 0, "ledger_failed": 0,
+              "waiting_sync": 0, "flag_off": 0}
+    try:
+        live, skipped = await _dot_summons_projects(project_ids)
+    except Exception as e:
+        logger.warning(f"[dot-summons] project read failed: {type(e).__name__}")
+        return report
+    if live is None:
+        report["skipped"] = skipped
+        return report
+    for project_id, project in live.items():
+        try:
+            synced = await _project_first_synced(project_id)
+        except Exception as e:
+            logger.warning(f"[dot-summons] sync state read failed: {type(e).__name__}")
+            continue
+        first = synced.get(source_sync.DOT_OATH)
+        if first is None:
+            report["waiting_sync"] += 1
+            continue
+        rows = await db.dot_logs.find({"project_id": project_id}).to_list(5000)
+        new = dot_summons.new_due(rows, today, first)
+        if new and not await feature_flags.is_feature_enabled(
+                db, dot_summons.FLAG, company_id=str(project.get("company_id") or "") or None):
+            # The rollout flag gates NEW-RECORD emails only (ruling 2026-10-22).
+            report["flag_off"] += len(new)
+            new = []
+        dflt = dot_summons.default_due(rows, today)
+        if not new and not dflt:
+            continue
+        report["projects"] += 1
+        report["new_due"] += len(new)
+        report["default_due"] += len(dflt)
+        recipients = await _critical_dob_alert_recipients(project)
+        if not recipients:
+            report["no_recipients"] += len(new) + len(dflt)
+            continue
+        for d in new:
+            lid = dot_summons.ledger_id(project_id, "summons_new", d["ticket"], "-",
+                                        dot_summons.issued_on(d["row"]))
+            await _dot_summons_send(project, project_id, d["row"], "new", dot_summons.TRIGGER_NEW,
+                                    lid, recipients, today, now, {}, report)
+        for d in dflt:
+            lid = dot_summons.ledger_id(project_id, "summons_default", d["ticket"])
+            await _dot_summons_send(project, project_id, d["row"], "default",
+                                    dot_summons.TRIGGER_DEFAULT, lid, recipients, today, now,
+                                    {"result": d["result"]}, report, result=d["result"])
+    logger.info(f"[dot-summons] {report}")
+    return report
+
+
+def _dot_hearing_digest_email(project: dict, items: list, today) -> tuple:
+    """(subject, text, html) for ONE email listing every hearing reminder due
+    today, grouped by hearing date; English, then Spanish."""
+    import html as _html
+    t = dot_summons.hearing_digest_text(project.get("name") or "your project", items, today)
+    en_sub, es_sub = (t["subject"].split(" / ", 1) + [""])[:2]
+    footer_en = ("You're receiving this because you're an admin of this company or the "
+                 "assigned project manager on this Levelog project.")
+    footer_es = ("Recibe este correo porque es administrador de esta empresa o el "
+                 "gerente de proyecto asignado a este proyecto en Levelog.")
+    source = "Source: NYC OATH hearings, DOT summonses (NYC Open Data)."
+    text = ("Hi,\n\n" + t["en"][0] + "\n\n" + "\n".join(t["en"][1:]) + "\n\n" + "-" * 8
+            + "\n\nHola,\n\n" + t["es"][0] + "\n\n" + "\n".join(t["es"][1:])
+            + f"\n\n{source}\n\n{footer_en}\n{footer_es}\n\n- Levelog")
+
+    def _block(lines):
+        return ('<p style="margin:0 0 12px;font-size:15px;">'
+                + "<br>".join(_html.escape(str(x)).replace("  ", "&nbsp;&nbsp;") for x in lines) + "</p>")
+
+    html_body = f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2937;line-height:1.55;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" width="560" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
+    <tr><td style="padding:24px 28px;">
+      <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
+      <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">{_html.escape(en_sub)}</h1>
+      {_block([t["en"][0]])}{_block(t["en"][1:])}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;">
+      <h2 style="margin:0 0 14px;font-size:16px;font-weight:600;color:#111827;">{_html.escape(es_sub)}</h2>
+      {_block([t["es"][0]])}{_block(t["es"][1:])}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
+      <p style="margin:0;font-size:12px;color:#6b7280;">{_html.escape(source)}<br>{_html.escape(footer_en)}<br>{_html.escape(footer_es)}</p>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    return t["subject"], text, html_body
+
+
+async def _dot_hearing_tick(now: Optional[datetime] = None,
+                            project_ids: Optional[List[str]] = None,
+                            release: bool = False, late_only: bool = False) -> dict:
+    """Part of the 07:00 New York run: ONE digest a day per project of the
+    hearing reminders 14/7/1 due (true days left), and the pending-segment
+    hearing email. Held over Shabbos / Yom Tov (_dot_hold_if_quiet); `release`:
+    the Shabbos queue delivering the held day. Reads dot_logs only. Not
+    flag-gated. `late_only`: the run after each DOT sync -- once today's
+    digest run has gone, a hearing <= 1 day away found since is sent now, on
+    its own; the rest wait for tomorrow's digest (ruling 2026-10-24)."""
+    from lib.notifications import send_notification
+    from pymongo.errors import DuplicateKeyError
+    now = now or datetime.now(timezone.utc)
+    today = dot_embargo.ny_date(now)
+    report = {"date": today.isoformat(), "projects": 0, "hearing_due": 0, "pending_due": 0,
+              "sent": 0, "digests": 0, "already": 0, "no_recipients": 0, "ledger_failed": 0,
+              "waiting_sync": 0, "held": 0, "late": 0, "wait_tomorrow": 0}
+    marker = dot_permits.run_marker_id("hearing", today)
+    if late_only:
+        # Before today's digest run, everything is the digest's to send.
+        try:
+            if not await db.system_config.find_one({"key": marker}, {"_id": 1}):
+                report["skipped"] = "before_digest_run"
+                return report
+        except Exception as e:
+            logger.warning(f"[dot-hearing] run marker read failed: {type(e).__name__}")
+            return report
+    try:
+        live, skipped = await _dot_summons_projects(project_ids)
+    except Exception as e:
+        logger.warning(f"[dot-hearing] project read failed: {type(e).__name__}")
+        return report
+    if live is None:
+        report["skipped"] = skipped
+        return report
+    for project_id, project in live.items():
+        try:
+            synced = await _project_first_synced(project_id)
+        except Exception as e:
+            logger.warning(f"[dot-hearing] sync state read failed: {type(e).__name__}")
+            continue
+        if source_sync.DOT_OATH not in synced:
+            report["waiting_sync"] += 1
+            continue
+        rows = await db.dot_logs.find({"project_id": project_id}).to_list(5000)
+        hearing = []
+        for d in dot_summons.hearing_due(rows, today):
+            # Once per threshold WINDOW (`bucket`) per hearing date, whatever
+            # day it went.
+            if await db[dot_embargo.LEDGER].find_one({
+                    "project_id": project_id, "kind": "hearing", "ticket": d["ticket"],
+                    "hearing_date": d["hearing"].isoformat(), "bucket": d["threshold"]}):
+                report["already"] += 1
+                continue
+            hearing.append(d)
+        pending = [d for d in dot_summons.pending_hearing_due(rows, today)
+                   if not await db[dot_embargo.LEDGER].find_one({"_id": dot_summons.ledger_id(
+                       project_id, "hearing_pending", d["ticket"], "-", d["hearing"])})]
+        if late_only:
+            # Only what cannot wait: a block match whose hearing is <= 1 day
+            # away (its email is one per summons, never in a digest).
+            later = [d for d in pending
+                     if (d["hearing"] - today).days > dot_permits.LATE_SEND_MAX_DAYS]
+            report["wait_tomorrow"] += len(later)
+            pending = [d for d in pending if d not in later]
+        if not hearing and not pending:
+            continue
+        if await _dot_hold_if_quiet(project, project_id, "hearing", today, now, report, release=release):
+            continue
+        report["projects"] += 1
+        report["hearing_due"] += len(hearing)
+        report["pending_due"] += len(pending)
+        recipients = await _critical_dob_alert_recipients(project)
+        if not recipients:
+            report["no_recipients"] += len(hearing) + len(pending)
+            continue
+        did, digest_kind = dot_permits.digest_id(project_id, "hearing", today), "hearing_digest"
+        if hearing:
+            try:
+                went = late_only or bool(await db[dot_embargo.LEDGER].find_one({"_id": did}, {"_id": 1}))
+            except Exception as e:
+                logger.warning(f"[dot-hearing] digest read failed: {type(e).__name__}")
+                went, hearing = True, []
+            if went and hearing:
+                # Today's digest has gone: a hearing <= 1 day away cannot wait
+                # for tomorrow's -- it goes now, in its own email.
+                urgent = dot_permits.late_items(hearing)
+                report["wait_tomorrow"] += len(hearing) - len(urgent)
+                hearing = urgent
+                if hearing:
+                    did = dot_permits.late_id(project_id, "hearing", today, [d["ticket"] for d in hearing])
+                    digest_kind = "hearing_late"
+        if hearing:
+            claimed = []
+            try:
+                await db[dot_embargo.LEDGER].insert_one({
+                    "_id": did, "project_id": project_id, "company_id": str(project.get("company_id") or ""),
+                    "kind": digest_kind, "send_date": today.isoformat(),
+                    "trigger_type": dot_summons.TRIGGER_HEARING, "recipients": len(recipients),
+                    "created_at": now})
+                for d in hearing:
+                    try:
+                        await db[dot_embargo.LEDGER].insert_one({
+                            "_id": dot_summons.hearing_ledger_id(project_id, d["ticket"], d["days"], d["hearing"]),
+                            "project_id": project_id, "company_id": str(project.get("company_id") or ""),
+                            "kind": "hearing", "ticket": d["ticket"], "bucket": d["threshold"],
+                            "days_left": d["days"], "hearing_date": d["hearing"].isoformat(),
+                            "send_date": today.isoformat(), "digest": did,
+                            "trigger_type": dot_summons.TRIGGER_HEARING, "created_at": now})
+                        claimed.append(d)
+                    except DuplicateKeyError:
+                        report["already"] += 1
+            except DuplicateKeyError:
+                report["already"] += len(hearing)        # this very email already went
+            except Exception as e:
+                logger.warning(f"[dot-hearing] ledger write failed: {type(e).__name__}")
+                report["ledger_failed"] += 1
+            if claimed:
+                subject, text, html_body = _dot_hearing_digest_email(project, claimed, today)
+                sent = 0
+                for recipient in recipients:
+                    try:
+                        await send_notification(
+                            db, permit_renewal_id=did, trigger_type=dot_summons.TRIGGER_HEARING,
+                            recipient=recipient, subject=subject, html=html_body, text=text,
+                            metadata={"project_id": project_id, "project_name": project.get("name"),
+                                      "count": len(claimed),
+                                      "items": [{"ticket": d["ticket"], "days_left": d["days"],
+                                                 "hearing_date": d["hearing"].isoformat()} for d in claimed]})
+                        sent += 1
+                    except Exception as e:
+                        logger.error(f"[dot-hearing] send failed: {type(e).__name__}")
+                report["sent"] += len(claimed) if sent else 0
+                if digest_kind == "hearing_late":
+                    report["late"] += 1 if sent else 0
+                else:
+                    report["digests"] += 1 if sent else 0
+                try:
+                    await db[dot_embargo.LEDGER].update_one({"_id": did}, {"$set": {
+                        "sent_to": sent, "sent_at": datetime.now(timezone.utc), "count": len(claimed)}})
+                except Exception:
+                    pass
+        for d in pending:
+            lid = dot_summons.ledger_id(project_id, "hearing_pending", d["ticket"], "-", d["hearing"])
+            await _dot_summons_send(project, project_id, d["row"], "pending",
+                                    dot_summons.TRIGGER_PENDING, lid, recipients, today, now,
+                                    {"hearing_date": d["hearing"].isoformat()}, report)
+    if not late_only and not project_ids:
+        # Today's digest run has gone: the sync's late run may now send a
+        # hearing <= 1 day away on its own. system_config: a run is not an alert.
+        try:
+            await db.system_config.update_one(
+                {"key": marker}, {"$setOnInsert": {"value": True, "send_date": today.isoformat(),
+                                                   "created_at": now}}, upsert=True)
+        except Exception as e:
+            logger.warning(f"[dot-hearing] run marker write failed: {type(e).__name__}")
+    logger.info(f"[dot-hearing] {report}")
+    return report
+
+
+class DotSummonsReview(BaseModel):
+    decision: str   # "accept" | "reject"
+
+
+@api_router.get("/projects/{project_id}/dot/summonses")
+async def get_dot_summonses(
+    project_id: str,
+    current_user=Depends(get_current_user),
+    project=Depends(require_project_access),
+):
+    """The DOT tab's summonses: the project's (open, then settled), the block
+    matches waiting for "It's ours?", and the ones answered "Not ours"."""
+    pid = str(project.get("_id") or project_id)
+    rows = await db.dot_logs.find({"project_id": pid}).to_list(5000)
+    out = dot_summons.board(rows, dot_embargo.ny_date(datetime.now(timezone.utc)))
+    return {**out, "can_review": _dot_setup_role(current_user) == "confirm"}
+
+
+@api_router.post("/projects/{project_id}/dot/summonses/{ticket}/review",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def review_dot_summons(
+    project_id: str,
+    ticket: str,
+    body: DotSummonsReview,
+    current_user=Depends(get_current_user),
+    project=Depends(require_project_access),
+):
+    """A block (segment) match: "It's ours" (accept) makes it the project's
+    summons -- hearing reminders and the default/docketed email from now on,
+    and no "new summons" email after the fact; "Not ours" (reject) hides it
+    and remembers. A rejected one can be accepted later from the Not-ours
+    list. Company admin or full-access PM only."""
+    if _dot_setup_role(current_user) != "confirm":
+        _dot_refuse("confirm")
+    decision = str(body.decision or "").strip().lower()
+    if decision not in ("accept", "reject"):
+        raise HTTPException(status_code=422, detail='decision: "accept" or "reject"')
+    pid = str(project.get("_id") or project_id)
+    row = await db.dot_logs.find_one({"project_id": pid, "raw_id": f"oath:{ticket}"})
+    if not row or row.get("record_type") != "dot_violation":
+        raise HTTPException(status_code=404, detail="Summons not found on this project")
+    state_now = dot_sync.match_state(row)
+    allowed = (state_now == dot_sync.STATE_NEEDS
+               or (state_now == dot_sync.STATE_REJECTED and decision == "accept"))
+    if not allowed:
+        raise HTTPException(status_code=409, detail="This summons is not waiting for an answer")
+    now = datetime.now(timezone.utc)
+    actor = actor_id(current_user)
+    m = dict(row.get("match") or {})
+    state = dot_sync.STATE_CONFIRMED if decision == "accept" else dot_sync.STATE_REJECTED
+    review = {"state": "accepted" if decision == "accept" else "rejected", "by": actor, "at": now}
+    await db.dot_logs.update_one({"_id": row["_id"]}, {"$set": {
+        "match": {**m, "how": m.get("how") or dot_sync.SUMMONS_SEGMENT, "state": state},
+        "review": review, "updated_at": now}})
+    await audit_log("dot_summons_review", actor, "project", pid,
+                    {"ticket": str(ticket), "decision": decision, "was": state_now})
+    return {"ticket": str(ticket), "state": state, "review": review["state"]}
 
 
 @api_router.get("/projects/{project_id}/dot/embargo")
@@ -84343,6 +84936,8 @@ async def startup_event():
         db.dot_logs, keys=[("project_id", 1), ("raw_id", 1)],
         name="dot_logs_project_raw_id_unique", unique=True)
     await db.dot_logs.create_index([("project_id", 1), ("company_id", 1)])
+    # DOT Phase 1 A: the summons -> permit links, read by permit number.
+    await db.dot_nov_permits.create_index([("permit_number", 1)])
     await _ensure_index_resilient(
         db.whatsapp_contacts,
         keys=[("company_id", 1), ("phone", 1)],
@@ -85813,6 +86408,17 @@ async def startup_event():
         _dot_stipulations_job,
         CronTrigger(hour=5, minute=30, timezone="America/New_York"),
         id='dot_stipulations',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    # DOT Phase 1 A. 05:45 New York: the inspections (ydkf-mpxb) that link a
+    # summons to one of a project's confirmed permits -> dot_nov_permits.
+    scheduler.add_job(
+        _dot_nov_links_job,
+        CronTrigger(hour=5, minute=45, timezone="America/New_York"),
+        id='dot_nov_links',
         replace_existing=True,
         max_instances=1,
         coalesce=True,
