@@ -37,7 +37,8 @@ that field works exactly as well.
      trusting it.
 
 RUNNING THE REAL CLASSIFIER IS OPT-IN AND COSTS MONEY. With --classify it
-sends each gated message to gpt-4o-mini with the prompt from server.py, byte for
+sends each gated message to the provider's chat model (lib/llm_provider) with
+the prompt from server.py, byte for
 byte, so the baseline is the deployed behaviour and not an approximation of it.
 Without it, the run is free and offline, and reports only what can be counted.
 """
@@ -181,7 +182,7 @@ async def classify(rows, api_key: str) -> dict:
     #
     # The rule is in .github: nothing under backend/ may open a raw async httpx
     # client, because the wrapper is what refuses a request to an Akamai-
-    # protected DOB host. This script talks to api.openai.com and would never
+    # protected DOB host. This script talks to the model provider and would never
     # trip that guard, which is exactly the reasoning that makes a per-file
     # exemption worthless — the next script copies this one.
     #
@@ -189,6 +190,7 @@ async def classify(rows, api_key: str) -> dict:
     # nothing else, so the standing rule of this file — no server import, no
     # database driver — is intact.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from lib import llm_provider
     from lib.server_http import ServerHttpClient
 
     SYSTEM = """You analyze construction site WhatsApp messages to detect material requests.
@@ -207,10 +209,10 @@ If NOT a material request, return: {"is_request": false}"""
             body = _text(r)
             try:
                 resp = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
+                    llm_provider.CHAT_URL,
                     headers={"Authorization": f"Bearer {api_key}"},
                     json={
-                        "model": "gpt-4o-mini",
+                        "model": llm_provider.CHAT_MODEL,
                         "temperature": 0,
                         "messages": [
                             {"role": "system", "content": SYSTEM},
@@ -282,7 +284,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("export", help="path to a mongoexport JSONL of whatsapp_messages")
     ap.add_argument("--classify", action="store_true",
-                    help="run the deployed gpt-4o-mini prompt; costs money")
+                    help="run the deployed classifier prompt; costs money")
     args = ap.parse_args()
 
     if not os.path.exists(args.export):
@@ -299,13 +301,15 @@ def main() -> int:
     report_prefilter(c["gated_rows"])
 
     if args.classify:
-        key = os.environ.get("OPENAI_API_KEY", "")
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from lib import llm_provider
+        key = llm_provider.API_KEY
         if not key:
-            print("--classify needs OPENAI_API_KEY in the environment",
+            print("--classify needs LLM_API_KEY (or QWEN_API_KEY) in the environment",
                   file=sys.stderr)
             return 2
         import asyncio
-        print(f"calling gpt-4o-mini on {c['gated']} messages ...", file=sys.stderr)
+        print(f"calling {llm_provider.CHAT_MODEL} on {c['gated']} messages ...", file=sys.stderr)
         verdicts = asyncio.run(classify(c["gated_rows"], key))
         report_agreement(c["gated_rows"], verdicts)
     else:

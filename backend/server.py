@@ -75,6 +75,8 @@ from lib.report import view as report_view
 from lib import wa_security  # noqa: E402
 from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
+from lib import dob_penalty  # noqa: E402
+from lib import model_outage  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
 from lib import datefmt  # noqa: E402
@@ -84,6 +86,7 @@ from lib import punch_link  # noqa: E402
 from lib import punch_brain  # noqa: E402
 from lib import punch_batch  # noqa: E402
 from lib import dm_actions  # noqa: E402
+from lib import answer_log  # noqa: E402
 from lib import trades as lib_trades  # noqa: E402
 from lib import dm_brain  # noqa: E402
 from lib import wa_voice  # noqa: E402
@@ -1037,6 +1040,11 @@ WAAPI_TOKEN = os.environ.get("WAAPI_TOKEN", "")
 WHATSAPP_VENDOR = os.environ.get("WHATSAPP_VENDOR", "waapi")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+# OpenAI is retired (2026-10-26): every model call goes to DeepInfra
+# (lib/llm_provider). Nothing reads OPENAI_API_KEY; it stays in Railway until
+# the switch is confirmed in production.
+from lib import llm_provider  # noqa: E402
+LLM_API_KEY = llm_provider.API_KEY
 
 # Qwen-VL (OpenAI-compatible) — used for OSHA/SST card reading at the gate,
 # plan indexing, query-time sheet matching, the WhatsApp plan QA, the card
@@ -3863,7 +3871,11 @@ from lib import plan_text  # noqa: E402
 from lib import plan_ocr  # noqa: E402
 from lib import plan_records  # noqa: E402
 from lib import plan_search  # noqa: E402
+from lib import plan_areas  # noqa: E402
+from lib import plan_levels  # noqa: E402
+from lib import plan_term_senses  # noqa: E402
 from lib import plan_crop  # noqa: E402
+from lib import plan_sources  # noqa: E402
 
 
 
@@ -5835,6 +5847,9 @@ class DOBLogResponse(BaseModel):
     violation_category: Optional[str] = None
     violation_date: Optional[str] = None
     penalty_amount: Optional[str] = None
+    # The hearing has not happened: the screen shows "(hearing pending)" after
+    # the penalty (lib/dob_penalty; set by get_dob_logs).
+    penalty_hearing_pending: Optional[bool] = None
     respondent: Optional[str] = None
     disposition_date: Optional[str] = None
     disposition_comments: Optional[str] = None
@@ -9505,6 +9520,12 @@ OPERATOR_PROJECT_ADMIN_ROUTES = (
     ("DELETE", "/api/projects/{project_id}/whatsapp/people/{key}"),
     ("POST", "/api/projects/{project_id}/plan-glyphs/run"),
     ("POST", "/api/projects/{project_id}/plan-index/{file_id}/retry"),
+    # DRAWING-SET QUESTIONS (ruling 33, operator, 2026-10-27): VIEW + ASK
+    # ONLY. The operator may list a project's pending questions and send
+    # them to its PM; he never ANSWERS one - .../{question_id}/answer keeps
+    # the company's own gate, and refuses him in the handler as well.
+    ("GET", "/api/projects/{project_id}/plan-set-questions"),
+    ("POST", "/api/projects/{project_id}/plan-set-questions/ask"),
 )
 
 
@@ -10771,7 +10792,7 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
 # ==================== ADMIN — SENTRY HEALTH CHECK ====================
 
 @api_router.get("/admin/_sentry_test")
-async def admin_sentry_test(current_user = Depends(get_admin_seat_user)):
+async def admin_sentry_test(current_user = Depends(require_operator_404)):
     """Phase C1 — intentionally raises so an operator can verify
     Sentry capture end-to-end after a deploy. Admin-only.
 
@@ -10888,7 +10909,7 @@ async def get_my_feature_flags(current_user = Depends(get_current_user)):
 
 
 @api_router.get("/admin/feature-flags")
-async def admin_list_feature_flags(_admin = Depends(get_admin_seat_user)):
+async def admin_list_feature_flags(_admin = Depends(require_operator_404)):
     """List all feature flags with full rollout config. Admin/owner only."""
     docs = await db.feature_flags.find({}).sort("flag", 1).to_list(500)
     return {"flags": [serialize_id(d) for d in docs]}
@@ -10897,7 +10918,7 @@ async def admin_list_feature_flags(_admin = Depends(get_admin_seat_user)):
 @api_router.post("/admin/feature-flags")
 async def admin_create_feature_flag(
     body: FeatureFlagCreate,
-    admin = Depends(get_admin_seat_user),
+    admin = Depends(require_operator_404),
 ):
     """Create a new feature flag. Defaults to disabled (no
     accidental rollout from a typo'd POST). The unique index on
@@ -10940,7 +10961,7 @@ async def admin_create_feature_flag(
 async def admin_update_feature_flag(
     flag: str,
     body: FeatureFlagUpdate,
-    admin = Depends(get_admin_seat_user),
+    admin = Depends(require_operator_404),
 ):
     """Update rollout config. PATCH semantics — only fields
     present in the body are touched. Cache is invalidated on
@@ -10991,7 +11012,7 @@ async def admin_update_feature_flag(
 @api_router.delete("/admin/feature-flags/{flag}")
 async def admin_delete_feature_flag(
     flag: str,
-    admin = Depends(get_admin_seat_user),
+    admin = Depends(require_operator_404),
 ):
     """Hard delete. Audit row records the prior shape so the
     deletion can be reversed by re-creating the flag from the
@@ -11664,7 +11685,7 @@ async def get_project_prediction(
 @api_router.get("/admin/risk-score/calibration")
 async def get_admin_risk_score_calibration(
     model_version: Optional[str] = None,
-    current_user = Depends(get_admin_seat_user),
+    current_user = Depends(require_operator_404),
 ):
     """Per-trigger calibration stats. Counts of hit / miss /
     expired_no_data, accuracy, false_positive_rate. Computed on
@@ -11684,7 +11705,7 @@ class V22WeightTuneRequest(BaseModel):
 @api_router.post("/admin/risk-score/weights")
 async def post_admin_risk_score_weights(
     body: V22WeightTuneRequest,
-    current_user = Depends(get_admin_seat_user),
+    current_user = Depends(require_operator_404),
 ):
     """Manual per-trigger prior tuning. Operator reads
     calibration stats, decides, edits. NO auto-update — the
@@ -12102,7 +12123,12 @@ async def _with_licence_resolved(doc: dict) -> dict:
 @api_router.get("/admin/users/{user_id}", response_model=UserResponse)
 async def get_admin_user_by_id(user_id: str, current_user = Depends(get_user_admin), _approved=Depends(require_approved)):
     user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}}, {"password": 0})
-    if not user:
+    # THE SAME SCOPE AS ITS PUT AND DELETE (security audit P3, extended
+    # 2026-10-25): the operator, or an admin of the user's own company. This
+    # read was the one by-id route on the account table left unscoped - any
+    # company's admin could read any account (email, phone, role, company,
+    # licence) by id. 404, not 403, so the id is not confirmed to exist.
+    if not user or not (is_platform_operator(current_user) or _same_company(current_user, user)):
         raise HTTPException(status_code=404, detail="User not found")
     return UserResponse(**await _with_licence_resolved(serialize_id(user)))
 
@@ -24210,9 +24236,9 @@ async def get_causal_lift(
 # returns the summary so operators can validate the job without waiting
 # for Sunday 4am ET. No-op (n_phase_updated=0) when GEMINI_API_KEY is
 # unset — each per-project infer call returns None.
-@api_router.post("/admin/run-phase-inference", dependencies=[Depends(require_approved)])
+@api_router.post("/admin/run-phase-inference", dependencies=[Depends(require_operator_404), Depends(require_approved)])
 async def admin_run_phase_inference(
-    current_user = Depends(get_admin_seat_user),
+    current_user = Depends(require_operator_404),
 ):
     from lib.ai.phase_inference import run_weekly_phase_inference
     result = await run_weekly_phase_inference(db)
@@ -25660,8 +25686,12 @@ async def list_cs_registrations(
 @api_router.get("/admin/cs-registrations/{registration_id}")
 async def get_cs_registration(registration_id: str, admin=Depends(get_admin_seat_user), _approved=Depends(require_approved)):
     """Get a specific CS registration."""
-    reg = await db.cs_registrations.find_one({"_id": to_query_id(registration_id), "is_deleted": {"$ne": True}})
-    if not reg:
+    # THE SAME GATE AS ITS PUT AND DELETE (security audit P3, 2026-10-13).
+    # This read was the one route on the collection left unscoped: any
+    # company's admin could read any tenant's superintendent licence number,
+    # phone and NYC ID email by id. A soft-deleted row stays 404 here, as before.
+    reg = await _cs_registration_under_admin(registration_id, admin)
+    if reg.get("is_deleted"):
         raise HTTPException(status_code=404, detail="CS registration not found")
     return serialize_id(reg)
  
@@ -26078,11 +26108,25 @@ async def get_compliance_alerts(
 @api_router.put("/admin/compliance-alerts/{alert_id}/resolve")
 async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_seat_user), _approved=Depends(require_approved)):
     """Mark a compliance alert as resolved."""
+    # THE SAME VISIBILITY AS THE LIST (security audit P3, 2026-10-13): the
+    # operator, or an admin of the alert's own company. It used to resolve any
+    # tenant's alert by id. A platform alert (company_id None) is the
+    # operator's. The scope is IN the update's filter -- one atomic write, and
+    # no separate read for test_alert_dedupe_honours_resolved to mistake for a
+    # dedupe. 404, not 403, so the id is not confirmed to exist.
+    flt = {"_id": to_query_id(alert_id)}
+    if not is_platform_operator(admin):
+        company_id = get_user_company_id(admin)  # as the list route filters
+        if not company_id:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        flt["company_id"] = company_id
     now = datetime.now(timezone.utc)
-    await db.compliance_alerts.update_one(
-        {"_id": to_query_id(alert_id)},
+    res = await db.compliance_alerts.update_one(
+        flt,
         {"$set": {"resolved": True, "resolved_at": now, "resolved_by": admin.get("id")}}
     )
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Alert not found")
     return {"message": "Alert resolved"}
  
  
@@ -43042,7 +43086,12 @@ def _extract_violation_fields(rec: dict) -> dict:
         or " — ".join(p for p in (rec.get("device_type"), rec.get("violation_remarks")) if p)
         or None
     )
-    fields["penalty_amount"] = rec.get("penalty_applied") or rec.get("penalty_balance_due") or rec.get("amount_paid") or None
+    # The penalty IMPOSED, never what was paid: the ECB dataset (6bgk-3dad)
+    # spells it `penality_imposed`; reading `amount_paid` stored "0" for an
+    # open $1,250 summons (39558662P). The refresh rewrites stored rows.
+    fields["penalty_amount"] = next(
+        (rec.get(k) for k in ("penality_imposed", "penalty_imposed", "penalty_applied",
+                              "penalty_balance_due") if rec.get(k) not in (None, "")), None)
     fields["respondent"] = rec.get("respondent_name") or rec.get("respondent") or None
     fields["disposition_date"] = rec.get("disposition_date") or rec.get("hearing_date_time") or None
     fields["disposition_comments"] = rec.get("disposition_comments") or rec.get("hearing_status") or None
@@ -43318,28 +43367,13 @@ def _generate_summary(rec: dict, record_type: str) -> str:
     if record_type == "complaint":
         comp_num = rec.get("complaint_number") or ""
         result = classify_complaint(rec)
-        CATEGORY_DESCRIPTIONS = {
-            "01": "illegal work or work without a permit",
-            "03": "failure to maintain building facade",
-            "05": "work contrary to approved plans",
-            "06": "unsafe construction condition",
-            "09": "illegal conversion or occupancy",
-            "12": "failure to maintain elevator",
-            "14": "demolition without permit",
-            "23": "working without a safety net",
-            "28": "illegal curb cut or sidewalk damage",
-            "30": "debris falling from building",
-            "45": "unsafe scaffolding or sidewalk shed",
-            "49": "construction noise outside allowed hours",
-            "59": "work without required DOB inspection",
-            "63": "illegal fence or retaining wall",
-            "71": "crane or derrick safety violation",
-            "83": "failure to safeguard persons or property",
-            "91": "building under construction in unsafe condition",
-        }
-        cat_code = rec.get("complaint_category", "")
-        desc = CATEGORY_DESCRIPTIONS.get(cat_code, result['category_label'])
-        summary = f"Complaint about {desc.lower()}. {result['disposition_label']}."
+        # DOB's own category label (classify_complaint's sourced table). A
+        # hand-written CATEGORY_DESCRIPTIONS dict used to override it here and
+        # was wrong for all 17 codes it listed -- 05 "Permit - None" read "work
+        # contrary to approved plans" -- and the alert emails and activity
+        # feed quote this summary. The in-place refresh rewrites it on the
+        # next sync (ai_summary is not in _IN_PLACE_KEEP).
+        summary = f"Complaint: {result['category_label']}. {result['disposition_label']}."
         if comp_num:
             summary = f"#{comp_num}: {summary}"
         return summary
@@ -45563,6 +45597,8 @@ async def get_dob_logs(
             log["body"] = rendered.get("body") or ""
             log["severity_kind"] = rendered.get("severity") or "info"
             log["action_text"] = rendered.get("action_text") or log.get("next_action") or ""
+            log["penalty_hearing_pending"] = (
+                dob_penalty.hearing_pending(log) if log.get("penalty_amount") else None)
 
             # Apply post-render filters before serializing.
             if severity_kind and log["severity_kind"] != severity_kind:
@@ -46756,6 +46792,7 @@ create_permit_renewal_routes(
     to_query_id=to_query_id,
     get_user_company_id=get_user_company_id,
     serialize_id=serialize_id,
+    require_operator_404=require_operator_404,
 )
 
 # ==================== WHATSAPP INTEGRATION ====================
@@ -47225,18 +47262,27 @@ async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict,
 
     A retry after a timeout can deliver a message twice if the first attempt
     reached WhatsApp; the alternative — never retrying — drops it. WaAPI
-    exposes no idempotency key to do better."""
+    exposes no idempotency key to do better.
+
+    A DM turn that set _DM_SENDS gets one entry per send: when it finished,
+    the action, ok, how long it waited for the lock and the pacing, tries."""
     loop = asyncio.get_running_loop()
+    sends = _DM_SENDS.get()
+    t_in = _time.monotonic()
+    ok, tried, waited = False, 0, 0
     async with _DM_SEND_LOCK:
         wait = _DM_LAST_SENT[0] + wa_dm.DM_MIN_INTERVAL_SECONDS - loop.time()
         if wait > 0:
             await asyncio.sleep(wait)
+        waited = int((_time.monotonic() - t_in) * 1000)
         err = None
         try:
             tries = attempts or wa_dm.DM_SEND_ATTEMPTS
             for attempt in range(tries):
+                tried += 1
                 code, body, exc = await _waapi_post_raw(url, payload, headers)
                 if exc is None and code is not None and code < 400:
+                    ok = True
                     return True, body, None
                 # Which call, its status and what WaAPI said (no numbers).
                 err = send_retry.waapi_error(url.rsplit("/", 1)[-1], code, body, exc)
@@ -47247,6 +47293,9 @@ async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict,
             return False, None, err
         finally:
             _DM_LAST_SENT[0] = loop.time()
+            if sends is not None:
+                sends.append({"at": _time.monotonic(), "action": url.rsplit("/", 1)[-1],
+                              "ok": ok, "wait_ms": waited, "tries": tried})
 
 
 async def send_whatsapp_dm(user_id: Any, message: str, *, kind: str,
@@ -48054,22 +48103,22 @@ async def _handle_gc_confirm_reply(chat_id: str, answer: str) -> bool:
 async def _gc_ai_line(kind: str, facts: Dict[str, str]) -> Optional[str]:
     """One plain-language sentence from the record's facts alone, or None.
     The caller checks it against the same facts (wa_alerts.what_line)."""
-    if not OPENAI_API_KEY or not facts or kind not in wa_alerts.AI_KINDS:
+    if not LLM_API_KEY or not facts or kind not in wa_alerts.AI_KINDS:
         return None
     payload = {
-        "model": "gpt-4o-mini", "temperature": 0, "max_tokens": 80,
+        "model": llm_provider.CHAT_MODEL, "temperature": 0, "max_tokens": 80,
         "messages": [
             {"role": "system", "content": wa_alerts.AI_SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(
                 {"what": wa_alerts.LABEL.get(kind, kind), **facts}, sort_keys=True)},
         ],
     }
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}",
+    headers = {"Authorization": f"Bearer {LLM_API_KEY}",
                "Content-Type": "application/json"}
     try:
         async with ServerHttpClient(timeout=20) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
+                llm_provider.CHAT_URL,
                 json=payload, headers=headers)
         return str(resp.json()["choices"][0]["message"]["content"]).strip() or None
     except Exception as e:
@@ -50373,15 +50422,15 @@ def _attention_disabled() -> bool:
 async def _attention_llm(messages: list) -> Optional[dict]:
     """One gpt-4o-mini call: {content, prompt_tokens, completion_tokens}, or
     None on any failure."""
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
         async with ServerHttpClient(timeout=30) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={
-                    "model": "gpt-4o-mini",
+                    "model": llm_provider.CHAT_MODEL,
                     "temperature": 0,
                     "max_tokens": 500,
                     "messages": messages,
@@ -51573,7 +51622,7 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
               "completion_tokens": 0, "call_cap": False}
     if _attention_disabled():
         return report
-    if llm is None and not OPENAI_API_KEY:
+    if llm is None and not LLM_API_KEY:
         # No model: start no cursor and move none, rather than fail every
         # message three times and skip it.
         report["no_model"] = True
@@ -53812,6 +53861,75 @@ async def _send_failed_alert(kind: str, key: str, *, company_id: Any, user_id: A
             logger.warning(f"[send-failed] email failed: {type(e).__name__}")
 
 
+async def _agent_model_down(kind: str, status_code: int, body: Any,
+                            now: Optional[datetime] = None,
+                            where: str = "the WhatsApp assistant") -> None:
+    """An OpenAI call a person is waiting on was refused for billing or auth
+    (lib/model_outage): an ERROR line ("[agent-model-down]", naming where)
+    and one email to the platform operators per kind per hour - the
+    notification id is the hour, so the existing alert path's idempotency is
+    the dedupe, across every caller that reports here."""
+    now = now or datetime.now(timezone.utc)
+    logger.error(f"[agent-model-down] {kind}: HTTP {status_code} in {where} "
+                 f"{send_retry.scrub(str(body), 300)}")
+    text = (model_outage.alert_text(kind, status_code, body, AGENT_MODEL)
+            + f"\n\nFirst seen this hour in: {where}.")
+    await _operator_alert(
+        model_outage.alert_key(kind, now), "agent_model_unavailable",
+        ("WhatsApp assistant down: DeepInfra balance exhausted"
+         if kind == model_outage.BILLING
+         else "WhatsApp assistant down: DeepInfra key refused"),
+        text, {"kind": kind, "status": status_code}, tag="agent-model-down")
+
+
+async def _operator_alert(key: str, trigger_type: str, subject: str, text: str,
+                          metadata: dict, tag: str = "operator-alert") -> None:
+    """One email to each platform operator through the existing alert path
+    (lib/notifications): `key` is the notification id it dedupes on. The
+    assistant's alerts (_agent_model_down, _dm_turn_gave_up) go out here.
+    Never raises."""
+    from lib.notifications import send_notification
+    try:
+        recipients = await _waapi_monitor_recipients()
+    except Exception as e:
+        logger.warning(f"[{tag}] no recipients: {type(e).__name__}")
+        return
+    for recipient in recipients:
+        try:
+            await send_notification(
+                db, permit_renewal_id=key, trigger_type=trigger_type, recipient=recipient,
+                subject=subject, html="<p>" + text.replace("\n\n", "</p><p>") + "</p>",
+                text=text, metadata=metadata)
+        except Exception as e:
+            logger.warning(f"[{tag}] email failed: {type(e).__name__}")
+
+
+async def _alert_if_model_refused(resp: Any, where: str) -> None:
+    """A user-facing OpenAI call's response: when it is a billing or auth
+    refusal, the same alert as the assistant's (_agent_model_down). Changes
+    nothing about what the caller then does with `resp`, and never raises."""
+    try:
+        status = int(getattr(resp, "status_code", 200) or 200)
+        if status < 400:
+            return
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        kind = model_outage.classify(status, body)
+        if kind:
+            await _agent_model_down(kind, status, body, where=where)
+    except Exception as e:
+        logger.warning(f"[agent-model-down] check failed in {where}: {type(e).__name__}")
+
+
+async def _voice_model_refused(status: int, body: Any) -> None:
+    """lib/voice_ingest's hook: a voice note's Whisper call was refused."""
+    kind = model_outage.classify(int(status or 0), body)
+    if kind:
+        await _agent_model_down(kind, int(status), body, where="voice note transcription")
+
+
 def _fmt_ny(at: datetime) -> str:
     from lib.datefmt import strftime as _f
     return _f(_utc(at).astimezone(wa_facts.NY), "%a %b %-d, %-I:%M %p ET")
@@ -55898,7 +56016,7 @@ async def _upcoming_chat_tick(now: Optional[datetime] = None, llm=None,
     if _upcoming_disabled():
         report["disabled"] = True
         return report
-    if llm is None and not OPENAI_API_KEY:
+    if llm is None and not LLM_API_KEY:
         report["no_model"] = True
         return report
     try:
@@ -56449,18 +56567,19 @@ async def _dm_scope(body: str) -> str:
     rule = wa_assistant.question_scope(body)
     if rule:
         return rule
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return wa_assistant.SCOPE_PROJECT
     try:
-        async with ServerHttpClient(timeout=10) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(10)) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
-                json={"model": "gpt-4o-mini", "temperature": 0, "max_tokens": 3,
+                llm_provider.CHAT_URL,
+                json={"model": llm_provider.CHAT_MODEL, "temperature": 0, "max_tokens": 3,
                       "messages": [
                           {"role": "system", "content": wa_assistant.SCOPE_CLASSIFIER_PROMPT},
                           {"role": "user", "content": body}]},
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}",
                          "Content-Type": "application/json"})
+            await _alert_if_model_refused(resp, "DM question routing")
         word = str(resp.json()["choices"][0]["message"]["content"]).strip().lower()
     except Exception:
         return wa_assistant.SCOPE_PROJECT
@@ -56469,17 +56588,18 @@ async def _dm_scope(body: str) -> str:
 
 
 async def _dm_llm(system: str, user_text: str) -> Optional[str]:
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
-        async with ServerHttpClient(timeout=30) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(30)) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
+                llm_provider.CHAT_URL,
                 json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 400,
                       "messages": [{"role": "system", "content": system},
                                    {"role": "user", "content": user_text}]},
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}",
                          "Content-Type": "application/json"})
+            await _alert_if_model_refused(resp, "DM answer")
         return str(resp.json()["choices"][0]["message"]["content"]).strip() or None
     except Exception as e:
         logger.warning(f"[wa-assistant] model call failed: {type(e).__name__}")
@@ -56673,17 +56793,18 @@ async def _dm_subs_fallback(ident: dict, question: str, projects: Optional[list]
 
 async def _dm_subs_model(messages: list, tool_choice: Any) -> Optional[dict]:
     """One chat-completions turn with the subs tools; the message, or None."""
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
-        async with ServerHttpClient(timeout=30) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(30)) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
+                llm_provider.CHAT_URL,
                 json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 400,
                       "tools": wa_subs.TOOLS, "tool_choice": tool_choice,
                       "messages": messages},
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}",
                          "Content-Type": "application/json"})
+            await _alert_if_model_refused(resp, "DM subs question")
             resp.raise_for_status()
         return resp.json()["choices"][0]["message"]
     except Exception as e:
@@ -56892,13 +57013,13 @@ def _memory_ny(dt: Any) -> Optional[datetime]:
 async def _memory_embed_many(texts: List[str]) -> Optional[List[list]]:
     """One embeddings call for a batch. None on any failure (retried next
     run)."""
-    if not OPENAI_API_KEY or not texts:
+    if not LLM_API_KEY or not texts:
         return None
     try:
         async with ServerHttpClient(timeout=60.0) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/embeddings",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                llm_provider.EMBED_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}",
                          "Content-Type": "application/json"},
                 json={"model": project_memory.EMBED_MODEL,
                       "input": [t[:8000] for t in texts]})
@@ -57160,8 +57281,13 @@ async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
     # 3. Embeddings, in batches, bounded per run.
     left = MEMORY_EMBED_PER_RUN
     while left > 0:
+        # A row embedded by another model is not comparable (OpenAI's
+        # 1536-dimension vectors against bge-m3's 1024, 2026-10-26): it is
+        # embedded again, in the same bounded batches, until none is left.
         todo = await db.project_memory.find(
-            {"embedded": False}, {"_id": 1, "text": 1}).limit(
+            {"$or": [{"embedded": False},
+                     {"embed_model": {"$ne": project_memory.EMBED_MODEL}}]},
+            {"_id": 1, "text": 1}).limit(
             min(MEMORY_EMBED_BATCH, left)).to_list(None)
         if not todo:
             break
@@ -57172,6 +57298,7 @@ async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
         for t, v in zip(todo, vecs):
             await db.project_memory.update_one(
                 {"_id": t["_id"]}, {"$set": {"embedding": v, "embedded": True,
+                                             "embed_model": project_memory.EMBED_MODEL,
                                              "embedded_at": now}})
         report["embedded"] += len(todo)
         left -= len(todo)
@@ -57279,6 +57406,16 @@ _MEMORY_SEARCH_INDEXES = (
 )
 
 
+def _vector_dims(ix: dict) -> Optional[int]:
+    """The dimensions a listed vector search index was defined with, or None
+    when its definition does not say."""
+    fields = ((ix or {}).get("latestDefinition") or (ix or {}).get("definition") or {}).get("fields") or []
+    for f in fields:
+        if isinstance(f, dict) and f.get("type") == "vector" and f.get("numDimensions"):
+            return int(f["numDimensions"])
+    return None
+
+
 def _memory_err(e: Exception) -> str:
     """A short, log-safe reason: the error class, Mongo's code name, and the
     start of its message."""
@@ -57315,6 +57452,26 @@ async def _memory_atlas_check(create: bool = False, log: bool = False) -> dict:
                     reasons.append(f"{d['name']} created")
                 except Exception as e:
                     reasons.append(f"{d['name']} not created ({_memory_err(e)})")
+            try:
+                have = await listed()
+            except Exception as e:
+                reasons.append(f"cannot list search indexes ({_memory_err(e)})")
+                have = {}
+        # AN INDEX BUILT FOR ANOTHER MODEL'S VECTORS IS REDEFINED. The vector
+        # index was built at 1536 dimensions (OpenAI); bge-m3's are 1024
+        # (2026-10-26). Created-if-missing never changed it, so a query
+        # vector of the new size would be refused by the old index forever.
+        stale = [d for d in _MEMORY_SEARCH_INDEXES
+                 if d["type"] == "vectorSearch" and d["name"] in have
+                 and _vector_dims(have[d["name"]]) not in (None, project_memory.EMBED_DIMS)]
+        if create and stale:
+            for d in stale:
+                try:
+                    await db.command({"updateSearchIndex": project_memory.COLLECTION,
+                                      "name": d["name"], "definition": d["definition"]})
+                    reasons.append(f"{d['name']} redefined at {project_memory.EMBED_DIMS} dimensions")
+                except Exception as e:
+                    reasons.append(f"{d['name']} not redefined ({_memory_err(e)})")
             try:
                 have = await listed()
             except Exception as e:
@@ -57568,17 +57725,18 @@ def _memory_when_key(r: dict) -> datetime:
 
 
 async def _memory_llm(messages: list) -> Optional[str]:
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
-        async with ServerHttpClient(timeout=60.0) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(60.0)) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}",
                          "Content-Type": "application/json"},
                 json={"model": project_memory.ANSWER_MODEL, "temperature": 0,
                       "max_tokens": 1200, "messages": messages,
                       "response_format": {"type": "json_object"}})
+            await _alert_if_model_refused(resp, "DM project-history answer")
             if resp.status_code != 200:
                 logger.warning(f"[memory] answer model {resp.status_code}")
                 return None
@@ -57666,6 +57824,125 @@ def _dm_redact(v: Any) -> Any:
     return v
 
 
+# ── THE ANSWER LOG (lib/answer_log.py): one immutable row per answer ──────
+# DM, group and app answers, each with the records the model was shown and
+# what the checks decided. INSERT ONLY: _answer_log_write is its one writer,
+# and nothing updates, replaces or deletes a row (tests/test_answer_log.py
+# fails on any). Every read is one company's (_answer_log_get / _rows).
+
+#: This turn's evidence, gathered where it is produced (_dispatch_agent_tool's
+#: plan records, the plan gate in _run_group_agent) and taken by the next
+#: _answer_log_write. Set by the turn (_answer_turn_begin) before any task it
+#: starts, so a task's notes land in the same dict.
+_ANSWER_TURN: contextvars.ContextVar = contextvars.ContextVar("answer_turn", default=None)
+
+
+def _answer_turn_begin() -> dict:
+    turn = {"records": [], "gates": [], "model": None}
+    _ANSWER_TURN.set(turn)
+    return turn
+
+
+def _answer_turn_note(*, records: Any = None, gate: Optional[dict] = None,
+                      model: Optional[str] = None) -> None:
+    turn = _ANSWER_TURN.get()
+    if turn is None:
+        return
+    if records:
+        turn["records"].extend(r for r in records if isinstance(r, dict))
+    if gate:
+        turn["gates"].append(gate)
+    if model:
+        turn["model"] = model
+
+
+def _code_sha() -> str:
+    """The commit this backend runs, as /api/version reports it."""
+    return (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT_SHA")
+            or os.environ.get("SOURCE_COMMIT") or os.environ.get("COMMIT_SHA") or "unknown")
+
+
+async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
+                            company_id: Any, user_id: Any = None, project_ids: Any = None,
+                            asker_phone: Any = None, records: Any = None,
+                            sources: Any = None, tools: Any = None,
+                            gates: Optional[list] = None, model: Optional[str] = None,
+                            path: Optional[str] = None, timing: Any = None,
+                            features: Optional[dict] = None,
+                            group_id: Optional[str] = None,
+                            params: Optional[dict] = None) -> Optional[str]:
+    """THE one writer of the answer log: an insert, never an update. Takes
+    (and empties) this turn's noted records and gate decisions. Never raises:
+    an answer goes out whether or not its row is written."""
+    turn = _ANSWER_TURN.get() or {}
+    noted, turn_gates = list(turn.get("records") or []), list(turn.get("gates") or [])
+    if turn:
+        turn["records"], turn["gates"] = [], []
+    try:
+        row = {
+            "_id": str(ObjectId()),
+            "surface": surface if surface in answer_log.SURFACES else "dm",
+            "question": answer_log.redact(str(question or "")[:answer_log.MAX_TEXT]),
+            "final_text": answer_log.redact(str(final_text or "")[:answer_log.MAX_TEXT]),
+            "user_id": str(user_id) if user_id else None,
+            "company_id": str(company_id) if company_id else None,
+            "project_ids": answer_log.project_ids(project_ids),
+            "asker_last4": answer_log.last4(asker_phone),
+            "group_id": group_id if group_id and str(group_id).endswith("@g.us") else None,
+            "records": answer_log.records_snapshot(list(records or []) + noted)
+                       + [answer_log.source_snapshot(s) for s in sources or []],
+            "tools": answer_log.tools_snapshot(tools),
+            "gates": answer_log.redact(list(gates or []) + turn_gates),
+            "model": model or turn.get("model") or None,
+            "code_sha": _code_sha(),
+            "path": path,
+            "timing": timing,
+            "features": features,
+            # The request's own parameters (an app search's date range), so a
+            # replay asks exactly what was asked.
+            "params": params or None,
+            "created_at": datetime.now(timezone.utc),
+        }
+        row["content_hash"] = answer_log.content_hash(row)
+        await db.answer_log.insert_one(row)
+        return row["_id"]
+    except Exception as e:
+        logger.warning(f"[answer-log] write failed surface={surface}: {type(e).__name__}")
+        return None
+
+
+async def _answer_log_get(company_id: Any, log_id: str) -> Optional[dict]:
+    """One row of ONE company's answer log; None for another company's id."""
+    if not company_id or not log_id:
+        return None
+    return await db.answer_log.find_one({"_id": str(log_id), "company_id": str(company_id)})
+
+
+async def _answer_log_rows(company_id: Any, *, surface: Optional[str] = None,
+                           limit: int = 50) -> list:
+    """ONE company's answers, newest first. No company: nothing."""
+    if not company_id:
+        return []
+    q: Dict[str, Any] = {"company_id": str(company_id)}
+    if surface:
+        q["surface"] = surface
+    return await db.answer_log.find(q).sort([("created_at", -1)]) \
+        .to_list(max(1, min(int(limit), 500)))
+
+
+def _dm_gates(path: str, extra: dict, fallback: bool, reason: Any) -> list:
+    """What the DM checks decided, as each exposes it: the brain's number /
+    claim / sender checks (stop, unverified, retries), a headcount's wording
+    check, the answer-outcome classifier. Read only."""
+    gate = {"gate": "dm_brain" if path == "brain" else f"dm_{path}",
+            "fallback": bool(fallback), "reason": reason}
+    for k in ("stop", "unverified", "verify_retries", "deflect_retries", "wording", "check",
+              "challenged"):
+        if extra.get(k) not in (None, [], ""):
+            gate[k] = extra[k]
+    return [gate]
+
+
 async def _dm_log_answer(ident: dict, project_id: Optional[str], question: str,
                          answer: Optional[str], path: str, tool_data: Any = None,
                          **extra) -> None:
@@ -57683,6 +57960,13 @@ async def _dm_log_answer(ident: dict, project_id: Optional[str], question: str,
             "created_at": datetime.now(timezone.utc)})
     except Exception as e:
         logger.warning(f"[wa-assistant] answer log failed: {type(e).__name__}")
+    # The immutable answer log: the same answer, with the records the model
+    # was shown (this turn's notes) and what the checks decided.
+    await _answer_log_write(
+        "dm", question=question, final_text=answer, company_id=ident.get("company_id"),
+        user_id=ident.get("user_id"), project_ids=project_id, tools=tool_data,
+        gates=_dm_gates(path, extra, fallback, reason), model=extra.get("model"),
+        path=path, timing=extra.get("timing"))
 
 
 def _dm_chat_ids(dm_chat: str) -> list:
@@ -57820,7 +58104,7 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
     reply, used = fixed, "fixed_by_design" if kind == wa_headcount.SUBS else "fixed"
     rejected = {}
     phrased = await _dm_llm(wa_headcount.PHRASE_PROMPT, fixed) \
-        if OPENAI_API_KEY and kind != wa_headcount.SUBS else None
+        if LLM_API_KEY and kind != wa_headcount.SUBS else None
     if phrased:
         why = wa_headcount.check(phrased, data, f"{short_job} {job['label']}", since_label)
         if why is None and len(phrased) > max(len(fixed), wa_style.MAX_CHARS):
@@ -57900,18 +58184,19 @@ async def _dm_action_model(text: str, jobs: List[str]) -> Optional[dict]:
     """The model's reading of a request (lib/dm_actions.MODEL_PROMPT), as it
     answered -- dm_actions.clean() checks it. None without a key, on any
     error, or when the answer is not one JSON object."""
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     system = dm_actions.MODEL_PROMPT + "\n\nTheir jobs: " + ("; ".join(jobs[:40]) or "none yet")
     try:
         async with ServerHttpClient(timeout=20.0) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 300,
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": system},
                                    {"role": "user", "content": str(text)[:1000]}]})
+            await _alert_if_model_refused(resp, "DM action reading")
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
         got = json.loads(content)
@@ -59001,6 +59286,8 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     the request or question needs an existing job and none can be inferred
     (their only job, one named, or the one picked in the last 30 minutes). A
     new job never asks it."""
+    # This turn's evidence for the answer log, before anything it starts.
+    _answer_turn_begin()
     if brain:
         # The DM brain (flag dm_brain_v2): one model, tools, guardrails.
         await _dm_brain_reply(ident, dm_chat, body, message_id, heard=heard, quoted=quoted)
@@ -59468,8 +59755,8 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
                           project_id: Optional[str] = None, question: Optional[str] = None,
                           labels: Any = (), styled: bool = False,
                           job_label: Optional[str] = None) -> None:
-    """Send the answer; 👀 on the question first if it takes over 5 s, and
-    taken back if no answer comes. A voice note's answer opens with
+    """Send the answer; "typing…" in their chat while it is worked out (no
+    reaction: Oct 27, 👀 read as "seen, not answering"). A voice note's answer opens with
     `Heard: "…"`. Every answer goes through the style post-check
     (lib/wa_style.py): short job names, no preamble, ~300 characters unless
     a list was asked for -- the rest offered ("Want the names?").
@@ -59477,15 +59764,49 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
     NEVER "CHECK WITH X" (Oct 21: "How many framers in 588" got "check with
     the site manager" -- they ARE the site manager / PM): the sentences that
     send them elsewhere are dropped (dm_brain.no_referral); with nothing
-    left, "I couldn't find that in Levelog for <job>." -- never made up."""
+    left, "I couldn't find that in Levelog for <job>." -- never made up.
+
+    THE ANSWER BUDGET (_dm_await_budget), as the brain's: "Still checking
+    the drawings." at DM_SLOW_NOTICE_SECONDS with nothing sent, the turn
+    given up at DM_GIVE_UP_SECONDS; its model calls take no longer than
+    what is left (_dm_call_timeout)."""
+    inbound = _WA_INBOUND.get() or {}
+    received = float(inbound.get("received") or _time.time())
+    t_start = _time.monotonic()
+    t0 = t_start - max(0.0, _time.time() - received)
+    sends = _DM_SENDS.get()
+    if sends is None:
+        sends = []
+        _DM_SENDS.set(sends)
+    _DM_DEADLINE.set(t0 + DM_GIVE_UP_SECONDS)
     task = asyncio.ensure_future(answer_coro)
-    eyes = False
+    thinking = asyncio.Event()
+    typing = asyncio.ensure_future(_dm_typing_while(dm_chat, thinking))
     try:
-        reply = await asyncio.wait_for(asyncio.shield(task),
-                                       wa_react.WORKING_AFTER_SECONDS)
-    except asyncio.TimeoutError:
-        eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
-        reply = await task
+        budget, reply = await _dm_await_budget(task, dm_chat, t_start - t0, sends)
+    finally:
+        thinking.set()
+        try:
+            await asyncio.wait_for(typing, 10)
+        except Exception:
+            pass
+    answered = _time.monotonic()
+
+    def timing() -> dict:
+        return _dm_turn_timing(inbound, received, t0, t_start, answered, {}, sends, budget=budget)
+    if budget == "gave_up":
+        try:
+            await send_whatsapp_message(dm_chat, DM_GAVE_UP_TEXT)
+        finally:
+            clock = timing()
+            path = log[3] if log else "headcount"
+            trace = (log[4] if log and len(log) > 4 else None) or []
+            if log:
+                await _dm_log_answer(log[0], log[1], log[2], DM_GAVE_UP_TEXT, log[3],
+                                     tool_data=trace or None, stop="gave_up", timing=clock)
+            await _dm_turn_gave_up(log[0] if log else None, dm_chat, path, clock,
+                                   [t for t in trace if isinstance(t, dict)], message_id)
+        return
     if reply:
         reply = _dm_old_no_referral(reply, job_label, ident=log[0] if log else None,
                                     path=log[3] if log else "headcount")
@@ -59520,7 +59841,7 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         # (ident, project_id, question, path[, tool trace]); a blocked repeat
         # keeps the answer it would have sent, for the next dm_eval.
         await _dm_log_answer(log[0], log[1], log[2], reply, log[3],
-                             tool_data=log[4] if len(log) > 4 else None,
+                             tool_data=log[4] if len(log) > 4 else None, timing=timing(),
                              **({"repeated": _dm_redact(repeated)} if reply and repeated else {}))
     job_id = (log[1] if log else None) or project_id
     if heard and message_id and job_id:
@@ -59536,8 +59857,6 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         if heard:
             reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
         await send_whatsapp_message(dm_chat, reply)
-    elif eyes:
-        await _react_to_message(dm_chat, message_id, "")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -59573,6 +59892,212 @@ _DM_MODEL: contextvars.ContextVar = contextvars.ContextVar("dm_model", default=N
 _DM_ASKER: contextvars.ContextVar = contextvars.ContextVar("dm_asker", default=None)
 #: How often the "typing…" indicator is sent again while the brain works.
 DM_TYPING_EVERY_SECONDS = 8.0
+#: This inbound message's clock (_process_whatsapp_message): {"received":
+#: wall seconds the webhook got it, "started": when its task began, "wa_ts":
+#: WhatsApp's own send time, epoch seconds or 0}. The DM answer log's timing.
+_WA_INBOUND: contextvars.ContextVar = contextvars.ContextVar("wa_inbound", default=None)
+#: This DM turn's message sends (_waapi_send_dm_paced, refusals in
+#: send_whatsapp_message): a list the turn sets before the brain task starts,
+#: so the task's own sends (a tool that sends a sheet) land in it too.
+_DM_SENDS: contextvars.ContextVar = contextvars.ContextVar("dm_sends", default=None)
+#: This DM turn's deadline on the monotonic clock: the receipt plus
+#: DM_GIVE_UP_SECONDS. Model calls made for the turn take no longer than
+#: what is left of it (_dm_call_timeout, _dm_brain_create). None outside a
+#: DM turn: every other caller keeps its own timeout.
+_DM_DEADLINE: contextvars.ContextVar = contextvars.ContextVar("dm_deadline", default=None)
+
+# ── THE ANSWER BUDGET (owner's decision, Oct 27) ──────────────────────────
+#
+# "typing…" until the whole answer is ready -- never a partial answer. From
+# the DM's receipt: nothing sent by DM_SLOW_NOTICE_SECONDS -> one line,
+# DM_SLOW_NOTICE_TEXT, once a turn (typing goes on); at DM_GIVE_UP_SECONDS
+# the turn is cancelled, DM_GAVE_UP_TEXT goes, and the operators get the
+# turn's timeline (_dm_turn_gave_up). An answer that finishes after the
+# notice is sent as usual; an answer that races the give-up wins, and the
+# give-up line is not sent -- never both. The answer row's timing.budget
+# says which: "ok" | "slow_notice" | "gave_up".
+DM_SLOW_NOTICE_SECONDS = 45.0
+DM_GIVE_UP_SECONDS = 120.0
+DM_SLOW_NOTICE_TEXT = "Still checking the drawings."
+DM_GAVE_UP_TEXT = "Couldn't finish that one, try again"
+#: The DM brain client's own per-call timeout (_dm_brain_client) and how
+#: many times a transient failure is tried again -- both inside the deadline.
+DM_MODEL_CALL_SECONDS = 60.0
+DM_MODEL_RETRIES = 2
+
+
+class _DmBudgetSpent(Exception):
+    """A DM turn's model call found its deadline already passed."""
+
+
+def _dm_budget_clock() -> float:
+    """The budget's clock (patched in tests)."""
+    return _time.monotonic()
+
+
+async def _dm_budget_wait(task: "asyncio.Future", seconds: float) -> None:
+    """Wait for `task`, at most `seconds` (patched in tests)."""
+    await asyncio.wait({task}, timeout=max(0.0, seconds))
+
+
+def _dm_call_timeout(default: float) -> float:
+    """A model call's timeout: its own, or what is left of this DM turn's
+    budget when that is less (a floor of half a second: the turn is about to
+    be given up, and the call should fail fast rather than not be made)."""
+    deadline = _DM_DEADLINE.get()
+    if deadline is None:
+        return default
+    return max(0.5, min(float(default), deadline - _time.monotonic()))
+
+
+async def _dm_await_budget(task: "asyncio.Future", dm_chat: str, waited: float,
+                           sends: Optional[list]) -> Tuple[str, Any]:
+    """(budget, the task's result) for one DM turn's answer task. `waited`:
+    seconds already gone since the DM's receipt. budget "gave_up" -> the
+    task was cancelled and the result is None; the caller sends the give-up
+    line. A task that raised re-raises here, as `await task` did."""
+    start = _dm_budget_clock() - max(0.0, waited)
+    budget, noticed = "ok", False
+    # The notice goes out on its own task: a send queued behind other DMs
+    # (_DM_SEND_LOCK) never stops this answer/deadline race. When the race
+    # resolves, a notice still waiting to go is dropped.
+    notice: Optional[asyncio.Future] = None
+    try:
+        while not task.done():
+            elapsed = _dm_budget_clock() - start
+            if elapsed >= DM_GIVE_UP_SECONDS:
+                # An answer finishing in this same tick wins: let it.
+                for _ in range(5):
+                    if task.done():
+                        break
+                    await asyncio.sleep(0)
+                if task.done():
+                    break
+                task.cancel()
+                try:
+                    result = await task
+                except (asyncio.CancelledError, _DmBudgetSpent):
+                    return "gave_up", None
+                return budget, result                    # it finished regardless
+            if not noticed and elapsed >= DM_SLOW_NOTICE_SECONDS:
+                noticed = True
+                if not any(x.get("ok") for x in sends or []):
+                    budget = "slow_notice"
+                    notice = asyncio.ensure_future(_dm_slow_notice(dm_chat))
+                    await asyncio.sleep(0)               # let it start
+                continue
+            await _dm_budget_wait(task, (DM_GIVE_UP_SECONDS if noticed else DM_SLOW_NOTICE_SECONDS)
+                                  - elapsed)
+        if not task.cancelled() and isinstance(task.exception(), _DmBudgetSpent):
+            return "gave_up", None
+        return budget, task.result()
+    finally:
+        if notice is not None and not notice.done():
+            notice.cancel()
+
+
+async def _dm_slow_notice(dm_chat: str) -> None:
+    """The one "Still checking the drawings." line, then typing again."""
+    try:
+        await send_whatsapp_message(dm_chat, DM_SLOW_NOTICE_TEXT)
+        await _wa_typing(dm_chat, True)                  # and still typing
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"[dm-budget] slow notice failed: {type(e).__name__}")
+
+
+def _dm_timeline_text(timing: dict, trace: Any = None) -> str:
+    """A turn's timing block as lines for a person: every offset from the
+    DM's receipt. No phone, no words -- tool names and clocks only."""
+    def sec(ms: Any) -> str:
+        return "?" if ms is None else f"{int(ms) / 1000:.1f} s"
+    at = timing.get("received_at")
+    lines = [f"Received: {at.isoformat() if isinstance(at, datetime) else at or '?'}",
+             f"Queue: {sec(timing.get('queue_ms'))}",
+             f"Answer started: {sec(timing.get('brain_start_ms'))}",
+             f"First send: {sec(timing.get('first_send_ms'))}",
+             f"Budget: {timing.get('budget') or '?'}"]
+    for r in timing.get("rounds") or []:
+        lines.append(f"Model round {r.get('round')}: at {sec(r.get('t_ms'))}, took {sec(r.get('ms'))}, "
+                     + (f"error {r['error']}" if r.get("error")
+                        else f"{r.get('finish') or '?'}, {r.get('tools') or 0} tool(s)")
+                     + (f", then {r['then']}" if r.get("then") else ""))
+    for t in trace or []:
+        lines.append(f"Tool {t.get('tool')} (round {t.get('round')}): at {sec(t.get('t_ms'))}, "
+                     f"took {sec(t.get('ms'))}" + (", cancelled at the deadline" if t.get("cancelled")
+                                                  else ", failed" if t.get("error") else ""))
+    for x in timing.get("sends") or []:
+        lines.append(f"Send {x.get('action')}: at {sec(x.get('t_ms'))}, "
+                     + ("ok" if x.get("ok") else f"not sent ({x.get('refused') or 'failed'})"))
+    return "\n".join(lines)
+
+
+async def _dm_turn_gave_up(ident: Optional[dict], dm_chat: str, path: str, timing: dict,
+                           trace: Any = None, message_id: str = "") -> None:
+    """The DM turn ran out of its DM_GIVE_UP_SECONDS: an ERROR line and the
+    operators' alert (_operator_alert, as the model-down alert) with the
+    turn's timeline. The chat as its last 4 digits only; nobody's words."""
+    company = str((ident or {}).get("company_id") or "?")
+    chat = _log_chat(dm_chat)
+    logger.error(f"[dm-gave-up] company={company} chat={chat} path={path} "
+                 f"rounds={len(timing.get('rounds') or [])} tools={len(trace or [])}")
+    text = (f"A WhatsApp DM got no answer within {int(DM_GIVE_UP_SECONDS)} s, so the turn was "
+            f"cancelled and they were told \"{DM_GAVE_UP_TEXT}\".\n\n"
+            f"Company: {company}\nChat: {chat}\nPath: {path}\n\n"
+            + _dm_timeline_text(timing, trace)
+            + "\n\nscripts/dm_thread_timeline.py prints the thread.")
+    safe = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in timing.items()}
+    tools = [{k: t.get(k) for k in ("tool", "round", "t_ms", "ms", "error", "cancelled") if k in t}
+             for t in trace or []]
+    await _operator_alert(
+        f"dm_turn_gave_up:{message_id or uuid.uuid4().hex}", "dm_turn_gave_up",
+        f"WhatsApp DM not answered in {int(DM_GIVE_UP_SECONDS)} s", text,
+        {"company_id": company, "chat": chat, "path": path, "timing": safe, "tools": tools},
+        tag="dm-gave-up")
+
+
+async def _dm_brain_create(client: Any, **kw) -> Any:
+    """One DM brain model call. Inside a DM turn (_DM_DEADLINE set): the
+    call's timeout is what is left of the turn (at most
+    DM_MODEL_CALL_SECONDS), the client's own retries are off, and a
+    transient failure (connection, timeout, 408/409/429/5xx -- what the SDK
+    retried) is tried again here only while the deadline allows. Past the
+    deadline: _DmBudgetSpent. Outside a turn (the eval): as before."""
+    deadline = _DM_DEADLINE.get()
+    if deadline is None:
+        return await client.chat.completions.create(**kw)
+    tries = 0
+    while True:
+        left = deadline - _time.monotonic()
+        if left <= 0:
+            raise _DmBudgetSpent("the DM turn's budget is spent")
+        c = client.with_options(max_retries=0) if hasattr(client, "with_options") else client
+        try:
+            return await c.chat.completions.create(timeout=min(DM_MODEL_CALL_SECONDS, left), **kw)
+        except Exception as e:
+            left = deadline - _time.monotonic()
+            if left <= 0.5:
+                raise _DmBudgetSpent("the DM turn's budget is spent") from e
+            pause = min(8.0, 0.5 * 2 ** tries)
+            if tries >= DM_MODEL_RETRIES or not _dm_model_retryable(e) or left <= pause + 1.0:
+                raise
+            tries += 1
+            await asyncio.sleep(pause)
+
+
+def _dm_model_retryable(e: BaseException) -> bool:
+    """What the OpenAI client retries on its own: a connection error or a
+    timeout, and 408 / 409 / 429 / 5xx."""
+    try:
+        import openai
+    except Exception:  # pragma: no cover - the brain needs it
+        return False
+    if isinstance(e, openai.APIConnectionError):
+        return True
+    code = getattr(e, "status_code", None)
+    return isinstance(e, openai.APIStatusError) and isinstance(code, int) and (
+        code in (408, 409, 429) or code >= 500)
 
 
 def _dm_is_asker(jid: str, person: Optional[dict]) -> bool:
@@ -59621,12 +60146,14 @@ async def _wa_seen(chat_id: str) -> bool:
     return await _wa_chat_action(chat_id, "send-seen")
 
 
-async def _dm_typing_while(chat_id: str, done: asyncio.Event) -> None:
+async def _dm_typing_while(chat_id: str, done: asyncio.Event, seen: bool = True) -> None:
     """What a person does: open the chat (read ticks), then "typing…" until
     `done`, sent again every DM_TYPING_EVERY_SECONDS (WhatsApp drops it
-    after a while)."""
+    after a while). The ONLY "working on it" signal -- no 👀 reaction (Oct
+    27). A group passes seen=False: typing only, nothing marked read."""
     try:
-        await _wa_seen(chat_id)
+        if seen:
+            await _wa_seen(chat_id)
         while not done.is_set():
             await _wa_typing(chat_id, True)
             try:
@@ -59690,6 +60217,23 @@ _DM_BRAIN_EXTRA_TOOLS = [
         "and they say 'show me'."),
      "input_schema": {"type": "object", "properties": {
          "job": _JOB_PROP, "sheet": {"type": "string", "description": "The sheet number, e.g. 'SSP-011.00'."}},
+         "required": ["sheet"]}},
+    {"name": "send_plan_file", "description": (
+        "Send a drawing's PDF here (to them) as a document: the file a sheet is on, a file by "
+        "name, or only some pages of it. With a sheet and no pages: the page that sheet is on; "
+        "whole_file true: the whole file it is in. Over the size limit it says so."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "sheet": {"type": "string", "description": "A sheet number, e.g. 'EN-001'."},
+         "file": {"type": "string", "description": "The file's name, or part of it, when they name a file."},
+         "pages": {"type": "string", "description": "PDF page numbers of the file, e.g. '3-5' or '2, 7'."},
+         "whole_file": {"type": "boolean", "description": "The whole file the sheet is in."}},
+         "required": []}},
+    {"name": "sheet_info", "description": (
+        "Which file and drawing set a sheet is on (its page), its title, and what the drawing "
+        "list says about it and its series (listed but not uploaded). For 'what file is it on'."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP, "sheet": {"type": "string", "description": "The sheet number, e.g. 'EN-001'."}},
          "required": ["sheet"]}},
     {"name": "send_report", "description": (
         "Build a project report PDF and send it here (to them)."),
@@ -60075,7 +60619,8 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
     args = dict(args or {})
     dry = bool(ctx.get("dry_run"))
     now = datetime.now(timezone.utc)
-    if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet"):
+    if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
+                                               "send_plan_file", "sheet_info"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
             return why
@@ -60092,7 +60637,9 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             page = rows[0] if rows else None
             if not page:
                 return f"{str(args.get('sheet') or '').upper()} isn't in the indexed drawings for {job['label']}."
-            label = page.get("sheet_number") or str(args.get("sheet")).upper()
+            src = (await _plan_file_sources(pid, [page.get("file_id")])).get(str(page.get("file_id")))
+            label = plan_sources.cite_with_set(
+                page.get("sheet_number") or str(args.get("sheet")).upper(), src)
             title = page.get("sheet_title") or page.get("title") or ""
             if not page.get("page_jpeg_r2_key"):
                 return f"{label} is indexed but has no image yet (notes sheet or still rendering)."
@@ -60106,8 +60653,13 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             shot = await _dm_plan_sheet_shot(ctx, page)
             if await _dm_send_sheet(dm_chat, page, **shot):
                 ctx["sent"].append(f"[sheet {label}]")
-                return f"Sent the image of {label} {title} to them."
+                where = plan_sources.sheet_source_text(label, src, page.get("page_number"))
+                return f"Sent the image of {label} {title} to them." + (f" {where}" if where else "")
             return f"Found {label} but the image couldn't be sent (may still be rendering)."
+        if name == "sheet_info":
+            return await _dm_sheet_info(str(job["id"]), str(args.get("sheet") or ""))
+        if name == "send_plan_file":
+            return await _dm_send_plan_file(ctx, job, args)
         if name == "search_project_history" and _memory_disabled():
             return "Project history search is off."
         sink: list = []
@@ -60115,6 +60667,8 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             name, args, project_id=str(job["id"]), group_id=dm_chat,
             company_id=str(ident["company_id"]), sender=wa_dm.phone_digits(dm_chat),
             reply_to=None, user_body=ctx["text"], record_sink=sink)
+        if sink:
+            ctx["_records"] = sink                   # the trace keeps where they are
         if sink and await _dm_plan_evidence(ctx, sink):
             out += ("\n(A picture of the sheet, with where this is marked, goes to them right "
                     "after your answer. No need to call send_sheet for it.)")
@@ -60237,7 +60791,7 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
 
 
 #: Tools that send something: one of each (same arguments) per turn.
-_DM_BRAIN_SENDS = ("send_sheet", "send_report", "resend_my_brief")
+_DM_BRAIN_SENDS = ("send_sheet", "send_plan_file", "send_report", "resend_my_brief")
 
 
 def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
@@ -60267,19 +60821,51 @@ def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
             pass
 
 
+def _dm_trace_records(sink: Any, limit: int = 6) -> list:
+    """The plan records one tool call returned, as the answer log keeps them:
+    sheet, file, page, set and the quote (160 chars). [] for none."""
+    out: list = []
+    for hit in sink or []:
+        for r in (hit or {}).get("records") or []:
+            if len(out) >= limit:
+                return out
+            row = {"sheet": r.get("sheet_number") or None, "file": r.get("file_name") or None,
+                   "page": r.get("page_number"),
+                   "set": r.get("set_name") or r.get("drawing_set") or r.get("revision") or None,
+                   "quote": str(r.get("quote") or r.get("text") or "")[:160]}
+            out.append({k: v for k, v in row.items() if v not in (None, "")})
+    return out
+
+
 async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[str] = None) -> dict:
     """The model, its tool calls (one after another, at most
     dm_brain.MAX_TOOL_CALLS a turn), and the number check, until an answer.
     Every retry (cut, evidence, claims, "you", deflect) is on the same model.
-    {reply, trace, rounds, retries, unverified, stop, usage}."""
+    {reply, trace, rounds, retries, unverified, stop, usage, timing_rounds}.
+
+    TIMED (Oct 27: a 588 answer took 7 minutes and nothing said where): each
+    model round is {round, t_ms, ms, finish, tools[, then][, error]} in
+    timing_rounds and each tool call carries round / t_ms / ms in the trace;
+    t_ms counts from ctx["t0"] (the message's receipt), else from here. The
+    same lists sit on ctx (_trace, _rounds) so a turn that raises still
+    leaves what it did."""
     client = _dm_brain_client()
     tools = _dm_brain_tools()
     use = model or _DM_MODEL.get() or dm_brain.MODEL
     msgs = [{"role": "system", "content": system}] + [dict(m) for m in messages]
     trace: List[dict] = []
+    rounds_log: List[dict] = []
+    ctx["_trace"], ctx["_rounds"] = trace, rounds_log
+    t_zero = ctx.get("t0") or _time.monotonic()
+
+    def at_ms(t: float) -> int:
+        return int((t - t_zero) * 1000)
+
+    def took_ms(t: float) -> int:
+        return int((_time.monotonic() - t) * 1000)
     sources = [system] + [m["content"] for m in messages if isinstance(m.get("content"), str)]
     retries, deflects, calls, last_text, missing = 0, 0, 0, "", []
-    cuts, claimed, yous = 0, 0, 0
+    cuts, claimed, yous, file_denied = 0, 0, 0, 0
     done_sends: set = set()
     budget = dm_brain.MAX_TOKENS
     usage: Dict[str, Any] = {"input": 0, "output": 0, "calls": 0, "seconds": 0.0, "models": []}
@@ -60289,30 +60875,50 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
         # so "here's the sheet" is true of it -- but only of the picture: a
         # "sent the report" with no send this turn is still caught.
         picture = ctx.get("plan_image_due") and dm_brain.sends_only_a_picture(last_text)
-        return set(ctx.get("acted") or set()) | (
-            {"sent"} if ctx.get("sent") or picture else set())
+        sent = bool(ctx.get("sent") or picture)
+        if sent and dm_brain.claims_file_sent(last_text) and not any(
+                str(x).startswith(("[file", "[report", "[brief")) for x in ctx.get("sent") or []):
+            # "Sent you the PDF" only when a file went: the drawing's PDF
+            # (send_plan_file), or the report's / brief's own. A sheet
+            # picture is not a PDF.
+            sent = False
+        return set(ctx.get("acted") or set()) | ({"sent"} if sent else set())
 
-    def fix(note: str) -> None:
+    def fix(note: str, why: str) -> None:
         msgs.append({"role": "assistant", "content": last_text or "(nothing)"})
         msgs.append({"role": "user", "content": "[Levelog check, not from them] " + note})
+        if rounds_log:
+            rounds_log[-1]["then"] = why
 
     def done(**kw):
         return {"trace": trace, "retries": retries, "deflect_retries": deflects, "usage": usage,
+                "timing_rounds": rounds_log,
                 "model": use, "tools_tried": [
                     f"{t['tool']}({json.dumps(t.get('args') or {}, ensure_ascii=False)})" for t in trace],
                 **kw}
     for rounds in range(1, dm_brain.MAX_ROUNDS + 1):
         can_call = calls < dm_brain.MAX_TOOL_CALLS
         t0 = _time.monotonic()
-        resp = await client.chat.completions.create(
-            model=use, messages=msgs, tools=tools, tool_choice="auto" if can_call else "none",
-            temperature=dm_brain.TEMPERATURE, max_tokens=budget,
-            **({"extra_body": {"reasoning_effort": dm_brain.REASONING_EFFORT}}
-               if dm_brain.REASONING_EFFORT else {}))
+        try:
+            # Inside a DM turn: no longer than what is left of its budget.
+            resp = await _dm_brain_create(
+                client, model=use, messages=msgs, tools=tools, tool_choice="auto" if can_call else "none",
+                temperature=dm_brain.TEMPERATURE, max_tokens=budget,
+                **({"extra_body": {"reasoning_effort": dm_brain.REASONING_EFFORT}}
+                   if dm_brain.REASONING_EFFORT else {}))
+        except BaseException as e:
+            # The SDK's own retries are inside this one call: its ms says so.
+            # A call the budget cancelled is logged too: it is where the turn stalled.
+            rounds_log.append({"round": rounds, "t_ms": at_ms(t0), "ms": took_ms(t0),
+                               "error": type(e).__name__,
+                               **({"cancelled": True} if isinstance(e, asyncio.CancelledError) else {})})
+            raise
         _dm_usage(usage, resp, use, t0)
         choice = resp.choices[0]
         m = choice.message
         asked = list(getattr(m, "tool_calls", None) or []) if can_call else []
+        rounds_log.append({"round": rounds, "t_ms": at_ms(t0), "ms": took_ms(t0),
+                           "finish": str(choice.finish_reason or ""), "tools": len(asked)})
         if asked:
             # SEQUENTIAL: each call runs after the one before it; past the cap
             # the rest are not run (and not shown as asked).
@@ -60324,12 +60930,14 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             for tc in asked:
                 calls += 1
                 name = tc.function.name
+                t_tool = _time.monotonic()
                 if name in _DM_BRAIN_SENDS:
                     # The same send twice in one turn goes out once.
                     key = (name, " ".join(str(tc.function.arguments or "").lower().split()))
                     if key in done_sends:
                         out = "Already done in this turn -- not sent again."
-                        trace.append({"tool": name, "args": {}, "result": out, "duplicate": True})
+                        trace.append({"tool": name, "args": {}, "result": out, "duplicate": True,
+                                      "round": rounds, "t_ms": at_ms(t_tool), "ms": 0})
                         msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out})
                         continue
                     done_sends.add(key)
@@ -60342,11 +60950,21 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
                 else:
                     try:
                         out, err = await _dm_brain_exec(ctx, name, dict(args)), False
+                    except asyncio.CancelledError:
+                        # Cancelled by the answer budget: the tool it stalled on.
+                        trace.append({"tool": name, "args": args, "result": "", "round": rounds,
+                                      "t_ms": at_ms(t_tool), "ms": took_ms(t_tool),
+                                      "error": True, "cancelled": True})
+                        raise
                     except Exception as e:
                         logger.warning(f"[dm-brain] tool {name} failed: {type(e).__name__}: {e}")
                         out, err = f"The tool failed ({type(e).__name__}). Say so plainly if it matters.", True
                 out = str(out)[:DM_BRAIN_TOOL_CHARS]
-                trace.append({"tool": name, "args": args, "result": out[:3000], **({"error": True} if err else {})})
+                found = _dm_trace_records(ctx.pop("_records", None))
+                trace.append({"tool": name, "args": args, "result": out[:3000],
+                              "round": rounds, "t_ms": at_ms(t_tool), "ms": took_ms(t_tool),
+                              **({"records": found} if found else {}),
+                              **({"error": True} if err else {})})
                 sources.append(out)
                 msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out})
             continue
@@ -60359,7 +60977,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
                 cuts += 1
                 budget = dm_brain.RETRY_MAX_TOKENS
                 logger.info(f"[dm-brain] cut answer ({choice.finish_reason}, {len(last_text)} chars): retried")
-                fix(dm_brain.cut_note())
+                fix(dm_brain.cut_note(), "cut")
                 continue
             if last_text and choice.finish_reason != "length" and not dm_brain._bold_unbalanced(last_text):
                 pass                                     # short, but whole: it goes
@@ -60371,7 +60989,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             # The one retry, on the same model.
             retries += 1
             logger.info(f"[dm-brain] re-asked: unverified {missing[:6]}")
-            fix(dm_brain.verify_note(missing))
+            fix(dm_brain.verify_note(missing), "verify")
             continue
         if missing:
             return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=missing,
@@ -60382,7 +61000,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             if claimed < 1:
                 claimed += 1
                 logger.info(f"[dm-brain] re-asked: claimed {unsupported} with no tool doing it")
-                fix(dm_brain.claim_note(unsupported, [t["tool"] for t in trace]))
+                fix(dm_brain.claim_note(unsupported, [t["tool"] for t in trace]), "claim")
                 continue
             return done(reply=dm_brain.ACTION_UNVERIFIED_TEXT, rounds=rounds, unverified=[],
                         stop="unsupported_claim", draft=last_text)
@@ -60391,16 +61009,24 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             if yous < 1:
                 yous += 1
                 logger.info("[dm-brain] re-asked: said 'from you' with no record marked theirs")
-                fix(dm_brain.you_note())
+                fix(dm_brain.you_note(), "you")
                 continue
             return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=["from you"],
                         stop="unverified_sender", draft=last_text)
+        if (dm_brain.denies_file_send(last_text) and file_denied < dm_brain.FILE_DENY_RETRIES
+                and not any(t.get("tool") == "send_plan_file" for t in trace)):
+            # Never "I can't send PDFs" (Oct 27): send_plan_file sends them.
+            # After it ran, its result (e.g. over the size limit) is the truth.
+            file_denied += 1
+            logger.info("[dm-brain] re-asked: said it can't send a file")
+            fix(dm_brain.file_send_note(), "file_deny")
+            continue
         if dm_brain.cant_answer(last_text) and deflects < dm_brain.DEFLECT_RETRIES:
             # Never "check with the site manager" / "not sure" before the
             # tools (Tue 12:28 PM): asked again, with what it tried.
             deflects += 1
             logger.info(f"[dm-brain] re-asked: deflected after {[t['tool'] for t in trace]}")
-            fix(dm_brain.deflect_note([t["tool"] for t in trace]))
+            fix(dm_brain.deflect_note([t["tool"] for t in trace]), "deflect")
             continue
         return done(reply=last_text, rounds=rounds, unverified=[], stop=choice.finish_reason,
                     cant_answer=dm_brain.cant_answer(last_text), cut_retries=cuts,
@@ -60412,9 +61038,14 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
 async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: list,
                            now: datetime, dry_run: bool = False,
                            flows: Optional[List[str]] = None,
-                           active: Optional[str] = None) -> dict:
+                           active: Optional[str] = None,
+                           t0: Optional[float] = None,
+                           live: Optional[dict] = None) -> dict:
     """Build the context and run the brain for one message (the live path
-    and the eval). {reply, trace, ...} plus `sent` (what tools sent)."""
+    and the eval). {reply, trace, ...} plus `sent` (what tools sent).
+    `t0`: the monotonic clock at the message's receipt (timing offsets).
+    `live`: given, live["ctx"] is the turn's context -- what a turn that is
+    given up (_dm_await_budget) had done, and when."""
     jobs = await _dm_jobs(ident) if ident.get("projects") else []
     by_id = {j["id"]: j for j in jobs}
     if active is None and not dry_run:
@@ -60440,16 +61071,22 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
     messages = dm_brain.turn_messages(dm_brain.history_messages(history, now), text)
     ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
            "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
-           "used_job": None}
+           "used_job": None, "t0": t0}
+    if live is not None:
+        live["ctx"] = ctx
     _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phones": [
         p for p in ("" if str(dm_chat).endswith("@lid") else wa_dm.phone_digits(dm_chat),
                     wa_dm.phone_digits(str((ident.get("user") or {}).get("phone") or ""))) if p]})
     try:
         out = await _dm_brain_run(ctx, messages, system)
+    except _DmBudgetSpent:
+        raise                                    # the turn is given up (_dm_await_budget)
     except Exception as e:
         logger.error(f"[dm-brain] model failed: {type(e).__name__}: {e}")
-        out = {"reply": dm_brain.FAILED_TEXT, "trace": [], "rounds": 0, "retries": 0,
-               "unverified": [], "stop": f"error:{type(e).__name__}"}
+        # What it did before it failed (and how long each step took) is kept.
+        out = {"reply": dm_brain.FAILED_TEXT, "trace": ctx.get("_trace") or [],
+               "timing_rounds": ctx.get("_rounds") or [], "rounds": len(ctx.get("_rounds") or []),
+               "retries": 0, "unverified": [], "stop": f"error:{type(e).__name__}"}
     if out.get("reply"):
         out["reply"] = dm_brain.redact_phones(out["reply"])
     # Where on the sheets the answer came from: sent after the words
@@ -60517,23 +61154,39 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
         question = f"[voice note] {question}"
 
     t_start = _time.monotonic()
-    task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history, now=now))
-    # "typing…" in their chat while the brain works, sent again every 8 s.
+    # The clock starts at the webhook's receipt, not here: a turn that began
+    # late (a queued task, a walkthrough lease, a voice note) shows it.
+    inbound = _WA_INBOUND.get() or {}
+    received = float(inbound.get("received") or _time.time())
+    t0 = t_start - max(0.0, _time.time() - received)
+    sends: list = []
+    _DM_SENDS.set(sends)                     # before the task: its sends land here too
+    _DM_DEADLINE.set(t0 + DM_GIVE_UP_SECONDS)
+    live: dict = {}
+    task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history,
+                                                  now=now, t0=t0, live=live))
+    # "typing…" in their chat while the brain works, sent again every 8 s --
+    # the only "working on it" signal (no 👀 reaction: Oct 27). Until the
+    # whole answer is ready, or the budget is spent (_dm_await_budget).
     thinking = asyncio.Event()
     typing = asyncio.ensure_future(_dm_typing_while(dm_chat, thinking))
-    eyes = False
     try:
-        try:
-            out = await asyncio.wait_for(asyncio.shield(task), wa_react.WORKING_AFTER_SECONDS)
-        except asyncio.TimeoutError:
-            eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
-            out = await task
+        budget, out = await _dm_await_budget(task, dm_chat, t_start - t0, sends)
     finally:
         thinking.set()
         try:
             await asyncio.wait_for(typing, 10)
         except Exception:
             pass
+    brain_done = _time.monotonic()
+    if budget == "gave_up":
+        # What the turn had done when it was cancelled, and when.
+        c = live.get("ctx") or {}
+        out = {"reply": None, "trace": c.get("_trace") or [],
+               "timing_rounds": c.get("_rounds") or [], "rounds": len(c.get("_rounds") or []),
+               "retries": 0, "unverified": [], "stop": "gave_up",
+               "sent": c.get("sent") or [], "used_job": c.get("used_job"),
+               "tools_tried": [t.get("tool") for t in c.get("_trace") or []]}
     reply = out.get("reply")
     # Which path answered, provably: one line per brain answer (no phone, no words).
     logger.info(f"[dm-brain] answered company={ident.get('company_id') or '?'} "
@@ -60542,14 +61195,6 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
     if out.get("used_job"):
         await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
                             project_id=out["used_job"])
-    await _dm_log_answer(
-        ident, out.get("used_job"), question, reply or " | ".join(out.get("sent") or []), "brain",
-        tool_data=out.get("trace"), model=out.get("model") or dm_brain.MODEL, rounds=out.get("rounds"),
-        usage=out.get("usage"),
-        verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
-        stop=out.get("stop"), deflect_retries=out.get("deflect_retries") or None,
-        tools_tried=_dm_redact(out.get("tools_tried") or []),
-        **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
     if out.get("cant_answer"):
         # Every "can't answer" is logged with the tools it tried (rule 3).
         logger.info(f"[dm-brain] cant_answer tools={_dm_redact(out.get('tools_tried') or [])}")
@@ -60560,14 +61205,59 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
                 {"$set": {"project_id": str(out["used_job"])}})
         except Exception as e:
             logger.warning(f"[voice] dm job stamp failed: {type(e).__name__}")
-    if reply:
-        if heard:
-            reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
-        await send_whatsapp_message(dm_chat, reply)
-        # The words first; then where on the sheet they came from.
-        await _dm_send_plan_shots(dm_chat, out.get("plan_shots") or [])
-    elif eyes:
-        await _react_to_message(dm_chat, message_id, "")
+    timing: dict = {}
+    try:
+        if budget == "gave_up":
+            await send_whatsapp_message(dm_chat, DM_GAVE_UP_TEXT)
+        elif reply:
+            if heard:
+                reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
+            await send_whatsapp_message(dm_chat, reply)
+            # The words first; then where on the sheet they came from.
+            await _dm_send_plan_shots(dm_chat, out.get("plan_shots") or [])
+    finally:
+        # Logged AFTER the sends, so the row says when the first one went.
+        timing = _dm_turn_timing(inbound, received, t0, t_start, brain_done, out, sends,
+                                 budget=budget)
+        await _dm_log_answer(
+            ident, out.get("used_job"), question,
+            DM_GAVE_UP_TEXT if budget == "gave_up"
+            else out.get("reply") or " | ".join(out.get("sent") or []),
+            "brain", tool_data=out.get("trace"), model=out.get("model") or dm_brain.MODEL,
+            rounds=out.get("rounds"), usage=out.get("usage"),
+            verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
+            stop=out.get("stop"), deflect_retries=out.get("deflect_retries") or None,
+            tools_tried=_dm_redact(out.get("tools_tried") or []),
+            timing=timing,
+            **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
+        if budget == "gave_up":
+            await _dm_turn_gave_up(ident, dm_chat, "brain", timing, out.get("trace"), message_id)
+
+
+def _dm_turn_timing(inbound: dict, received: float, t0: float, t_start: float,
+                    brain_done: float, out: dict, sends: list, budget: str = "ok") -> dict:
+    """One DM turn's clock for the answer log, every offset in ms from the
+    webhook's receipt: received_at; queue_ms (webhook -> its task began);
+    wa_lag_ms (WhatsApp's send time -> webhook); brain_start_ms / brain_ms;
+    rounds (each model call); sends (each message out: t_ms, action, ok,
+    wait_ms for the DM send lock, tries, or `refused`); first_send_ms (the
+    first send that went); budget ("ok" | "slow_notice" | "gave_up", see
+    _dm_await_budget). No phone, no words."""
+    def off(t: float) -> int:
+        return int((t - t0) * 1000)
+    wa_ts = int(inbound.get("wa_ts") or 0)
+    rows = [{"t_ms": off(x["at"]), **{k: v for k, v in x.items() if k != "at"}}
+            for x in sends or []]
+    went = [r["t_ms"] for r in rows if r.get("ok")]
+    return {
+        "received_at": datetime.fromtimestamp(received, timezone.utc),
+        "queue_ms": int((float(inbound["started"]) - received) * 1000) if inbound.get("started") else None,
+        "wa_lag_ms": int((received - wa_ts) * 1000) if wa_ts else None,
+        "brain_start_ms": off(t_start), "brain_ms": int((brain_done - t_start) * 1000),
+        "rounds": out.get("timing_rounds") or [],
+        "sends": rows, "first_send_ms": min(went) if went else None,
+        "budget": budget,
+    }
 
 
 def _iso_utc(v: Any) -> Any:
@@ -60652,6 +61342,10 @@ async def send_whatsapp_message(
         if not verdict["allowed"]:
             logger.info(f"WhatsApp DM refused ({verdict['reason']}) "
                         f"to ...{wa_dm.phone_digits(chat_id)[-4:]}")
+            sends = _DM_SENDS.get()
+            if sends is not None:
+                sends.append({"at": _time.monotonic(), "action": "send-message", "ok": False,
+                              "refused": str(verdict.get("reason") or "?")})
             return None
         ledger_id = verdict.get("ledger_id")
 
@@ -61865,18 +62559,18 @@ async def transcribe_audio(audio_bytes: bytes) -> str:
     construction vocabulary + the handful of languages our crews
     actually speak.
     """
-    if not OPENAI_API_KEY:
-        logger.warning("Transcription skipped — OPENAI_API_KEY not set")
+    if not LLM_API_KEY:
+        logger.warning("Transcription skipped — LLM_API_KEY not set")
         return ""
     if not audio_bytes or len(audio_bytes) < 200:
         logger.warning(f"Transcription skipped — audio too small ({len(audio_bytes) if audio_bytes else 0} bytes)")
         return ""
     try:
-        url = "https://api.openai.com/v1/audio/transcriptions"
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        url = llm_provider.TRANSCRIBE_URL
+        headers = {"Authorization": f"Bearer {LLM_API_KEY}"}
         files_payload = {
             "file": ("audio.ogg", io.BytesIO(audio_bytes), "audio/ogg"),
-            "model": (None, "whisper-1"),
+            "model": (None, llm_provider.WHISPER_MODEL),
             # Biasing vocabulary, NOT a language lock.
             "prompt": (
                 None,
@@ -62521,16 +63215,16 @@ async def _detect_material_request(message_body: str, project_id: str, company_i
     """Use GPT-4o-mini to detect if a message contains a material request."""
     if not message_body or len(message_body.strip()) < 15:
         return None
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
 
     try:
         async with ServerHttpClient(timeout=15) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={
-                    "model": "gpt-4o-mini",
+                    "model": llm_provider.CHAT_MODEL,
                     "temperature": 0,
                     "messages": [
                         {"role": "system", "content": """You analyze construction site WhatsApp messages to detect material requests.
@@ -63784,19 +64478,19 @@ async def _generate_embedding(text: str) -> Optional[list]:
 
     Returns None on any failure — callers must tolerate missing embeddings.
     """
-    if not OPENAI_API_KEY or not text:
+    if not LLM_API_KEY or not text:
         return None
     # OpenAI caps at 8192 tokens per input; truncate aggressively at char level.
     text = text.strip()[:20000]
     try:
         async with ServerHttpClient(timeout=30.0) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/embeddings",
+                llm_provider.EMBED_URL,
                 headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Authorization": f"Bearer {LLM_API_KEY}",
                     "Content-Type": "application/json",
                 },
-                json={"model": "text-embedding-3-small", "input": text},
+                json={"model": llm_provider.EMBED_MODEL, "input": text},
             )
             if resp.status_code != 200:
                 logger.warning(f"embedding API {resp.status_code}: {resp.text[:200]}")
@@ -64114,6 +64808,24 @@ _GLYPH_PASS_RUNNING: set = set()
 _DOOR_SCHEDULE_TEXT = re.compile(r"DOOR\s+SCHEDULE", re.I)
 
 
+async def _opening_schedules(pid: str, page_ids: List[str]) -> List[dict]:
+    """The door and window schedules on the given pages (lib.plan_openings):
+    schedule records on ARCHITECTURAL sheets whose printed name says DOOR or
+    WINDOW SCHEDULE - A-400.00's three on 588 Boyland. The pass and the
+    count gate read them the same way, as the equipment's M-sheet schedules."""
+    sched = await db[PLAN_RECORDS].find(
+        {"project_id": pid, "record_type": "schedule", "page_id": {"$in": list(page_ids)},
+         "sheet_number": {"$regex": "^A"},
+         "payload.name": {"$regex": "(?i)(door|window)s?\\b.*\\bschedule"}},
+        {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
+         "payload.rows": 1},
+    ).to_list(500)
+    return [{"name": (r.get("payload") or {}).get("name"),
+             "columns": (r.get("payload") or {}).get("columns"),
+             "rows": (r.get("payload") or {}).get("rows"),
+             "tier": r.get("tier"), "sheet_number": r.get("sheet_number")} for r in sched]
+
+
 def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
                        live: set) -> List[Tuple[str, List[dict]]]:
     """[(drawing track, its current index rows)], the filed track first.
@@ -64190,7 +64902,34 @@ async def _glyph_page_ids(pid: str) -> List[str]:
     return sorted(ids)
 
 
-async def _plan_glyph_pass(project_id: str) -> dict:
+async def _reindex_in_flight(project_id: str, since: Optional[datetime] = None) -> List[dict]:
+    """Re-index jobs that make the project's pages unsafe to read: any queued
+    or running, and - with `since` - any enqueued or started after it, even
+    one already finished (the pages it rewrote changed under a pass that
+    began earlier).
+
+    ── WHY THE PASS WAITS (2026-10-26) ──────────────────────────────────────
+    #
+    # A re-index deletes the file's page rows first and writes them back one
+    # page at a time. The glyph pass was started a minute after a re-index of
+    # AR 3.28.25 - whose pages include the filed track's architectural plans -
+    # and paired the mechanical sheets against a set with that file missing:
+    # 221 rows against 181, 48 count answers bound to a wrong figure (EF-2 in
+    # 1C, PTAC-1 in every fourth-floor unit), and 46 set-health items for
+    # sheets that were only being rewritten."""
+    q: Dict[str, Any] = {"project_id": str(project_id)}
+    if since is None:
+        q["status"] = {"$in": list(PLAN_INDEX_ACTIVE)}
+    else:
+        q["$or"] = [{"status": {"$in": list(PLAN_INDEX_ACTIVE)}},
+                    {"enqueued_at": {"$gte": since}}, {"started_at": {"$gte": since}}]
+    rows = await db[PLAN_INDEX_JOBS].find(
+        q, {"file_name": 1, "status": 1, "enqueued_at": 1, "started_at": 1}).to_list(100)
+    return [{"job_id": str(r["_id"]), "file_name": r.get("file_name"),
+             "status": r.get("status")} for r in rows]
+
+
+async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict:
     """Run the equipment-placement pass over the project's current sheets
     and write its rows (lib.plan_glyph_pass, lib.plan_emit) - once per
     drawing track (_glyph_track_pages), each mechanical sheet swept once.
@@ -64198,11 +64937,22 @@ async def _plan_glyph_pass(project_id: str) -> dict:
     NOT CALLED BY THE INDEXER. It runs when an operator starts it
     (POST .../plan-glyphs/run): its rows change what the count-answer gate
     allows (plan_search.glyph_tallies), and the first write is reviewed by
-    render before it is made."""
+    render before it is made.
+
+    DRAWING-SET QUESTIONS (ruling 21, lib.plan_set_questions): the stored
+    answers are applied on this pass, and the questions it raises are
+    stored (_store_set_questions) - NEVER SENT from here: asking is its own
+    operator action (POST .../plan-set-questions/ask)."""
     from lib.plan_glyph_pass import run_pass
     from lib.plan_page import PlanPage
 
     pid = str(project_id)
+    began = datetime.now(timezone.utc)
+    try:
+        set_answers = await _set_question_answers(pid)
+    except Exception as e:                  # no answers read: every question stays open
+        logger.warning("plan set questions unreadable for %s: %r", pid, e)
+        set_answers = {}
     tracks, files = await _glyph_pages(pid)
     by_track: List[Tuple[str, List[dict]]] = []
     door_pages, seen_doors, current_ids = [], set(), set()
@@ -64239,6 +64989,16 @@ async def _plan_glyph_pass(project_id: str) -> dict:
                   "rows": (s.get("payload") or {}).get("rows"),
                   "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
                  for s in sched]
+    # DOORS AND WINDOWS (lib.plan_openings): the door/window schedules, read
+    # on the same floors; their rows follow every equipment row, so the
+    # equipment rows and their numbering are what they were.
+    opening_schedules = await _opening_schedules(pid, sorted(current_ids))
+    # PLAN-ONLY FAMILIES (lib.plan_only, ruling 2026-10-26): the roof drains
+    # no schedule counts, allowed only while a detail or note in the set names
+    # them - read from the same current pages the pass places against.
+    from lib import plan_only as _plan_only
+    plan_only = _plan_only.families(await db[PLAN_RECORDS].find(
+        _plan_only.record_query(pid, sorted(current_ids)), {"embedding": 0}).to_list(2000))
 
     import tempfile as _tf
     with _tf.TemporaryDirectory(prefix="glyphpass-") as tmp:
@@ -64259,19 +65019,345 @@ async def _plan_glyph_pass(project_id: str) -> dict:
 
         sweeps: Dict[Any, Any] = {}
         rows: List[dict] = []
+        opening_rows: List[dict] = []
+        opening_health: List[dict] = []
+        set_questions: List[dict] = []
+        areas: List[dict] = []
         summary: Dict[str, Any] = {"tracks": {}}
         for track, pages in by_track:
+            # (passed only when there is one: a set with no door or window
+            # schedule runs exactly the equipment pass it ran before)
+            extra = {"opening_schedules": opening_schedules} if opening_schedules else {}
+            if opening_schedules and set_answers:
+                extra["set_answers"] = set_answers
             out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
-                                          door_pages, track=track, sweeps=sweeps)
+                                          door_pages, track=track, sweeps=sweeps,
+                                          plan_only=plan_only, **extra)
             rows += out["rows"]
+            areas += out.get("areas") or []
+            opening_rows += out.get("opening_rows") or []
+            opening_health += out.get("opening_health") or []
+            set_questions += out.get("set_questions") or []
             summary["tracks"][track] = out["summary"]
+        rows += opening_rows
+        # SET HEALTH (PR 5), while the PDFs are still here - a callout bubble
+        # is read from the page's geometry. A failure is logged, never sinks
+        # the pass: its rows stand on their own.
+        # NEVER SILENT (ruling 2026-10-26): a failure writes one marker the
+        # model is shown, and a set with nothing to report says so - an empty
+        # collection only ever means "not yet assessed".
+        from lib import plan_set_health as _health
+        try:
+            health = await asyncio.to_thread(_glyph_set_health, tracks, rows, schedules,
+                                             sweeps, open_page)
+            from lib import plan_openings as _openings
+            health = _health.dedupe(health + _health.unreconciled(
+                _openings.families(opening_schedules)) + opening_health)
+            if not health:
+                health = [_health.clean(datetime.now(timezone.utc))]
+        except Exception as e:
+            logger.exception("plan set health %s failed: %r", pid, e)
+            health = [_health.unavailable(e, datetime.now(timezone.utc))]
     # one numbering across the tracks: a row is (page_id, ordinal), and every
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
         r["ordinal"] = i
+    # A RE-INDEX DURING THE PASS: the pages it read may not be the set's.
+    # Nothing is written - the rows and set health from the last good pass
+    # stay - and the operator runs it again when the re-index is done.
+    late = await _reindex_in_flight(pid, since=began)
+    if late:
+        summary["aborted"] = "a re-index ran during the pass; nothing written"
+        summary["reindex"] = late
+        logger.warning("plan glyph pass %s aborted, nothing written: re-index during the pass %s",
+                       pid, late)
+        return summary
     summary["written"] = await _write_glyph_records(pid, rows)
+    summary["set_health"] = await _write_set_health(pid, health)
+    summary["areas_written"] = await _write_area_records(pid, areas)
+    try:
+        summary["set_questions"] = await _store_set_questions(
+            pid, set_questions, opening_rows, actor or "system:glyph_pass")
+    except Exception as e:                  # the rows stand on their own
+        logger.exception("plan set questions %s not stored: %r", pid, e)
+        summary["set_questions"] = {"error": type(e).__name__}
     logger.info("plan glyph pass %s: %s", pid, summary)
     return summary
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# DRAWING-SET QUESTIONS (ruling 21, lib.plan_set_questions)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# "The system never decides which drawings belong to a set or which governs.
+# When it's ambiguous: if the project has a PM or SM on record, ask them
+# through the app/WhatsApp: one question per ambiguity, naming the sheets
+# and what each would change. Their answer is stored per project,
+# audit-logged, and applied on the next pass." (operator, 2026-10-27)
+#
+#   STORED   by the glyph pass (_store_set_questions): one document per
+#            question, _id = its stable id; never re-opened, never re-asked.
+#   ASKED    only by the operator action POST .../plan-set-questions/ask
+#            (_ask_set_questions): a WhatsApp DM to each PM / Site Manager
+#            on record (send_whatsapp_dm, kind plan_set_question, one ledger
+#            window per question). No PM/SM, or none reachable: stored
+#            unasked, and the render says so.
+#   ANSWERED by the PM's reply "Q1 YES" / "Q1 NO" (_handle_set_question_reply,
+#            in the inbound DM route beside the GC-group answer), or by an
+#            admin (POST .../plan-set-questions/{id}/answer). Audit-logged.
+#   APPLIED  on the next glyph pass (_set_question_answers -> run_pass).
+
+async def _set_question_answers(pid: str) -> Dict[str, str]:
+    from lib import plan_set_questions as psq
+    docs = await db[psq.COLLECTION].find(
+        {"project_id": str(pid), "status": psq.ANSWERED}).to_list(500)
+    return {str(d["_id"]): d["answer"] for d in docs if d.get("answer") in psq.ANSWERS}
+
+
+async def _store_set_questions(pid: str, detected: List[dict], opening_rows: List[dict],
+                               actor: str) -> dict:
+    """One pass's questions into the project's stored ones (psq.reconcile):
+    a new one opened, a known one's figures refreshed while it is open, an
+    open one no longer raised withdrawn. Each opening and withdrawal is
+    audited."""
+    from lib import plan_set_questions as psq
+    pid = str(pid)
+    coll = db[psq.COLLECTION]
+    company_id = await _project_company_id(pid)
+    existing = await coll.find({"project_id": pid}).to_list(500)
+    taken = [d.get("code") for d in await coll.find(
+        {"company_id": company_id}, {"code": 1}).to_list(5000)] if company_id else []
+    seen: Dict[str, dict] = {}
+    for d in detected:
+        seen.setdefault(d["id"], d)        # one question, whatever track raised it
+    detected = list(seen.values())
+    for d in detected:
+        d["figures"] = psq.figures(opening_rows, d["id"], d["track"])
+    plan = psq.reconcile(existing, detected, taken=taken)
+    now = datetime.now(timezone.utc)
+    status_of = {str(q.get("_id")): q.get("status") for q in existing}
+    for d in plan["insert"]:
+        doc = {k: v for k, v in d.items() if k != "id"}
+        doc.update(_id=d["id"], project_id=pid, company_id=company_id, status=psq.OPEN,
+                   asked=[], asked_user_ids=[], created_at=now, last_seen_at=now)
+        await coll.insert_one(doc)
+        await audit_log("plan_set_question_opened", actor, "plan_set_question", d["id"],
+                        {"project_id": pid, "code": d["code"], "label": d["label"],
+                         "track": d["track"], "figures": d["figures"]})
+    for d in plan["refresh"]:
+        fields = {"last_seen_at": now}
+        if status_of.get(d["id"]) == psq.OPEN:
+            fields.update(pages=d["pages"], figures=d["figures"], label=d["label"],
+                          short=d["short"])
+        await coll.update_one({"_id": d["id"]}, {"$set": fields})
+    withdrawn = 0
+    for q in plan["withdraw"]:
+        res = await coll.update_one(
+            {"_id": q["_id"], "status": psq.OPEN},
+            {"$set": {"status": psq.WITHDRAWN, "withdrawn_at": now,
+                      "withdrawn_reason": "the glyph pass no longer raises it"}})
+        if getattr(res, "matched_count", 0):
+            withdrawn += 1
+            await audit_log("plan_set_question_withdrawn", actor, "plan_set_question",
+                            str(q["_id"]), {"project_id": pid, "label": q.get("label")})
+    return {"opened": len(plan["insert"]), "refreshed": len(plan["refresh"]),
+            "withdrawn": withdrawn}
+
+
+async def _set_question_people(pid: str) -> Tuple[Optional[dict], List[dict]]:
+    """(the project, its PMs / Site Managers on record)."""
+    from lib import plan_set_questions as psq
+    try:
+        proj = await db.projects.find_one({"_id": to_query_id(str(pid))},
+                                          {"name": 1, "company_id": 1})
+    except Exception:
+        proj = None
+    if not proj or not proj.get("company_id"):
+        return proj, []
+    cid = str(proj["company_id"])
+    users = await db.users.find({"company_id": _company_id_filter(cid), "role": "pm",
+                                 "is_deleted": {"$ne": True}},
+                                {"password": 0}).to_list(200)
+    return proj, [u for u in users if psq.pm_on_record(u, pid, cid)]
+
+
+async def _ask_set_questions(pid: str, actor: str) -> dict:
+    """ASK, ONCE (ruling 21): every open question not yet delivered to
+    anyone goes to each PM / Site Manager on record, by WhatsApp DM. A
+    question delivered once is never sent again. Called ONLY by the
+    operator action POST .../plan-set-questions/ask."""
+    from lib import plan_set_questions as psq
+    pid = str(pid)
+    coll = db[psq.COLLECTION]
+    proj, pms = await _set_question_people(pid)
+    name = str((proj or {}).get("name") or "your project")
+    now = datetime.now(timezone.utc)
+    report: List[dict] = []
+    for q in await coll.find({"project_id": pid, "status": psq.OPEN}).to_list(500):
+        qid = str(q["_id"])
+        if any(a.get("sent") for a in q.get("asked") or []):
+            report.append({"id": qid, "code": q.get("code"), "skipped": "already asked"})
+            continue
+        if not pms:
+            why = "no PM or Site Manager on record for this project"
+            await coll.update_one({"_id": qid}, {"$set": {"unasked_reason": why}})
+            report.append({"id": qid, "code": q.get("code"), "unasked": why})
+            continue
+        asked: List[dict] = []
+        for u in pms:
+            uid = str(u.get("_id"))
+            who = u.get("full_name") or u.get("name") or "the PM"
+            reason = await _dm_refusal_reason(uid, psq.WA_KIND)
+            res = None
+            if reason is None:
+                res = await send_whatsapp_dm(uid, psq.message(q, name), kind=psq.WA_KIND,
+                                             window=qid, project_id=pid)
+                if res is None:
+                    reason = "not delivered"
+            asked.append({"user_id": uid, "name": who, "channel": "WhatsApp", "at": now,
+                          "sent": res is not None, "reason": reason})
+        sent_to = [a["user_id"] for a in asked if a["sent"]]
+        fields: Dict[str, Any] = {"asked": (q.get("asked") or []) + asked,
+                                  "asked_user_ids": sorted(set((q.get("asked_user_ids") or [])
+                                                               + sent_to))}
+        fields["unasked_reason"] = (None if sent_to else "no PM or Site Manager could be reached: "
+                                    + "; ".join(f"{a['name']} ({a['reason']})" for a in asked))
+        if sent_to:
+            fields["asked_at"] = now
+        await coll.update_one({"_id": qid}, {"$set": fields})
+        await audit_log("plan_set_question_asked", actor, "plan_set_question", qid,
+                        {"project_id": pid, "code": q.get("code"), "sent_to": sent_to,
+                         "refused": [{"user_id": a["user_id"], "reason": a["reason"]}
+                                     for a in asked if not a["sent"]]})
+        report.append({"id": qid, "code": q.get("code"), "sent_to": sent_to,
+                       "unasked": fields["unasked_reason"]})
+    return {"questions": report}
+
+
+async def _record_set_answer(pid: str, qid: str, answer: str, actor: str, *, via: str,
+                             name: Optional[str] = None) -> Optional[dict]:
+    """Record one answer - only to an OPEN question of THIS project, once -
+    and audit it. None when there was no such question (answered already,
+    withdrawn, another project's). Applied on the next glyph pass."""
+    from lib import plan_set_questions as psq
+    if answer not in psq.ANSWERS:
+        raise ValueError(f"answer must be one of {psq.ANSWERS}")
+    pid, qid = str(pid), str(qid)
+    coll = db[psq.COLLECTION]
+    now = datetime.now(timezone.utc)
+    res = await coll.update_one(
+        {"_id": qid, "project_id": pid, "status": psq.OPEN},
+        {"$set": {"status": psq.ANSWERED, "answer": answer, "answered_by": str(actor),
+                  "answered_by_name": name, "answered_at": now, "answered_via": via}})
+    if not getattr(res, "matched_count", 0):
+        return None
+    doc = await coll.find_one({"_id": qid})
+    await audit_log("plan_set_question_answered", str(actor), "plan_set_question", qid,
+                    {"project_id": pid, "code": (doc or {}).get("code"), "answer": answer,
+                     "via": via, "label": (doc or {}).get("label")})
+    return doc
+
+
+async def _handle_set_question_reply(chat_id: str, code: str, answer: str) -> bool:
+    """A PM's "Q1 YES" / "Q1 NO" to a drawing-set question Levelog asked
+    THEM. True when it was one (recorded, and confirmed back); False sends
+    the message on to normal handling. Re-checked at the moment of the
+    answer: the person is still a PM / Site Manager on record for that
+    project."""
+    from lib import plan_set_questions as psq
+    optin = await _active_optin_for_phone(wa_dm.phone_digits(chat_id))
+    if not optin or not optin.get("user_id"):
+        return False
+    uid = str(optin["user_id"])
+    qs = await db[psq.COLLECTION].find({"code": code, "status": psq.OPEN,
+                                        "asked_user_ids": uid}).to_list(5)
+    if len(qs) != 1:
+        return False
+    q = qs[0]
+    _proj, pms = await _set_question_people(str(q.get("project_id")))
+    me = next((u for u in pms if str(u.get("_id")) == uid), None)
+    if me is None:
+        _security_event("plan_set_answer_refused", user_id=uid,
+                        project_id=str(q.get("project_id")), reason="not_pm_on_record")
+        return False
+    doc = await _record_set_answer(str(q["project_id"]), str(q["_id"]), answer, uid,
+                                   via="whatsapp", name=me.get("full_name") or me.get("name"))
+    if doc is None:
+        return False
+    await send_whatsapp_message(chat_id, psq.answer_text(q, answer))
+    return True
+
+
+def _glyph_set_health(tracks: List[Tuple[str, List[dict]]], rows: List[dict],
+                      schedules: List[dict], sweeps: Dict[Any, Any],
+                      open_page=None) -> List[dict]:
+    """Every set-health item of one pass (lib.plan_set_health): the tags the
+    mechanical sweeps read (unlisted tags, prose mentions), the schedule tags
+    never located, the schedules with no identifier column, and per track the
+    duplicate sheet numbers and mechanical plans with no partner; then the
+    sheets referenced in reference context that the current set lacks."""
+    from lib import plan_derive as _derive, plan_set_health as H
+    from lib.plan_glyph_pass import families as _families
+
+    fams = _families(schedules)
+    items: List[dict] = H.unreconciled(fams)
+    reconciled = {n: f for n, f in fams.items() if f["tags"]}
+    sheet_of = {str(p["_id"]): p.get("sheet_number") for _t, ps in tracks for p in ps}
+    for page_id, reads in sorted(sweeps.items(), key=lambda kv: str(sheet_of.get(str(kv[0])))):
+        items += H.tag_reads(str(sheet_of.get(str(page_id)) or page_id), reads, reconciled)
+    located = {r.get("label") for r in rows if r.get("label") and r.get("glyph_status") == "resolved"
+               and (r.get("payload") or {}).get("kind") != "opening"}
+    items += H.not_located(reconciled, located)
+    current: Dict[str, dict] = {}
+    for track, pages in tracks:
+        items += H.duplicates(track, pages)
+        items += H.unpaired_mechanical(track, _derive.pair_plan_sheets(pages).get("unpaired_mech") or [])
+        for p in pages:
+            current.setdefault(str(p["_id"]), p)
+    present = {H.sheet_stem(p.get("sheet_number")) for p in current.values()} - {None}
+    items += H.missing_references(list(current.values()), present, open_page)
+    return H.dedupe(items)
+
+
+async def _write_area_records(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's area rows with one pass's (lib.plan_areas). Own
+    collection, as set health: search fetches them only for a question about
+    an area (search_plans), and the eval's record baseline does not move."""
+    from lib.plan_areas import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    for i, r in enumerate(rows):
+        r["ordinal"] = i
+        r["created_at"] = now
+    await db[COLLECTION].insert_many(rows)
+    return len(rows)
+
+
+async def _area_evidence(project_id: str) -> List[dict]:
+    """Every area row of the project's last glyph pass (lib.plan_areas):
+    whole project, every track, like the located symbols - a floor filter on
+    the question must not hide the row that withholds a figure."""
+    from lib.plan_areas import COLLECTION
+    return await db[COLLECTION].find({"project_id": str(project_id)},
+                                     {"_id": 0, "created_at": 0}).to_list(2000)
+
+
+async def _write_set_health(project_id: str, items: List[dict]) -> int:
+    """Replace the project's set-health items with one pass's (own collection:
+    they are no plan record, so search never returns them and the eval's
+    record baseline does not move with them)."""
+    from lib.plan_set_health import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not items:
+        return 0
+    now = datetime.now(timezone.utc)
+    docs = [dict(it, project_id=pid, record_type="set_health", created_at=now) for it in items]
+    await db[COLLECTION].insert_many(docs)
+    return len(docs)
 
 
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
@@ -66530,18 +67616,18 @@ async def _parse_plan_query(query: str) -> dict:
     Returns dict with keys: sheet_number, discipline, floor, sheet_type,
     keywords (list), question (str|None), dob_route (bool).
     """
-    if not OPENAI_API_KEY or not query:
+    if not LLM_API_KEY or not query:
         return {}
     try:
         async with ServerHttpClient(timeout=20.0) as client_http:
             resp = await client_http.post(
-                "https://api.openai.com/v1/chat/completions",
+                llm_provider.CHAT_URL,
                 headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Authorization": f"Bearer {LLM_API_KEY}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "gpt-4o-mini",
+                    "model": llm_provider.CHAT_MODEL,
                     "temperature": 0,
                     "max_tokens": 250,
                     "response_format": {"type": "json_object"},
@@ -66849,6 +67935,244 @@ async def _dm_send_sheet(dm_chat: str, page: dict, *, jpeg: Optional[bytes] = No
     return True
 
 
+# ── WHAT FILE, WHICH SET, AND THE PDF ITSELF (lib/plan_sources) ─────────────
+#
+# Oct 27, the owner: EN-001 / EN-002, then "what file is it on", then "send me
+# the PDF". The evidence named sheets only, and nothing could send a PDF. A
+# record and a sheet now say their file and set (project_files.drawing_track,
+# DRAWING_TRACKS), sheet_info answers "what file", and send_plan_file sends the
+# drawing's PDF -- the whole file or some of its pages -- through the DM gate.
+# Data and rendering only: nothing here binds, withholds or ranks a record.
+
+
+async def _plan_file_sources(project_id: str, file_ids: Any) -> Dict[str, dict]:
+    """{file_id: plan_sources.source_of(row)} for this project's files.
+    {} when it could not look: a citation then goes out as it did before."""
+    ids = sorted({str(f) for f in file_ids or [] if f})
+    if not ids:
+        return {}
+    try:
+        rows = await db.project_files.find(
+            {"_id": {"$in": [to_query_id(i) for i in ids]}, "project_id": str(project_id),
+             "is_deleted": {"$ne": True}},
+            {"name": 1, "drawing_track": 1, "drawing_track_label": 1}).to_list(len(ids))
+    except Exception as e:
+        logger.warning(f"plan file sources lookup failed for {project_id}: {type(e).__name__}")
+        return {}
+    out = {}
+    for r in rows:
+        src = plan_sources.source_of(r)
+        if src:
+            out[str(r["_id"])] = src
+    return out
+
+
+async def _drawing_list_and_sheets(project_id: str) -> Tuple[Dict[str, dict], List[str]]:
+    """(the drawing list -- {sheet key: {sheet, title, on}} from the index
+    schedules on the current pages, plan_sources.drawing_list -- and the
+    sheet numbers actually uploaded). ({}, []) when it could not look."""
+    pid = str(project_id)
+    live = await _live_plan_file_ids(pid)
+    try:
+        pages = await db.document_page_index.find(
+            {"project_id": pid, **_current_page_filter(live)}, {"sheet_number": 1}).to_list(5000)
+        recs = await db[PLAN_RECORDS].find(
+            {"project_id": pid, "record_type": "schedule",
+             "page_id": {"$in": [str(p["_id"]) for p in pages]}},
+            {"payload.name": 1, "payload.rows": 1, "quote": 1, "sheet_number": 1}).to_list(2000)
+    except Exception as e:
+        logger.warning(f"drawing list lookup failed for {pid}: {type(e).__name__}")
+        return {}, []
+    listed = plan_sources.drawing_list([r for r in recs if plan_search.is_index_record(r)])
+    return listed, [p.get("sheet_number") for p in pages if p.get("sheet_number")]
+
+
+async def _dm_sheet_info(project_id: str, sheet_q: str) -> str:
+    """sheet_info: the file and set a sheet is on, its own title, and what
+    the drawing list says (another title for it; its series' sheets listed
+    but not uploaded)."""
+    pid = str(project_id)
+    rows = await _find_named_sheet(pid, sheet_q)
+    page = rows[0] if rows else None
+    listed, uploaded = await _drawing_list_and_sheets(pid)
+    asked = (page or {}).get("sheet_number") or str(sheet_q or "").strip().upper()
+    lines = []
+    if page:
+        src = (await _plan_file_sources(pid, [page.get("file_id")])).get(str(page.get("file_id")))
+        label = plan_sources.cite_with_set(asked, src)
+        title = page.get("sheet_title") or ""
+        lines.append(label + (f" — {title}" if title else "") + " (its title block).")
+        where = plan_sources.sheet_source_text(label, src, page.get("page_number"))
+        if not where and page.get("file_name"):
+            where = f"{label} is page {page.get('page_number')} of {page['file_name']}."
+        if where:
+            lines.append(where)
+        lines.append("send_plan_file sends its PDF (that page, or whole_file for the whole file).")
+    else:
+        lines.append(f"{asked} isn't among the uploaded, indexed sheets.")
+    lines += plan_sources.list_notes(asked, (page or {}).get("sheet_title") or "", listed, uploaded)
+    return "\n".join(lines)
+
+
+async def _dm_plan_file_named(project_id: str, company_id: Any, said: str
+                              ) -> Tuple[Optional[str], str]:
+    """(file id, "") for the live file of this project whose name is `said`
+    (or contains it, when only one does); (None, why) otherwise."""
+    live = await _live_plan_file_ids(project_id)
+    q: Dict[str, Any] = {"project_id": project_id, "is_deleted": {"$ne": True},
+                         "name": {"$regex": "(?i)" + re.escape(said)}}
+    if live is not None:
+        q["_id"] = {"$in": [to_query_id(i) for i in live]}
+    rows = await db.project_files.find(q, {"name": 1, "company_id": 1}).to_list(20)
+    rows = [r for r in rows if str(r.get("company_id") or company_id) == str(company_id)]
+    exact = [r for r in rows if str(r.get("name") or "").lower() == said.lower()]
+    pick = exact if len(exact) == 1 else rows
+    if len(pick) == 1:
+        return str(pick[0]["_id"]), ""
+    if not pick:
+        return None, f"No drawing file on this job is named like {said!r}."
+    return None, ("More than one file matches: " + ", ".join(str(r.get("name")) for r in pick[:6])
+                  + ". Which one?")
+
+
+async def _dm_pdf_media_url(frec: dict, pages: Optional[List[int]]) -> Tuple[Optional[str], str]:
+    """(the URL WaAPI fetches the PDF from, "") -- the stored file itself
+    when `pages` is None, else a new PDF of those pages, uploaded as a
+    temporary file; (None, why) when it can't be made or is over the limit."""
+    import tempfile as _tempfile
+    import uuid as _uuid
+    if pages is None:
+        tok = await _mint_temp_media_token(frec["r2_key"], "application/pdf", ttl_seconds=3600)
+        return _public_temp_media_url(tok), ""
+    with _tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "source.pdf")
+        try:
+            await _sheet_fetch_pdf(frec, path)
+            data, _count = await asyncio.to_thread(plan_sources.extract_pages, path, pages)
+        except ValueError as e:
+            return None, str(e)
+        except Exception as e:
+            logger.warning(f"[dm-brain] plan file pages failed: {type(e).__name__}")
+            return None, "the pages couldn't be cut from the file"
+    if len(data) > plan_sources.MAX_SEND_BYTES:
+        return None, (f"those pages come to {plan_sources.size_mb(len(data))}, over the "
+                      f"{plan_sources.MAX_SEND_MB} MB limit for sending a file in this chat")
+    key = f"temp/whatsapp/dm/{_uuid.uuid4()}.pdf"
+    try:
+        await asyncio.to_thread(_upload_to_r2, data, key, "application/pdf")
+        tok = await _mint_temp_media_token(key, "application/pdf", ttl_seconds=3600)
+    except Exception as e:
+        logger.warning(f"[dm-brain] plan file temp upload failed: {type(e).__name__}")
+        return None, "the PDF couldn't be stored for sending"
+    return _public_temp_media_url(tok), ""
+
+
+async def _dm_send_document(dm_chat: str, media_url: str, media_name: str, caption: str) -> bool:
+    """One PDF to this DM chat as a WhatsApp document, through the DM gate
+    (the reply window, paced, in the ledger), like _dm_send_sheet. Kept in
+    the chat's history as "[File] <caption>"."""
+    verdict = await _dm_send_verdict(dm_chat, f"[file {media_name}]", None)
+    if not verdict["allowed"]:
+        logger.info(f"[dm-brain] file refused ({verdict['reason']}) to {_log_chat(dm_chat)}")
+        return False
+    ledger_id = verdict.get("ledger_id")
+    ok, body, err = await _waapi_send_dm_paced(
+        f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
+        {"chatId": dm_chat, "mediaUrl": media_url, "mediaName": media_name, "caption": caption},
+        {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"})
+    inner = body.get("data") if isinstance(body, dict) else None
+    if ok and isinstance(inner, dict) and inner.get("status") == "error":
+        ok, err = False, "data.status error"
+    if ledger_id is not None:
+        await _ledger_finish(ledger_id, ok, err)
+    if not ok:
+        logger.warning(f"[dm-brain] file {media_name} not sent to {_log_chat(dm_chat)}: {err}")
+        return False
+    try:
+        now = datetime.now(timezone.utc)
+        await db.whatsapp_messages.insert_one({
+            "group_id": dm_chat, "is_dm": True, "sender": "bot", "body": f"[File] {caption}",
+            "has_audio": False, "message_id": "", "from_me": True,
+            "timestamp": now, "created_at": now})
+    except Exception as e:
+        logger.debug(f"[dm-brain] file bot-log skipped: {type(e).__name__}")
+    return True
+
+
+async def _dm_send_plan_file(ctx: dict, job: dict, args: dict) -> str:
+    """send_plan_file: the drawing's PDF -- the page a sheet is on, a page
+    range, or the whole file -- to this chat. Same scope as send_sheet; the
+    eval (dry run) sends nothing."""
+    ident, dm_chat, dry = ctx["ident"], ctx["dm_chat"], bool(ctx.get("dry_run"))
+    pid = str(job["id"])
+    company_id = str(ident.get("company_id") or "")
+    if not company_id or not await _bot_project_scope(company_id, pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    sheet_q = str(args.get("sheet") or "").strip()
+    file_q = str(args.get("file") or "").strip()
+    pages_q = str(args.get("pages") or "").strip()
+    page = None
+    if sheet_q:
+        rows = await _find_named_sheet(pid, sheet_q)
+        page = rows[0] if rows else None
+        if not page:
+            listed, uploaded = await _drawing_list_and_sheets(pid)
+            return " ".join([f"{sheet_q.upper()} isn't in the uploaded drawings for {job['label']}, "
+                             f"so there is no PDF of it to send."]
+                            + plan_sources.list_notes(sheet_q, "", listed, uploaded))
+        file_id = str(page.get("file_id") or "")
+    elif file_q:
+        file_id, why = await _dm_plan_file_named(pid, company_id, file_q)
+        if not file_id:
+            return why
+    else:
+        return "Say which sheet or file to send."
+    frec = await db.project_files.find_one(
+        {"_id": to_query_id(file_id), "project_id": pid, "is_deleted": {"$ne": True}},
+        {"name": 1, "company_id": 1, "r2_key": 1, "size": 1, "drawing_track": 1,
+         "drawing_track_label": 1})
+    # The file's own company must be the asker's: a file row with no company
+    # is not sent (its project is in scope, but the row proves nothing).
+    if not frec or str(frec.get("company_id") or "") != company_id:
+        return "That drawing's file isn't on this job any more."
+    if not frec.get("r2_key"):
+        return f"{frec.get('name') or 'That file'} has no stored copy in Levelog to send."
+    src = plan_sources.source_of(frec)
+    name = src["file_name"] or "drawing.pdf"
+    if not name.lower().endswith(".pdf"):
+        return f"{name} isn't a PDF."
+    if pages_q:
+        pages, why = plan_sources.parse_pages(pages_q)
+        if why:
+            return f"Nothing sent: {why}."
+    elif page is not None and args.get("whole_file") is not True and page.get("page_number"):
+        pages = [int(page["page_number"])]
+    else:
+        pages = None
+    label = plan_sources.cite_with_set(page.get("sheet_number") or sheet_q.upper(), src) if page else ""
+    what = (f"{name} ({src['set_name']})" if pages is None
+            else f"{plan_sources.pages_label(pages)} of {name} ({src['set_name']})")
+    if label:
+        what = f"{label}, {what}"
+    size = frec.get("size")
+    if pages is None and isinstance(size, (int, float)) and size > plan_sources.MAX_SEND_BYTES:
+        return (f"Not sent: {name} is {plan_sources.size_mb(size)}, over the {plan_sources.MAX_SEND_MB} MB "
+                f"limit for sending a file in this chat. Some of its pages can be sent (pages, or a "
+                f"sheet's page).")
+    if dry:
+        ctx["sent"].append(f"[file {name}]")
+        return f"(eval) Would send {what} here as a PDF."
+    media_url, why = await _dm_pdf_media_url(frec, pages)
+    if not media_url:
+        return f"Nothing sent: {why}. Say so plainly -- don't say the PDF was sent."
+    stem = re.sub(r"\.pdf$", "", name, flags=re.I)
+    media_name = name if pages is None else f"{stem} - {plan_sources.pages_label(pages)}.pdf"
+    if not await _dm_send_document(dm_chat, media_url, media_name, what):
+        return f"The PDF of {what} could NOT be sent. Say so plainly -- don't say it was sent."
+    ctx["sent"].append(f"[file {name}]")
+    return f"Sent {what} to them as a PDF."
+
+
 # ── WHERE A PLANS ANSWER CAME FROM, ON THE SHEET (lib/plan_crop) ────────────
 #
 # "Window protection details are on SSP-011.00" still sends a superintendent
@@ -66886,6 +68210,13 @@ async def _dm_plan_evidence(ctx: dict, sink: list) -> bool:
             except Exception as e:
                 logger.warning(f"[dm-brain] plan page read failed: {type(e).__name__}")
                 pages[pid] = {}
+    # Each page's file and set, for the picture's caption (rendering only).
+    want = {str(p.get("file_id")) for p in pages.values() if p and p.get("file_id")}
+    have = ctx.setdefault("plan_sources", {})
+    if want - set(have):
+        some = next((p for p in pages.values() if p and p.get("project_id")), None)
+        if some:
+            have.update(await _plan_file_sources(str(some["project_id"]), sorted(want - set(have))))
     if _dm_plan_records(ctx):
         ctx["plan_image_due"] = True
     return bool(ctx.get("plan_image_due"))
@@ -66918,8 +68249,11 @@ def _dm_plan_shots(ctx: dict, out: dict) -> list:
     groups = plan_crop.by_page(choice["marks"])
     total = sum(len(marks) for _pid, marks in groups)
     pages, sent = ctx["plan_pages"], ctx.get("sheets_sent") or set()
+    srcs = ctx.get("plan_sources") or {}
     return [{"page": pages[pid], "marks": marks, "total": total,
-             "label": pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+             "label": plan_sources.cite_with_set(
+                 pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+                 srcs.get(str(pages[pid].get("file_id") or ""))),
              "ambiguous": choice["ambiguous"], "unverified": choice["unverified"],
              "pictures": len(groups)}
             for pid, marks in groups if pid not in sent]
@@ -67456,8 +68790,56 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                       for s in sched])
     want = plan_search.glyph_families_for(
         subject, {n: f.get("tags") or [] for n, f in fams.items()})
-    if not want:
-        return []
+    # DOORS AND WINDOWS (lib.plan_openings): their schedules' families, wanted
+    # the same way; censused apart (scope OPENING), never mixed with the above.
+    from lib import plan_openings as _openings
+    ofams_all = _openings.families(await _opening_schedules(pid, page_ids))
+    owant = plan_search.opening_families_for(
+        subject, {n: f.get("tags") or [] for n, f in ofams_all.items()})
+    # PLAN-ONLY FAMILIES (lib.plan_only, ruling 2026-10-26), read at question
+    # time from the same pages: a family exists only while a detail or note
+    # names its object, and its census carries what the set says of it.
+    from lib import plan_only as _plan_only
+    plan_only: Dict[str, dict] = {}
+    try:
+        po_all = _plan_only.families(await db[PLAN_RECORDS].find(
+            _plan_only.record_query(pid, page_ids), {"embedding": 0}).to_list(2000))
+        po_want = plan_search.glyph_families_for(
+            subject, {n: f["tags"] for n, f in po_all.items() if n not in fams})
+        plan_only = {n: po_all[n] for n in po_want}
+    except Exception as e:
+        logger.warning("plan-only families unavailable for %s: %r", pid, e)
+    want = dict(want, **{n: plan_only[n]["tags"] for n in plan_only})
+    # SET HEALTH (PR 5): what the pass recorded about the set, and - read
+    # live, from the same schedules - every family with no identifier column,
+    # so a claim about one refuses with the reason and none is skipped silently.
+    from lib import plan_set_health as _health
+    health = [dict(h, record_type="set_health") for h in
+              _health.unreconciled(fams) + _health.unreconciled(ofams_all)]
+    try:
+        stored = await db[_health.COLLECTION].find({"project_id": pid}, {"_id": 0}).to_list(2000)
+        # no item at all: no pass has assessed the set - said, never read as clean
+        health += [dict(h, record_type="set_health") for h in
+                   ([s for s in stored if s.get("kind") != _health.FAMILY_NOT_RECONCILED]
+                    if stored else [_health.not_assessed()])]
+    except Exception as e:
+        logger.warning("plan set health read failed for %s: %r", pid, e)
+        health.append(dict(_health.unavailable(e, datetime.now(timezone.utc)),
+                           record_type="set_health"))
+    # DRAWING-SET QUESTIONS (ruling 21): the open ones, so the render can say
+    # whether each was asked. The gate reads the rows, never these.
+    if owant:
+        try:
+            from lib import plan_set_questions as _psq
+            health += [dict(q, record_type="set_question") for q in await db[_psq.COLLECTION].find(
+                {"project_id": pid, "status": _psq.OPEN}).to_list(200)]
+        except Exception as e:
+            logger.warning("plan set questions unreadable for %s: %r", pid, e)
+    if not want and not owant:
+        unrec = plan_search.unreconciled_families_for(
+            subject, [h["subject"] for h in health if h["kind"] == _health.FAMILY_NOT_RECONCILED])
+        return [h for h in health if h["kind"] == _health.FAMILY_NOT_RECONCILED
+                and h["subject"] in unrec]
     proj = {"_id": 0, "embedding": 0}
     # A CENSUS PER DRAWING TRACK (ruling 2026-10-24): each track's rows are
     # checked against the database on their own. Rows written before
@@ -67468,10 +68850,18 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                          {"payload.track": 1}).to_list(GLYPH_EVIDENCE_MAX)} - {None}) or [None]
     checks = []
     for track in tracks:
-        checks += [(plan_search.glyph_family_filter(pid, page_ids, name, tags, track=track),
-                    ("family", name, tags, track)) for name, tags in sorted(want.items())]
-        checks.append((plan_search.glyph_refusal_filter(pid, page_ids, track=track),
-                       ("refusals", None, [], track)))
+        if want:
+            checks += [(plan_search.glyph_family_filter(pid, page_ids, name, tags, track=track),
+                        ("family", name, tags, track, None)) for name, tags in sorted(want.items())]
+            checks.append((plan_search.glyph_refusal_filter(pid, page_ids, track=track),
+                           ("refusals", None, [], track, None)))
+        if owant:
+            op = plan_search.OPENING
+            checks += [(plan_search.glyph_family_filter(pid, page_ids, name, tags, track=track,
+                                                        scope=op),
+                        ("family", name, tags, track, op)) for name, tags in sorted(owant.items())]
+            checks.append((plan_search.glyph_refusal_filter(pid, page_ids, track=track, scope=op),
+                           ("refusals", None, [], track, op)))
     # THE SCHEDULE'S QTY, per tag, from the same best-tier reading the
     # families come from - so a building total can be checked against what
     # the schedule prints (plan_search._qty_check).
@@ -67481,17 +68871,35 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
         nm = str((s.get("payload") or {}).get("name") or "").strip().upper()
         if nm and (nm not in best or _tier_rank(s.get("tier")) < _tier_rank(best[nm].get("tier"))):
             best[nm] = s
+    obest: Dict[str, dict] = {}
+    if owant:
+        for r in await db[PLAN_RECORDS].find(
+                {"project_id": pid, "record_type": "schedule", "page_id": {"$in": page_ids},
+                 "sheet_number": {"$regex": "^A"}},
+                {"tier": 1, "payload.name": 1, "payload.columns": 1, "payload.rows": 1}).to_list(500):
+            nm = str((r.get("payload") or {}).get("name") or "").strip().upper()
+            if nm in owant and (nm not in obest
+                                or _tier_rank(r.get("tier")) < _tier_rank(obest[nm].get("tier"))):
+                obest[nm] = r
     rows: List[dict] = []
     census: List[dict] = []
-    for flt, (kind, name, tags, track) in checks:
+    for flt, (kind, name, tags, track, scope) in checks:
         rows += await db[PLAN_RECORDS].find(flt, proj).to_list(GLYPH_EVIDENCE_MAX)
         n = await db[PLAN_RECORDS].count_documents(flt)
-        qty = (plan_search.schedule_quantities((best.get(name) or {}).get("payload"), tags)
+        # A door/window schedule's QTY (none on A-400.00) is a cross-check
+        # only: a located total that disagrees refuses (_building_count), and
+        # it lends no figure to a door or window claim (opening_values never
+        # reads it).
+        src = best if scope is None else obest
+        qty = (plan_search.schedule_quantities((src.get(name) or {}).get("payload"), tags)
                if kind == "family" else None)
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
                                                family=name, tags=tags, qty=qty,
-                                               track=track))
-    return rows + census
+                                               track=track,
+                                               plan_only=(plan_only.get(name)
+                                                          if scope is None else None),
+                                               scope=scope))
+    return rows + census + health
 
 
 #: Rows fetched per filter. NOT a silent cap: a family with more rows than
@@ -67499,20 +68907,14 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
 GLYPH_EVIDENCE_MAX = 5000
 
 
-async def search_plans(project_id: str, subject: str, *, intent: str = "",
-                       discipline: str = "", floor: str = "",
-                       sheet_number: str = "", limit: int = 8) -> List[dict]:
-    """The records on this project's current sheets that speak to `subject`.
-
-    Returns RECORDS, not prose. The agent composes; `answer_is_grounded` then
-    decides whether what it composed may be sent."""
+async def _ranked_for_subject(project_id: str, page_ids: list, subject: str,
+                              intent: str) -> Optional[Tuple[List[dict], List[str]]]:
+    """(ranked records, terms) for ONE name of what is being looked for, or
+    None when the drawings never use a word of it (the floor) or it has no
+    words. Labels may find a record here and never keep one."""
     terms = plan_search.search_terms(subject)
-    if not (project_id and terms):
-        return []
-    page_ids = await _current_record_page_ids(
-        project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
-    if not page_ids:
-        return []
+    if not terms:
+        return None
     # ── MATCHED IN THE DATABASE, RANKED IN PYTHON ──────────────────────────
     #
     # Mongo narrows to the rows that contain ANY term — a cheap OR over the
@@ -67567,7 +68969,7 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
                     f"for {subject!r}; records matching only some terms were cut")
     except Exception as e:
         logger.warning(f"search_plans lookup failed for {subject!r}: {e}")
-        return []
+        return None
     ranked = plan_search.rank(rows, terms, intent)
     # ── A LABEL MAY FIND A RECORD; IT MAY NOT MAKE ONE AN ANSWER ───────────
     #
@@ -67619,9 +69021,237 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
         logger.info(
             f"search_plans floor: the drawings never use {unknown} "
             f"- returning no records")
+        return None
+    return ([r for r in ranked
+             if not plan_search.matched_only_through_label(r, terms)], terms)
+
+
+async def _level_rows(project_id: str) -> List[dict]:
+    """The current pages' titles and floor columns - what the SET calls its
+    levels (lib.plan_levels). Read only when a question names a level or a
+    meaning that lives on one."""
+    live_ids = await _live_plan_file_ids(str(project_id))
+    return await db.document_page_index.find(
+        {"project_id": str(project_id), **_current_page_filter(live_ids)},
+        {"_id": 1, "sheet_number": 1, "sheet_title": 1, "floor": 1, "floors": 1},
+    ).to_list(5000)
+
+
+async def _interpret_levels(project_id: str, subject: str, floor: str,
+                            attribute: str, interp: dict) -> Tuple[str, str, list]:
+    """(subject, floor, extra scopes) after reading the question's level words
+    against the set's own levels (lib.plan_levels).
+
+    QUERY INTERPRETATION AND RETRIEVAL SCOPE ONLY. "5th floor" on a set whose
+    numbered floors stop at four is its mezzanine: the phrase leaves the
+    searched words (no sheet prints 5TH, and an unprinted word empties the
+    search), the floor filter gives way to the set's level, that level's
+    sheets are searched as well, and `interp["level_mapping"]` carries the
+    sentence the answer must say. The ceiling of the top occupied level is
+    the underside of the roof assembly, so the roof sections and details are
+    searched too. What a record may say is the gate's, unchanged."""
+    from_subject = plan_levels.find_phrases(subject)
+    from_floor = plan_levels.find_phrases(floor, field_is_a_level=True)
+    if not from_subject and not from_floor:
+        return subject, floor, []
+    rows = await _level_rows(project_id)
+    levels = plan_levels.set_levels(rows)
+    if not levels:
+        return subject, floor, []
+    in_subject = [plan_levels.map_phrase(p, levels) for p in from_subject]
+    in_floor = [plan_levels.map_phrase(p, levels) for p in from_floor]
+    maps = in_subject + in_floor
+    interp["levels"] = [lv["token"] for m in maps for lv in m["levels"]]
+    restate = [m for m in maps if m["restate"]]
+    interp["level_mapping"] = [plan_levels.describe(m, levels) for m in restate]
+    scoped: list = []
+    if any(m["restate"] for m in in_subject):
+        subject = plan_levels.strip_phrases(subject) or subject
+    if any(m["restate"] for m in in_floor):
+        floor = ""
+    sheet_of = interp.setdefault("page_sheets", {})
+    sheet_of.update({str(r.get("_id")): str(r.get("sheet_number") or "") for r in rows})
+    ids = sorted({i for m in restate for lv in m["levels"] for i in lv["page_ids"]})
+    if ids:
+        scoped.append(("level", ids, subject))
+    if (plan_levels.asks_about_ceiling(f"{subject} {attribute}")
+            and set(plan_levels.top_occupied(levels)) & set(interp["levels"])):
+        roof = plan_levels.roof_assembly_sheets(rows)
+        if roof:
+            interp["searched_sheets"] = [r["sheet_number"] for r in roof]
+            scoped.append(("roof assembly",
+                           sorted({i for r in roof for i in r["page_ids"]}),
+                           plan_levels.without_ceiling(subject) or subject))
+    return subject, floor, scoped
+
+
+async def _sense_scopes(project_id: str, terms: List[str], asked: str,
+                        interp: dict, subject: str) -> list:
+    """A meaning the question settles may name the level that draws it (a
+    rooftop bulkhead is on the roof sheets): those sheets are searched too."""
+    want = {tok for t in terms for tok in plan_term_senses.levels_for(
+        plan_term_senses.resolve(t, asked, interp.get("levels") or ()))}
+    if not want:
         return []
-    ranked = [r for r in ranked
-              if not plan_search.matched_only_through_label(r, terms)]
+    rows = await _level_rows(project_id)
+    interp.setdefault("page_sheets", {}).update(
+        {str(r.get("_id")): str(r.get("sheet_number") or "") for r in rows})
+    lv = plan_levels.set_levels(rows)
+    ids = sorted({i for x in lv if x["token"] in want for i in x["page_ids"]})
+    return [("sense", ids, subject)] if ids else []
+
+
+#: Records each extra scope (the set's level, the roof assembly) may add,
+#: ahead of the whole-set results.
+SCOPED_PLANS_MAX = 4
+
+
+def _on_sheet(record: dict, sheet_number: str) -> bool:
+    """Does `record` sit on the sheet the caller named (the same prefix rule
+    `_current_record_page_ids` applies to pages)?"""
+    if not sheet_number:
+        return True
+    return str(record.get("sheet_number") or "").upper().startswith(sheet_number.upper())
+
+
+async def _interpret_query(project_id: str, subject: str, floor: str, attribute: str,
+                           intent: str, interp: dict, *, discipline: str = "",
+                           sheet_number: str = "") -> Tuple[str, str, List[dict]]:
+    """(subject, floor, records from the extra scopes) for what the question
+    MEANS on this set: its level words read against the set's levels, and a
+    two-meaning term's settled meaning (lib.plan_levels, lib.plan_term_senses).
+    Fills `interp` with `level_mapping`, `searched_sheets` and `scoped_sheets`.
+    A failure here costs the interpretation and nothing else: the question is
+    searched as it was asked.
+
+    AN EXPLICIT SHEET OR DISCIPLINE STILL HOLDS. The extra scopes widen what
+    the question means; they never widen past a sheet or discipline the
+    caller named - 'roof bulkhead' on M-200 does not return A-105. Each
+    scope is cut to the pages those filters allow, and any extra record off
+    them is dropped before it is merged."""
+    asked = f"{subject} {attribute}"
+    scoped: list = []
+    try:
+        subject, floor, scoped = await _interpret_levels(
+            project_id, subject, floor, attribute, interp)
+    except Exception as e:
+        logger.warning(f"search_plans level reading failed for {subject!r}: {e!r}")
+    terms = plan_term_senses.terms_in(asked)
+    if terms:
+        try:
+            scoped += await _sense_scopes(project_id, terms, asked, interp, subject)
+        except Exception as e:
+            logger.warning(f"search_plans sense scope failed for {subject!r}: {e!r}")
+    allowed: Optional[set] = None
+    if scoped and (sheet_number or discipline):
+        try:
+            allowed = set(await _current_record_page_ids(
+                project_id, discipline=discipline, sheet_number=sheet_number))
+        except Exception as e:
+            logger.warning(f"search_plans scope filter failed for {subject!r}: {e!r}")
+            allowed = set()
+    if allowed is not None:
+        scoped = [(why, [i for i in ids if i in allowed], subj) for why, ids, subj in scoped]
+    sheet_of = interp.get("page_sheets") or {}
+    kept = {i for _why, ids, _s in scoped for i in ids}
+    interp["scoped_sheets"] = sorted({sheet_of[i] for i in kept if sheet_of.get(i)})
+    if interp.get("searched_sheets"):
+        interp["searched_sheets"] = [s for s in interp["searched_sheets"]
+                                     if s in interp["scoped_sheets"]]
+    extra: List[dict] = []
+    for _why, ids, subj in scoped:
+        if not ids:
+            continue
+        subj = plan_search.normalize_arguments(subj, attribute, intent, "")[0]
+        got = await _ranked_for_subject(project_id, ids, subj, intent)
+        if got is not None:
+            extra += [r for r in plan_search.drop_impossible_dimensions(
+                plan_search.drop_indexes(got[0]))
+                if not plan_search.is_glyph_evidence(r)
+                and (allowed is None or str(r.get("page_id")) in allowed)
+                and _on_sheet(r, sheet_number)][:SCOPED_PLANS_MAX]
+    return subject, floor, extra
+
+
+def _with_scoped(extra: List[dict], out: List[dict], asked: str, interp: dict) -> List[dict]:
+    """The extra scopes' records ahead of the whole set's, each once; and the
+    meaning of any two-meaning term, read with what the sheets returned."""
+    if extra:
+        def key(r):
+            return (r.get("page_id"), r.get("record_type"), r.get("ordinal"))
+        first: List[dict] = []
+        for r in extra:
+            if key(r) not in {key(x) for x in first}:
+                first.append(r)
+        taken = {key(r) for r in first}
+        out = first + [r for r in out if key(r) not in taken]
+    terms = plan_term_senses.terms_in(asked)
+    if terms:
+        interp["term_senses"] = [plan_term_senses.describe(plan_term_senses.resolve(
+            t, asked, interp.get("levels") or (), out)) for t in terms]
+    return out
+
+
+async def search_plans(project_id: str, subject: str, *, intent: str = "",
+                       discipline: str = "", floor: str = "",
+                       sheet_number: str = "", limit: int = 8,
+                       also: Optional[List[str]] = None,
+                       attribute: str = "",
+                       interp: Optional[dict] = None) -> List[dict]:
+    """The records on this project's current sheets that speak to `subject`.
+
+    Returns RECORDS, not prose. The agent composes; `answer_is_grounded` then
+    decides whether what it composed may be sent.
+
+    ── ANOTHER NAME FOR THE SAME THING (`also`) ────────────────────────────
+    #
+    # Asked what type of AC units the building has, the only lines printing
+    # both AC and UNITS are split-system boilerplate the project team says is
+    # wrong; the PTAC schedule prints PTAC and never AC, so it matched one
+    # word of two and ranked eleventh (2026-10-25). The set never says PTAC
+    # is an AC, and no word list here will say it for the set.
+    #
+    # The agent knows it, so the agent may name it (ruling 2026-10-25):
+    # `also` carries other names for the same thing. Each name is matched and
+    # floor-checked on its own printed words, exactly as `subject` is, and a
+    # record ranks by the best it does under any of them - so ranking still
+    # counts only what the sheet prints, and the gate is unchanged.
+
+    ── WHAT THE QUESTION MEANS ON THIS SET (`interp`) ───────────────────────
+    #
+    # "5th floor ceiling" on a set whose numbered floors stop at four
+    # (2026-10-27): its mezzanine, searched as such, with the roof assembly's
+    # sections and details, and `interp` (filled when given) carries the
+    # `level_mapping` the answer must say and the `term_senses` of a word
+    # with two construction meanings (_interpret_query). Query and scope
+    # only: the records are what the sheets print and the gate is unchanged.
+    """
+    if not project_id:
+        return []
+    interp = interp if interp is not None else {}
+    asked = f"{subject} {attribute}"
+    interp["filters"] = {"sheet_number": sheet_number, "discipline": discipline}
+    subject, floor, extra = await _interpret_query(
+        project_id, subject, floor, attribute, intent, interp,
+        discipline=discipline, sheet_number=sheet_number)
+    # The property out of the subject, and no floor filter on a count
+    # (plan_search.normalize_arguments) - before anything reads them.
+    subject, attribute, floor = plan_search.normalize_arguments(subject, attribute, intent, floor)
+    names = [subject] + [a for a in (also or []) if (a or "").strip() and a != subject]
+    page_ids = await _current_record_page_ids(
+        project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
+    # Nothing found still says what the question meant (_with_scoped fills
+    # `term_senses`; the level mapping is already in `interp`).
+    if not page_ids:
+        return _with_scoped(extra, [], asked, interp)
+    found = [x for x in [await _ranked_for_subject(project_id, page_ids, n, intent)
+                         for n in names] if x is not None]
+    if not found and (extra or plan_term_senses.terms_in(asked)):
+        return _with_scoped(extra, [], asked, interp)
+    if not found:
+        return []
+    ranked = (found[0][0] if len(found) == 1
+              else plan_search.rank_by_best(found, intent))
     # An index of the set matches many subjects and answers none of them.
     # Dropped AFTER the floor, so a question whose only match is the drawing
     # list still counts as found — and kept when it is all there is, so the
@@ -67639,7 +69269,15 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     # every row of the families the subject names follows it, with a census
     # the gate checks them against.
     ranked = [r for r in ranked if not plan_search.is_glyph_evidence(r)]
-    out = plan_search.best_per_attribute(ranked)[:max(1, min(limit, SEARCH_PLANS_MAX))]
+    chosen = plan_search.best_per_attribute(ranked)
+    n = max(1, min(limit, SEARCH_PLANS_MAX))
+    out = chosen[:n]
+    # A MENTION MAY NOT CROWD OUT THE MEASUREMENT (plan_search.value_records):
+    # an attribute question whose results state fewer than two values gets up
+    # to two more that do, as a ninth and tenth - appended, never replacing -
+    # and only when the call named the attribute it asks about.
+    if (intent or "").strip().lower() == "attribute":
+        out += plan_search.value_records(out, chosen[n:], subject, attribute)
     if (intent or "").strip().lower() == "count":
         try:
             out += await _glyph_evidence(project_id, subject)
@@ -67647,14 +69285,77 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
             # Without the census nothing about a located symbol binds, so a
             # failure here costs those figures and nothing else.
             logger.warning(f"search_plans glyph evidence failed for {subject!r}: {e}")
-    return out
+    # AN AREA IS CHECKED AGAINST WHAT THE PLAN PRINTS (lib.plan_areas,
+    # ruling 2026-10-26): a question about an area, an apartment or a room
+    # brings every area row, whatever the intent, and the gate binds a
+    # figure only where the printed and the measured one agree.
+    if plan_areas.is_area_subject(" ".join(names), attribute):
+        try:
+            out += await _area_evidence(project_id)
+        except Exception as e:
+            logger.warning(f"search_plans area evidence failed for {subject!r}: {e}")
+    return _with_scoped(extra, out, asked, interp)
 
 
-def _render_records_for_model(records: List[dict], subject: str) -> str:
+def _interp_lines(interp: Optional[dict]) -> List[str]:
+    """`level_mapping`, `searched_sheets` and `term_senses` as the model is
+    shown them (search_plans `interp`), each with what it must do with it."""
+    interp = interp or {}
+    lines: List[str] = []
+    for m in interp.get("level_mapping") or []:
+        lines.append(f"level_mapping: {m}. State this mapping in your answer, in "
+                     f"these words, before anything you say about that level.")
+    if interp.get("searched_sheets"):
+        lines.append("searched_sheets: the ceiling of the top occupied level is the "
+                     "underside of the roof assembly, so the roof sections/details were "
+                     "searched too (" + ", ".join(interp["searched_sheets"][:6]) + ").")
+    for t in interp.get("term_senses") or []:
+        lines.append(f"term_senses: {t}")
+    return lines
+
+
+def _searched_list(interp: Optional[dict]) -> str:
+    """Which sheets an empty search covered, as far as it is known: the extra
+    scopes by number, then the whole set (or the caller's filters)."""
+    interp = interp or {}
+    named = list(interp.get("scoped_sheets") or [])[:8]
+    f = interp.get("filters") or {}
+    if f.get("sheet_number") or f.get("discipline"):
+        rest = "the sheets matching " + " / ".join(
+            x for x in (f.get("sheet_number"), f.get("discipline")) if x)
+    else:
+        rest = "the indexed set" if not named else "the rest of the indexed set"
+    return ", ".join(named + [rest])
+
+
+def _render_records_for_model(records: List[dict], subject: str,
+                              sources: Optional[Dict[str, dict]] = None,
+                              interp: Optional[dict] = None) -> str:
     """What the agent is shown. Every line carries where it came from and how
     strong it is, because those are the two things the model must not have to
     guess at — and the numbers it is allowed to use are the ones printed
-    here."""
+    here. What the question was read to MEAN on this set (`interp`) comes
+    right after the rule, for the answer to echo.
+
+    `sources` ({file_id: plan_sources.source_of}, _plan_file_sources): each
+    line also names its file and drawing set, and a sheet from a set that is
+    not the filed one is cited with it -- "A-302 (owner's set)". Rendering
+    only: the records, and what the gate checks, are the same."""
+    if not records and _interp_lines(interp):
+        # WHAT THE QUESTION MEANT IS STILL TRUE WHEN NOTHING WAS FOUND. The
+        # mapping is a fact about the set's levels; the empty search is a fact
+        # about the search. They are said apart, and the second is said only
+        # as far as it is known: not found in the sheets searched.
+        return "\n".join(
+            [f"(The search for {subject!r} returned no records.)"]
+            + _interp_lines(interp)
+            + [f"Answer in two separate parts. FIRST, state each level_mapping "
+               f"line above exactly as given (it is about the set's levels, not "
+               f"about {subject!r}). THEN, about the thing asked, say only: "
+               f"'Not found in the sheets searched: {_searched_list(interp)}.' "
+               f"That is a fact about this search, not about the building: never "
+               f"say the drawings do not show it, do not estimate, and do not "
+               f"list other sheets."])
     if not records:
         # NOT "nothing on the drawings mentions it" — that is a claim about
         # the building, and what actually happened is that this search found
@@ -67678,10 +69379,15 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     # sheet, and the two rules it keeps breaking.
     lines = [f"Records for {subject!r}. Use ONLY numbers printed below. "
              f"A schedule ROW is a TYPE, not a quantity: never count rows."]
+    lines += _interp_lines(interp)
     for r in records:
         # Located symbols are shown as their scoped counts, below - one line
         # per row would be 84 lines of OCR'd labels to count by hand.
         if plan_search.is_glyph_evidence(r):
+            continue
+        # An area row is shown through its check, below: its quote is a
+        # printed figure the check may withhold.
+        if plan_areas.is_area_record(r):
             continue
         # The same citation the crew is shown, for the same reason: a model
         # given '?' or 'pNone' will write one into the answer. A record that
@@ -67693,6 +69399,10 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
         # The model is told how many sheets carry it, so "on all six mechanical
         # plans" stays available to it and one citation is not mistaken for the
         # only place it appears.
+        if sources:
+            where = plan_sources.evidence_where(
+                where, sources.get(str(r.get("file_id") or "")),
+                sheet_number=str(r.get("sheet_number") or ""), page_number=r.get("page_number"))
         more = [w for w in (r.get("also_on") or []) if w]
         if more:
             where = f"{where} (+{len(more)} sheet{'s' if len(more) > 1 else ''})"
@@ -67719,6 +69429,15 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     located = plan_search.render_glyph_evidence(records)
     if located:
         lines.append(located)
+    openings = plan_search.render_opening_evidence(records)
+    if openings:
+        lines.append(openings)
+    areas = plan_areas.render_area_evidence(records)
+    if areas:
+        lines.append(areas)
+    health = plan_search.render_set_health(records)
+    if health:
+        lines.append(health)
     return "\n".join(lines)
 
 
@@ -68675,18 +70394,56 @@ _AGENT_TOOLS = [
                 "search_plans again with THEIR words as the subject. If it "
                 "still returns nothing, say so plainly — 'Still not finding it. "
                 "It may be on a sheet I can't read.' Agreeing without new "
-                "records is how an invented fact reaches a jobsite."
+                "records is how an invented fact reaches a jobsite.\n"
+                "LEVELS AND TWO-MEANING WORDS: put the user's level words in the "
+                "subject as they said them ('5th floor ceiling'); the set's own "
+                "levels decide what they mean. A result line 'level_mapping:' "
+                "must be stated in your answer ('5th floor = Mezzanine (A-104.00) "
+                "on this set'; both, when it gives two). A 'term_senses:' line "
+                "means the word has two construction meanings: never treat one "
+                "as the other - answer the meaning it names, or each meaning "
+                "separately, or ask which."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "subject": {"type": "string", "description":
-                                "The thing to look for, in the user's own words — "
-                                "'ptac units', 'roof drain', 'pile schedule'"},
+                                "The THING to look for, in the user's words "
+                                "but SPELLED CORRECTLY (fix their typos: a "
+                                "drawing prints the word right, and a "
+                                "misspelled word finds nothing) — 'ptac "
+                                "units', 'roof drain', 'pile schedule'. NEVER "
+                                "a property word (height, size, width, "
+                                "length, depth, thickness, area, gauge, "
+                                "capacity...): that goes in `attribute`. "
+                                "'what's the hight of the shed' -> subject "
+                                "'sidewalk shed', attribute 'height'."},
+                    "attribute": {"type": "string", "description":
+                                  "With intent attribute: the PROPERTY asked "
+                                  "about, in one or two words, spelled "
+                                  "correctly - 'how high is the shed' -> "
+                                  "subject 'sidewalk shed', attribute "
+                                  "'height'; 'what size are the doors' -> "
+                                  "'size'. Property words go ONLY here, never "
+                                  "in subject. It is never the thing asked "
+                                  "about, and never a place (a roof, a floor, "
+                                  "a room): the thing is the subject. Leave "
+                                  "it out when the question asks for no "
+                                  "property."},
+                    "also": {"type": "array", "items": {"type": "string"},
+                             "description":
+                             "Other names the drawings may print for the SAME "
+                             "thing, when you know one, spelled correctly: "
+                             "'AC units' -> ['PTAC']. Each is searched on its "
+                             "own; a line counts only for words it prints. "
+                             "Never a different thing, never a property word."},
                     "intent": {"type": "string", "description":
                                "count|attribute|existence|location|identify|geometry"},
                     "discipline": {"type": "string", "description": "AR|ME|EL|PL|SP|ST|GN"},
-                    "floor": {"type": "string"},
+                    "floor": {"type": "string", "description":
+                              "Narrows a lookup to one floor's sheets. Not "
+                              "for a count: a count reads the whole set and "
+                              "the floor is said in the answer."},
                     "sheet_number": {"type": "string", "description": "e.g. M-200.00"},
                 },
                 "required": ["subject"],
@@ -68932,6 +70689,12 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "  • A QUESTION about the drawings — 'how many PTAC units', 'what type of "
     "    AC', 'stucco thickness', 'what is KE 1', 'are there chase walls' → "
     "    search_plans FIRST, then answer from the lines it returns.\n"
+    "  • 'what is a <term>', 'what does <mark> mean', 'what's a kicker' — a "
+    "    word, mark or abbreviation someone on this job used → search_plans "
+    "    FIRST: the drawings may print it, define it, or mean something "
+    "    else by it. NEVER answer a definition from general knowledge before "
+    "    searching; if nothing is found, say that, then you may add what the "
+    "    word usually means, marked as general.\n"
     "  • 'show me', 'pull up', 'send the', 'plan', 'drawing', 'sheet', "
     "    elevation/section/detail/schedule, 'show me A-101/ME-401' — the user "
     "    wants to SEE the sheet → query_plan. ONLY for visual drawings. It "
@@ -69774,7 +71537,7 @@ async def _agent_context_block(
 # 800 tokens, up from 500. A reply that leads with the answer and cites its
 # source is longer than a reply that does neither, and a truncated answer is
 # worse than a slightly slower one.
-AGENT_MODEL = "gpt-4o"
+AGENT_MODEL = llm_provider.CHAT_MODEL
 # Never offered in a DM:
 #   start_permit_renewal, start_checklist  change something / start a flow;
 #   list_workers  reads the WHOLE company's roster, which a PM may not see
@@ -69812,7 +71575,7 @@ async def _run_group_agent(
     # can route on the sentence rather than on the agent's rebuilt keywords.
     """Run the tool-use agent over a bot-addressed message. Returns the reply
     text to send (or None for NOREPLY / silence)."""
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
 
     # The caller resolved the binding; this asks again, because a function
@@ -69966,7 +71729,7 @@ async def _run_group_agent(
         enabled_tools.append(t)
 
     try:
-        async with ServerHttpClient(timeout=40.0) as client_http:
+        async with ServerHttpClient(timeout=_dm_call_timeout(40.0)) as client_http:
             last_content = ""  # track so we can fall back gracefully on overrun
             used_tool = False  # a reply built from tool results is data; never cut it
             # Everything search_plans handed back this conversation. The gate
@@ -69985,6 +71748,12 @@ async def _run_group_agent(
                 sent, outcome = await gate_and_warrant(
                     reply, records, subject, intent=intent,
                     user_words=body or subject, project_id=project_id)
+                # The answer log keeps what the gate returned: ONE outcome
+                # per answer (it exposes no decision per claim). Read only.
+                _answer_turn_note(gate={
+                    "gate": "plan_answer_gate", "outcome": outcome,
+                    "subject": subject[:200], "intent": intent,
+                    "records": len(records), "replaced": sent != reply})
                 if outcome not in ("grounded", "no_records",
                                    "refusal_overturned"):
                     logger.warning(
@@ -69998,11 +71767,12 @@ async def _run_group_agent(
                             if dm and wa_assistant.asks_about_voice_notes(body)
                             and any(t["function"]["name"] == "recent_voice_notes"
                                     for t in enabled_tools) else None)
+            _answer_turn_note(model=AGENT_MODEL)
             for _turn in range(4):  # max 4 tool rounds
                 resp = await client_http.post(
-                    "https://api.openai.com/v1/chat/completions",
+                    llm_provider.CHAT_URL,
                     headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Authorization": f"Bearer {LLM_API_KEY}",
                         "Content-Type": "application/json",
                     },
                     json={
@@ -70015,6 +71785,24 @@ async def _run_group_agent(
                         "messages": messages,
                     },
                 )
+                # ── THE MODEL IS DOWN FOR A REASON A PERSON MUST FIX ─────
+                #
+                # No credits, or a key OpenAI will not take: this raised into
+                # the catch-all below and returned None - NOREPLY - so the
+                # person who asked heard nothing and nobody was told
+                # (2026-10-26, credit_balance_exhausted). Now the operators
+                # get one alert an hour, and whoever addressed the assistant
+                # is told it is unavailable. A rate limit or a server error is
+                # neither, and keeps the old path.
+                if int(getattr(resp, "status_code", 200) or 200) >= 400:
+                    try:
+                        err_body = resp.json()
+                    except Exception:
+                        err_body = None
+                    down = model_outage.classify(int(resp.status_code), err_body)
+                    if down:
+                        await _agent_model_down(down, int(resp.status_code), err_body)
+                        return model_outage.UNAVAILABLE_REPLY if (dm or explicit_mention) else None
                 resp.raise_for_status()
                 choice = resp.json()["choices"][0]["message"]
                 tool_calls = choice.get("tool_calls") or []
@@ -70371,20 +72159,29 @@ async def _dispatch_agent_tool(
             return "\n".join(lines)
         if name == "search_plans":
             subject = (args.get("subject") or user_body or "").strip()
+            also = [str(a) for a in (args.get("also") or []) if isinstance(a, str)][:4]
+            attribute = args.get("attribute") if isinstance(args.get("attribute"), str) else ""
+            interp: dict = {}
             found = await search_plans(
-                project_id, subject,
+                project_id, subject, also=also, attribute=attribute,
                 intent=args.get("intent") or "",
                 discipline=args.get("discipline") or "",
                 floor=args.get("floor") or "",
                 sheet_number=args.get("sheet_number") or "",
+                interp=interp,
             )
+            _answer_turn_note(records=found)
             if record_sink is not None:
                 record_sink.append({"subject": subject, "records": found,
-                                    "intent": args.get("intent") or ""})
+                                    "intent": args.get("intent") or "",
+                                    "level_mapping": interp.get("level_mapping") or [],
+                                    "term_senses": interp.get("term_senses") or []})
             logger.info(
                 f"search_plans subject={subject[:40]!r} intent={args.get('intent')!r} "
-                f"hits={len(found)} top={[r.get('tier') for r in found[:3]]}")
-            return _render_records_for_model(found, subject)
+                f"hits={len(found)} top={[r.get('tier') for r in found[:3]]} "
+                f"levels={interp.get('level_mapping') or []}")
+            sources = await _plan_file_sources(project_id, [r.get("file_id") for r in found])
+            return _render_records_for_model(found, subject, sources, interp=interp)
         if name == "who_on_site":
             return await _handle_who_on_site(
                 project_id,
@@ -70466,6 +72263,7 @@ async def _dispatch_agent_tool(
                 discipline=args.get("discipline") or "",
                 floor=args.get("floor") or "",
                 sheet_number=sheet_number)
+            _answer_turn_note(records=found)
             if record_sink is not None:
                 # query_plan does not take an intent; it sends a sheet image
                 # and answers from records, so its numbers keep the union rule.
@@ -70474,8 +72272,9 @@ async def _dispatch_agent_tool(
             logger.info(
                 f"query_plan answered from records subject={question[:40]!r} "
                 f"hits={len(found)} (sheet image sent separately)")
+            sources = await _plan_file_sources(project_id, [r.get("file_id") for r in found])
             return ("(The sheet image is on its way to the group.)\n"
-                    + _render_records_for_model(found, question))
+                    + _render_records_for_model(found, question, sources))
         if name == "start_permit_renewal":
             return await _handle_start_permit_renewal(
                 project_id, group_id, sender,
@@ -72102,17 +73901,18 @@ async def _punch_brain_model(state: dict, said: str, dm_chat: Optional[str] = No
     the brain's model reads it with the chat's last turns."""
     if _WALK_BRAIN.get():
         return await _walk_brain_json(punch_brain.PROMPT, punch_brain.user_message(state, said), dm_chat)
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
         async with ServerHttpClient(timeout=20.0) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 500,
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": punch_brain.PROMPT},
                                    {"role": "user", "content": punch_brain.user_message(state, said)}]})
+            await _alert_if_model_refused(resp, "punch walkthrough")
             resp.raise_for_status()
             got = json.loads(resp.json()["choices"][0]["message"]["content"])
         return got if isinstance(got, dict) else None
@@ -72621,17 +74421,18 @@ async def _punch_batch_model(text: str, prompt: Optional[str] = None) -> Optiona
     if _WALK_BRAIN.get():
         return await _walk_brain_json(prompt or punch_batch.BATCH_PROMPT, str(text)[:4000],
                                        max_tokens=600)
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
         async with ServerHttpClient(timeout=15.0) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 200,
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": prompt or punch_batch.BATCH_PROMPT},
                                    {"role": "user", "content": str(text)[:4000]}]})
+            await _alert_if_model_refused(resp, "punch walkthrough (batch)")
             resp.raise_for_status()
             got = json.loads(resp.json()["choices"][0]["message"]["content"])
         return got if isinstance(got, dict) else None
@@ -73107,17 +74908,18 @@ async def _punch_describe_blanks(sess: dict, dm_chat: Optional[str] = None,
 async def _punch_loc_model(text: str) -> Optional[dict]:
     """The model's reading of a message between photos (LOC_MODEL_PROMPT);
     None without a key, on any error, or when it is not one JSON object."""
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return None
     try:
         async with ServerHttpClient(timeout=15.0) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                llm_provider.CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                 json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 150,
                       "response_format": {"type": "json_object"},
                       "messages": [{"role": "system", "content": punch.LOC_MODEL_PROMPT},
                                    {"role": "user", "content": str(text)[:500]}]})
+            await _alert_if_model_refused(resp, "punch walkthrough (location)")
             resp.raise_for_status()
             got = json.loads(resp.json()["choices"][0]["message"]["content"])
         return got if isinstance(got, dict) else None
@@ -75150,10 +76952,19 @@ async def _punch_remind_job() -> None:
         logger.warning(f"[punch] remind job failed: {type(e).__name__}")
 
 
-async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
-    """Background task to process an inbound WhatsApp message."""
+async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
+                                    received_at: Optional[float] = None):
+    """Background task to process an inbound WhatsApp message.
+    `received_at`: wall seconds the webhook got it (the task may start later)."""
+    started = _time.time()
     try:
         parsed = parse_inbound_message(payload, vendor=WHATSAPP_VENDOR)
+        try:
+            wa_ts = int(parsed.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            wa_ts = 0
+        _WA_INBOUND.set({"received": received_at or started, "started": started,
+                         "wa_ts": wa_ts})
 
         # ── A NOTIFICATION IS NOT A MESSAGE ────────────────────────────────
         #
@@ -75435,9 +77246,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 try:
                     vresult = await _vi.process_voice_note(
                         audio_bytes,
-                        openai_api_key=OPENAI_API_KEY,
+                        openai_api_key=LLM_API_KEY,
                         prompt=await _voice_prompt(msg_company_id, project_id),
                         language=whisper_hint,
+                        model_refused=_voice_model_refused,
                         sentry_capture=(
                             (lambda m, level="warning":
                                 sentry_sdk.capture_message(m, level=level))
@@ -75483,7 +77295,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 if direct or unreliable or yi_group:
                     try:
                         english_direct = await _vi.translate_whisper(
-                            audio_bytes, openai_api_key=OPENAI_API_KEY) or None
+                            audio_bytes, openai_api_key=LLM_API_KEY) or None
                     except Exception as _e:
                         logger.warning(f"[voice] direct translation failed: "
                                        f"{type(_e).__name__}")
@@ -75874,6 +77686,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         await _react_to_message(group_id, reply_to,
                                                 wa_react.PRAISE)
                     return
+                # The answer log's evidence: begun before the task, so the
+                # task's records and gate decision land in this dict.
+                _answer_turn_begin()
+                group_trace: list = []           # each tool call and what it returned
                 agent_task = asyncio.ensure_future(_run_group_agent(
                     project_id=str(project_id),
                     group_id=group_id,
@@ -75884,24 +77700,30 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     explicit_mention=explicit_mention,
                     reply_to=reply_to,
                     address_mode=address_mode,
+                    tool_trace=group_trace,
                 ))
-                # A slow answer: 👀 on the question first, the answer after.
-                eyes = False
+                # "typing…" in the group while it works (WaAPI send-typing
+                # takes any chatId; a failure is a logged warning and
+                # nothing shows). Never a 👀 reaction (Oct 27).
+                thinking = asyncio.Event()
+                typing = asyncio.ensure_future(
+                    _dm_typing_while(group_id, thinking, seen=False))
                 try:
-                    reply = await asyncio.wait_for(
-                        asyncio.shield(agent_task),
-                        wa_react.WORKING_AFTER_SECONDS)
-                except asyncio.TimeoutError:
-                    eyes = await _react_to_message(group_id, reply_to,
-                                                   wa_react.WORKING)
                     reply = await agent_task
+                finally:
+                    thinking.set()
+                    try:
+                        await asyncio.wait_for(typing, 10)
+                    except Exception:
+                        pass
                 if reply:
                     await send_whatsapp_message(group_id, reply,
                                                 reply_to=reply_to)
-                elif eyes:
-                    # Nothing came of it: take the 👀 back rather than leave
-                    # a promise of an answer that is not coming.
-                    await _react_to_message(group_id, reply_to, "")
+                    await _answer_log_write(
+                        "group", question=body, final_text=reply,
+                        company_id=msg_company_id, project_ids=project_id,
+                        asker_phone=sender, path="group_agent", tools=group_trace,
+                        features=dict(features or {}), group_id=group_id)
                 return
 
             # NOT ADDRESSED: SILENCE. The once-a-day "I'm here, say levelog"
@@ -75971,6 +77793,13 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # else, or no open question for this person, carries on below.
             answer = wa_gc.parse_confirm_reply(parsed.get("body"))
             if answer and await _handle_gc_confirm_reply(dm_chat, answer):
+                return
+            # "Q1 YES" / "Q1 NO" to a drawing-set question Levelog asked this
+            # person (ruling 21). The code is required: a bare "yes" is the
+            # assistant's, which confirms its own pending change.
+            from lib import plan_set_questions as _psq
+            set_reply = _psq.parse_reply(parsed.get("body"))
+            if set_reply and await _handle_set_question_reply(dm_chat, *set_reply):
                 return
 
         # ── LEVELOG ASSISTANT IN A DM ─────────────────────────────────────
@@ -76092,13 +77921,14 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 from lib.voice_ingest import process_voice_note as _process_voice
                 vresult = await _process_voice(
                     audio_bytes,
-                    openai_api_key=OPENAI_API_KEY,
+                    openai_api_key=LLM_API_KEY,
                     # A DM names no job yet: the glossary only.
                     prompt=await _voice_prompt(None, None),
                     language=await _sender_whisper_language(
                         ident.get("company_id"), _dm_chat_ids(dm_chat) + [
                             j for j in [wa_voice.phone_sender_jid(
                                 (ident.get("user") or {}).get("phone"))] if j]),
+                    model_refused=_voice_model_refused,
                     sentry_capture=(
                         (lambda msg, level="warning":
                             sentry_sdk.capture_message(msg, level=level))
@@ -76264,6 +78094,7 @@ async def whatsapp_webhook(request: Request):
     # for this path, the per-request [req] line prints the path only, and
     # whatsapp_webhook_log stores headers and body, never the URL.
     """
+    received = _time.time()
     expected = os.environ.get("WAAPI_WEBHOOK_SECRET", "")
     provided = request.query_params.get(wa_security.WEBHOOK_TOKEN_PARAM)
     if not wa_security.webhook_token_ok(provided, expected):
@@ -76301,7 +78132,7 @@ async def whatsapp_webhook(request: Request):
         return {"status": "ok"}
 
     if payload:
-        asyncio.create_task(_process_whatsapp_message(payload))
+        asyncio.create_task(_process_whatsapp_message(payload, received_at=received))
     return {"status": "ok"}
 
 
@@ -78507,6 +80338,17 @@ def _memory_source_view(src: dict, admin: bool = False) -> dict:
                                if src.get("source") == project_memory.SOURCE_WHATSAPP else None)}
 
 
+def _memory_gates(got: dict) -> list:
+    """What the project-history check decided (project_memory.checked_claims):
+    each claim it kept, with its source and quote, and how many it dropped or
+    merged -- it exposes no per-claim reason for a dropped one. Read only."""
+    return [{"gate": "memory_checked_claims", "mode": got.get("mode"),
+             "kept": [{"claim": str(c.get("text") or "")[:400], "sid": c.get("sid"),
+                       "quote": str(c.get("quote") or "")[:400]} for c in got.get("claims") or []],
+             "dropped": got.get("dropped") or 0, "merged": got.get("merged") or 0,
+             "made_faithful": got.get("made_faithful") or 0}]
+
+
 @api_router.get("/projects/{project_id}/memory/search",
                  dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def search_project_memory(project_id: str, q: str = "", date_from: str = "",
@@ -78528,6 +80370,12 @@ async def search_project_memory(project_id: str, q: str = "", date_from: str = "
     if answer:
         got = await _memory_answer(company_id, str(project_id), q, dfrom, dto,
                                    phone_view="full" if admin else "last4")
+        await _answer_log_write(
+            "app", question=q, final_text=got["text"], company_id=company_id,
+            user_id=current_user.get("id") or current_user.get("_id"),
+            project_ids=project_id, sources=got["sources"],
+            gates=_memory_gates(got), model=project_memory.ANSWER_MODEL,
+            path="memory_search", params={"date_from": dfrom, "date_to": dto})
         cited = {c["sid"] for c in got["claims"]}
         by_sid = {s["sid"]: _memory_source_view(s, admin) for s in got["sources"]}
         return {"results": [_memory_source_view(s, admin) for s in got["sources"]],
@@ -79573,6 +81421,7 @@ async def reindex_project_document(
                               dict(file_rec), source="reindex_document", resume=resume)
     return {
         "status": "queued",
+        "job_id": str(file_rec["_id"]),
         "file_name": file_rec.get("name"),
         "total_pages": total_pages,
     }
@@ -79608,7 +81457,7 @@ async def reindex_all_project_files(
     if not files:
         return {"queued": 0, "files": []}
 
-    queued = []
+    queued, jobs = [], []
     for fr in files:
         # Wipe existing index entries so stale v1 pages don't linger — unless
         # resuming an interrupted run.
@@ -79620,7 +81469,8 @@ async def reindex_all_project_files(
         await _enqueue_plan_index(project_id, fr.get("company_id") or company_id or "",
                                   dict(fr), source="reindex_all", resume=resume)
         queued.append(fr.get("name"))
-    return {"queued": len(queued), "files": queued}
+        jobs.append({"job_id": str(fr["_id"]), "file_name": fr.get("name")})
+    return {"queued": len(queued), "files": queued, "jobs": jobs}
 
 
 # ==================== TEMP-MEDIA PROXY (for WaAPI preflight) ====================
@@ -80522,11 +82372,19 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
     pid = str(project_id)
     if pid in _GLYPH_PASS_RUNNING:
         return {"started": False, "reason": "a pass is already running"}
+    busy = await _reindex_in_flight(pid)
+    if busy:
+        raise HTTPException(status_code=409, detail={
+            "started": False,
+            "reason": "a re-index is in progress for this project; run the pass when it is "
+                      "done (GET .../plan-index/jobs/{job_id})",
+            "jobs": busy})
     _GLYPH_PASS_RUNNING.add(pid)
+    who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
 
     async def _go():
         try:
-            await _plan_glyph_pass(pid)
+            await _plan_glyph_pass(pid, actor=who or None)
         except Exception as e:
             logger.exception("plan glyph pass %s failed: %r", pid, e)
         finally:
@@ -80534,6 +82392,114 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
 
     asyncio.create_task(_go())
     return {"started": True}
+
+
+class PlanSetAnswer(BaseModel):
+    answer: Literal["include", "exclude"]
+
+
+@api_router.get("/projects/{project_id}/plan-set-questions",
+                dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
+async def list_plan_set_questions(project_id: str, current_user=Depends(get_admin_user)):
+    """READ-ONLY: the project's drawing-set questions (ruling 21) - open,
+    answered and withdrawn: the sheets, the two readings with their figures,
+    the exact WhatsApp text, who was asked and when, and the answer. The
+    operator may view them (ruling 33; there is no view-only variant of
+    require_project_admin_access, so this route carries that gate)."""
+    from lib import plan_set_questions as psq
+    pid = str(project_id)
+    proj, _pms = await _set_question_people(pid)
+    name = str((proj or {}).get("name") or "your project")
+    out = []
+    for d in await db[psq.COLLECTION].find({"project_id": pid}).to_list(500):
+        out.append({
+            "id": str(d.get("_id")), "code": d.get("code"), "status": d.get("status"),
+            "track": d.get("track"), "file_name": d.get("file_name"), "label": d.get("label"),
+            "sheets": [{"sheet_number": p.get("sheet_number"), "page_number": p.get("page_number"),
+                        "sheet_title": p.get("sheet_title")} for p in d.get("pages") or []],
+            "readings": {"without": {f"{f['family']}|{f['tag']}": f["without"]
+                                     for f in d.get("figures") or []},
+                         "with": {f"{f['family']}|{f['tag']}": f["with"]
+                                  for f in d.get("figures") or []}},
+            "figures": d.get("figures") or [],
+            "message": psq.message(d, name),
+            "asked": d.get("asked") or [], "asked_at": d.get("asked_at"),
+            "unasked_reason": d.get("unasked_reason"),
+            "answer": d.get("answer"), "answered_by": d.get("answered_by"),
+            "answered_by_name": d.get("answered_by_name"), "answered_at": d.get("answered_at"),
+            "answered_via": d.get("answered_via"),
+            "created_at": d.get("created_at"), "last_seen_at": d.get("last_seen_at")})
+    return {"questions": out}
+
+
+@api_router.post("/projects/{project_id}/plan-set-questions/ask",
+                 dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
+async def ask_plan_set_questions(project_id: str, current_user=Depends(get_admin_user)):
+    """SENDS WHATSAPP MESSAGES. Ask the project's PM / Site Manager each open
+    drawing-set question not yet delivered (ruling 21) - the only place a
+    question is sent from. Nothing is sent twice."""
+    who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
+    return await _ask_set_questions(str(project_id), actor=who)
+
+
+@api_router.post("/projects/{project_id}/plan-set-questions/{question_id}/answer",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def answer_plan_set_question(project_id: str, question_id: str, body: PlanSetAnswer,
+                                   current_user=Depends(get_admin_user)):
+    """Record the answer to an open drawing-set question (ruling 21), as the
+    PM gave it: "include" (the pages are part of the set) or "exclude".
+    Audit-logged; applied on the next glyph pass.
+
+    THE COMPANY ANSWERS, NEVER THE OPERATOR (ruling 33): the company's own
+    gate (require_project_access, which does not admit him), and refused
+    here too, so a later change to the gate cannot let him answer for a
+    project."""
+    if is_platform_operator(current_user):
+        raise HTTPException(status_code=403,
+                            detail="the platform operator does not answer a project's "
+                                   "drawing-set questions; its PM or company admin does")
+    who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
+    doc = await _record_set_answer(str(project_id), question_id, body.answer, who, via="admin",
+                                   name=(current_user or {}).get("full_name")
+                                   or (current_user or {}).get("name"))
+    if doc is None:
+        raise HTTPException(status_code=409,
+                            detail="no open drawing-set question with that id on this project")
+    return {"id": str(doc.get("_id")), "status": doc.get("status"), "answer": doc.get("answer"),
+            "applies": "on the next glyph pass"}
+
+
+@api_router.get("/projects/{project_id}/plan-glyphs/status",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def plan_glyph_pass_status(project_id: str, current_user=Depends(get_admin_user)):
+    """Read-only: is a pass running here, when did the last one write, and is
+    a re-index in flight that would make a new one refuse to start.
+
+    `running` is this server process's own flag - the pass runs in the
+    process that started it."""
+    from lib.plan_set_health import COLLECTION as SET_HEALTH
+    pid = str(project_id)
+    newest = await db[PLAN_RECORDS].find_one(
+        {"project_id": pid, "record_type": "glyph"}, {"created_at": 1},
+        sort=[("created_at", -1)])
+    return {"running": pid in _GLYPH_PASS_RUNNING,
+            "last_written_at": (newest or {}).get("created_at"),
+            "rows": await db[PLAN_RECORDS].count_documents({"project_id": pid, "record_type": "glyph"}),
+            "set_health_items": await db[SET_HEALTH].count_documents({"project_id": pid}),
+            "reindex_in_flight": await _reindex_in_flight(pid)}
+
+
+@api_router.get("/projects/{project_id}/plan-index/jobs/{job_id}",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def plan_index_job_status(project_id: str, job_id: str, current_user=Depends(get_admin_user)):
+    """Read-only: one re-index job - queued, running, done, failed or
+    cancelled - with its page progress. The job id is what the re-index
+    routes return (the file's id)."""
+    j = await db[PLAN_INDEX_JOBS].find_one({"_id": str(job_id), "project_id": str(project_id)})
+    if not j:
+        raise HTTPException(status_code=404, detail="No such job on this project")
+    return {k: j.get(k) for k in ("status", "file_name", "pages_done", "pages_total", "enqueued_at",
+                                  "started_at", "finished_at", "error", "attempts")} | {"job_id": str(j["_id"])}
 
 
 @api_router.post("/projects/{project_id}/plan-index/{file_id}/retry",
@@ -81019,15 +82985,15 @@ async def _summarize_and_send_for_group(group_doc: dict) -> None:
     # Named by its address in the group, like every other bot message.
     project_name = wa_groups.project_label(project)
 
-    if not OPENAI_API_KEY:
-        logger.info(f"Daily summary skipped for {project_name}: no OPENAI_API_KEY")
+    if not LLM_API_KEY:
+        logger.info(f"Daily summary skipped for {project_name}: no LLM_API_KEY")
         return
 
     try:
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        url = llm_provider.CHAT_URL
+        headers = {"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"}
         gpt_payload = {
-            "model": "gpt-4o",
+            "model": llm_provider.CHAT_MODEL,
             "temperature": 0.3,
             "max_tokens": 500,
             "messages": [
@@ -81392,19 +83358,19 @@ async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversati
                         wa_group_id=group_id, company_id=company_id,
                         project_id=project_id)
         return None
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         logger.info(
-            f"checklist extraction skipped (no OPENAI_API_KEY) "
+            f"checklist extraction skipped (no LLM_API_KEY) "
             f"project={project_id} group={group_id}"
         )
         return None
 
     # Call GPT-4o-mini — structured extraction, forced JSON
     try:
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        url = llm_provider.CHAT_URL
+        headers = {"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"}
         payload = {
-            "model": "gpt-4o-mini",
+            "model": llm_provider.CHAT_MODEL,
             "temperature": 0.2,
             "max_tokens": 900,
             "response_format": {"type": "json_object"},
@@ -81415,6 +83381,7 @@ async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversati
         }
         async with ServerHttpClient(timeout=40.0) as client_http:
             resp = await client_http.post(url, json=payload, headers=headers)
+            await _alert_if_model_refused(resp, "checklist from a group conversation")
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
@@ -82955,6 +84922,8 @@ async def startup_event():
     await db.chase_shadow.create_index([("project_id", 1), ("company_id", 1), ("at", -1)])
     # The daily [dm-answer] count (answers, fallbacks) reads by day.
     await db.whatsapp_dm_answers.create_index([("created_at", -1), ("fallback", 1)])
+    # The answer log (lib/answer_log.py): one company's answers, newest first.
+    await db.answer_log.create_index([("company_id", 1), ("created_at", -1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
     await _ensure_index_resilient(

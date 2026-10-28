@@ -31,6 +31,7 @@ os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 import server  # noqa: E402
 from lib import wa_assistant, wa_brief, wa_dm, wa_facts  # noqa: E402
 from tests.test_whatsapp_phase1_foundations import ADMIN_PHONE, CO_A, _Ctx, _Wire  # noqa: E402
+from tests._pinned_clock import pin_server_clock  # noqa: E402
 from tests.test_whatsapp_dm_assistant import THOMAS, _Harness, _optin  # noqa: E402
 from tests.test_whatsapp_morning_brief import (  # noqa: E402
     THU_7, WALWORTH, _run, _sends, _texts, _tick, _world,
@@ -502,13 +503,19 @@ class UserLevel(_Harness, unittest.TestCase):
         self.assertTrue(reply.startswith("I can't see a brief sent to you today"))
 
     def test_send_me_my_brief_sends_it_now_and_once(self):
+        # ON THE TEST'S OWN CLOCK, NOT THE REAL ONE. The brief adds an "Open
+        # violations" message on Mondays (wa_brief: Mondays only), so on a
+        # real Monday the fixture's brief is two messages and the reply is
+        # Walworth's - red every Monday on main from 2026-10-26, for nothing
+        # in any change. Wednesday Oct 14 is the day this file already uses.
+        pin_server_clock(self, at=WED)
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
         with _Ctx(db) as c:
             reply = self._send(c, f"{ADMIN_PHONE}@c.us", "send me my brief")
         self.assertIn("588 Thomas", reply)
         self.assertEqual(self.agent_calls, [])
-        today = datetime.now(timezone.utc).astimezone(NY).date().isoformat()
+        today = WED.astimezone(NY).date().isoformat()
         self.assertEqual(_log(db, day=today)["status"], "resent")
         # The morning tick finds it sent.
         self.assertEqual(_ledger(db, day=today)["status"], "sent")

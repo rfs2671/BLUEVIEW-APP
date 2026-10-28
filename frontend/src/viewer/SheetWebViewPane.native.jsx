@@ -1,6 +1,5 @@
 /**
- * The tile viewer inside a WebView, for phones whose installed app has no Skia (so it can be
- * delivered with an OTA update). The page (webview/main.js) does all the drawing and
+ * The tile viewer inside a WebView, on phones. It ships with an ordinary OTA update (no native module). The page (webview/main.js) does all the drawing and
  * gestures; this component loads it, hands it the login token in a message (never in a
  * URL) and relays taps back through the handle.
  */

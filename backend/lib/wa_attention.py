@@ -32,6 +32,7 @@ import json
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
+from lib import llm_provider
 
 try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
     from zoneinfo import ZoneInfo
@@ -40,7 +41,7 @@ except Exception:  # pragma: no cover
     _ET = None
 
 PROMPT_VERSION = "att-v1.4"   # v1.4: a progress reply ("Working on it") is not an item
-MODEL = "gpt-4o-mini"
+MODEL = llm_provider.CHAT_MODEL
 
 TYPES = ("question", "request", "commitment", "issue", "decision")
 IMPORTANCE = ("low", "normal", "high")
@@ -575,9 +576,9 @@ def precision(items: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-# gpt-4o-mini list price, USD per million tokens. Used only for the log line.
-PRICE_IN_PER_M = 0.15
-PRICE_OUT_PER_M = 0.60
+# The chat model's price, USD per million tokens. Used only for the log line.
+PRICE_IN_PER_M = llm_provider.PRICE_IN_PER_M
+PRICE_OUT_PER_M = llm_provider.PRICE_OUT_PER_M
 
 
 def iso_week(ts: datetime) -> str:

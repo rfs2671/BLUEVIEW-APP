@@ -53,7 +53,7 @@ class TheWalk(_Walk):
                 await server._dm_assistant_reply(self.ident, WALK_CHAT, text_, parsed["message_id"])
         with patch.object(server, "DM_BRAIN_API_KEY", "k"), \
                 patch.object(server, "_dm_brain_client", lambda: self.llm), \
-                patch.object(server, "OPENAI_API_KEY", None):
+                patch.object(server, "LLM_API_KEY", None):
             asyncio.run(go())
 
     def test_all_of_the_above_then_moving_up(self):

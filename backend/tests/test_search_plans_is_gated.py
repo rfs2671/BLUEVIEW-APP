@@ -140,13 +140,15 @@ class ANumberWithNothingBehindItDoesNotReachAPerson(unittest.TestCase):
         self.assertTrue(ok)
         ok, bad = ps.answer_is_grounded('The studs are 5 1/2" at 16" O.C.', [dim])
         self.assertFalse(ok)
-        self.assertIn("5", bad)
+        # Reported whole since the dimension rule (2026-10-25): the length
+        # that is not printed, not one of its digits.
+        self.assertEqual(bad, ['5 1/2"'])
 
     def test_the_inches_of_a_foot_inch_dimension_are_not_invisible(self):
         dim = rec(record_type="dimension", quote="CEILING HEIGHT 12'-6\"")
         ok, bad = ps.answer_is_grounded("The ceiling is 12'-9\".", [dim])
         self.assertFalse(ok, "the inch part was never checked")
-        self.assertIn("9", bad)
+        self.assertEqual(bad, ["12'-9\""])
 
     def test_a_payload_value_counts_even_when_the_quote_truncates(self):
         r = rec(record_type="schedule", tier=pe.TIER_SCHEDULE_CELL, quote="PILE SCHEDULE",
@@ -261,7 +263,8 @@ class TheGateIsWiredToWhatGetsSent(unittest.TestCase):
                 f"{name} reads the plan index but is not behind plan_queries")
 
     def test_the_search_returns_records_rather_than_prose(self):
-        src = inspect.getsource(self.server.search_plans)
+        src = (inspect.getsource(self.server._ranked_for_subject)
+               + inspect.getsource(self.server.search_plans))
         self.assertIn("plan_search.rank(", src)
         self.assertIn("best_per_attribute", src)
         self.assertIn("-> List[dict]", inspect.getsource(self.server.search_plans)[:400])

@@ -217,7 +217,7 @@ class TheDmRoutesToIt(unittest.TestCase):
         with _Ctx(db), patch.object(server, "ServerHttpClient", _Http), \
                 patch.object(server, "_bot_project_scope", scope), \
                 patch.object(server, "_agent_context_block", ctx), \
-                patch.object(server, "OPENAI_API_KEY", "k"):
+                patch.object(server, "LLM_API_KEY", "k"):
             reply = _run(server._run_group_agent(
                 project_id=PID, group_id="15550009999@c.us", company_id=CO_A,
                 sender="15550009999", body="What was said on the last voicenote on 588 group",

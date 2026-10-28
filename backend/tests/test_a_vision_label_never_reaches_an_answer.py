@@ -186,7 +186,7 @@ class NoLabelOnlyMatchReachesTheComposingModel(unittest.TestCase):
 
     def test_search_plans_drops_label_only_matches_before_anything_sees_them(self):
         import server
-        src = inspect.getsource(server.search_plans)
+        src = (inspect.getsource(server._ranked_for_subject) + inspect.getsource(server.search_plans))
         self.assertIn("matched_only_through_label(", src)
         i = src.index("matched_only_through_label(")
         # After ranking, before the attribute dedupe and the limit.

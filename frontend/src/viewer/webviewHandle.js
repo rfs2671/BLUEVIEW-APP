@@ -2,7 +2,7 @@
  * The app's handle on a viewer that lives inside a WebView page (webview/main.js). It has
  * the same surface SheetViewerPane uses on a controller (setPins, search, stepMatch,
  * clearSearch, fit, zoomBy, goToPage, searchState, indexProgress, on), so the search bar,
- * zoom buttons and pins work the same whether the viewer is Skia, a web canvas or a page.
+ * zoom buttons and pins work the same whether the viewer is a web canvas or a WebView page.
  *
  * State that must survive the page loading late (the pins, the latest manifest) is
  * replayed when the page reports `ready`; everything else is sent as it happens.

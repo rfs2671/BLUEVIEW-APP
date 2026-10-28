@@ -461,8 +461,8 @@ class TheLeaseRunsAJobOnce(unittest.TestCase):
         start = src.index("async def startup_event")
         body = src[start:]
         # + project reports, + photo pipeline, + DOT stipulations, + DOT embargo alerts,
-        # + DOT summons -> permit links (Phase 1 A, #855), + sheet tile sweep (main, #864):
-        # BOTH sides added one job to the 43 they shared, so the merged count is 45.
+        # + sheet tile sweep (main, #864) -> 44 on #853; + DOT summons -> permit
+        # links (dot_nov_links, Phase 1 A, #855) -> 45.
         self.assertEqual(body.count("scheduler.add_job("), 45)
 
 

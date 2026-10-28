@@ -1,6 +1,6 @@
 /**
  * The deep-zoom viewer's geometry. Pure functions, no React, no platform: the
- * Canvas2D (web) and Skia (native) renderers both draw what these return, so a
+ * web canvas and the phone WebView page both draw what these return, so a
  * pin, a search highlight and a tile can never disagree about where they are.
  *
  * WORLD COORDINATES. Every page is PAGE_W world units wide (its height follows
@@ -128,7 +128,6 @@ export function boxToWorld(pg, box) {
 // ── camera ───────────────────────────────────────────────────────────────────
 
 export function screenToWorld(cam, vp, sx, sy) {
-  'worklet';
   return { x: (sx - vp.width / 2) / cam.zoom + cam.x, y: (sy - vp.height / 2) / cam.zoom + cam.y };
 }
 
@@ -177,7 +176,6 @@ export function fitRectCamera(rect, vp, pad = 0.08, limits = null) {
 /** Keep the camera inside the content: zoom in range; each axis clamped so the
  *  content cannot be flung away, and centred when it is smaller than the view. */
 export function clampCamera(cam, layout, vp, limits, bounds = null) {
-  'worklet';
   const zoom = Math.max(limits.min, Math.min(limits.max, cam.zoom));
   const b = bounds || { x: 0, y: 0, w: layout.width, h: layout.height };
   const halfW = vp.width / zoom / 2;
@@ -192,7 +190,6 @@ export function clampCamera(cam, layout, vp, limits, bounds = null) {
 
 /** Zoom by `factor` keeping the world point under screen (sx, sy) where it is. */
 export function zoomAt(cam, factor, sx, sy, vp, limits) {
-  'worklet';
   const zoom = Math.max(limits.min, Math.min(limits.max, cam.zoom * factor));
   const before = screenToWorld(cam, vp, sx, sy);
   return {
@@ -203,7 +200,6 @@ export function zoomAt(cam, factor, sx, sy, vp, limits) {
 }
 
 export function panBy(cam, dxScreen, dyScreen) {
-  'worklet';
   return { zoom: cam.zoom, x: cam.x - dxScreen / cam.zoom, y: cam.y - dyScreen / cam.zoom };
 }
 

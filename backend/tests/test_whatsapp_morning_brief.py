@@ -1378,7 +1378,7 @@ class OpenItems(unittest.TestCase):
                         hearing_date="2026-10-30")]
         self.assertEqual(wa_brief.open_items(rows, dot, MON), [
             "• Stop-work order SWO77 · issued Aug 20",
-            "• DOB 34000001 · issued Jun 2 · penalty $2,500 · hearing Nov 4",
+            "• DOB 34000001 · issued Jun 2 · penalty $2,500 (hearing pending) · hearing Nov 4",
             "• DOT 0123456789 · issued Sep 29 · $1,000.50 due · hearing Oct 30"])
 
     def test_nothing_not_stored_is_said(self):
@@ -1493,7 +1493,7 @@ class MondayBrief(unittest.TestCase):
         self.assertIn("🔴 New violation 35123456, issued Oct 9, open. DOB.", walworth)
         self.assertIn("\n".join([
             "📋 *Open violations*",
-            "• DOB 34000001 · issued Jun 2 · penalty $2,500 · hearing Nov 4"]), walworth)
+            "• DOB 34000001 · issued Jun 2 · penalty $2,500 (hearing pending) · hearing Nov 4"]), walworth)
         self.assertNotIn("• DOB 35123456", walworth)        # new today: not twice
         self.assertNotIn("• DOB 34000002", walworth)        # dismissed
         self.assertNotIn("• DOB 34000003", walworth)        # paid since
