@@ -423,7 +423,8 @@ class TheAlertJob(unittest.TestCase):
         m = mails[0]
         self.assertEqual(m["recipient"], "admin@acme.test")
         self.assertEqual(m["trigger_type"], "dot_embargo_waiver_missing")
-        self.assertEqual(m["permit_renewal_id"], f"dot:p1:embargo:{NO_WAIVER_NUM}:2026:2026-11-01")
+        # The day's ONE DOT digest (ruling 2026-10-28); the permit keeps its own row.
+        self.assertEqual(m["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-11-01")
         self.assertIn(f"Holiday embargo: permit {NO_WAIVER_NUM} has no waiver", m["subject"])
         self.assertIn(f"Embargo navideño: el permiso {NO_WAIVER_NUM} no tiene exención", m["subject"])
         for s in (NO_WAIVER_NUM, "PLACE EQUIPMENT OTHER THAN CRANE OR SHOV",
@@ -443,8 +444,10 @@ class TheAlertJob(unittest.TestCase):
             self.assertNotIn(line, m["text"])
             self.assertNotIn(line, m["html"])
         self.assertFalse(hasattr(E, "COVERAGE_NOTE_EN") or hasattr(E, "COVERAGE_NOTE_ES"))
-        (led,) = env.db.dot_alert_ledger.docs
+        (led,) = [d for d in env.db.dot_alert_ledger.docs if d.get("trigger_type") == "dot_embargo_waiver_missing"
+                  and d.get("permit")]
         self.assertEqual(led["_id"], f"dot:p1:embargo:{NO_WAIVER_NUM}:2026:2026-11-01")
+        self.assertEqual(led["digest"], "dot:p1:dot_digest:-:-:2026-11-01")
 
     def test_nov_1_with_the_waiver_sends_nothing(self):
         env = self._env(REAL_PERMIT, {"M022026294C45": REAL_STIPS})
@@ -473,7 +476,8 @@ class TheAlertJob(unittest.TestCase):
         env.alerts(NOV12_7AM)
         mails = env.emails()
         self.assertEqual(len(mails), 2)
-        self.assertTrue(mails[1]["permit_renewal_id"].endswith(":2026:2026-11-12"))
+        self.assertEqual(mails[1]["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-11-12")
+        self.assertEqual([i["send_date"] for i in mails[1]["metadata"]["items"]], ["2026-11-12"])
 
     def _seeded(self, is_test, dot_synced=True):
         """The row (and sync state) the sync would have written, seeded
@@ -536,7 +540,10 @@ class TheAlertJob(unittest.TestCase):
         env.alerts(datetime(2026, 11, 22, 12, 0, tzinfo=UTC))
         mails = env.emails()
         self.assertEqual(len(mails), 1)
-        self.assertTrue(mails[0]["permit_renewal_id"].endswith(":2026:2026-11-20"))
+        # The first-sight item keeps its send date (Nov 20); the held digest is Saturday's.
+        self.assertEqual(mails[0]["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-11-21")
+        self.assertEqual([(i["permit"], i["send_date"]) for i in mails[0]["metadata"]["items"]],
+                         [(NO_WAIVER_NUM, "2026-11-20")])
 
 
 # ═══ WhatsApp: the GC group post (kind "dot_embargo") ════════════════════════

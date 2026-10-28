@@ -256,11 +256,18 @@ def _expiry_items(env, permit=None):
     """[(item, email)] across the expiry DIGEST emails (one email per project
     per day lists every permit due: metadata.items)."""
     out = []
-    for m in env.emails("dot_permit_expiring"):
-        for i in m["metadata"]["items"]:
-            if permit is None or i["permit"] == permit:
+    for m in env.emails():
+        for i in m["metadata"].get("items") or []:
+            if "work_end" in i and (permit is None or i["permit"] == permit):
                 out.append((i, m))
     return out
+
+
+def _embargo_mails(env, permit):
+    """The DOT digest emails (ONE per project per day, ruling 2026-10-28) whose
+    Holiday embargo section lists `permit`."""
+    return [m for m in env.emails() if any(
+        "embargo" in i and i.get("permit") == permit for i in m["metadata"].get("items") or [])]
 
 
 def _permits_in(mails):
@@ -271,7 +278,7 @@ def _permits_in(mails):
         md = m["metadata"]
         if md.get("permit"):
             out.add(md["permit"])
-        out |= {i["permit"] for i in md.get("items") or []}
+        out |= {i["permit"] for i in md.get("items") or [] if i.get("permit")}
     return out
 
 
@@ -553,7 +560,7 @@ class TheNeedsConfirmation(unittest.TestCase):
         exp = _expiry_items(env, num)
         self.assertEqual([i["days_left"] for i, _m in exp], [14, 3])
         first = exp[0][1]
-        self.assertEqual(first["permit_renewal_id"], "dot:p1:expiry_digest:-:-:2026-11-06")
+        self.assertEqual(first["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-11-06")
         self.assertEqual(first["subject"], "2 DOT permits expiring on 588 Thomas S Boyland / "
                                            "2 permisos del DOT por vencer en 588 Thomas S Boyland")
         text = first["text"]
@@ -567,7 +574,7 @@ class TheNeedsConfirmation(unittest.TestCase):
             self.assertIn(piece, text, piece)
         self.assertLess(text.index("Renewal:"), text.index("Renovación:"))
         self.assertEqual({m["recipient"] for _i, m in exp}, {"admin@blueelm.test"})   # never the CP
-        emb = [m for m in env.emails("dot_embargo_waiver_missing") if m["metadata"]["permit"] == num]
+        emb = _embargo_mails(env, num)
         self.assertEqual([m["permit_renewal_id"].rsplit(":", 1)[1] for m in emb],
                          ["2026-11-01", "2026-11-12"])
         self.assertIn(num, [p["number"] for p in env.permits()["permits"]])
@@ -665,20 +672,18 @@ class TheFirstPassGate(unittest.TestCase):
         self.assertIn(f"dot:p1:expiry:{OURS['permitnumber']}:14d:2026-11-20",
                       [d["_id"] for d in env.db.dot_alert_ledger.docs])
 
-    def test_the_07_00_job_runs_both(self):
+    def test_the_07_00_job_runs_the_one_digest(self):
+        """Ruling 2026-10-28: the 07:00 job is ONE run (embargo + expiry +
+        hearings in one email per project); a failure is logged, not raised."""
         _need()
         calls = []
 
-        async def emb(now=None):
-            calls.append("embargo")
-            raise RuntimeError("boom")              # one failing does not stop the other
-
-        async def exp(now=None):
-            calls.append("expiry")
-        with patch.object(server, "_dot_embargo_alert_tick", emb), \
-                patch.object(server, "_dot_permit_expiry_tick", exp):
+        async def digest(**kw):
+            calls.append(kw)
+            raise RuntimeError("boom")
+        with patch.object(server, "_dot_daily_digest_tick", digest):
             _run(server._dot_embargo_alert_job())
-        self.assertEqual(calls, ["embargo", "expiry"])
+        self.assertEqual(calls, [{}])
 
 
 class TheSetup(unittest.TestCase):
@@ -836,9 +841,7 @@ class TheUnverifiedWaiver(unittest.TestCase):
         (p,) = [x for x in board["permits"] if x["number"] == OURS["permitnumber"]]
         self.assertEqual((p["waiver_unverified"], p["waiver_missing"]), (True, False))
         env.alerts(_days(date(2026, 11, 1), date(2026, 11, 20)))
-        emb = [m for m in env.emails("dot_embargo_waiver_missing")
-               if m["metadata"]["permit"] == OURS["permitnumber"]]
-        self.assertEqual(emb, [])
+        self.assertEqual(_embargo_mails(env, OURS["permitnumber"]), [])
         # (The expiry email is about the work end, not the waiver: it still goes.)
         self.assertEqual([i["days_left"] for i, _m in _expiry_items(env, OURS["permitnumber"])], [14, 3])
 
@@ -863,8 +866,7 @@ class TheCoverageNoteIsGone(unittest.TestCase):
         env.sync()
         env.review(OTHER["permitnumber"], "accept")
         env.alerts([date(2026, 11, 1)])
-        (m,) = [x for x in env.emails("dot_embargo_waiver_missing")
-                if x["metadata"]["permit"] == OTHER["permitnumber"]]
+        (m,) = _embargo_mails(env, OTHER["permitnumber"])
         for gone in ("Checks permits matched to your address", "Permits filed by street segment",
                      "Revisa los permisos vinculados a su dirección",
                      "registrados por tramo de calle"):
