@@ -46285,6 +46285,9 @@ async def _send_annotation_emails(annotation: dict, project_name: str, recipient
     try:
         # Wait for screenshot to be generated (up to 30s)
         ann_id = annotation.get("id") or str(annotation.get("_id"))
+        # The annotation doc carries its project (set in create_annotation);
+        # this function has no project_id parameter of its own.
+        project_id = annotation.get("project_id")
         screenshot_url = None
         for _ in range(15):
             await asyncio.sleep(2)
@@ -46352,7 +46355,7 @@ async def _send_annotation_emails(annotation: dict, project_name: str, recipient
                     text=text,
                     metadata={
                         "annotation_id": ann_id,
-                        "project_id": str(project_id),
+                        "project_id": str(project_id) if project_id else None,
                         "creator_name": creator_name,
                     },
                 )
