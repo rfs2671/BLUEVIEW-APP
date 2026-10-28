@@ -72,7 +72,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
              door_pages: Sequence[Dict[str, Any]] = (), *, track: str = "filed",
              sweeps: Optional[Dict[Any, Any]] = None,
              plan_only: Optional[Dict[str, Dict[str, Any]]] = None,
-             opening_schedules: Sequence[Dict[str, Any]] = ()) -> Dict[str, Any]:
+             opening_schedules: Sequence[Dict[str, Any]] = (),
+             set_answers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Every glyph row for the project's `track`, and what was done and
     refused.
 
@@ -91,7 +92,11 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     architectural plans print, read against the door/window schedules
     (`opening_schedules`) on the SAME floors - their units, membership maps,
     stair links and voids - and returned apart, in "opening_rows", so the
-    equipment rows are exactly what they were."""
+    equipment rows are exactly what they were.
+
+    `set_answers` are the stored answers to the project's drawing-set
+    questions (lib.plan_set_questions, ruling 21): {question id: include |
+    exclude}. The questions this track raises come back in "set_questions"."""
     from lib import plan_openings as popen
     from lib.plan_sheet import load_sheet
     from lib.plan_space import build_space
@@ -217,7 +222,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     opening = popen.run_openings(
         floors_in, open_page, ofams, track=track, widest_door=door,
         refused=[(p, why) for p, why, role in paired["refused"]
-                 if role == derive.ROLE_ARCHITECTURAL])
+                 if role == derive.ROLE_ARCHITECTURAL],
+        answers=set_answers)
     summary["openings"] = opening["summary"]
 
     for f in floors_in:
@@ -274,7 +280,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         r.setdefault("payload", {})["track"] = track
     summary["rows"] = len(rows)
     return {"rows": rows, "summary": summary, "areas": areas,
-            "opening_rows": opening["rows"], "opening_health": opening["health"]}
+            "opening_rows": opening["rows"], "opening_health": opening["health"],
+            "set_questions": opening.get("questions") or []}
 
 
 def floor_area_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any], *,
