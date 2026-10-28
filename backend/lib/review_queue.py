@@ -6,11 +6,8 @@ explanation -- not built here). This step only INSERTS items:
 server._review_queue_add is the one writer, nothing changes a row, and no
 person is ever shown one.
 
-ONE COLLECTION, `review_queue`, for the auto-queued kinds below. A dispute
-(a person saying an answer is wrong) stays where L6.2 put it, in
-`answer_disputes`, with its own one-row-per-(answer, person) key; L6.4 lists
-both collections side by side, and KIND_DISPUTE is reserved here so the
-screen has one vocabulary.
+ONE COLLECTION, `review_queue`, for the auto-queued kinds below. Customers
+do not flag answers: every item here comes from the system's own checks.
 
 KINDS (the producers, each in server.py):
   conflicting_sources   an answer whose checks refused or doubted it: the
@@ -64,15 +61,14 @@ from lib import answer_log
 COLLECTION = "review_queue"
 STATUS_PENDING = "pending"
 
-KIND_DISPUTE = "dispute"                    # lives in answer_disputes (L6.2)
 KIND_CONFLICTING_SOURCES = "conflicting_sources"
 KIND_SET_HEALTH = "set_health"
 KIND_REGISTRATION_REFUSAL = "registration_refusal"
 KIND_PLAN_SET_QUESTION = "plan_set_question"
-KINDS = (KIND_DISPUTE, KIND_CONFLICTING_SOURCES, KIND_SET_HEALTH,
+KINDS = (KIND_CONFLICTING_SOURCES, KIND_SET_HEALTH,
          KIND_REGISTRATION_REFUSAL, KIND_PLAN_SET_QUESTION)
-#: The kinds this collection holds (a dispute is answer_disputes' row).
-QUEUED_KINDS = KINDS[1:]
+#: The kinds this collection holds: all of them.
+QUEUED_KINDS = KINDS
 
 #: Plan answer gate outcomes that are a refusal or a doubted answer.
 #: "grounded" and "no_records" (nothing asserted) are not.
@@ -187,15 +183,15 @@ def from_answer(row: Dict[str, Any], raw_records: Iterable[Dict[str, Any]] = (),
             reasons.append(f"{g['gate']}:{g['stop']}")
             found.append(REASON_UNVERIFIED)
     shown = [r for r in raw_records or [] if isinstance(r, dict)]
-    disputed = [answer_log.record_snapshot(r) for r in shown if contested(r)]
-    if disputed:
+    contested_recs = [answer_log.record_snapshot(r) for r in shown if contested(r)]
+    if contested_recs:
         reasons.append("records_contested")
         found.append(REASON_CONFLICT)
     if not reasons:
         return None
     projects = sorted(str(p) for p in row.get("project_ids") or [])
     key = "|".join(projects) + "|" + _norm(subject or row.get("question"))
-    sheets = sorted({str(r["sheet"]) for r in disputed if r.get("sheet")}) or sorted(
+    sheets = sorted({str(r["sheet"]) for r in contested_recs if r.get("sheet")}) or sorted(
         {str(r["sheet"]) for r in row.get("records") or [] if r.get("sheet")})
     evidence = {
         "reasons": reasons,
@@ -203,10 +199,10 @@ def from_answer(row: Dict[str, Any], raw_records: Iterable[Dict[str, Any]] = (),
         "path": row.get("path"),
         "subject": subject[:200] or None,
         "sheets": sheets[:MAX_EVIDENCE],
-        "record_ids": [r["id"] for r in (disputed or row.get("records") or [])
+        "record_ids": [r["id"] for r in (contested_recs or row.get("records") or [])
                        if r.get("id")][:MAX_EVIDENCE],
         "quotes": [{"id": r.get("id"), "sheet": r.get("sheet"),
-                    "text": str(r.get("text") or "")[:MAX_QUOTE]} for r in disputed][:MAX_EVIDENCE],
+                    "text": str(r.get("text") or "")[:MAX_QUOTE]} for r in contested_recs][:MAX_EVIDENCE],
     }
     what = subject or "an answer"
     summary = (f"{', '.join(reasons)} on {what[:120]}"

@@ -380,7 +380,7 @@ class Writer(unittest.TestCase):
                     summary="s", now=NOW)
         self.assertEqual(a["_id"], rq.item_id(rq.KIND_SET_HEALTH, CO_A, "k"))
         self.assertNotEqual(a["_id"], rq.item_id(rq.KIND_SET_HEALTH, CO_B, "k"))
-        self.assertIsNone(rq.item(rq.KIND_DISPUTE, CO_A, "k", reason=rq.REASON_CONFLICT,
+        self.assertIsNone(rq.item("dispute", CO_A, "k", reason=rq.REASON_CONFLICT,
                                   summary="s", now=NOW))
         self.assertIsNone(rq.item(rq.KIND_SET_HEALTH, CO_A, "k", reason="other",
                                   summary="s", now=NOW))
