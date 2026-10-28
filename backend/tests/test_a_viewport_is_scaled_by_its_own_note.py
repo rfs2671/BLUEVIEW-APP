@@ -14,6 +14,9 @@ What this guards, each from a reading that went wrong on 588 Boyland:
     the text layer, so there is no scale, whatever the drawing measures.
   * A note is a claim. The drawing's own dimensions, measured, must back it
     - at least three of them - or the viewport is refused.
+  * Copies count, but the three must include two different printed values
+    (Roy, 2026-10-27): GN-004.00's ROOF EGRESS PLAN verified on four copies
+    of one 3'-0" door width, and the elevations on six 10'-0" floor heights.
 
 WRITTEN TO FAIL BY ASSERTION ON A TREE WITHOUT THE MODULE: every test reaches
 lib.plan_scale through `_ps()`, which turns a missing module or name into an
@@ -49,10 +52,26 @@ def _ps(*names):
     return mod
 
 
-def _dims(implied, inches=96.0):
+#: Printed values for test dimensions: a different one each, unless a test
+#: asks for copies.
+_VALUES = (96.0, 120.0, 36.0, 48.0, 60.0, 72.0, 84.0, 108.0, 132.0, 144.0)
+
+
+def _text(inches):
+    ft, inch = divmod(int(inches), 12)
+    return f"{ft}'-{inch}\""
+
+
+def _dims(implied, inches=None):
+    """One measured dimension per implied pt/in. `inches`: one printed value
+    for all of them (copies), a list (one each), or None (all different)."""
     ps = _ps("Dimension")
-    return [ps.Dimension(text="x", inches=inches, bbox=(0, 0, 1, 1), measured_pt=v * inches)
-            for v in implied]
+    if inches is None:
+        inches = [_VALUES[i % len(_VALUES)] for i in range(len(implied))]
+    elif not isinstance(inches, (list, tuple)):
+        inches = [inches] * len(implied)
+    return [ps.Dimension(text=_text(n), inches=n, bbox=(0, 0, 1, 1), measured_pt=v * n)
+            for v, n in zip(implied, inches)]
 
 
 def _note(pt_per_in, text="note"):
@@ -113,7 +132,7 @@ class ANoteIsAcceptedOnlyWhenItsDimensionsAgree(unittest.TestCase):
     def test_a_dimension_rounded_to_the_half_inch_still_agrees(self):
         # A 1'-0" dimension printed for 12 1/4" drawn: 2.1% off, rounding.
         ps = _ps("verify")
-        ok, _n, why = ps.verify(_note(QUARTER), _dims([1.5 * 12.25 / 12] * 3, inches=12.0))
+        ok, _n, why = ps.verify(_note(QUARTER), _dims([1.5 * 12.25 / 12] * 3, inches=[12.0, 12.0, 24.0]))
         self.assertTrue(ok, why)
 
     def test_a_dimension_ten_percent_off_does_not_agree(self):
@@ -152,6 +171,58 @@ class ANoteIsAcceptedOnlyWhenItsDimensionsAgree(unittest.TestCase):
         self.assertIn("different scales", v.refusal)
         same = ps.claimed_viewport((0, 0, 100, 100), [_note(QUARTER), _note(QUARTER)], _dims([1.5] * 3))
         self.assertTrue(same.verified, same.refusal)
+
+    def test_copies_of_one_value_do_not_verify(self):
+        # GN-004.00 ROOF EGRESS PLAN: four 3'-0" door widths, each exactly
+        # 1/8". One length checked four times is one length checked.
+        ps = _ps("verify")
+        ok, n, why = ps.verify(_note(EIGHTH, "1/8\" = 1'-0\""), _dims([EIGHTH] * 4, inches=36.0))
+        self.assertFalse(ok)
+        self.assertEqual(n, 4, "copies still count as agreeing")
+        self.assertIn("all read 3'-0\"", why)
+        self.assertIn("2 different values needed", why)
+
+    def test_copies_count_toward_the_three(self):
+        # Two copies of 3'-0" and one 10'-0": three agree, two values. The
+        # copies are not thrown away - a viewport needs two VALUES, not three.
+        ps = _ps("verify")
+        ok, n, why = ps.verify(_note(EIGHTH), _dims([EIGHTH] * 3, inches=[36.0, 36.0, 120.0]))
+        self.assertTrue(ok, why)
+        self.assertEqual(n, 3)
+
+    def test_one_value_written_two_ways_is_one_value(self):
+        ps = _ps("Dimension", "verify")
+        dims = [ps.Dimension(text=t, inches=36.0, bbox=(0, 0, 1, 1), measured_pt=27.0)
+                for t in ("3'-0\"", '36"', "3'-0\"")]
+        ok, n, _why = ps.verify(_note(EIGHTH), dims)
+        self.assertFalse(ok)
+        self.assertEqual(n, 3)
+
+    def test_the_second_value_must_itself_agree(self):
+        # Three 3'-0" agree; the 10'-0" beside them is 10% off the note. It is
+        # a different value, but it backs nothing.
+        ps = _ps("verify")
+        ok, n, why = ps.verify(_note(EIGHTH), _dims([EIGHTH] * 3 + [EIGHTH * 1.10],
+                                                     inches=[36.0, 36.0, 36.0, 120.0]))
+        self.assertFalse(ok)
+        self.assertEqual(n, 3)
+        self.assertIn("all read", why)
+
+    def test_values_are_counted_per_viewport_not_per_sheet(self):
+        # Two viewports on one sheet: the first prints 3'-0" and 10'-0", the
+        # second only 3'-0". The first's 10'-0" is no evidence for the second,
+        # in either order, and through claimed_viewport as through verify.
+        ps = _ps("verify", "claimed_viewport")
+        both = _dims([EIGHTH] * 4, inches=[36.0, 36.0, 120.0, 120.0])
+        only = _dims([EIGHTH] * 4, inches=36.0)
+        for dims, want in ((both, True), (only, False), (only, False), (both, True), (only, False)):
+            self.assertEqual(ps.verify(_note(EIGHTH), dims)[0], want)
+        a = ps.claimed_viewport((0, 0, 100, 100), [_note(EIGHTH)], both)
+        b = ps.claimed_viewport((200, 0, 300, 100), [_note(EIGHTH)], only)
+        self.assertTrue(a.verified, a.refusal)
+        self.assertFalse(b.verified)
+        self.assertIsNone(b.pt_per_in)
+        self.assertIn("all read", b.refusal)
 
     def test_an_unverified_viewport_gives_no_length(self):
         ps = _ps("Viewport")
@@ -301,6 +372,37 @@ class GN004AnEighthIsReadNotAssumed(_Sheet):
         v = self.titled("MEZZANINE EGRESS PLAN")
         self.assertEqual(v.agreeing, 2)
         self.assertFalse(v.verified)
+
+    def test_four_copies_of_one_door_width_are_refused(self):
+        # Every agreeing dimension on the roof egress plan is a 3'-0" door
+        # width. On the same sheet the first floor plan also prints 30'-5",
+        # and that is the first floor's evidence, not the roof's.
+        v = self.titled("ROOF EGRESS PLAN")
+        self.assertGreaterEqual(v.agreeing, 3, "copies still count as agreeing")
+        self.assertFalse(v.verified)
+        self.assertIsNone(v.pt_per_in)
+        self.assertIn("all read 3'-0\"", v.refusal)
+        x0, y0, x1, y1 = v.drawing_bbox
+        self.assertIsNone(self.scale_at((x0 + x1) / 2, (y0 + y1) / 2))
+
+    def test_the_first_floor_still_verifies_on_two_values(self):
+        v = self.titled("FIRST FLOOR EGRESS PLAN")
+        ok = [d for d in v.dimensions
+              if d.implied_pt_per_in and abs(d.implied_pt_per_in / EIGHTH - 1) <= 0.03]
+        self.assertGreaterEqual(len({round(d.inches * 16) for d in ok}), 2)
+        self.assertTrue(v.verified, v.refusal)
+
+
+class A202_01AnElevationOfOneFloorHeight(_Sheet):
+    """Six 10'-0" floor-to-floor heights, each exactly 3/16": one value."""
+    FILE, PAGE = "AR - 8.18.26.pdf", 10
+
+    def test_six_copies_of_ten_feet_are_refused(self):
+        v = self.titled("SIDE ELEVATION")
+        self.assertEqual(v.agreeing, 6)
+        self.assertFalse(v.verified)
+        self.assertIsNone(v.pt_per_in)
+        self.assertIn("all read 10'-0\"", v.refusal)
 
 
 if __name__ == "__main__":
