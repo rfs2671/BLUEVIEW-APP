@@ -41,6 +41,12 @@ A ROW:
   evidence          record ids, sheets, outcomes, short quotes of the plan
                     records -- never anybody's chat words
   created_at
+  reason            why it is queued (owner's ruling, L6.3): conflict |
+                    replaced | unverified | set_health_failed |
+                    set_health_info | registration (REASONS below). A
+                    plan-set question is set membership in doubt: conflict.
+  priority          "low" for set_health_info, "normal" for everything else
+                    (L6.4 lists pending items by status, priority, newest)
   status            "pending". Written once, at insert; nothing in this step
                     changes it.
 """
@@ -78,6 +84,36 @@ CONTESTED_TEXT = "(readings disagree)"
 
 #: Set-health kinds that are no finding.
 HEALTHY = frozenset({"set_health_clean", "set_health_not_assessed"})
+#: Set-health findings that are purely informational: recorded, refusing no
+#: claim of their own (lib/plan_set_health: a prose mention is "recorded ...
+#: never counted"; a schedule tag not located "refuses nothing else").
+#: Every other kind -- set_health_unavailable, and any kind not named here --
+#: is a failed check.
+SET_HEALTH_INFO = frozenset({"mentioned_unlocated", "schedule_tag_not_located"})
+
+# ── WHY AN ITEM IS QUEUED (reason), and its priority ───────────────────────
+REASON_CONFLICT = "conflict"                # contested records, "readings disagree"
+REASON_REPLACED = "replaced"                # the plan gate replaced / overturned it
+REASON_UNVERIFIED = "unverified"            # the DM brain stopped on a claim
+REASON_SET_HEALTH_FAILED = "set_health_failed"
+REASON_SET_HEALTH_INFO = "set_health_info"
+REASON_REGISTRATION = "registration"
+REASONS = (REASON_CONFLICT, REASON_REPLACED, REASON_UNVERIFIED, REASON_SET_HEALTH_FAILED,
+           REASON_SET_HEALTH_INFO, REASON_REGISTRATION)
+#: An answer that hits several: the first of these wins.
+ANSWER_PRECEDENCE = (REASON_CONFLICT, REASON_REPLACED, REASON_UNVERIFIED)
+PRIORITY_LOW = "low"
+PRIORITY_NORMAL = "normal"
+
+
+def priority(reason: str) -> str:
+    return PRIORITY_LOW if reason == REASON_SET_HEALTH_INFO else PRIORITY_NORMAL
+
+
+def answer_reason(found: Iterable[str]) -> Optional[str]:
+    """conflict > replaced > unverified."""
+    found = set(found or ())
+    return next((r for r in ANSWER_PRECEDENCE if r in found), None)
 
 #: START refusals queued, by the reason _handle_dm_start gives.
 REGISTRATION_REASONS = frozenset({"code_phone_mismatch", "phone_missing",
@@ -96,12 +132,12 @@ def item_id(kind: str, company_id: Any, subject_key: Any) -> str:
     return hashlib.sha256(f"{kind}|{company_id}|{subject_key}".encode("utf-8")).hexdigest()
 
 
-def item(kind: str, company_id: Any, subject_key: Any, *, summary: Any,
+def item(kind: str, company_id: Any, subject_key: Any, *, reason: str, summary: Any,
          evidence: Optional[Dict[str, Any]] = None, project_id: Any = None,
          answer_log_id: Any = None, now: datetime) -> Optional[Dict[str, Any]]:
-    """The row. None without a company or with a kind this does not hold:
-    an item belongs to one company's queue."""
-    if kind not in QUEUED_KINDS or not company_id:
+    """The row. None without a company, or with a kind or reason this does
+    not hold: an item belongs to one company's queue."""
+    if kind not in QUEUED_KINDS or reason not in REASONS or not company_id:
         return None
     return {
         "_id": item_id(kind, company_id, subject_key),
@@ -111,6 +147,8 @@ def item(kind: str, company_id: Any, subject_key: Any, *, summary: Any,
         "answer_log_id": str(answer_log_id) if answer_log_id else None,
         "summary": answer_log.redact(str(summary or "")[:MAX_SUMMARY]),
         "evidence": answer_log.redact(evidence or {}),
+        "reason": reason,
+        "priority": priority(reason),
         "created_at": now,
         "status": STATUS_PENDING,
     }
@@ -134,19 +172,23 @@ def from_answer(row: Dict[str, Any], raw_records: Iterable[Dict[str, Any]] = (),
     if not row or not row.get("company_id"):
         return None
     reasons: List[str] = []
+    found: List[str] = []
     subject = ""
     for g in row.get("gates") or []:
         if not isinstance(g, dict):
             continue
         if g.get("gate") == "plan_answer_gate" and g.get("outcome") in GATE_OUTCOMES:
             reasons.append(f"plan_gate:{g['outcome']}")
+            found.append(REASON_REPLACED)
             subject = subject or str(g.get("subject") or "")
         elif str(g.get("gate") or "").startswith("dm_") and g.get("stop") in DM_STOPS:
             reasons.append(f"{g['gate']}:{g['stop']}")
+            found.append(REASON_UNVERIFIED)
     shown = [r for r in raw_records or [] if isinstance(r, dict)]
     disputed = [answer_log.record_snapshot(r) for r in shown if contested(r)]
     if disputed:
         reasons.append("records_contested")
+        found.append(REASON_CONFLICT)
     if not reasons:
         return None
     projects = sorted(str(p) for p in row.get("project_ids") or [])
@@ -167,7 +209,8 @@ def from_answer(row: Dict[str, Any], raw_records: Iterable[Dict[str, Any]] = (),
     what = subject or "an answer"
     summary = (f"{', '.join(reasons)} on {what[:120]}"
                + (f" (sheets {', '.join(sheets[:4])})" if sheets else ""))
-    return item(KIND_CONFLICTING_SOURCES, row["company_id"], key, summary=summary,
+    return item(KIND_CONFLICTING_SOURCES, row["company_id"], key,
+                reason=answer_reason(found) or REASON_CONFLICT, summary=summary,
                 evidence=evidence, project_id=projects[0] if len(projects) == 1 else None,
                 answer_log_id=row.get("_id"), now=now)
 
@@ -187,7 +230,8 @@ def from_set_health(company_id: Any, project_id: Any, finding: Dict[str, Any], *
                 "detail": str(finding.get("detail") or "")[:MAX_QUOTE] or None}
     summary = f"{kind}" + (f" on {sheet}" if sheet else "") + (
         f": {subject}" if subject and subject != sheet else "")
-    return item(KIND_SET_HEALTH, company_id, key, summary=summary,
+    reason = REASON_SET_HEALTH_INFO if kind in SET_HEALTH_INFO else REASON_SET_HEALTH_FAILED
+    return item(KIND_SET_HEALTH, company_id, key, reason=reason, summary=summary,
                 evidence={k: v for k, v in evidence.items() if v not in (None, "")},
                 project_id=project_id, now=now)
 
@@ -207,7 +251,7 @@ def from_registration(company_id: Any, user_id: Any, reason: str, *, chat: Any =
                + (f" for a {role}" if role else "")
                + (f" from chat …{tail}" if tail else ""))
     return item(KIND_REGISTRATION_REFUSAL, company_id, f"{user_id}|{reason}",
-                summary=summary,
+                reason=REASON_REGISTRATION, summary=summary,
                 evidence={k: v for k, v in evidence.items() if v not in (None, "")},
                 now=now)
 
@@ -229,6 +273,6 @@ def from_plan_set_question(company_id: Any, project_id: Any, question: Dict[str,
                 or None}
     text = str(question.get("question") or question.get("text") or "set membership question")
     return item(KIND_PLAN_SET_QUESTION, company_id, f"{project_id}|{qid}",
-                summary=text[:MAX_SUMMARY],
+                reason=REASON_CONFLICT, summary=text[:MAX_SUMMARY],
                 evidence={k: v for k, v in evidence.items() if v not in (None, "")},
                 project_id=project_id, now=now)
