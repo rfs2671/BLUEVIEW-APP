@@ -162,6 +162,158 @@ class WhatDoesNotChange(unittest.TestCase):
         self.assertFalse(gate("There are 22 PTAC-1.", [qty], intent="count"))
 
 
+SHED = [rec(sheet_number="SSP-003.00", record_type="legend_entry", file_id="SSP", quote="8' HIGH SHED",
+            subject_terms=["8' HIGH SHED"])]
+# M-001.00's GENERAL ABBREVIATIONS as production stores it: a VISION-read
+# grid (source vision, verified False), its rows visibly misaligned.
+M001 = rec(sheet_number="M-001.00", record_type="schedule", tier="vision_read", source="vision",
+           file_id="MH", subject_terms=["GENERAL ABBREVIATIONS"],
+           quote="GENERAL ABBREVIATIONS ABBREVIATION | MEANING CLG | CEILING HGT | HEIGHT GA | GAUGE DXF | ROOM",
+           payload={"name": "GENERAL ABBREVIATIONS", "verified": False,
+                    "columns": [{"header": "ABBREVIATION", "role": "identifier"},
+                                {"header": "MEANING", "role": None}],
+                    "rows": [["CLG", "CEILING"], ["HGT", "HEIGHT"], ["GA", "GAUGE"], ["DXF", "ROOM"]]})
+
+
+class Ruling5EveryWordOfTheSubjectIsNamed(unittest.TestCase):
+    """Ruling 2026-10-28 (5): every word of the subject must be named where
+    the value is. 8' HIGH SHED names the shed, not the sidewalk shed."""
+
+    def test_the_sidewalk_shed_is_not_named_by_high_shed(self):
+        self.assertFalse(gate("sidewalk shed: 8.", SHED))
+        self.assertFalse(gate("sidewalk shed: 8'.", SHED))
+        self.assertFalse(gate("The sidewalk shed is 8' high.", SHED))
+
+    def test_the_word_it_does_print_names_it(self):
+        self.assertTrue(gate("shed: 8.", SHED))
+        self.assertTrue(gate("The shed is 8' high.", SHED))
+
+
+class Ruling6TheSubjectIsTheWordsBeforeTheValue(unittest.TestCase):
+    """Ruling 2026-10-28 (6): the subject is the words before the value;
+    words after it are not required. With no word before it, the subject is
+    what follows its last value ("a 42" parapet") - kept as built."""
+
+    def test_trailing_words_are_not_required(self):
+        self.assertTrue(gate("The parapet is 42\" high.", PARAPET))
+        self.assertTrue(gate("parapet: 42\" above the roof.", PARAPET))
+
+    def test_every_word_before_the_value_is(self):
+        self.assertFalse(gate("The parapet height is 42\".", PARAPET))
+        self.assertFalse(gate("The roof parapet is 42\".", PARAPET))
+
+    def test_nothing_before_the_value_reads_what_follows_it(self):
+        self.assertTrue(gate("A 42\" parapet.", PARAPET))
+        self.assertFalse(gate("A 42\" railing.", PARAPET))
+        self.assertFalse(gate("42\".", PARAPET))
+
+
+class Ruling7AVisionTableNamesNothing(unittest.TestCase):
+    """Ruling 2026-10-28 (7): M-001.00's vision-read abbreviations stay out.
+    The alternative names come only from a text layer's table, handed in by
+    file (aliases); a returned record's grid never lends one."""
+
+    def test_a_vision_abbreviations_grid_among_the_records_names_nothing(self):
+        recs = [M001, rec(sheet_number="M-101.00", file_id="MH", quote="8'-0\" CLG HGT")]
+        self.assertFalse(gate("ceiling height: 8'-0\".", recs))
+        self.assertFalse(gate("ceiling height: 8'-0\".", recs, aliases={}))
+        self.assertTrue(gate("CLG HGT: 8'-0\".", recs))
+
+    def test_the_text_layer_reader_reads_no_vision_grid(self):
+        # A grid's quote is not a text layer's alternating lines.
+        self.assertEqual(ps.abbreviation_table(M001["quote"]), {})
+
+
+class Ruling8AndRuling9WhereAnAlternativeNameComesFrom(unittest.TestCase):
+
+    def test_8_a_table_names_only_in_its_own_file(self):
+        studs = [rec(sheet_number="A-500.00", file_id="AR", quote="2 1/2\" CH STUDS 16\" O.C. 20 GA.")]
+        self.assertFalse(gate("stud gauge: 20.", studs, aliases={"ST": s002_table()}))
+        self.assertTrue(gate("stud gauge: 20.", studs, aliases={"AR": s002_table()}))
+
+    def test_9_the_agents_also_never_reaches_the_gate(self):
+        """The gate takes the records, the intent and the file's own tables;
+        no parameter carries the agent's other names, so none can bind."""
+        params = inspect.signature(ps.answer_is_grounded).parameters
+        self.assertEqual(list(params), ["text", "records", "intent", "aliases"])
+        self.assertFalse(any(p.kind is p.VAR_KEYWORD for p in params.values()))
+        src = inspect.getsource(ps._attribute_answer_is_bound) + inspect.getsource(ps._subject_bound)
+        self.assertNotIn("also", src.replace("also\"", ""))
+
+
+class Ruling12AGridWithoutAnIdentifier(unittest.TestCase):
+
+    def test_a_cell_is_named_by_itself_its_headers_and_the_grids_name_only(self):
+        # CEILING is in P1's cell, 1'-4" in P2's: no identifier column joins them.
+        self.assertFalse(gate("ceiling: 1'-4\".", [PARTITIONS]))
+        self.assertFalse(gate("ceiling height: 1'-4\".", [PARTITIONS]))
+        # P2's own header names P2's cell.
+        self.assertTrue(gate("partition type 2: 1'-4\".", [PARTITIONS]))
+        # The grid's name ("TABLE") names every cell.
+        self.assertTrue(gate("table: 1'-4\".", [PARTITIONS]))
+
+
+# P-400.00's pump row as production stores it: ROOF MECH ROOM and 13 GPM in
+# one identified row. It names the roof, and it is no count of anything.
+PUMPS = rec(sheet_number="P-400.00", record_type="schedule", tier="schedule_cell", file_id="PL",
+            subject_terms=["PUMP SCHEDULE"],
+            quote="PUMP SCHEDULE MARK | LOCATION | GPM HWRP-1 | ROOF MECH ROOM | 13",
+            payload={"name": "PUMP SCHEDULE",
+                     "columns": [{"header": "MARK", "role": "identifier"},
+                                 {"header": "LOCATION", "role": None},
+                                 {"header": "GPM", "role": None}],
+                     "rows": [["HWRP-1", "ROOF MECH ROOM", "13"]]})
+# Z-001.01's zoning analysis: it names FIRST FLOOR beside its figures.
+ZONING = rec(sheet_number="Z-001.01", file_id="ZN", subject_terms=["ZONING ANALYSIS"],
+             quote="ZONING ANALYSIS FIRST FLOOR 8 DWELLING UNITS 16 PARKING 2")
+PTAC_QTY = rec(sheet_number="M-200.00", record_type="schedule", file_id="MH",
+               quote="PTAC SCHEDULE UNIT NO. | QTY PTAC-1 | 21",
+               payload={"name": "PTAC SCHEDULE",
+                        "columns": [{"header": "UNIT NO.", "role": "identifier"},
+                                    {"header": "QTY", "role": "quantity"}],
+                        "rows": [["PTAC-1", "21"]]})
+
+
+class ACountNeverBindsThroughTheValuePath(unittest.TestCase):
+    """Ruling 2026-10-28 (must-fix): a count claim never binds through the
+    value path. Under intent=attribute it is decided by the count rule - its
+    counting sources - or refused."""
+
+    def test_a_record_naming_the_scope_is_no_count_of_what_is_on_it(self):
+        self.assertFalse(gate("The roof has 13 EF-1.", [PUMPS]))
+        self.assertFalse(gate("The roof has 13 exhaust fans.", [PUMPS]))
+        self.assertFalse(gate("There are 13 HWRP-1.", [PUMPS]))
+        self.assertFalse(gate("The first floor has 8 exhaust fans.", [ZONING]))
+        self.assertFalse(gate("The first floor has 16 PTAC units.", [ZONING]))
+        self.assertFalse(gate("The first floor has 2 EF-1 per the owner's set.", [ZONING]))
+        self.assertFalse(gate("The first floor has 1 exhaust fan.", [ZONING]))
+
+    def test_the_count_rule_decides_it_from_a_counting_source(self):
+        self.assertTrue(gate("There are 21 PTAC-1.", [PTAC_QTY]))
+        self.assertFalse(gate("There are 22 PTAC-1.", [PTAC_QTY]))
+        for t in ("There are 21 PTAC-1.", "There are 22 PTAC-1.", "The roof has 13 EF-1."):
+            self.assertEqual(gate(t, [PTAC_QTY, PUMPS]), gate(t, [PTAC_QTY, PUMPS], intent="count"), t)
+
+    def test_a_value_of_the_thing_keeps_the_value_path(self):
+        self.assertTrue(gate("HWRP-1: 13.", [PUMPS]))
+        self.assertTrue(gate("HWRP-1 is 13 GPM.", [PUMPS]))
+        self.assertTrue(gate("The roof mech room pump is 13 GPM.", [PUMPS]))
+        self.assertTrue(gate("PTAC-1: 21.", [PTAC_QTY]))
+
+    def test_what_states_a_count(self):
+        counts = ["The roof has 13 EF-1.", "The first floor has 8 exhaust fans.",
+                  "There are 36 type F doors.", "4A has 1 EF-1.", "The roof has 1 exhaust fan.",
+                  "There are 5 A2.", "The roof has 2 PTAC units and 1 SAF-1."]
+        values = ["parapet: 42.", "The parapet is 42 high.", "The heater is 15.0 KW.",
+                  "The pump is 13 GPM.", "The roof is 1970 sq ft.", "The studs are 20 gauge.",
+                  "PTAC-1: 21.", "There are 42.", "occupancy load: 10.", "16 O.C."]
+        states = getattr(ps, "states_a_count", lambda _t: False)
+        for c in counts:
+            self.assertTrue(states(c), c)
+        for v in values:
+            self.assertFalse(states(v), v)
+
+
 class TheEvalStatesAnAttributeOfItsSubject(unittest.TestCase):
 
     CASE = {"id": "x", "question": "how high is the parapet", "subject": "parapet",

@@ -3384,6 +3384,61 @@ def _claim_subject(clause: str, spans: Sequence[Tuple[int, int]]) -> List[str]:
     return before or search_terms(clause[max(e for _, e in spans):])
 
 
+# ── A COUNT IS NEVER AN ATTRIBUTE'S VALUE ─────────────────────────────────
+#
+# Measured 2026-10-28 on #894: 282 count claims bound under intent=attribute
+# - "The roof has 13 EF-1." on P-400.00's HWRP-1 row (ROOF MECH ROOM, 13
+# GPM), the subject being the word before the value - and with the
+# attribute's own word kept in the subject (option B) 108 more: "The first
+# floor has 8 exhaust fans." on Z-001.01's ZONING ANALYSIS, which names
+# FIRST FLOOR. A record naming the floor is no count of the fans on it.
+#
+# Ruling 2026-10-28 (operator): a count claim never binds through the value
+# path. A count binds only from a counting source - a census-checked located
+# tally, a schedule QTY at its scope, a printed figure as earlier rulings
+# allow - which is what _count_answer_is_bound reads. So an attribute clause
+# that states a count is decided by that rule, and by nothing else.
+#
+# A CLAUSE STATES A COUNT when a bare number - not a dimension, not a number
+# with a unit of measure (_UNIT_VALUE) - is followed by what it numbers: up
+# to the first stop word, a phrase holding a mark (a word with a letter and
+# a digit, as the count rule's idents have: EF-1, PTAC-2, A2; or "type F"),
+# or ending in a plural ("8 exhaust fans", "36 type F doors"), or any thing
+# at all after a 1 ("1 exhaust fan"). A magnitude word (ASKING_WORDS: "42
+# high") is a measurement's, not a count's. "PTAC-1: 21." states its value
+# after the subject and is an attribute's shape; it keeps the value path.
+_COUNT_WORD = r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*"
+_COUNTED = re.compile(
+    r"(?<![A-Za-z0-9.\-/])(\d[\d,]*(?:\.\d+)?)[ \t]+(" + _COUNT_WORD
+    + r"(?:[ \t]+" + _COUNT_WORD + r")*)")
+
+
+def _is_mark(word: str) -> bool:
+    return any(c.isalpha() for c in word) and any(c.isdigit() for c in word)
+
+
+def states_a_count(clause: str) -> bool:
+    """Does this clause (its dimensions and set names already blanked) state
+    a number OF things - a count - rather than a value of something?"""
+    for m in _COUNTED.finditer(clause or ""):
+        if _UNIT_VALUE.match(clause, m.start()):
+            continue
+        words = []
+        for w in m.group(2).split():
+            if w.lower() in _STOP:
+                break
+            words.append(w)
+        if not words or (words[0].lower() in ASKING_WORDS and words[0].lower() != "type"):
+            continue
+        low = [w.lower() for w in words]
+        if (any(_is_mark(w) for w in words)
+                or any(a == "type" and b for a, b in zip(low, low[1:]))
+                or any(len(f) < len(low[-1]) for f in term_forms(low[-1]))
+                or m.group(1).rstrip(".") == "1"):
+            return True
+    return False
+
+
 def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
                    citations: Sequence[str],
                    aliases: Optional[Dict[str, Dict[str, List[str]]]] = None
@@ -3440,9 +3495,11 @@ def _attribute_answer_is_bound(text: str, records: Sequence[Dict[str, Any]],
     """An attribute answer, clause by clause: each value binds only on a
     record naming the clause's subject (_subject_bound). An area clause is
     decided as before - its area check first (lib.plan_areas), anything else
-    by what any returned record prints."""
+    by what any returned record prints. A clause stating a count is decided
+    by the count rule alone (states_a_count, _count_answer_is_bound)."""
     has_areas = any(_areas.is_area_record(r) for r in records or [])
-    masked = _dims.mask_quotation_marks(_areas.join_thousands(text or ""))
+    source = _areas.join_thousands(text or "")
+    masked = _dims.mask_quotation_marks(source)
     found = _dims.find(masked)
     hold = list(masked)
     for f in found:
@@ -3464,6 +3521,11 @@ def _attribute_answer_is_bound(text: str, records: Sequence[Dict[str, Any]],
             a_add, a_drop = _areas.figures_in_clause(bare, records, named)
             unsupported += [v for v in _values(plain)
                             if v not in a_add and (v in a_drop or v not in ok)]
+            continue
+        # A COUNT IS DECIDED BY THE COUNT RULE, from its counting sources,
+        # never by a record that names the clause's subject (states_a_count).
+        if states_a_count(_strip_citations(bare, citations)):
+            unsupported += _count_answer_is_bound(source[c0:c1], records)[1]
             continue
         unsupported += _subject_bound(_track_claim(masked[c0:c1])[1], records,
                                       citations, aliases)
