@@ -169,6 +169,35 @@ class AWallIsTwoFaces(unittest.TestCase):
         self.assertEqual(res["walls"], [])
 
 
+class EachTypeIsTaggedLengthWithTheUntypedBesideIt(unittest.TestCase):
+    """Ruling 52 (Roy, 2026-10-28): a type is reported as its tagged LF with
+    the floor's untyped LF always beside it; only an all-walls total is
+    refused - there is none."""
+
+    def test_every_type_figure_carries_the_untyped_lf_and_there_is_no_total(self):
+        d, w = tag("P2", 150, 160, leader_to=(150, 100 + 6 * Q))
+        res = build([h_wall(100, 100, 100 + 120 * Q, 6), h_wall(600, 100, 100 + 48 * Q, 4), d], [w])
+        self.assertIn("figures", res, "no per-type figures with the untyped LF beside them")
+        self.assertEqual(res["figures"], {"P2": {"tagged_lf": 10.0, "untyped_lf_beside": 4.0,
+                                                 "ambiguous_lf_beside": 0.0}})
+        for k in res:
+            self.assertNotIn("total", k.lower(), f"an all-walls figure: {k}")
+
+    def test_the_report_carries_it_per_floor_and_for_the_building(self):
+        from scripts.plan_walls_report import summarize
+        s = {"sheet": "A-101.00", "floor": "FLOOR_2", "page": 12, "title": "SECOND FLOOR PLAN",
+             "by_type": {"P2": 10.0}, "untyped_lf": 4.0, "ambiguous_lf": 0.0, "refusal": None,
+             "png": "", "refused_viewports": [], "walls": [], "tags": [],
+             "figures": _pw("figures").figures({"P2": 10.0}, 4.0, 0.0)}
+        out = summarize([s], {})
+        self.assertIn("figures", out["floors"]["FLOOR_2"], "a floor without its figures")
+        self.assertIn("building_figures", out, "no building figures")
+        self.assertEqual(out["floors"]["FLOOR_2"]["figures"]["P2"]["untyped_lf_beside"], 4.0)
+        self.assertEqual(out["building_figures"]["P2"],
+                         {"tagged_lf": 10.0, "untyped_lf_beside": 4.0, "ambiguous_lf_beside": 0.0})
+        self.assertFalse([k for k in out if "total" in k.lower()])
+
+
 class RefusedWhereTheScaleDoesNotVerify(unittest.TestCase):
 
     def test_a_wall_in_an_unverified_viewport_has_no_length(self):

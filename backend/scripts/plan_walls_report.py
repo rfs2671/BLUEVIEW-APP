@@ -117,7 +117,7 @@ def summarize(sheets, table):
             continue
         s = ss[0]
         floors[fl] = {"sheet": s["sheet"], "by_type": s["by_type"], "untyped_lf": s["untyped_lf"],
-                      "ambiguous_lf": s["ambiguous_lf"],
+                      "ambiguous_lf": s["ambiguous_lf"], "figures": s["figures"],
                       "refused_viewports": [v["title"] for v in s["refused_viewports"]]}
         building.update(s["by_type"])
         untyped += s["untyped_lf"]
@@ -135,6 +135,9 @@ def summarize(sheets, table):
                              else "refused: a floor is claimed by two plans"),
         "building_untyped_lf": round(untyped, 2),
         "building_ambiguous_lf": round(ambiguous, 2),
+        # ruling 52: each type tagged, the untyped beside it, no all-walls total
+        "building_figures": (W.figures(dict(building), untyped, ambiguous) if building_ok
+                             else "refused: a floor is claimed by two plans"),
         "apartments": {k: {t: round(v, 2) for t, v in sorted(c.items())} for k, c in sorted(apartments.items())},
         "types_table": table,
         "reconciliation": W.reconcile({s["sheet"]: [t["text"] for t in s["tags"]] for s in sheets}, table)

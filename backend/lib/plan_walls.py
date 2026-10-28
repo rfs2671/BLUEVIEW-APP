@@ -603,10 +603,24 @@ def floor_walls(page, *, scale_sheet=None, space=None, widest_door_in: Optional[
     out["by_type"] = {k: round(by_type[k], 2) for k in sorted(by_type)}
     out["untyped_lf"] = round(out["untyped_lf"], 2)
     out["ambiguous_lf"] = round(out["ambiguous_lf"], 2)
+    out["figures"] = figures(out["by_type"], out["untyped_lf"], out["ambiguous_lf"])
     out["types_on_plan"] = sorted({t["text"] for t in tags if t["text"]})
     for i, w in enumerate(out["walls"], 1):
         w["id"] = i
     return out
+
+
+def figures(by_type: Dict[str, float], untyped_lf: float, ambiguous_lf: float
+            ) -> Dict[str, Dict[str, float]]:
+    """THE FIGURES, AS RULED (Roy, 2026-10-28, question 52): each type is its
+    TAGGED length, and every type's figure carries the untyped and ambiguous
+    length of the same scope beside it - a wall no tag reaches may be any
+    type, so no type's figure is ever said without it. There is NO all-walls
+    total: one would fold the untyped walls into a sum that hides them.
+    {type: {"tagged_lf", "untyped_lf_beside", "ambiguous_lf_beside"}}."""
+    return {t: {"tagged_lf": round(lf, 2), "untyped_lf_beside": round(untyped_lf, 2),
+                "ambiguous_lf_beside": round(ambiguous_lf, 2)}
+            for t, lf in sorted(by_type.items())}
 
 
 def _wall(part, types, pieces, joints, ends, ppi, v, space, tags_on) -> Dict[str, Any]:
@@ -780,7 +794,8 @@ def render(page, result: Dict[str, Any], path: str, *, title: str = "", dpi: int
     y = 20
     d.text((20, y), title or "walls by type", fill=(0, 0, 0), font=font)
     y += 30
-    rows = [(t, col[t], f"{t}: {lf:.1f} LF") for t, lf in result["by_type"].items()]
+    rows = [(t, col[t], f"{t}: {lf:.1f} LF tagged (+{result['untyped_lf']:.1f} LF untyped on this plan)")
+            for t, lf in result["by_type"].items()]
     rows += [("", UNTYPED_RGB, f"UNTYPED (no tag reaches it): {result['untyped_lf']:.1f} LF"),
              ("", AMBIGUOUS_RGB, f"AMBIGUOUS (type change not drawn): {result['ambiguous_lf']:.1f} LF"),
              ("", REFUSED_RGB, f"REFUSED (scale not verified): {len(result.get('refused_viewports') or [])} viewport(s)"),
@@ -796,4 +811,4 @@ def render(page, result: Dict[str, Any], path: str, *, title: str = "", dpi: int
 __all__ = ["MIN_FACE_IN", "MIN_T_IN", "LAYER_GAP_IN", "THICK_MARGIN_IN", "CENTER_TOL_IN", "THICK_TOL_IN",
            "SMALL_GAP_IN", "TYPED", "UNTYPED", "AMBIGUOUS", "Piece", "wall_lines", "bands",
            "opening_boxes", "read_tags", "attach", "join_runs", "absorb_short", "split_types", "scope_of",
-           "apportion", "floor_walls", "floor_of", "partition_types", "reconcile", "colours", "render"]
+           "apportion", "floor_walls", "figures", "floor_of", "partition_types", "reconcile", "colours", "render"]
