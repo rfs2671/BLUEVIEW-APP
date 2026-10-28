@@ -65418,6 +65418,7 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         opening_health: List[dict] = []
         set_questions: List[dict] = []
         areas: List[dict] = []
+        walls: List[dict] = []
         summary: Dict[str, Any] = {"tracks": {}}
         for track, pages in by_track:
             # (passed only when there is one: a set with no door or window
@@ -65432,6 +65433,7 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
                                           plan_only=plan_only, **extra)
             rows += out["rows"]
             areas += out.get("areas") or []
+            walls += out.get("walls") or []
             opening_rows += out.get("opening_rows") or []
             opening_health += out.get("opening_health") or []
             set_questions += out.get("set_questions") or []
@@ -65476,6 +65478,7 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
     summary["written"] = await _write_glyph_records(pid, rows)
     summary["set_health"] = await _write_set_health(pid, health)
     summary["areas_written"] = await _write_area_records(pid, areas)
+    summary["walls_written"] = await _write_wall_records(pid, walls)
     try:
         summary["set_questions"] = await _store_set_questions(
             pid, set_questions, opening_rows, actor or "system:glyph_pass")
@@ -65736,6 +65739,27 @@ async def _write_area_records(project_id: str, rows: List[dict]) -> int:
         r["created_at"] = now
     await db[COLLECTION].insert_many(rows)
     return len(rows)
+
+
+async def _write_wall_records(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's wall rows with one pass's (lib.plan_walls, the
+    glyph pass's `walls` step). IDEMPOTENT PER PROJECT AND TRACK: every row
+    of the project goes and this pass's rows - each track's, each saying its
+    track - come in, so a second run of the same pass leaves the same rows,
+    and a track the set no longer has keeps none. Own collection, as areas:
+    nothing reads it yet (the gate's binding and T5's Walls trade come
+    later); it is written only by the operator-started pass."""
+    from lib.plan_walls import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    docs = []
+    for i, r in enumerate(rows):
+        docs.append(dict(r, project_id=pid, ordinal=i, created_at=now))
+    await db[COLLECTION].insert_many(docs)
+    return len(docs)
 
 
 async def _area_evidence(project_id: str) -> List[dict]:
@@ -82823,8 +82847,8 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
         await _record_glyph_pass_result(pid, tracker)
         try:
             summary = await _plan_glyph_pass(pid, actor=who or None, progress=tracker)
-            counts = {k: summary[k] for k in ("written", "set_health", "areas_written")
-                      if k in summary}
+            counts = {k: summary[k] for k in ("written", "set_health", "areas_written",
+                                              "walls_written") if k in summary}
             if summary.get("aborted"):
                 tracker.finish(ABORTED, summary=dict(counts, reindex=summary.get("reindex")))
             else:
