@@ -171,6 +171,20 @@ class ConflictingSources(unittest.TestCase):
         self.assertEqual(len(db.answer_log.rows), 2)
         self.assertEqual([r["answer_log_id"] for r in _rows(db)], [first])
 
+    def test_same_subject_other_sheet_or_question_is_another_row(self):
+        """search_plans takes floor / sheet apart from subject: the same
+        subject refused on A-101 and on A-102 is two findings (Codex, #904)."""
+        db = FakeDb()
+        a = _write_answer(db, note_gate=self.GATE, question="type F doors on A-101",
+                          records=[{"_id": "r1", "sheet_number": "A-101", "quote": "F"}])
+        b = _write_answer(db, note_gate=self.GATE, question="type F doors on A-102",
+                          records=[{"_id": "r2", "sheet_number": "A-102", "quote": "F"}])
+        c = _write_answer(db, note_gate=self.GATE, question="type F doors on A-101",
+                          records=[{"_id": "r3", "sheet_number": "A-102", "quote": "F"}])
+        rows = _rows(db)
+        self.assertEqual(sorted(r["answer_log_id"] for r in rows), sorted([a, b, c]))
+        self.assertEqual(len({r["_id"] for r in rows}), 3)
+
     def test_no_company_no_item(self):
         db = FakeDb()
         _write_answer(db, note_gate=self.GATE, company_id=None)

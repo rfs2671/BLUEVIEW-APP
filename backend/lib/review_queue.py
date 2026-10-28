@@ -190,9 +190,14 @@ def from_answer(row: Dict[str, Any], raw_records: Iterable[Dict[str, Any]] = (),
     if not reasons:
         return None
     projects = sorted(str(p) for p in row.get("project_ids") or [])
-    key = "|".join(projects) + "|" + _norm(subject or row.get("question"))
     sheets = sorted({str(r["sheet"]) for r in contested_recs if r.get("sheet")}) or sorted(
         {str(r["sheet"]) for r in row.get("records") or [] if r.get("sheet")})
+    # The finding is the project(s), the subject, the question AND the sheets
+    # it rests on: the same subject asked about on another floor or sheet is
+    # another finding (search_plans takes floor / sheet apart from subject),
+    # while the same question on the same sheets again is one row.
+    key = "|".join([",".join(projects), _norm(subject), _norm(row.get("question")),
+                    ",".join(sheets)])
     evidence = {
         "reasons": reasons,
         "surface": row.get("surface"),
