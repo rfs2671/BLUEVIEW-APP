@@ -6,11 +6,17 @@ approve / deny, no reviewer. Only the platform operator reviews a dispute
 (L6.4, not built here); this step only records it.
 
 A ROW in `answer_disputes`, one per (answer, person):
-  _id               sha256 of answer_log_id + user_id: the same person
-                    disputing the same answer twice is the same row (the
-                    second insert is a duplicate key, and the reply is the same)
+  _id               sha256 of answer_log_id + the person (user_id in a DM or
+                    the app; asker_key in a group): the same person disputing
+                    the same answer twice is the same row (the second insert
+                    is a duplicate key, and the reply is the same)
   answer_log_id     the disputed answer (an answer_log row of the SAME company)
-  company_id, user_id, surface (dm | app)
+  company_id, user_id, surface (dm | group | app)
+  asker_key         the disputer as a keyed hash of their full WhatsApp sender
+                    id (answer_log.asker_key): every group dispute, and a DM
+                    one too; never the number. A group row has no user_id.
+  asker_last4       a group disputer's last 4 digits (as on the answer row)
+  group_id          a group dispute's group (…@g.us)
   text              what they said, phone runs cut to the last 4 (answer_log.redact)
   created_at
   status            "pending". Written once, at insert; nothing in this step
@@ -37,7 +43,7 @@ from lib import answer_log
 COLLECTION = "answer_disputes"
 REPLY = "Flagged for review"
 STATUS_PENDING = "pending"
-SURFACES = ("dm", "app")
+SURFACES = ("dm", "group", "app")
 
 #: A message with no reply-to disputes the last answer only this soon after it.
 WINDOW_SECONDS = 10 * 60
@@ -150,23 +156,35 @@ def quote_matches(quoted_body: Any, row: Dict[str, Any]) -> bool:
     return q[:300] in a or a[:300] in q
 
 
-def dispute_id(answer_log_id: Any, user_id: Any) -> str:
-    return hashlib.sha256(f"{answer_log_id}|{user_id}".encode("utf-8")).hexdigest()[:32]
+def dispute_id(answer_log_id: Any, who: Any) -> str:
+    """One row per (answer, person): `who` is the user_id (DM, app) or the
+    asker_key (group)."""
+    return hashlib.sha256(f"{answer_log_id}|{who}".encode("utf-8")).hexdigest()[:32]
 
 
-def dispute_row(log_row: Dict[str, Any], *, user_id: Any, surface: str, text: Any,
-                now: datetime) -> Dict[str, Any]:
-    """The row for one person disputing one answer_log row (its company's)."""
-    return {
-        "_id": dispute_id(log_row["_id"], user_id),
+def dispute_row(log_row: Dict[str, Any], *, surface: str, text: Any, now: datetime,
+                user_id: Any = None, asker_key: Optional[str] = None,
+                asker_last4: Optional[str] = None,
+                group_id: Optional[str] = None) -> Dict[str, Any]:
+    """The row for one person disputing one answer_log row (its company's).
+    A group dispute is keyed by asker_key; a DM / app one by user_id."""
+    surface = surface if surface in SURFACES else "dm"
+    who = asker_key if surface == "group" else user_id
+    row = {
+        "_id": dispute_id(log_row["_id"], who),
         "answer_log_id": str(log_row["_id"]),
         "company_id": str(log_row.get("company_id")),
-        "user_id": str(user_id),
-        "surface": surface if surface in SURFACES else "dm",
+        "user_id": str(user_id) if user_id else None,
+        "asker_key": asker_key or None,
+        "surface": surface,
         "text": answer_log.redact(str(text or "")[:MAX_TEXT]),
         "created_at": now,
         "status": STATUS_PENDING,
     }
+    if surface == "group":
+        row["asker_last4"] = asker_last4 or None
+        row["group_id"] = group_id if group_id and str(group_id).endswith("@g.us") else None
+    return row
 
 
 def user_view() -> Dict[str, str]:

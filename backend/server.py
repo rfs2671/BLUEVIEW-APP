@@ -56447,6 +56447,29 @@ def _answer_turn_note(*, records: Any = None, gate: Optional[dict] = None,
         turn["model"] = model
 
 
+#: The key asker_key is made with (lib/answer_log.asker_key), read once.
+_ASKER_KEY: Optional[bytes] = None
+_ASKER_KEY_READ = False
+
+
+def _answer_asker_key(sender: Any) -> Optional[str]:
+    """A WhatsApp sender as answer_log.asker_key: who asked, not their
+    number. THE KEY: env ANSWER_ASKER_SALT; unset, HMAC-SHA256(JWT_SECRET,
+    b"answer-asker-key-v1") -- derived, never a constant, never logged.
+    Changing either changes every asker_key from then on (a person's old
+    rows stop matching their new ones). Neither set: None, nothing keyed."""
+    global _ASKER_KEY, _ASKER_KEY_READ
+    if not _ASKER_KEY_READ:
+        salt = (os.environ.get("ANSWER_ASKER_SALT") or "").strip()
+        if salt:
+            _ASKER_KEY = salt.encode("utf-8")
+        elif JWT_SECRET:
+            _ASKER_KEY = hmac.new(JWT_SECRET.encode("utf-8"), b"answer-asker-key-v1",
+                                  hashlib.sha256).digest()
+        _ASKER_KEY_READ = True
+    return answer_log.asker_key(sender, _ASKER_KEY)
+
+
 def _code_sha() -> str:
     """The commit this backend runs, as /api/version reports it."""
     return (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT_SHA")
@@ -56455,7 +56478,8 @@ def _code_sha() -> str:
 
 async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
                             company_id: Any, user_id: Any = None, project_ids: Any = None,
-                            asker_phone: Any = None, records: Any = None,
+                            asker_phone: Any = None, asker_id: Any = None,
+                            records: Any = None,
                             sources: Any = None, tools: Any = None,
                             gates: Optional[list] = None, model: Optional[str] = None,
                             path: Optional[str] = None, timing: Any = None,
@@ -56483,6 +56507,8 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
             "company_id": str(company_id) if company_id else None,
             "project_ids": answer_log.project_ids(project_ids),
             "asker_last4": answer_log.last4(asker_phone),
+            # A group asker: their full WhatsApp id, keyed-hashed. Never the number.
+            "asker_key": _answer_asker_key(asker_id) if asker_id else None,
             "group_id": group_id if group_id and str(group_id).endswith("@g.us") else None,
             "records": answer_log.records_snapshot(list(records or []) + noted)
                        + [answer_log.source_snapshot(s) for s in sources or []],
@@ -56535,20 +56561,29 @@ async def _answer_log_rows(company_id: Any, *, surface: Optional[str] = None,
 # platform operator reviews (L6.4). Per company: a dispute only ever names
 # an answer of the disputer's own company (_answer_log_get).
 
-async def _answer_dispute_capture(*, surface: str, company_id: Any, user_id: Any,
-                                  answer_log_id: Any, text: Any) -> Optional[bool]:
+async def _answer_dispute_capture(*, surface: str, company_id: Any, user_id: Any = None,
+                                  answer_log_id: Any, text: Any,
+                                  asker_key: Optional[str] = None,
+                                  asker_last4: Optional[str] = None,
+                                  group_id: Optional[str] = None) -> Optional[bool]:
     """Record one dispute. True: recorded (or already recorded by this
-    person); False: refused (no company, no user, or not an answer of this
-    company); None: the write failed."""
-    if not company_id or not user_id or not answer_log_id:
+    person); False: refused (no company, no person, or not an answer of this
+    company -- in a group, not an answer given in that group); None: the
+    write failed. The person is user_id in a DM / the app, asker_key in a
+    group."""
+    who = asker_key if surface == "group" else user_id
+    if not company_id or not who or not answer_log_id:
         # Refused: a dispute belongs to one person of one company.
         return False
     row = await _answer_log_get(company_id, str(answer_log_id))
-    if not row or str(row.get("company_id")) != str(company_id):
+    if not row or str(row.get("company_id")) != str(company_id) or (
+            surface == "group" and (row.get("surface") != "group"
+                                    or not group_id or row.get("group_id") != group_id)):
         logger.info(f"[answer-dispute] refused company={company_id} surface={surface}")
         return False
     doc = answer_disputes.dispute_row(row, user_id=user_id, surface=surface, text=text,
-                                      now=datetime.now(timezone.utc))
+                                      now=datetime.now(timezone.utc), asker_key=asker_key,
+                                      asker_last4=asker_last4, group_id=group_id)
     from pymongo.errors import DuplicateKeyError
     dup = False
     try:
@@ -56617,11 +56652,80 @@ async def _answer_dispute_dm(ident: dict, dm_chat: str, body: str, message_id: s
         return False
     ok = await _answer_dispute_capture(surface="dm", company_id=ident.get("company_id"),
                                        user_id=ident.get("user_id"),
-                                       answer_log_id=row.get("_id"), text=text)
+                                       answer_log_id=row.get("_id"), text=text,
+                                       asker_key=_answer_asker_key(dm_chat))
     if not ok:
         return False
     await _dm_store_inbound(ident, dm_chat, text, message_id)
     await send_whatsapp_message(dm_chat, answer_disputes.REPLY)
+    return True
+
+
+async def _answer_dispute_group_target(company_id: Any, group_id: str, quoted: dict,
+                                       now: datetime) -> Optional[dict]:
+    """The group answer a reply-to names: the answer_log row that went out
+    as the quoted message (its WhatsApp id, in this group), else -- the id
+    on no row -- this company's answer in this group whose words it quotes,
+    within answer_disputes.QUOTE_LOOKBACK_SECONDS. None: no answer.
+
+    The id lookup is by the group and the id, not the company: a row of
+    another company with that id (the group re-bound) is then REFUSED by
+    _answer_dispute_capture, which re-reads it with the company. Nothing of
+    such a row is used here but its _id. The words lookup reads this
+    company's rows only."""
+    if not company_id or not group_id:
+        # Refused: no company or no group, no answer of theirs.
+        return None
+    qid = answer_disputes.short_id(quoted.get("message_id"))
+    qbody = str(quoted.get("body") or "").strip()
+    try:
+        if qid:
+            row = await db.answer_log.find_one(
+                {"group_id": group_id, "surface": "group", "wa_message_ids": qid})
+            if row:
+                return row
+        if not qbody:
+            return None
+        since = now - timedelta(seconds=answer_disputes.QUOTE_LOOKBACK_SECONDS)
+        rows = await db.answer_log.find(
+            {"company_id": str(company_id), "group_id": group_id, "surface": "group",
+             "created_at": {"$gte": since}}).sort([("created_at", -1)]).to_list(30)
+    except Exception as e:
+        logger.warning(f"[answer-dispute] lookup failed: {type(e).__name__}")
+        return None
+    return next((r for r in rows if answer_disputes.quote_matches(qbody, r)), None)
+
+
+async def _answer_dispute_group(parsed: dict, group_id: str, company_id: Any, body: str,
+                                reply_to: str, quoted_from_bot: bool, spoken: bool) -> bool:
+    """A group message that REPLIES TO a bot answer and says it is wrong:
+    recorded against that answer (keyed by the asker's asker_key), answered
+    "Flagged for review" as a reply to it, and the group agent never runs
+    on it. Only a reply-to: a group is too busy for "the last answer".
+    False: not one (or not one this can place), and the message goes on
+    exactly as before."""
+    text = (body or "").strip()
+    if spoken or not quoted_from_bot or not answer_disputes.is_dispute(text):
+        # A voice note's transcript is not taken as a dispute: typed words only.
+        return False
+    quoted = {"message_id": parsed.get("quoted_message_id") or "",
+              "body": parsed.get("quoted_body") or ""}
+    if not (quoted["message_id"] or str(quoted["body"]).strip()):
+        return False
+    asker_key = _answer_asker_key(parsed.get("sender"))
+    if not asker_key:
+        return False
+    row = await _answer_dispute_group_target(company_id, group_id, quoted,
+                                             datetime.now(timezone.utc))
+    if not answer_disputes.disputable(row):
+        return False
+    ok = await _answer_dispute_capture(
+        surface="group", company_id=company_id, answer_log_id=row.get("_id"), text=text,
+        asker_key=asker_key, asker_last4=answer_log.last4(parsed.get("sender")),
+        group_id=group_id)
+    if not ok:
+        return False
+    await send_whatsapp_message(group_id, answer_disputes.REPLY, reply_to=reply_to)
     return True
 
 
@@ -75691,6 +75795,14 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
             # messages. The checklist flows below answer only then; nothing
             # else here posts.
 
+            # "That's wrong" as a reply to a bot answer: flagged for review,
+            # never answered. First, before the checklist reply, "done N" and
+            # the agent could take it; anything else goes on as before.
+            if is_addressed and await _answer_dispute_group(
+                    parsed, group_id, msg_company_id, body, reply_to,
+                    quoted_from_bot, spoken):
+                return
+
             # ── Sprint 6: interactive checklist assignment flow ──
             # If this group has an active draft checklist awaiting assignment,
             # try to parse the reply BEFORE running any other handlers.
@@ -75926,7 +76038,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                     await _answer_log_write(
                         "group", question=body, final_text=reply,
                         company_id=msg_company_id, project_ids=project_id,
-                        asker_phone=sender, path="group_agent", tools=group_trace,
+                        asker_phone=sender, asker_id=parsed.get("sender"),
+                        path="group_agent", tools=group_trace,
                         features=dict(features or {}), group_id=group_id)
                 return
 
@@ -83082,6 +83195,11 @@ async def startup_event():
     await db.answer_log.create_index([("company_id", 1), ("user_id", 1), ("surface", 1),
                                       ("created_at", -1)])
     await db.answer_log.create_index([("company_id", 1), ("wa_message_ids", 1)])
+    # A group dispute's answer: the quoted id in that group, and that group's
+    # answers newest first (its words).
+    await db.answer_log.create_index([("group_id", 1), ("surface", 1), ("wa_message_ids", 1)])
+    await db.answer_log.create_index([("company_id", 1), ("group_id", 1), ("surface", 1),
+                                      ("created_at", -1)])
     # The disputes themselves: one company's, newest first (L6.4 reads them).
     await db.answer_disputes.create_index([("company_id", 1), ("created_at", -1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record

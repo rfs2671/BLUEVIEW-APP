@@ -13,6 +13,9 @@ A ROW (surface dm | group | app):
   question, final_text      as asked / as sent (phone runs cut to the last 4)
   user_id, company_id, project_ids
   asker_last4               a group asker's phone: the last 4 digits only
+  asker_key                 a group asker, as a keyed hash of their FULL WhatsApp
+                            sender id (asker_key below): who asked, without the
+                            number; a reply-to dispute is keyed by it
   records                   [{id, sheet, file_id, page_id, page, kind, text}]:
                             the plan records the model was shown, `text` the
                             quote as the model saw it (_render_records_for_model:
@@ -37,6 +40,7 @@ NO PHONE IN FULL: every string in the row goes through `redact`.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
 from datetime import datetime
@@ -62,6 +66,19 @@ _PHONE_KEYS = ("worker_phone", "phone", "chat_id", "sender")
 def last4(v: Any) -> Optional[str]:
     d = re.sub(r"\D", "", str(v or ""))
     return d[-4:] if len(d) >= 4 else None
+
+
+def asker_key(sender: Any, key: Optional[bytes]) -> Optional[str]:
+    """Who asked, in a group, without their number: HMAC-SHA256 of the FULL
+    WhatsApp sender id as received ("...@c.us", "...@lid"), only whitespace
+    and case normalised, keyed by `key` (server._answer_asker_key: env
+    ANSWER_ASKER_SALT, else derived from JWT_SECRET; never a constant).
+    The same sender under the same key is the same value; nothing in it
+    reads back to the phone. None: no sender or no key."""
+    sid = "".join(str(sender or "").split()).lower()
+    if not sid or not key:
+        return None
+    return hmac.new(key, sid.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _cut(m: "re.Match") -> str:
@@ -168,12 +185,17 @@ def _canon(v: Any) -> Any:
 
 #: The fields the hash covers: the row's content, never _id or the hash.
 HASHED = ("surface", "question", "final_text", "user_id", "company_id", "project_ids",
-          "asker_last4", "group_id", "records", "tools", "gates", "model", "code_sha",
+          "asker_last4", "asker_key", "group_id", "records", "tools", "gates", "model", "code_sha",
           "path", "timing", "features", "params", "wa_message_ids", "created_at")
 
 
+#: Fields added after the first rows were written: hashed only when the row
+#: has them, so a row written before them still verifies.
+LATER = frozenset({"asker_key"})
+
+
 def content_hash(row: Dict[str, Any]) -> str:
-    body = {k: _canon(row.get(k)) for k in HASHED}
+    body = {k: _canon(row.get(k)) for k in HASHED if k in row or k not in LATER}
     return _sha(json.dumps(body, sort_keys=True, ensure_ascii=False, default=str))
 
 
