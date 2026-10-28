@@ -79,13 +79,14 @@ _LAYER_SYSTEM = (
     (re.compile(r"DOMC|-CW-", re.I), "cold water"),
     (re.compile(r"NGAS|GAS", re.I), "gas"),
 )
-#: What the tag's letter says the stack is (the legend, P-001.00).
-TAG_SYSTEM = {"S": "sanitary", "V": "vent", "ST": "storm", "W": "water",
-              "G": "gas"}
-#: Which pipe systems a tag letter may point at. W is the riser GROUP
-#: (cold, hot and return drawn side by side), so all three waters.
+#: What the tag's letter says the stack is (P-001.00's legend; on the PL
+#: set W is the domestic HOT water riser group - P-300.00 pairs every W-n
+#: with a CW-n - and each W tag's leaders reach hot water and its return).
+TAG_SYSTEM = {"S": "sanitary", "V": "vent", "ST": "storm", "W": "hot water",
+              "CW": "cold water", "G": "gas"}
+#: Which pipe systems a tag letter may point at.
 TAG_POINTS_AT = {"S": {"sanitary"}, "V": {"vent"}, "ST": {"storm"},
-                 "W": {"cold water", "hot water", "hot water return"},
+                 "W": {"hot water", "hot water return"}, "CW": {"cold water"},
                  "G": {"gas"}}
 
 # ── geometry (points; 1/4" = 1'-0" -> 1.5pt per real inch) ─────────────────
@@ -1139,7 +1140,10 @@ def where(units, x: float, y: float) -> Tuple[Optional[str], str]:
                     got = u or "unresolved"
                 break
         sides.append(got or f"nothing within {WALL_PROBE_IN:.0f}in")
-    return "wall: " + " | ".join(sides), f"in a wall; probed both ways along its normal ({'N-S' if dr else 'E-W'})"
+    how = f"in a wall; probed both ways along its normal ({'N-S' if dr else 'E-W'})"
+    if sides[0] == sides[1] and not sides[0].startswith(("nothing", "unresolved", "outdoors")):
+        return sides[0], how + ": the same space both sides"
+    return "wall: " + " | ".join(sides), how
 
 
 # ── riser diagram cross-check ──────────────────────────────────────────────
