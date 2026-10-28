@@ -246,7 +246,7 @@ class Ruling8AndRuling9WhereAnAlternativeNameComesFrom(unittest.TestCase):
         """The gate takes the records, the intent and the file's own tables;
         no parameter carries the agent's other names, so none can bind."""
         params = inspect.signature(ps.answer_is_grounded).parameters
-        self.assertEqual(list(params), ["text", "records", "intent", "aliases", "sources"])
+        self.assertEqual(list(params), ["text", "records", "intent", "aliases", "sources", "families"])
         self.assertFalse(any(p.kind is p.VAR_KEYWORD for p in params.values()))
         # No name in the attribute path's code is `also` (comments aside).
         import ast
@@ -431,9 +431,58 @@ class Ruling51AFamilysCountIsTheCountRulesUnderEveryIntent(unittest.TestCase):
         fams = getattr(ps, "_count_families", lambda _r: {})([EF_SCHED, PTAC_SCHED, EF_NOTE])
         self.assertEqual(fams, {"EXHAUST FAN SCHEDULE": ["EF-1", "EF-2"],
                                 "ROOMS PTAC UNITS SCHEDULE": ["PTAC-1"]})
-        # A plural no family in hand names is not a family's count: under the
-        # union it keeps the union (under attribute it has the count shape, 50).
+        # A plural no family names is not a family's count: under the union
+        # it keeps the union (under attribute it has the count shape, 50).
         self.assertTrue(gate("diffusers: 13.", [EF_NOTE, rec(quote="DIFFUSERS 13")], intent=""))
+
+    def test_the_projects_families_name_a_plural_the_search_did_not_return(self):
+        """The search for a ceiling returns no fan schedule; the project has
+        one (server.plan_count_families), and 'exhaust fans' still names it."""
+        project = {"EXHAUST FAN SCHEDULE": ["EF-1", "EF-2"], "ROOMS PTAC UNITS SCHEDULE": ["PTAC-1"]}
+        takes = "families" in inspect.signature(ps.answer_is_grounded).parameters
+        kw = {"families": project} if takes else {}
+        for it in EVERY:
+            for t in ("exhaust fans: 13.", "The first floor has 13 exhaust fans.", "PTAC units: 13."):
+                ok = ps.answer_is_grounded(t, [EF_NOTE, rec(quote="PTAC UNITS 13")], intent=it, **kw)[0]
+                self.assertFalse(ok, (t, it))
+        # Without the project's families, and none in hand, the union is as it was.
+        self.assertTrue(gate("exhaust fans: 13.", [EF_NOTE], intent=""))
+
+    def test_production_hands_the_gate_the_projects_families(self):
+        import asyncio
+        from unittest import mock
+        import server
+        project = {"EXHAUST FAN SCHEDULE": ["EF-1", "EF-2"]}
+        sent, outcome = server.gate_plan_answer("exhaust fans: 13.", [EF_NOTE], "exhaust fans",
+                                                intent="", **({"families": project} if "families" in
+                                                    inspect.signature(server.gate_plan_answer).parameters else {}))
+        self.assertEqual(outcome, "ungrounded")
+        # gate_and_warrant reads them for every intent but count, and passes them on.
+        seen = {}
+
+        def fake_gate(text, records, subject="", **kw):
+            seen.update(kw)
+            return text, "grounded"
+
+        async def fams(_pid):
+            return project
+
+        async def none(*_a, **_k):
+            return {}
+
+        with mock.patch.object(server, "gate_plan_answer", fake_gate), \
+                mock.patch.object(server, "plan_count_families", fams, create=True), \
+                mock.patch.object(server, "_plan_file_sources", none), \
+                mock.patch.object(server, "plan_abbreviation_tables", none):
+            for it in ("", "identify", "attribute"):
+                seen.clear()
+                asyncio.run(server.gate_and_warrant("exhaust fans: 13.", [EF_NOTE], "x",
+                                                    intent=it, project_id="p"))
+                self.assertEqual(seen.get("families"), project, it)
+            seen.clear()
+            asyncio.run(server.gate_and_warrant("exhaust fans: 13.", [EF_NOTE], "x",
+                                                intent="count", project_id="p"))
+            self.assertIsNone(seen.get("families"))
 
 
 class TheEvalStatesAnAttributeOfItsSubject(unittest.TestCase):

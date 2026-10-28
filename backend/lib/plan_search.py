@@ -4058,7 +4058,8 @@ def states_a_family_count(clause: str, fams: Dict[str, List[str]]) -> bool:
     return False
 
 
-def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool
+def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
+                  families: Optional[Dict[str, Sequence[str]]] = None
                   ) -> Tuple[str, List[str]]:
     """(the text with every count clause blanked, what the count rule refuses
     in them). `every`: route every count-shaped clause (intent=attribute,
@@ -4086,6 +4087,9 @@ def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool
         if not route:
             if fams is None:
                 fams = _count_families(records)
+                for name, tags in (families or {}).items():
+                    fams[str(name).upper()] = sorted(set(fams.get(str(name).upper(), []))
+                                                     | {str(t).upper() for t in tags or []})
             route = states_a_family_count(clause, fams)
         if route:
             bad += _count_answer_is_bound(source[c0:c1], records)[1]
@@ -4244,7 +4248,9 @@ def _attribute_answer_is_bound(text: str, records: Sequence[Dict[str, Any]],
 def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
                        intent: str = "",
                        aliases: Optional[Dict[str, Dict[str, List[str]]]] = None,
-                       sources: Iterable[Dict[str, Any]] = ()) -> Tuple[bool, List[str]]:
+                       sources: Iterable[Dict[str, Any]] = (),
+                       families: Optional[Dict[str, Sequence[str]]] = None
+                       ) -> Tuple[bool, List[str]]:
     """(ok, the numbers nothing returned can vouch for).
 
     A CHECK ON THE OUTPUT, not an instruction in a prompt. The model composes;
@@ -4252,7 +4258,11 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     behind it is the worst failure this product has — it looks verified.
 
     `sources` (plan_sources.source_of rows for the records' files): their
-    file names and set labels are citations (strip_source_citations)."""
+    file names and set labels are citations (strip_source_citations).
+
+    `families` (server.plan_count_families): the project's countable families,
+    name -> tags, so a plural names its family whatever the search returned
+    (ruling 51); the records' own families count without it."""
     text = strip_source_citations(text or "", records, sources)
     it = (intent or "").strip().lower()
     # A COUNT CLAUSE IS DECIDED BY THE COUNT RULE, from its counting sources,
@@ -4260,7 +4270,8 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     # ruling 50 under attribute, ruling 51 under every intent).
     routed: List[str] = []
     if it != "count":
-        text, routed = _route_counts(text, records, every=(it == "attribute"))
+        text, routed = _route_counts(text, records, every=(it == "attribute"),
+                                     families=families)
     # AN ATTRIBUTE BINDS TO THE SUBJECT ITS RECORD NAMES (ruling 2026-10-27,
     # _attribute_answer_is_bound). `aliases`: file_id -> that file's own
     # abbreviations table (abbreviation_table), the alternative names.
