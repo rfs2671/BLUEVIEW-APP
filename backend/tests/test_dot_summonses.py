@@ -547,7 +547,7 @@ class TheHearingReminders(unittest.TestCase):
         self.env.hearing_alerts(_days(date(2026, 12, 9), date(2026, 12, 25)))
         mails = self.env.emails("dot_hearing_reminder")
         self.assertEqual([i["days_left"] for i, _m in _hearing_items(self.env)], [14, 7, 1])
-        self.assertEqual(mails[0]["permit_renewal_id"], "dot:p1:hearing_digest:-:-:2026-12-10")
+        self.assertEqual(mails[0]["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-12-10")
         self.assertEqual(mails[0]["subject"], "1 DOT hearing coming up on 588 Thomas S Boyland / "
                                               "1 audiencia del DOT próxima en 588 Thomas S Boyland")
         self.assertIn("Hearing Dec 24, 2026 (in 14 days):", mails[0]["text"])

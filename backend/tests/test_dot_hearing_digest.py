@@ -150,7 +150,7 @@ class HeldOverShabbos(unittest.TestCase):
             _run(server._dot_hearing_tick(now=datetime(2026, 11, 8, 12, 0, tzinfo=UTC)))
         mails = env.emails("dot_hearing_reminder")
         self.assertEqual(len(mails), 1)
-        self.assertEqual(mails[0]["permit_renewal_id"], "dot:p1:hearing_digest:-:-:2026-11-07")
+        self.assertEqual(mails[0]["permit_renewal_id"], "dot:p1:dot_digest:-:-:2026-11-07")
         self.assertIn("(in 1 day):", mails[0]["text"])
 
 
