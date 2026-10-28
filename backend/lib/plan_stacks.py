@@ -1228,7 +1228,11 @@ def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[
                      tag_number=t.get("number"), tag_read=t.get("read_why"),
                      tag_at=(round(t["x"], 2), round(t["y"], 2)),
                      tag_system=TAG_SYSTEM.get(t.get("letter") or ""),
-                     note=t.get("note"), size=t.get("size"),
+                     # the note's OCR, as evidence only: NO SIZE IS STORED.
+                     # Measured 2026-10-28: the SHX inch mark reads as 17,
+                     # 99, 7J; a size came out on 13 of 117 plan tags and at
+                     # least two were wrong (P-101.00 W-1's 3/4" read 4").
+                     note_ocr=t.get("note"),
                      findings=tag_system_check(t) or None)
         if not t.get("leaders"):
             rows.append(dict(tbase, stack_at=None, footprint_arch=None, at_arch=None,
@@ -1348,7 +1352,6 @@ def run_stacks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable,
         polys = t.pop("note_polys", None) or {}
         note = {side: read_note(pl, reader) for side, pl in polys.items() if pl}
         t["note"] = note or None
-        t["size"] = next((printed_size(v) for v in note.values() if printed_size(v)), None)
     plans = [p for p in p_pages if is_plan(p) and str(p.get("page_id")) in located]
     risers = [p for p in p_pages if is_riser_diagram(p) and str(p.get("page_id")) in located]
     pairing: Dict[str, Any] = {}
