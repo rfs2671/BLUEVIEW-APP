@@ -444,6 +444,14 @@ class OnTheBoylandDrawings(unittest.TestCase):
         self.assertEqual(n.get("STORM STACK/STACK NO."), 2, n)
         self.assertTrue(all("line type" in got[k]["refused"] for k in got if k.endswith("PIPING")))
 
+    def test_rcp001_control_devices_by_their_marks(self):
+        # one double square, five marks; 23 EX across the six views, one A
+        m = _ls("count_sheet")
+        from lib.plan_page import PlanPage
+        page = PlanPage(str(require_pdf("AR - 3.28.25.pdf")), 25)
+        got = {r.get("mark"): len(r.get("matches") or []) for r in m.count_sheet(page)["rows"]}
+        self.assertEqual(got, {"A": 1, "S": 0, "EX": 23, "D": 0, "P": 0})
+
 
 if __name__ == "__main__":
     unittest.main()
