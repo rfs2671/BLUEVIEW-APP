@@ -56674,8 +56674,8 @@ async def _review_queue_add(doc: Optional[dict]) -> Optional[bool]:
             await db[review_queue.COLLECTION].insert_one(doc)
         except DuplicateKeyError:
             dup = True
-        logger.info(f"[review-queue] kind={doc['kind']} company={doc['company_id']}"
-                    f"{' duplicate=true' if dup else ''}")
+        logger.info(f"[review-queue] kind={doc['kind']} reason={doc.get('reason')} "
+                    f"company={doc['company_id']}{' duplicate=true' if dup else ''}")
         return True
     except Exception as e:
         logger.warning(f"[review-queue] write failed kind={(doc or {}).get('kind')}: "
@@ -79101,11 +79101,10 @@ async def owner_review_queue(kind: Optional[str] = None, status: str = "pending"
             qq["reason"] = reason
         if company_id:
             qq["company_id"] = str(company_id)
-        if priority == review_queue.PRIORITY_LOW:
-            qq["priority"] = review_queue.PRIORITY_LOW
-        elif priority == review_queue.PRIORITY_NORMAL:
-            # A row queued before priorities existed counts as normal.
-            qq["priority"] = {"$ne": review_queue.PRIORITY_LOW}
+        if priority != "all":
+            # Equality, served by (status, priority, created_at): every row
+            # carries its priority from insert (L6.3).
+            qq["priority"] = priority
         rows = await db.review_queue.find(qq).sort([("created_at", -1)]).to_list(want)
         lists.append([await _review_view(review_queue.SOURCE_QUEUE, r, memo=memo)
                       for r in rows])
@@ -83712,6 +83711,8 @@ async def startup_event():
     # The review queue (lib/review_queue.py): L6.4 lists it by status, newest
     # first, across companies (the operator), and one company's newest first.
     await db.review_queue.create_index([("status", 1), ("created_at", -1)])
+    # Pending items, normal before low, newest first (L6.4's default list).
+    await db.review_queue.create_index([("status", 1), ("priority", 1), ("created_at", -1)])
     await db.review_queue.create_index([("company_id", 1), ("created_at", -1)])
     # The operator's list (GET /owner/review-queue): always one status, then
     # optionally one company or one kind, newest first -- both collections.

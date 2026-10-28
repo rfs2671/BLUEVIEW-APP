@@ -111,9 +111,9 @@ def _db():
              "answer_log_id": None, "summary": "set_health_info on A-001",
              "reason": "set_health_info", "priority": "low", "evidence": {},
              "created_at": T0 + timedelta(minutes=11), "status": "pending"},
-            # Queued before priorities existed: counts as normal.
             {"_id": "q_old", "kind": "registration_refusal", "company_id": A,
              "summary": "START refused (phone_missing)", "evidence": {},
+             "reason": "registration", "priority": "normal",
              "created_at": T0 + timedelta(minutes=5), "status": "pending"},
         ],
         audit_logs=[],
@@ -198,7 +198,7 @@ class TheList(_Base):
         r = self.get("", self.op())
         self.assertEqual(r.status_code, 200, r.text)
         out = r.json()
-        # q_info is low priority: hidden by default. q_old has no priority: normal.
+        # q_info is low priority (set_health_info): hidden by default.
         self.assertEqual([i["id"] for i in out["items"]], ["d_dm", "q_conf", "d_grp", "q_old"])
         self.assertEqual({i["source"] for i in out["items"]}, {"dispute", "queue"})
         d = out["items"][0]
