@@ -48538,9 +48538,11 @@ SOURCE_SYNC_STATE = "source_sync_state"
 
 
 async def _mark_sources_synced(project_id: str, company_id: str,
-                               sources) -> None:
-    """Stamp each source's synced_at, and first_synced_at the first time."""
-    now = datetime.now(timezone.utc)
+                               sources, now: Optional[datetime] = None) -> None:
+    """Stamp each source's synced_at, and first_synced_at the first time.
+    `now`: the sync tick's clock (the DOT sync passes it, so the summons
+    baseline and each row's detected_at come from the same clock)."""
+    now = now or datetime.now(timezone.utc)
     for s in sorted(set(sources)):
         try:
             await db[SOURCE_SYNC_STATE].update_one(
@@ -48612,6 +48614,11 @@ async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
             # DOT Phase 1 A: stored by the project's first summons pass -- it
             # never emails as new (lib/dot_summons.new_due), whatever its date.
             extra["first_pass"] = True
+        if log.get("record_type") == "dot_violation":
+            # DOT Phase 1 A: this row's own detection is by the Phase 1 sync
+            # (insert only). A row stored before Phase 1 never carries it, so
+            # it never emails as new (lib/dot_summons.new_due).
+            extra[dot_summons.PHASE1_MARK] = True
         if match and match.get("state") == dot_sync.STATE_NEEDS:
             # DOT Phase 1 B: another permittee's permit on a confirmed
             # frontage. Nothing alerts on it until a person accepts it.
@@ -48727,9 +48734,8 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
             oath_done = False
         reqs = (dot_sync.queries(pk) + dot_sync.segment_queries(setup, today)
                 + dot_sync.summons_segment_queries(setup, today))
-        tq = dot_sync.ticket_query(nov_links)
-        if tq:
-            reqs.append(tq)
+        # Every linked ticket, in batches of 100 (dot_sync.ticket_queries).
+        reqs += dot_sync.ticket_queries(nov_links, rotation=today.toordinal())
         if not reqs:
             continue
         report["projects"] += 1
@@ -48822,7 +48828,7 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
                 logger.warning(f"[dot-sync] renewal chain failed: {type(e).__name__}")
         await _mark_sources_synced(
             project_id, company_id,
-            source_sync.answered_sources(answered, failed_types))
+            source_sync.answered_sources(answered, failed_types), now=now)
     logger.info(f"[dot-sync] {report}")
     return report
 

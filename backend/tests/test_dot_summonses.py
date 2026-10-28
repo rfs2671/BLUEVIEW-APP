@@ -485,6 +485,57 @@ class TheNewSummonsEmail(unittest.TestCase):
         self.assertEqual(env.emails(), [])
 
 
+class TheNewSummonsBaseline(unittest.TestCase):
+    """Codex P1 on #855: only a row whose own detection is after the project's
+    Phase 1 summons baseline (first_pass_at) is new. A row stored BEFORE
+    Phase 1 A (no Phase 1 marker) never emails, even if issued yesterday."""
+
+    def setUp(self):
+        _need()
+
+    def test_a_pre_phase_row_issued_yesterday_sends_nothing(self):
+        env = _Env()
+        env.first_pass()                                       # the baseline: OCT23 - 4h
+        yday = summons("0704345557", issued=TODAY - timedelta(days=1))     # SYNTHETIC date
+        # Stored by the pre-Phase-1 sync AFTER the oath baseline: no match,
+        # no first_pass flag, no Phase 1 marker.
+        env.db.dot_logs.docs.append({**dot_sync.to_log("dot_violation", yday), "_id": "pre1",
+                                     "project_id": "p1", "company_id": "c1",
+                                     "matched_by": "address",
+                                     "detected_at": OCT23 - timedelta(hours=2)})
+        env.sync(address=[yday])                               # the Phase 1 sync updates it
+        row = env.row("0704345557")
+        self.assertEqual(row["match"]["how"], "address")       # match added by the update ...
+        self.assertIsNone(row.get(S.PHASE1_MARK))              # ... but never the marker
+        r = env.record_alerts()
+        self.assertEqual((env.emails("dot_summons_new"), r["new_due"]), ([], 0))
+
+    def test_a_row_detected_after_the_baseline_and_issued_today_sends_one(self):
+        env = _Env()
+        env.first_pass()
+        env.sync(address=[ADDR_TODAY])
+        self.assertIs(env.row("0704345557")[S.PHASE1_MARK], True)
+        r = env.record_alerts()
+        self.assertEqual([m["metadata"]["ticket"] for m in env.emails("dot_summons_new")],
+                         ["0704345557"])
+        self.assertEqual(r["new_due"], 1)
+
+    def test_the_rule(self):
+        base = OCT23 - timedelta(hours=4)
+        row = {**dot_sync.to_log("dot_violation", ADDR_TODAY), "matched_by": "address",
+               "match": {"how": "address", "state": "confirmed"}, S.PHASE1_MARK: True,
+               "detected_at": OCT23}
+        self.assertEqual([d["ticket"] for d in S.new_due([row], TODAY, base)], ["0704345557"])
+        no_seen = {k: v for k, v in row.items() if k != "detected_at"}
+        self.assertEqual(S.new_due([no_seen], TODAY, base), [])
+        self.assertEqual(S.new_due([{**row, "detected_at": base}], TODAY, base), [])
+        no_mark = {k: v for k, v in row.items() if k != S.PHASE1_MARK}
+        self.assertEqual(S.new_due([no_mark], TODAY, base), [])
+        no_match = {k: v for k, v in row.items() if k != "match"}
+        self.assertEqual(S.new_due([no_match], TODAY, base), [])
+        self.assertEqual(S.new_due([row], TODAY, None), [])
+
+
 class TheHearingReminders(unittest.TestCase):
 
     def setUp(self):
@@ -617,6 +668,38 @@ class ThePermitLink(unittest.TestCase):
         self.assertEqual(len(tq), 1)
         self.assertIn("'0704345548'", tq[0]["$where"])
         self.assertNotIn("0704345557", tq[0]["$where"])
+
+
+class TheLinkedTicketBatches(unittest.TestCase):
+    """Codex P2 on #855: every linked ticket is read, 100 per request."""
+
+    def setUp(self):
+        _need()
+
+    def test_250_linked_tickets_are_three_requests_covering_all(self):
+        env = _Env()
+        env.db.dot_logs.docs.append(_permit_row("B022026215B29"))
+        want = {f"07049{i:05d}" for i in range(250)}           # SYNTHETIC ticket numbers
+        env.db.dot_nov_permits.docs += [{"_id": t, "permit_number": "B022026215B29"} for t in want]
+        env.sync()
+        tq = [p for ds, p in env.last.calls if "ticket_number in" in p.get("$where", "")]
+        self.assertEqual(len(tq), 3)
+        got = [set(re.findall(r"'(\d+)'", p["$where"].split("ticket_number in", 1)[1])) for p in tq]
+        self.assertEqual([len(g) for g in got], [100, 100, 50])
+        self.assertEqual(set().union(*got), want)
+        self.assertEqual({p["$limit"] for p in tq}, {"100"})
+
+    def test_over_the_per_tick_cap_the_rotation_covers_every_batch(self):
+        cap = dot_sync.TICKET_BATCHES_PER_TICK
+        want = {f"07049{i:05d}" for i in range(dot_sync.TICKET_CAP * (cap + 5))}   # SYNTHETIC
+        seen = set()
+        for day in range(2):
+            qs = dot_sync.ticket_queries(want, rotation=day)
+            self.assertEqual(len(qs), cap)
+            for q in qs:
+                seen |= set(re.findall(r"'(\d+)'", q["params"]["$where"]))
+        self.assertEqual(seen, want)
+        self.assertEqual(dot_sync.ticket_queries([]), [])
 
 
 class TheEndpoints(unittest.TestCase):

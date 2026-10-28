@@ -583,14 +583,28 @@ def summons_segment_queries(setup: Any, today: date) -> List[Dict[str, Any]]:
 TICKET_CAP = 100
 
 
-def ticket_query(tickets: Iterable[str]) -> Optional[Dict[str, Any]]:
-    """The OATH request for the summonses linked to the project's permits."""
-    t = sorted({str(x).strip() for x in tickets or [] if str(x).strip()})[:TICKET_CAP]
-    if not t:
-        return None
-    return {"dataset": OATH_DATASET, "kind": "dot_violation", "nov": True, "params": {
-        "$where": f"{_AGENCY_WHERE} AND ticket_number in ({', '.join(repr_q(x) for x in t)})",
-        "$order": "violation_date DESC", "$limit": str(TICKET_CAP)}}
+# At most this many ticket batches (TICKET_CAP each) per project per sync
+# tick. Under it (<= 1,000 linked tickets) every batch is read every tick;
+# over it, a deterministic rotation (ticket_queries' `rotation`) moves the
+# window each day so every ticket is read within ceil(batches / cap) days.
+TICKET_BATCHES_PER_TICK = 10
+
+
+def ticket_queries(tickets: Iterable[str], rotation: int = 0) -> List[Dict[str, Any]]:
+    """The OATH requests for the summonses linked to the project's permits:
+    the full sorted ticket set split into batches of TICKET_CAP, one request
+    per batch (never truncated to the first batch: Codex P2 on #855). When
+    there are more than TICKET_BATCHES_PER_TICK batches, `rotation` (the
+    server passes the New York day's ordinal) picks which consecutive
+    window of batches this tick reads, wrapping around."""
+    t = sorted({str(x).strip() for x in tickets or [] if str(x).strip()})
+    batches = [t[i:i + TICKET_CAP] for i in range(0, len(t), TICKET_CAP)]
+    if len(batches) > TICKET_BATCHES_PER_TICK:
+        start = (int(rotation) * TICKET_BATCHES_PER_TICK) % len(batches)
+        batches = [batches[(start + k) % len(batches)] for k in range(TICKET_BATCHES_PER_TICK)]
+    return [{"dataset": OATH_DATASET, "kind": "dot_violation", "nov": True, "params": {
+        "$where": f"{_AGENCY_WHERE} AND ticket_number in ({', '.join(repr_q(x) for x in b)})",
+        "$order": "violation_date DESC", "$limit": str(TICKET_CAP)}} for b in batches]
 
 
 def repr_q(v: str) -> str:

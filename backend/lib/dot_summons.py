@@ -115,20 +115,37 @@ def _aware(v: Any) -> Optional[datetime]:
     return None
 
 
+# Stamped (True) by the Phase 1 A sync on a summons row it INSERTS, never on
+# an update: rows stored before Phase 1 A never carry it (lib/dot_summons.new_due).
+PHASE1_MARK = "phase1_detected"
+
+
 def new_due(rows: Iterable[Dict[str, Any]], today: date,
             first_pass_at: Optional[datetime]) -> List[Dict[str, Any]]:
     """The new-summons emails due: [{ticket, row}]. `first_pass_at`: when the
-    project's first DOT summons pass finished (None = not yet: nothing). A row
-    the first pass stored carries `first_pass` (the sync reads the state
-    BEFORE the pass) and never emails; a row from before Phase 1 A carries no
-    flag but is long past the 2-day window."""
-    if first_pass_at is None:
+    project's first DOT summons pass finished (None = not yet: nothing).
+
+    Only a row whose OWN detection is after that baseline is new: it must
+    carry the Phase 1 A insert marker (`PHASE1_MARK`, stamped once when the
+    Phase 1 sync first stores the row, never on an update) and a
+    `detected_at` later than `first_pass_at`. A row the first pass stored
+    carries `first_pass` and never emails. A row stored BEFORE Phase 1 A has
+    no marker (a later sync may add `match` to it, but never the marker), so
+    it never emails as new even when DOT issued it within the 2-day window
+    (Codex P1 on #855: a false "New DOT summons" email at rollout)."""
+    base = _aware(first_pass_at)
+    if base is None:
         return []
     out = []
     for r in summonses(rows):
         if not dot_sync.record_confirmed(r) or how(r) not in dot_sync.OWN_MATCHES:
             continue
         if r.get("first_pass"):                    # stored by the first pass
+            continue
+        if not isinstance(r.get("match"), dict) or not r.get(PHASE1_MARK):
+            continue                               # stored before Phase 1 A
+        seen = _aware(r.get("detected_at"))
+        if seen is None or seen <= base:           # not detected after the baseline
             continue
         if _settled(r) or not recently_issued(r, today):
             continue
