@@ -57958,6 +57958,29 @@ async def _review_queue_plan_set_question(company_id: Any, project_id: Any,
         await _review_queue_add(doc)
 
 
+async def _review_queue_takeoff(company_id: Any, project_id: Any, **line: Any) -> Optional[bool]:
+    """A takeoff line not verified or refused (review_queue.from_takeoff:
+    trade, item_name, scope, track, reason, sheets), for the operator.
+    Never raises; the export goes out either way."""
+    try:
+        doc = review_queue.from_takeoff(company_id, project_id, now=datetime.now(timezone.utc), **line)
+    except Exception as e:
+        logger.warning(f"[review-queue] takeoff item failed: {type(e).__name__}")
+        return None
+    return await _review_queue_add(doc) if doc else False
+
+
+async def _review_queue_clash(company_id: Any, project_id: Any, **clash: Any) -> Optional[bool]:
+    """A clash between two elements (review_queue.from_clash: a, b, where,
+    detail, sheets), for the operator. Never raises."""
+    try:
+        doc = review_queue.from_clash(company_id, project_id, now=datetime.now(timezone.utc), **clash)
+    except Exception as e:
+        logger.warning(f"[review-queue] clash item failed: {type(e).__name__}")
+        return None
+    return await _review_queue_add(doc) if doc else False
+
+
 # ── THE OPERATOR'S REVIEW QUEUE (L6.4; lib/review_queue.py, last section) ──
 #
 # PLATFORM OPERATOR ONLY: every route below carries require_operator_404,
