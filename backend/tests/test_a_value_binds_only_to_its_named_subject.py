@@ -235,7 +235,7 @@ class Ruling8AndRuling9WhereAnAlternativeNameComesFrom(unittest.TestCase):
         """The gate takes the records, the intent and the file's own tables;
         no parameter carries the agent's other names, so none can bind."""
         params = inspect.signature(ps.answer_is_grounded).parameters
-        self.assertEqual(list(params), ["text", "records", "intent", "aliases"])
+        self.assertEqual(list(params), ["text", "records", "intent", "aliases", "sources"])
         self.assertFalse(any(p.kind is p.VAR_KEYWORD for p in params.values()))
         src = inspect.getsource(ps._attribute_answer_is_bound) + inspect.getsource(ps._subject_bound)
         self.assertNotIn("also", src.replace("also\"", ""))

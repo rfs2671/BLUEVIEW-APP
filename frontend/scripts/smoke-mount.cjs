@@ -365,6 +365,10 @@ const ROUTES = [
   // CI renders them.
   '/owner/deleted',
   '/owner/company/c1',
+  // THE REVIEW QUEUE (L6.4): queued findings, approve / deny.
+  '/owner/review',
+  // ANSWERS (L6.4): search the answer log, Mark wrong with the correct answer.
+  '/owner/answers',
   // THE SITE DEVICE — a fixed tablet at the gate, read by DOB inspectors, and
   // until now the only surface in the app with ZERO executed coverage. These
   // five need more than a URL: every one of them redirects away unless
