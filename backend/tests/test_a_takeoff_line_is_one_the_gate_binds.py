@@ -133,6 +133,22 @@ class WhatIsNotBoundIsRefusedWithItsReason(unittest.TestCase):
         self.assertEqual(len(w), 6)               # W1-W3, in each set
         self.assertTrue(all(ln.reason == "no located symbols" for ln in w))
 
+    def test_a_schedule_with_no_identifier_column_is_listed(self):
+        """Codex, #912: an unreconciled family counted nothing and was left
+        out of the workbook - "None found." where the set says otherwise."""
+        from lib import plan_set_health as H
+        health = [dict(h, record_type="set_health") for h in
+                  H.unreconciled({"DIFFUSER SCHEDULE": {"sheet": "M-001.00", "tags": []}})]
+        census = S.glyph_census("family", T.PID, ["pg-m100"], 0, family="DIFFUSER SCHEDULE",
+                                tags=[])
+        for recs in (health, health + [census], T._world() + health):
+            t = X.build(recs)
+            d = [ln for ln in t.refused if ln.item == "DIFFUSER SCHEDULE"]
+            self.assertEqual(len(d), 1, recs)
+            self.assertEqual(d[0].trade, X.EQUIPMENT)
+            self.assertIn("no identifier column", d[0].reason)
+        self.assertEqual(d[0].sheets, "M-001.00")
+
     def test_a_figure_the_gate_refuses_is_never_exported(self):
         with patch.object(S, "answer_is_grounded", return_value=(False, ["3"])):
             t = X.build(_world(), AREAS)

@@ -280,6 +280,13 @@ def _book_lines(ctx: _Ctx, book: S.GlyphBook, *, set_label: str, sets: int,
                  level=book.titles.get(k) or k, n=None, unit="ea", set_label=set_label,
                  rows=[r for r in book.refused if S._row_floor(r) == k], check="",
                  sentence="", why=why)
+        if not fam.tags:
+            # A SCHEDULE WITH NO IDENTIFIER COLUMN counts nothing - and is
+            # never left out silently (plan_set_health.unreconciled).
+            _put(ctx, trade=trade, item=name, tag="(all)", scope=BUILDING, level="", n=None,
+                 unit="ea", set_label=set_label, rows=fam.rows, check="", sentence="",
+                 why=_UNRECONCILED)
+            continue
         for tag in fam.tags:
             rows_t = [r for r in fam.rows if r.get("label") == tag]
             for k in sorted({S._row_floor(r) for r in rows_t if S._row_floor(r)} - refused_k):
@@ -303,6 +310,28 @@ def _book_lines(ctx: _Ctx, book: S.GlyphBook, *, set_label: str, sets: int,
                  rows=rows_t, check=_check_text(fam, [tag], located) if located else "",
                  sentence=_sentence("", n, _thing(fam, tag, n, opening), phrase) if n else "",
                  why=None if n else _building_why(book, fam, [tag], located))
+
+
+_UNRECONCILED = "the schedule has no identifier column: its items cannot be counted"
+
+
+def _unreconciled_lines(ctx: _Ctx, records: Sequence[Dict[str, Any]]) -> None:
+    """Every schedule set health says has no identifier column, that no book
+    already listed: one refused line each, with the recorded reason."""
+    from lib import plan_set_health as _health
+    done = {ln.item for ln in ctx.refused}
+    for h in records:
+        if h.get("record_type") != "set_health" or h.get("kind") != _health.FAMILY_NOT_RECONCILED:
+            continue
+        name = str(h.get("subject") or "").strip()
+        if not name or name in done:
+            continue
+        done.add(name)
+        trade = (DOORS_WINDOWS if re.search(r"DOOR|WINDOW", name, re.I)
+                 else _trade(S.GlyphFamily(name, [], [], None)))
+        sheet = str(h.get("sheet") or "")
+        ctx.refused.append(Line(trade, name, "(all)", BUILDING, "", None, "ea", "", sheet,
+                                sheet, "", "", str(h.get("detail") or _UNRECONCILED)))
 
 
 def _area_lines(ctx: _Ctx, rows: Sequence[Dict[str, Any]]) -> None:
@@ -359,6 +388,7 @@ def build(records: Sequence[Dict[str, Any]], area_rows: Sequence[Dict[str, Any]]
     for t, book in ob.tracks.items():
         _book_lines(ctx, book, set_label=ob.labels.get(t) or S._FILED_LABEL,
                     sets=len(ob.tracks), trade_of=lambda f: DOORS_WINDOWS)
+    _unreconciled_lines(ctx, records)
     if area_rows:
         actx = _Ctx(list(area_rows), sources, ctx.src_list, ctx.out, ctx.refused)
         _area_lines(actx, area_rows)
