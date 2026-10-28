@@ -513,6 +513,70 @@ class ThePassKeepsWhatItCannotPlace(unittest.TestCase):
         self.assertEqual(row["tag_id"], "V-3")
 
 
+class ThePipeRunsGoToC1Too(unittest.TestCase):
+    """Roy (2026-10-28, for clash v1): a pipe SEGMENT passing through a shear
+    wall or braced frame is flagged, not only a stack inside one - so every
+    straight piece the P sheet draws on a pipe layer is stored, with its
+    system, in the paired A page's points."""
+
+    def _segs(self):
+        PS = _ps("locate")
+        page, _pc = _sheet_with_one_stack()
+        page.drawings.append(_line((470.0, 352.25), (470.0, 420.0), "P-Pipe-Sswr-Vent"))
+        page.drawings.append(_line((100.0, 100.0), (200.0, 100.0), "P-Fixt-Text"))
+        page.drawings.append(_line((100.0, 120.0), (200.0, 120.0), "X-FLOOR PLANS|P-Pipe-Sswr-Dran"))
+        return PS.locate(page)["pipe_segments"]
+
+    def test_only_the_sheets_own_pipe_layers_are_pipe(self):
+        segs = self._segs()
+        self.assertEqual([l for _a, _b, l in segs], ["P-Pipe-Sswr-Vent"])
+
+    def test_a_placed_sheet_stores_its_pipe_in_architectural_points(self):
+        PS = _ps("pipe_segment_row")
+        reg = {"dx": -25.5, "dy": -66.0, "anchors": 1735, "best_peak_anchors": 1740,
+               "second_peak_anchors": 478, "margin": 3.64}
+        row = PS.pipe_segment_row("filed", _pg("P-204.00", "x"), _pg("A-103.00", "y"), self._segs(),
+                                  reg, True, [])
+        self.assertEqual(row["segments"], [[495.5, 418.25, 495.5, 486.0, "vent"]])
+        self.assertEqual(row["a_sheet"]["page_id"], "A-103.00")
+        self.assertEqual(row["registration"]["margin"], 3.64)
+        self.assertIsNone(row["placement_refused"])
+
+    def test_an_unplaced_sheet_keeps_its_pipe_in_its_own_frame_only(self):
+        PS = _ps("pipe_segment_row")
+        row = PS.pipe_segment_row("filed", _pg("P-207.00", "x"), None, self._segs(), None, False, [],
+                                  refused="P-207.00: 0 architectural plans titled at level BULKHEAD")
+        self.assertIsNone(row["segments"])
+        self.assertEqual(row["segments_p"], [[470.0, 352.25, 470.0, 420.0, "vent"]])
+        self.assertIn("BULKHEAD", row["placement_refused"])
+
+    def test_a_curved_piece_of_pipe_is_stored_too(self):
+        """A fitting or a stack's own circle in a wall is pipe in the wall:
+        on P-204.00, 36 of the 70 sanitary/vent pieces in SW 1 are curves."""
+        PS = _ps("locate", "pipe_segment_row")
+        page, _pc = _sheet_with_one_stack()
+        got = PS.locate(page)
+        self.assertEqual(len(got["pipe_curves"]), 4)            # the vent circle's 4 arcs
+        row = PS.pipe_segment_row("filed", _pg("P-204.00", "x"), _pg("A-103.00", "y"),
+                                  got["pipe_segments"], {"dx": 10.0, "dy": 0.0}, True, [],
+                                  curves=got["pipe_curves"])
+        self.assertEqual(len(row["curves"]), 4)
+        self.assertAlmostEqual(row["curves"][0][0][0][0], row["curves_p"][0][0][0][0] - 10.0, places=2)
+        self.assertEqual(row["curves"][0][1], "vent")
+
+    def test_the_pass_writes_a_segment_row_for_every_plan(self):
+        PS = _ps("run_stacks")
+        page, _pc = _sheet_with_one_stack()
+        page.drawings.append(_line((470.0, 352.25), (470.0, 420.0), "P-Pipe-Sswr-Vent"))
+        p = {"sheet_number": "P-200.00", "sheet_title": "FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN",
+             "page_id": "p200"}
+        got = PS.run_stacks([("filed", [p])], lambda pg: page,
+                            reader=lambda png: [], place=False)
+        (row,) = [r for r in got["rows"] if r.get("record_type") == "pipe_segments"]
+        self.assertEqual(row["systems"], {"vent": 1})
+        self.assertIn("names no level", row["placement_refused"])
+
+
 class AStackInAWallNamesBothSides(unittest.TestCase):
 
     def test_a_wet_wall_between_two_units_is_both_units(self):

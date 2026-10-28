@@ -351,6 +351,11 @@ class Sheet:
         self.arrows: List[Dict[str, Any]] = []
         #: indices into segs that are an arrowhead's sides - never a leader
         self.arrow_segs: set = set()
+        #: every straight piece of pipe the sheet draws (own P-Pipe-* layers):
+        #: what clash v1 tests against a wall, beside the stacks themselves
+        self.pipe_segs: List[Tuple[Tuple[float, float], Tuple[float, float], str]] = []
+        #: and every curved piece (fittings, the stacks' own circles), flattened
+        self.pipe_curves: List[Tuple[List[Tuple[float, float]], str]] = []
         allsegs = [(it[1][0], it[1][1], it[2][0], it[2][1]) for d in page.drawings
                    for it in d["items"] if it[0] == "l"]
         self.edge = title_block_edge(allsegs, page.width, page.height)
@@ -370,10 +375,14 @@ class Sheet:
             for it in d["items"]:
                 pl = polyline(it)
                 self.strokes.append((pl, layer, pid))
+                if it[0] == "c" and PIPE_LAYER.search(layer):
+                    self.pipe_curves.append((pl, layer))
                 if it[0] == "l":
                     if tri is not None:
                         self.arrow_segs.add(len(self.segs))
                     self.segs.append((tuple(it[1]), tuple(it[2]), layer))
+                    if PIPE_LAYER.search(layer):
+                        self.pipe_segs.append((tuple(it[1]), tuple(it[2]), layer))
         self.pipes = [dict(c, system=layer_system(c["layer"])) for c in pipe_rounds(arcs)]
 
 
@@ -930,7 +939,8 @@ def locate(page, *, tags_only: bool = False) -> Dict[str, Any]:
             t["leaders"].append({"path": ld["path"], "tip": ld["tip"], "layer": ld["layer"],
                                  "stack": st, "why": why})
         t["note_polys"] = note_strokes(sheet, t, [{"path": l["path"]} for l in t["leaders"]], tags)
-    return {"tags": tags, "pipes": len(pipes), "sheet": sheet}
+    return {"tags": tags, "pipes": len(pipes), "sheet": sheet, "pipe_segments": sheet.pipe_segs,
+            "pipe_curves": sheet.pipe_curves}
 
 
 def tag_system_check(tag: dict) -> List[str]:
@@ -1074,6 +1084,19 @@ def registration_usable(reg: dict, second: Optional[int] = None) -> Tuple[bool, 
         why.append(f"a second offset holds {second} anchors, over half the best "
                    f"peak's {best}: the alignment is ambiguous")
     return (not why), why
+
+
+def register_pair(arch_sheet: dict, other_sheet: dict) -> Tuple[dict, bool, List[str]]:
+    """(registration, usable, why not) for a pair ALREADY decided by title
+    level - the ONE place the stack pass registers, so the rule it applies
+    is one call to change (Roy's ruling 63: one shared function for every
+    pair, each pair's margin on its row)."""
+    from lib.plan_sheet import register
+    reg = register(arch_sheet, other_sheet)
+    ok, why = registration_usable(reg)
+    best, second = reg.get("best_peak_anchors") or 0, reg.get("second_peak_anchors")
+    reg["margin"] = round(best / second, 2) if second else None
+    return reg, ok, why
 
 
 def to_arch(x: float, y: float, reg: dict) -> Tuple[float, float]:
@@ -1227,6 +1250,7 @@ def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[
                 "dx": round(reg["dx"], 3), "dy": round(reg["dy"], 3), "anchors": reg.get("anchors"),
                 "best_peak_anchors": reg.get("best_peak_anchors"),
                 "second_peak_anchors": reg.get("second_peak_anchors"),
+                "margin": reg.get("margin"),
                 "rms_in": round(reg.get("rms_in", 0.0), 3), "max_in": round(reg.get("max_in", 0.0), 3),
                 "usable": usable, "why_not": list(why_not) or None}}
     for t in tags:
@@ -1274,6 +1298,50 @@ def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[
     return rows
 
 
+def pipe_segment_row(track: str, p_page: dict, a_page: Optional[dict], segs: Sequence,
+                     reg: Optional[dict], usable: bool, why_not: Sequence[str],
+                     refused: Optional[str] = None, curves: Sequence = ()) -> Dict[str, Any]:
+    """ONE row per plumbing sheet and track: every straight pipe piece the
+    sheet draws, with its system, in architectural page points when the pair
+    is decided and the registration usable - C1's input for a pipe passing
+    through a shear wall or braced frame. Always in the P sheet's own frame
+    too, so a refused placement still says what is drawn.
+
+    `segments`: [[x1, y1, x2, y2, system]] (A frame) or None;
+    `segments_p`: the same in P points. `curves` / `curves_p`: every curved
+    piece (a fitting, a stack's own circle) as [[[x, y], ...], system] - on
+    P-204.00, 34 straight and 36 curved sanitary/vent pieces fall in SW 1,
+    the 70 T3 counts."""
+
+    def fmtc(dx, dy):
+        return [[[[round(x - dx, 2), round(y - dy, 2)] for x, y in pl], layer_system(layer)]
+                for pl, layer in curves]
+    def fmt(dx, dy):
+        return [[round(a[0] - dx, 2), round(a[1] - dy, 2), round(b[0] - dx, 2),
+                 round(b[1] - dy, 2), layer_system(layer)] for a, b, layer in segs]
+    placed = refused is None and usable and reg is not None
+    return {"record_type": "pipe_segments", "row_version": ROW_VERSION, "track": track,
+            "plumbing_sheet": p_page.get("sheet_number"), "plumbing_page_id": p_page.get("page_id"),
+            "arch_sheet": (a_page or {}).get("sheet_number"),
+            "arch_page_id": (a_page or {}).get("page_id"),
+            "a_sheet": None if not a_page else {k: a_page.get(k) for k in (
+                "page_id", "file_id", "file_name", "page_number", "sheet_number",
+                "sheet_title", "file_hash")},
+            "frame": "arch_page_pt",
+            "systems": dict(Counter(layer_system(l) or "unknown" for _a, _b, l in segs)),
+            "segments": fmt(reg["dx"], reg["dy"]) if placed else None,
+            "segments_p": fmt(0.0, 0.0),
+            "curves": fmtc(reg["dx"], reg["dy"]) if placed else None,
+            "curves_p": fmtc(0.0, 0.0),
+            "registration": None if not reg else {
+                "dx": round(reg["dx"], 3), "dy": round(reg["dy"], 3), "anchors": reg.get("anchors"),
+                "best_peak_anchors": reg.get("best_peak_anchors"),
+                "second_peak_anchors": reg.get("second_peak_anchors"), "margin": reg.get("margin"),
+                "usable": usable, "why_not": list(why_not) or None},
+            "placement_refused": None if placed else (
+                refused or "registration not usable: " + "; ".join(why_not))}
+
+
 def continuity(rows: Sequence[dict], tol_in: float = 6.0) -> List[Dict[str, Any]]:
     """Per (track, stack ID): the floors it is located on and whether every
     floor puts it at the same architectural location within tol_in (a
@@ -1301,7 +1369,7 @@ __all__ = [
     "COLLECTION", "ROW_VERSION", "Sheet", "fit_circle", "arcs_of", "pipe_rounds", "circle_of", "split_circle_tags", "trace_leaders",
     "arrowhead_at", "pipe_circles", "stack_at", "signature", "compose", "vote",
     "read_tags", "locate", "tag_system_check", "title_level",
-    "pair_by_title_level", "registration_usable",
+    "pair_by_title_level", "registration_usable", "register_pair", "pipe_segment_row",
     "to_arch", "expand_id", "crosscheck", "stack_rows", "continuity",
     "is_plan", "is_riser_diagram", "where", "printed_size", "read_note", "note_strokes",
 ]
@@ -1336,7 +1404,7 @@ def run_stacks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable,
     with no tags is a row; a sheet that cannot be paired keeps its stacks as
     rows with placement refused - nothing is dropped silently."""
     from lib import plan_derive as derive
-    from lib.plan_sheet import load_sheet, register
+    from lib.plan_sheet import load_sheet
     tracks = list(tracks)
     filed = next((pp for t, pp in tracks if t == "filed"), [])
     p_pages = [p for p in filed if _is_p(p) and (is_plan(p) or is_riser_diagram(p))]
@@ -1368,26 +1436,33 @@ def run_stacks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable,
                           "pairs": [(p["sheet_number"], a["sheet_number"], o) for p, a, o in pr["pairs"]],
                           "refused": [(p["sheet_number"], w) for p, w in pr["refused"]]}
         for p, why in pr["refused"]:
-            tags = located[str(p["page_id"])]["tags"]
+            got_p = located[str(p["page_id"])]
+            tags = got_p["tags"]
             rows += (stack_rows(track, p, None, tags, None, False, [], refused=why) if tags
                      else [sheet_row(track, p, "no_tags", "the sheet prints no split-circle tag")])
+            rows.append(pipe_segment_row(track, p, None, got_p.get("pipe_segments") or [], None,
+                                         False, [], refused=why,
+                                         curves=got_p.get("pipe_curves") or []))
         for p, a, _off in pr["pairs"]:
-            tags = located[str(p["page_id"])]["tags"]
+            got_p = located[str(p["page_id"])]
+            tags, segs = got_p["tags"], got_p.get("pipe_segments") or []
+            curves = got_p.get("pipe_curves") or []
             if not tags:
                 rows.append(sheet_row(track, p, "no_tags", "the sheet prints no split-circle tag"))
-                continue
             try:
                 arch_pg = open_page(a)
                 A, O = load_sheet(arch_pg), load_sheet(open_page(p))
-                reg = register(A, O)
-                ok, why = registration_usable(reg)
+                reg, ok, why = register_pair(A, O)
                 placed = None
-                if ok and place:
+                if ok and place and tags:
                     placed = _membership(arch_pg, A, door_inches)
                 rows += stack_rows(track, p, a, tags, reg, ok, why, placed)
+                rows.append(pipe_segment_row(track, p, a, segs, reg, ok, why, curves=curves))
             except Exception as e:
-                rows += stack_rows(track, p, a, tags, None, False, [],
-                                   refused=f"placement failed: {type(e).__name__}: {e}")
+                why_f = f"placement failed: {type(e).__name__}: {e}"
+                rows += stack_rows(track, p, a, tags, None, False, [], refused=why_f)
+                rows.append(pipe_segment_row(track, p, a, segs, None, False, [], refused=why_f,
+                                             curves=curves))
     cc = crosscheck({p["sheet_number"]: [t.get("id") for t in located[str(p["page_id"])]["tags"]]
                      for p in plans},
                     {p["sheet_number"]: [t.get("id") for t in located[str(p["page_id"])]["tags"]]
