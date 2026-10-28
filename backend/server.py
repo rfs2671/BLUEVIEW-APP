@@ -86,6 +86,7 @@ from lib import punch_link  # noqa: E402
 from lib import punch_brain  # noqa: E402
 from lib import punch_batch  # noqa: E402
 from lib import dm_actions  # noqa: E402
+from lib import answer_log  # noqa: E402
 from lib import trades as lib_trades  # noqa: E402
 from lib import dm_brain  # noqa: E402
 from lib import wa_voice  # noqa: E402
@@ -56428,6 +56429,125 @@ def _dm_redact(v: Any) -> Any:
     return v
 
 
+# ── THE ANSWER LOG (lib/answer_log.py): one immutable row per answer ──────
+# DM, group and app answers, each with the records the model was shown and
+# what the checks decided. INSERT ONLY: _answer_log_write is its one writer,
+# and nothing updates, replaces or deletes a row (tests/test_answer_log.py
+# fails on any). Every read is one company's (_answer_log_get / _rows).
+
+#: This turn's evidence, gathered where it is produced (_dispatch_agent_tool's
+#: plan records, the plan gate in _run_group_agent) and taken by the next
+#: _answer_log_write. Set by the turn (_answer_turn_begin) before any task it
+#: starts, so a task's notes land in the same dict.
+_ANSWER_TURN: contextvars.ContextVar = contextvars.ContextVar("answer_turn", default=None)
+
+
+def _answer_turn_begin() -> dict:
+    turn = {"records": [], "gates": [], "model": None}
+    _ANSWER_TURN.set(turn)
+    return turn
+
+
+def _answer_turn_note(*, records: Any = None, gate: Optional[dict] = None,
+                      model: Optional[str] = None) -> None:
+    turn = _ANSWER_TURN.get()
+    if turn is None:
+        return
+    if records:
+        turn["records"].extend(r for r in records if isinstance(r, dict))
+    if gate:
+        turn["gates"].append(gate)
+    if model:
+        turn["model"] = model
+
+
+def _code_sha() -> str:
+    """The commit this backend runs, as /api/version reports it."""
+    return (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT_SHA")
+            or os.environ.get("SOURCE_COMMIT") or os.environ.get("COMMIT_SHA") or "unknown")
+
+
+async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
+                            company_id: Any, user_id: Any = None, project_ids: Any = None,
+                            asker_phone: Any = None, records: Any = None,
+                            sources: Any = None, tools: Any = None,
+                            gates: Optional[list] = None, model: Optional[str] = None,
+                            path: Optional[str] = None, timing: Any = None,
+                            features: Optional[dict] = None,
+                            group_id: Optional[str] = None,
+                            params: Optional[dict] = None) -> Optional[str]:
+    """THE one writer of the answer log: an insert, never an update. Takes
+    (and empties) this turn's noted records and gate decisions. Never raises:
+    an answer goes out whether or not its row is written."""
+    turn = _ANSWER_TURN.get() or {}
+    noted, turn_gates = list(turn.get("records") or []), list(turn.get("gates") or [])
+    if turn:
+        turn["records"], turn["gates"] = [], []
+    try:
+        row = {
+            "_id": str(ObjectId()),
+            "surface": surface if surface in answer_log.SURFACES else "dm",
+            "question": answer_log.redact(str(question or "")[:answer_log.MAX_TEXT]),
+            "final_text": answer_log.redact(str(final_text or "")[:answer_log.MAX_TEXT]),
+            "user_id": str(user_id) if user_id else None,
+            "company_id": str(company_id) if company_id else None,
+            "project_ids": answer_log.project_ids(project_ids),
+            "asker_last4": answer_log.last4(asker_phone),
+            "group_id": group_id if group_id and str(group_id).endswith("@g.us") else None,
+            "records": answer_log.records_snapshot(list(records or []) + noted)
+                       + [answer_log.source_snapshot(s) for s in sources or []],
+            "tools": answer_log.tools_snapshot(tools),
+            "gates": answer_log.redact(list(gates or []) + turn_gates),
+            "model": model or turn.get("model") or None,
+            "code_sha": _code_sha(),
+            "path": path,
+            "timing": timing,
+            "features": features,
+            # The request's own parameters (an app search's date range), so a
+            # replay asks exactly what was asked.
+            "params": params or None,
+            "created_at": datetime.now(timezone.utc),
+        }
+        row["content_hash"] = answer_log.content_hash(row)
+        await db.answer_log.insert_one(row)
+        return row["_id"]
+    except Exception as e:
+        logger.warning(f"[answer-log] write failed surface={surface}: {type(e).__name__}")
+        return None
+
+
+async def _answer_log_get(company_id: Any, log_id: str) -> Optional[dict]:
+    """One row of ONE company's answer log; None for another company's id."""
+    if not company_id or not log_id:
+        return None
+    return await db.answer_log.find_one({"_id": str(log_id), "company_id": str(company_id)})
+
+
+async def _answer_log_rows(company_id: Any, *, surface: Optional[str] = None,
+                           limit: int = 50) -> list:
+    """ONE company's answers, newest first. No company: nothing."""
+    if not company_id:
+        return []
+    q: Dict[str, Any] = {"company_id": str(company_id)}
+    if surface:
+        q["surface"] = surface
+    return await db.answer_log.find(q).sort([("created_at", -1)]) \
+        .to_list(max(1, min(int(limit), 500)))
+
+
+def _dm_gates(path: str, extra: dict, fallback: bool, reason: Any) -> list:
+    """What the DM checks decided, as each exposes it: the brain's number /
+    claim / sender checks (stop, unverified, retries), a headcount's wording
+    check, the answer-outcome classifier. Read only."""
+    gate = {"gate": "dm_brain" if path == "brain" else f"dm_{path}",
+            "fallback": bool(fallback), "reason": reason}
+    for k in ("stop", "unverified", "verify_retries", "deflect_retries", "wording", "check",
+              "challenged"):
+        if extra.get(k) not in (None, [], ""):
+            gate[k] = extra[k]
+    return [gate]
+
+
 async def _dm_log_answer(ident: dict, project_id: Optional[str], question: str,
                          answer: Optional[str], path: str, tool_data: Any = None,
                          **extra) -> None:
@@ -56445,6 +56565,13 @@ async def _dm_log_answer(ident: dict, project_id: Optional[str], question: str,
             "created_at": datetime.now(timezone.utc)})
     except Exception as e:
         logger.warning(f"[wa-assistant] answer log failed: {type(e).__name__}")
+    # The immutable answer log: the same answer, with the records the model
+    # was shown (this turn's notes) and what the checks decided.
+    await _answer_log_write(
+        "dm", question=question, final_text=answer, company_id=ident.get("company_id"),
+        user_id=ident.get("user_id"), project_ids=project_id, tools=tool_data,
+        gates=_dm_gates(path, extra, fallback, reason), model=extra.get("model"),
+        path=path, timing=extra.get("timing"))
 
 
 def _dm_chat_ids(dm_chat: str) -> list:
@@ -57764,6 +57891,8 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     the request or question needs an existing job and none can be inferred
     (their only job, one named, or the one picked in the last 30 minutes). A
     new job never asks it."""
+    # This turn's evidence for the answer log, before anything it starts.
+    _answer_turn_begin()
     if brain:
         # The DM brain (flag dm_brain_v2): one model, tools, guardrails.
         await _dm_brain_reply(ident, dm_chat, body, message_id, heard=heard, quoted=quoted)
@@ -69992,6 +70121,12 @@ async def _run_group_agent(
                 sent, outcome = await gate_and_warrant(
                     reply, records, subject, intent=intent,
                     user_words=body or subject, project_id=project_id)
+                # The answer log keeps what the gate returned: ONE outcome
+                # per answer (it exposes no decision per claim). Read only.
+                _answer_turn_note(gate={
+                    "gate": "plan_answer_gate", "outcome": outcome,
+                    "subject": subject[:200], "intent": intent,
+                    "records": len(records), "replaced": sent != reply})
                 if outcome not in ("grounded", "no_records",
                                    "refusal_overturned"):
                     logger.warning(
@@ -70005,6 +70140,7 @@ async def _run_group_agent(
                             if dm and wa_assistant.asks_about_voice_notes(body)
                             and any(t["function"]["name"] == "recent_voice_notes"
                                     for t in enabled_tools) else None)
+            _answer_turn_note(model=AGENT_MODEL)
             for _turn in range(4):  # max 4 tool rounds
                 resp = await client_http.post(
                     llm_provider.CHAT_URL,
@@ -70407,6 +70543,7 @@ async def _dispatch_agent_tool(
                 sheet_number=args.get("sheet_number") or "",
                 interp=interp,
             )
+            _answer_turn_note(records=found)
             if record_sink is not None:
                 record_sink.append({"subject": subject, "records": found,
                                     "intent": args.get("intent") or "",
@@ -70499,6 +70636,7 @@ async def _dispatch_agent_tool(
                 discipline=args.get("discipline") or "",
                 floor=args.get("floor") or "",
                 sheet_number=sheet_number)
+            _answer_turn_note(records=found)
             if record_sink is not None:
                 # query_plan does not take an intent; it sends a sheet image
                 # and answers from records, so its numbers keep the union rule.
@@ -75921,6 +76059,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                         await _react_to_message(group_id, reply_to,
                                                 wa_react.PRAISE)
                     return
+                # The answer log's evidence: begun before the task, so the
+                # task's records and gate decision land in this dict.
+                _answer_turn_begin()
+                group_trace: list = []           # each tool call and what it returned
                 agent_task = asyncio.ensure_future(_run_group_agent(
                     project_id=str(project_id),
                     group_id=group_id,
@@ -75931,6 +76073,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                     explicit_mention=explicit_mention,
                     reply_to=reply_to,
                     address_mode=address_mode,
+                    tool_trace=group_trace,
                 ))
                 # "typing…" in the group while it works (WaAPI send-typing
                 # takes any chatId; a failure is a logged warning and
@@ -75949,6 +76092,11 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                 if reply:
                     await send_whatsapp_message(group_id, reply,
                                                 reply_to=reply_to)
+                    await _answer_log_write(
+                        "group", question=body, final_text=reply,
+                        company_id=msg_company_id, project_ids=project_id,
+                        asker_phone=sender, path="group_agent", tools=group_trace,
+                        features=dict(features or {}), group_id=group_id)
                 return
 
             # NOT ADDRESSED: SILENCE. The once-a-day "I'm here, say levelog"
@@ -78556,6 +78704,17 @@ def _memory_source_view(src: dict, admin: bool = False) -> dict:
                                if src.get("source") == project_memory.SOURCE_WHATSAPP else None)}
 
 
+def _memory_gates(got: dict) -> list:
+    """What the project-history check decided (project_memory.checked_claims):
+    each claim it kept, with its source and quote, and how many it dropped or
+    merged -- it exposes no per-claim reason for a dropped one. Read only."""
+    return [{"gate": "memory_checked_claims", "mode": got.get("mode"),
+             "kept": [{"claim": str(c.get("text") or "")[:400], "sid": c.get("sid"),
+                       "quote": str(c.get("quote") or "")[:400]} for c in got.get("claims") or []],
+             "dropped": got.get("dropped") or 0, "merged": got.get("merged") or 0,
+             "made_faithful": got.get("made_faithful") or 0}]
+
+
 @api_router.get("/projects/{project_id}/memory/search",
                  dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def search_project_memory(project_id: str, q: str = "", date_from: str = "",
@@ -78577,6 +78736,12 @@ async def search_project_memory(project_id: str, q: str = "", date_from: str = "
     if answer:
         got = await _memory_answer(company_id, str(project_id), q, dfrom, dto,
                                    phone_view="full" if admin else "last4")
+        await _answer_log_write(
+            "app", question=q, final_text=got["text"], company_id=company_id,
+            user_id=current_user.get("id") or current_user.get("_id"),
+            project_ids=project_id, sources=got["sources"],
+            gates=_memory_gates(got), model=project_memory.ANSWER_MODEL,
+            path="memory_search", params={"date_from": dfrom, "date_to": dto})
         cited = {c["sid"] for c in got["claims"]}
         by_sid = {s["sid"]: _memory_source_view(s, admin) for s in got["sources"]}
         return {"results": [_memory_source_view(s, admin) for s in got["sources"]],
@@ -83047,6 +83212,8 @@ async def startup_event():
     await db.chase_shadow.create_index([("project_id", 1), ("company_id", 1), ("at", -1)])
     # The daily [dm-answer] count (answers, fallbacks) reads by day.
     await db.whatsapp_dm_answers.create_index([("created_at", -1), ("fallback", 1)])
+    # The answer log (lib/answer_log.py): one company's answers, newest first.
+    await db.answer_log.create_index([("company_id", 1), ("created_at", -1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
     await _ensure_index_resilient(
