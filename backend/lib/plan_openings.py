@@ -64,7 +64,9 @@ log = logging.getLogger(__name__)
 #: from the mechanical symbols' (plan_search.opening_books)
 KIND = "opening"
 #: payload.opening_version: what an opening row records. 1 (2026-10-26).
-OPENING_VERSION = 1
+#: 2 (2026-10-27, ruling 21): a plan whose membership of the set is not
+#: decided is READ, its rows marked with its question (lib.plan_set_questions).
+OPENING_VERSION = 2
 
 #: a schedule of doors or windows, by its printed name
 SCHEDULE_NAME = re.compile(r"\b(DOOR|WINDOW)S?\b.*\bSCHEDULE\b", re.I)
@@ -317,25 +319,40 @@ def _refused_tags(space: Optional[Dict[str, Any]]) -> List[str]:
 def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any],
                  fams: Dict[str, Dict[str, Any]], *, track: str = "filed",
                  refused: Sequence[Tuple[Dict[str, Any], str]] = (),
-                 widest_door: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 widest_door: Optional[Dict[str, Any]] = None,
+                 answers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Every opening row of one drawing track.
 
     `floors` are plan_glyph_pass's floors (each architectural plan with its
     units, membership map, stair links and voids, already read). `refused`
-    are the plan-titled architectural pages the pairing refused, with why:
-    each carries tags this pass did not read, so each is a refusal row that
-    blocks its track's building figures (and its floor's, when it has one).
+    are the plan-titled architectural pages the pairing refused, with why.
+
+    THE SYSTEM NEVER DECIDES WHICH DRAWINGS BELONG TO A SET (ruling 21,
+    lib.plan_set_questions). A refused plan whose number is not in the plan
+    series (A.1.1 ... A.1.7, an unnumbered roof plan) is a question, one per
+    file, and `answers` ({question id: include | exclude}, the stored
+    answers) decides it on this pass:
+      exclude   its pages are left out: no row;
+      include   they are read at sheet scope, ordinary rows of the track;
+      open      they are read at sheet scope, every row (and the refusal of
+                a page that could not be read) marked with the question, so
+                the gate counts the set with them and without them.
+    Any other refused plan (two current A-101s; an A-1xx with no mechanical
+    partner) carries tags this pass did not read: a refusal row that blocks
+    its track's building figures (and its floor's, when it has one).
     A track with no door or window schedule reconciled writes nothing."""
+    from lib import plan_set_questions as psq
     from lib.plan_takeoff import Units
 
     run = {n: f for n, f in fams.items() if f["tags"]}
     rows: List[Dict[str, Any]] = []
     summary: Dict[str, Any] = {"track": track, "families": {n: f["tags"] for n, f in run.items()},
-                               "floors": [], "refused": []}
+                               "floors": [], "refused": [], "set_questions": []}
     health: List[Dict[str, Any]] = []
     if not run:
-        return {"rows": rows, "summary": summary, "health": health}
+        return {"rows": rows, "summary": summary, "health": health, "questions": []}
     door = widest_door or {"inches": None}
+    answers = answers or {}
 
     def tagged(rs):
         for r in rs:
@@ -344,11 +361,64 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
             r["payload"]["track"] = track
         return rs
 
+    project_id = next((p.get("project_id") for p, _w in refused if p.get("project_id")), None)
+    questions = psq.detect(project_id, track, refused)
+    q_of = {str(pg.get("page_id")): q for q in questions for pg in q["pages"]}
     for page, why in refused:
         sheet = page.get("sheet_number") or f"{page.get('file_name')} p{page.get('page_number')}"
+        if str(page.get("page_id")) in q_of:
+            continue
         rows += tagged([emit.sheet_refusal(page, f"doors and windows not read: {why}",
                                            pass_key=f"openings|{sheet}", role=KIND)])
         summary["refused"].append([sheet, why])
+    for q in questions:
+        ans = answers.get(q["id"])
+        summary["set_questions"].append({"id": q["id"], "label": q["label"],
+                                         "applied": ans or "open"})
+        if ans == psq.EXCLUDE:
+            continue
+        mark = {} if ans == psq.INCLUDE else {psq.ROW_KEY: q["id"], psq.ROW_LABEL: q["short"]}
+        for page, why in refused:
+            if q_of.get(str(page.get("page_id"))) is not q:
+                continue
+            sheet = page.get("sheet_number") or f"{page.get('file_name')} p{page.get('page_number')}"
+            out: List[Dict[str, Any]] = []
+            try:
+                got = floor_records(open_page(page), run, None,
+                                    f"refused: {sheet}: {why}: counted at sheet scope, not placed")
+            except Exception as e:                  # one page never sinks the pass
+                log.exception("openings %s failed: %r", sheet, e)
+                got = None
+                out = [emit.sheet_refusal(page, f"doors and windows not read: "
+                                                f"{type(e).__name__}",
+                                          pass_key=f"openings|{sheet}", role=KIND)]
+            if got is not None and got["unreadable"]:
+                out = [emit.sheet_refusal(
+                    page, f"doors and windows not read: {len(got['unreadable'])} tag "
+                          f"outline(s) with no readable tag", pass_key=f"openings|{sheet}",
+                    role=KIND)]
+            elif got is not None:
+                for t in got["orphans"]:
+                    health.append({"kind": "plan_tag_not_in_schedule", "sheet": sheet,
+                                   "subject": t["text"], "track": track,
+                                   "detail": f"{t['text']} is printed in a door/window tag on "
+                                             f"{sheet} ({track} set) but no door or window "
+                                             f"schedule lists it"})
+                for name, recs in got["records"].items():
+                    if not recs:
+                        continue
+                    res = {"records": recs, "method": "sheet_scope", "fallback_reason": None,
+                           "registration": {"dx": 0.0, "dy": 0.0, "usable": True,
+                                            "anchors": None, "refused": None},
+                           "refused_tags": []}
+                    out += emit.glyph_rows(res, mech=page, arch=page, family=name,
+                                           pass_key=f"{sheet}|openings|{name}",
+                                           units={"tags": [], "method": "sheet_scope",
+                                                  "zero_units": False, "multi_level": {}},
+                                           widest_door=door, mech_count=len(recs))
+            for r in tagged(out):
+                r["payload"].update(mark)
+            rows += out
     located: set = set()
     for f in floors:
         arch_p, a_sheet = f["arch_p"], f["a_sheet"]
@@ -421,4 +491,4 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
                            "subject": t, "family": name,
                            "detail": f"{t} is listed by more than one door/window schedule; "
                                      f"it is counted in none - state no count of {t}"})
-    return {"rows": rows, "summary": summary, "health": health}
+    return {"rows": rows, "summary": summary, "health": health, "questions": questions}

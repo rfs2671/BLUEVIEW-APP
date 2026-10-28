@@ -30,10 +30,10 @@ KINDS (the producers, each in server.py):
                         knows the company of): wrong phone for the code, no
                         phone on the profile, a phone shared by two accounts,
                         a role that may not use the assistant.
-  plan_set_question     a set-membership question for the PM (L7, PR #889).
-                        #889 is not on main: from_plan_set_question and
-                        server._review_queue_plan_set_question are the hook it
-                        calls when it lands; nothing on main produces one yet.
+  plan_set_question     a set-membership question for the PM (PR #889,
+                        lib/plan_set_questions): server._store_set_questions
+                        queues each question it opens through
+                        server._review_queue_plan_set_question.
 
 A ROW:
   _id               sha256 of kind|company|subject key: the same finding
@@ -45,8 +45,9 @@ A ROW:
   created_at
   reason            why it is queued (owner's ruling, L6.3): conflict |
                     replaced | unverified | set_health_failed |
-                    set_health_info | registration (REASONS below). A
-                    plan-set question is set membership in doubt: conflict.
+                    set_health_info | registration | set_ambiguity (REASONS
+                    below). A plan-set question is set_ambiguity (owner's
+                    ruling: it replaces the earlier "conflict").
   priority          "low" for set_health_info, "normal" for everything else
                     (L6.4 lists pending items by status, priority, newest)
   status            "pending" at insert. Changed once, by the operator's
@@ -102,8 +103,9 @@ REASON_UNVERIFIED = "unverified"            # the DM brain stopped on a claim
 REASON_SET_HEALTH_FAILED = "set_health_failed"
 REASON_SET_HEALTH_INFO = "set_health_info"
 REASON_REGISTRATION = "registration"
+REASON_SET_AMBIGUITY = "set_ambiguity"      # #889: which drawings belong to the set
 REASONS = (REASON_CONFLICT, REASON_REPLACED, REASON_UNVERIFIED, REASON_SET_HEALTH_FAILED,
-           REASON_SET_HEALTH_INFO, REASON_REGISTRATION)
+           REASON_SET_HEALTH_INFO, REASON_REGISTRATION, REASON_SET_AMBIGUITY)
 #: An answer that hits several: the first of these wins.
 ANSWER_PRECEDENCE = (REASON_CONFLICT, REASON_REPLACED, REASON_UNVERIFIED)
 PRIORITY_LOW = "low"
@@ -260,24 +262,35 @@ def from_registration(company_id: Any, user_id: Any, reason: str, *, chat: Any =
                 now=now)
 
 
-# ── plan_set_question (L7, PR #889: the hook) ──────────────────────────────
+# ── plan_set_question (PR #889) ──────────────────────────────
 
 def from_plan_set_question(company_id: Any, project_id: Any, question: Dict[str, Any], *,
                            now: datetime) -> Optional[Dict[str, Any]]:
     """One set-membership question for the PM (lib/plan_set_questions on
     #889: a question names its sheets and what each reading would change).
-    Keyed by the question's own id (else its code)."""
+    Keyed by the question's own id (else its code). Reads #889's stored
+    shape (label, pages[].sheet_number, figures) or plain sheets/readings."""
     qid = question.get("_id") or question.get("id") or question.get("code")
     if not qid or not project_id:
         return None
-    sheets = [str(s) for s in (question.get("sheets") or [])][:MAX_EVIDENCE]
+    sheets = question.get("sheets") or [
+        p.get("sheet_number") for p in (question.get("pages") or [])
+        if isinstance(p, dict) and p.get("sheet_number")]
+    sheets = [str(s) for s in sheets][:MAX_EVIDENCE]
+    readings = question.get("readings")
+    if not readings and question.get("figures"):
+        try:
+            from lib import plan_set_questions as psq
+            readings = psq.change_lines(question)
+        except Exception:
+            readings = None
     evidence = {"question_id": str(qid), "code": question.get("code"),
                 "sheets": sheets or None,
-                "readings": [str(r)[:MAX_QUOTE] for r in (question.get("readings") or [])][:4]
-                or None}
-    text = str(question.get("question") or question.get("text") or "set membership question")
+                "readings": [str(r)[:MAX_QUOTE] for r in (readings or [])][:4] or None}
+    text = str(question.get("question") or question.get("text") or question.get("label")
+               or "set membership question")
     return item(KIND_PLAN_SET_QUESTION, company_id, f"{project_id}|{qid}",
-                reason=REASON_CONFLICT, summary=text[:MAX_SUMMARY],
+                reason=REASON_SET_AMBIGUITY, summary=text[:MAX_SUMMARY],
                 evidence={k: v for k, v in evidence.items() if v not in (None, "")},
                 project_id=project_id, now=now)
 

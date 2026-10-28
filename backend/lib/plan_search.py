@@ -1792,6 +1792,15 @@ class GlyphBook(NamedTuple):
     #: named only as "type X", and a tag or symbol that could not be read on
     #: a floor refuses that family's figures there and building-wide.
     opening: bool = False
+    #: the drawing-set questions open on this track (ruling 21,
+    #: lib.plan_set_questions): question id -> how the pages are named
+    #: ("the A.1.x plans"). Their rows are in the book; which of them count
+    #: is not decided.
+    questions: Dict[str, str] = {}
+    #: None: no reading chosen - with questions open, nothing building-wide
+    #: binds from this book (_building_refused). A frozenset: one reading,
+    #: the questions whose pages it counts (_reading_book).
+    reading: Optional[frozenset] = None
 
 
 def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
@@ -2100,8 +2109,11 @@ def _blocking_refusals(book: GlyphBook) -> List[Dict[str, Any]]:
 
 
 def _building_refused(book: GlyphBook) -> bool:
+    # THE SET IS NOT DECIDED (ruling 21): a book holding the rows of an open
+    # drawing-set question states no building figure of its own - only its
+    # readings do, where they agree (_agreed_values).
     return (bool(_blocking_refusals(book)) or not book.refusals_complete
-            or bool(book.invariant))
+            or bool(book.invariant) or (bool(book.questions) and book.reading is None))
 
 
 def _resolved(fam: GlyphFamily, tags: Sequence[str]) -> List[Dict[str, Any]]:
@@ -2895,15 +2907,189 @@ def opening_books(records: Sequence[Dict[str, Any]]) -> GlyphBooks:
     inv = _invariant(rows)
     per: Dict[Optional[str], GlyphBook] = {}
     for t in tracks:
-        b = glyph_book([r for r in rows if _row_track(r) == t]
-                       + [c for c in censuses if c.get("track") in (t, None)])
-        per[t] = b._replace(opening=True,
+        mine = [r for r in rows if _row_track(r) == t]
+        b = glyph_book(mine + [c for c in censuses if c.get("track") in (t, None)])
+        qs = {}
+        for r in mine:
+            q = _question_of(r)
+            if q is not None:
+                qs.setdefault(q, str((r.get("payload") or {}).get(_SQ_LABEL) or "some plans"))
+        per[t] = b._replace(opening=True, questions=qs,
                             invariant={k: w for (tt, k), w in inv.items() if tt == t})
     return GlyphBooks(None, per, {t: _track_label(t, rows) for t in tracks})
 
 
-def opening_values(clause: str, books: GlyphBooks) -> set:
-    """The door/window counts this one clause may state (opening_books)."""
+# ── THE SET IS NOT DECIDED: count every reading (ruling 21) ───────────────
+#
+# "The system never decides which drawings belong to a set or which governs.
+# ... Until answered, or if no PM/SM exists: never pick one. Answers state
+# the difference instead, e.g. 'the filed set has 36 type F doors without
+# the A.1.x plans; including them gives N'. Claims bind only where both
+# readings agree." (operator, 2026-10-27)
+#
+# The pass reads the pages of an open question and marks their rows with it
+# (lib.plan_set_questions). A READING is a choice of which open questions'
+# pages count; each is a book. A figure binds only where EVERY reading gives
+# it - or every reading a claim names ("... without the A.1.x plans"). A page
+# of a question that could not be read is a refusal in the readings that
+# count it: they give nothing, so nothing that depends on it binds.
+
+#: payload keys of a row of an open question (lib.plan_set_questions)
+_SQ_KEY, _SQ_LABEL = "set_question", "set_question_label"
+#: more open questions than this on one track: 2^n readings are not counted
+#: - its building figures refuse, as the undecided book does
+MAX_SET_QUESTIONS = 4
+
+
+def _question_of(r: Dict[str, Any]) -> Optional[str]:
+    payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+    q = payload.get(_SQ_KEY)
+    return str(q) if q else None
+
+
+def _reading_book(book: GlyphBook, included: frozenset) -> GlyphBook:
+    """The book as one reading counts it: the rows of the questions in
+    `included`, and none of the other open questions'."""
+    def keep(r):
+        q = _question_of(r)
+        return q is None or q in included
+    fams = {n: f._replace(rows=[r for r in f.rows if keep(r)]) for n, f in book.families.items()}
+    return book._replace(families=fams, refused=[r for r in book.refused if keep(r)],
+                         reading=frozenset(included))
+
+
+def _readings(book: GlyphBook) -> Optional[List[GlyphBook]]:
+    """Every reading of an undecided book, or None for a decided one."""
+    if not book.questions or book.reading is not None:
+        return None
+    qs = sorted(book.questions)
+    if len(qs) > MAX_SET_QUESTIONS:
+        return [book]
+    import itertools
+    return [_reading_book(book, frozenset(c))
+            for k in range(len(qs) + 1) for c in itertools.combinations(qs, k)]
+
+
+def _agreed_values(clause: str, book: GlyphBook,
+                   spec: Optional[Dict[str, bool]] = None) -> set:
+    """What one book lets the clause state: every reading's values that ALL
+    the readings agree on - among the readings `spec` names ({question:
+    counted?}, from the clause's own words; a question this book does not
+    hold is no reading of it)."""
+    rs = _readings(book)
+    if rs is None:
+        return _book_values(clause, book)
+    if spec:
+        rs = [b for b in rs if b.reading is None or all(
+            (q in b.reading) == inc for q, inc in spec.items() if q in book.questions)]
+    out: Optional[set] = None
+    for b in rs:
+        v = _book_values(clause, b)
+        out = v if out is None else (out & v)
+    return out or set()
+
+
+_READING_WORD = (r"(?P<how>without|excluding|not\s+counting|leaving\s+out|"
+                 r"including|counting|with)")
+
+
+def _label_pattern(short: str) -> str:
+    """'the A.1.x plans' -> a pattern for 'A.1.x plans' / 'A.1.x sheets' ..."""
+    core = re.sub(r"^\s*the\s+", "", short or "", flags=re.I).strip()
+    m = re.match(r"^(.*?)\s+(plans?|sheets?|drawings?|pages?)$", core, re.I)
+    if m:
+        return re.escape(m.group(1)).replace("\\ ", r"\s+") + r"\s+(?:plans?|sheets?|drawings?|pages?)"
+    return re.escape(core).replace("\\ ", r"\s+")
+
+
+def reading_phrases(clause: str, books: "GlyphBooks"
+                    ) -> Tuple[Dict[str, bool], str]:
+    """({question: counted?}, the clause without those phrases): "without the
+    A.1.x plans" -> not counted, "including the A.1.x plans" (or "including
+    them", after naming them) -> counted. A phrase naming two readings of
+    one question names none."""
+    labels: Dict[str, str] = {}
+    for b in (books.tracks or {}).values():
+        for q, lab in (b.questions or {}).items():
+            labels.setdefault(q, lab)
+    if not labels:
+        return {}, clause
+    spec: Dict[str, bool] = {}
+    clash: set = set()
+    last: Optional[str] = None
+    pats = {q: _label_pattern(lab) for q, lab in labels.items()}
+    alt = "|".join(f"(?P<q{i}>{pat})" for i, pat in enumerate(pats.values()))
+    rx = re.compile(r"\b" + _READING_WORD + r"\s+(?:the\s+)?(?:" + alt
+                    + r"|(?P<them>them|those|these))\b", re.I)
+    order = list(pats)
+    mentions = re.compile("|".join(f"(?:{p})" for p in pats.values()), re.I)
+
+    def one(m):
+        nonlocal last
+        q = None
+        for i, qid in enumerate(order):
+            if m.group(f"q{i}"):
+                q = qid
+        if q is None:
+            q = last
+        if q is None:
+            return m.group(0)
+        last = q
+        inc = not m.group("how").lower().startswith(("without", "excluding", "not", "leaving"))
+        if q in spec and spec[q] != inc:
+            clash.add(q)
+        spec[q] = inc
+        return " "
+    # a question named before "them" is what "them" means
+    first = mentions.search(clause)
+    if first:
+        for i, qid in enumerate(order):
+            if re.fullmatch(pats[qid], first.group(0), re.I):
+                last = qid
+    out = rx.sub(one, clause)
+    for q in clash:
+        spec.pop(q, None)
+    return spec, out
+
+
+_READING_SPLIT = re.compile(r"\s(?:and|or|but|while|whereas)\s", re.I)
+
+
+def reading_segments(clause: str, books: "GlyphBooks"
+                     ) -> List[Tuple[str, Optional[Dict[str, bool]]]]:
+    """A clause stating figures of several readings, one segment per
+    conjunct, each with its own reading and the set the clause names: "The
+    filed set has 36 type F doors without the A.1.x plans and 72 type F doors
+    including the A.1.x plans" -> two claims, each checked against its
+    reading. A clause naming no reading is itself, unchanged."""
+    if not any((b.questions or {}) for b in (books.tracks or {}).values()):
+        return [(clause, None)]
+    _spec, stripped = reading_phrases(clause, books)
+    if stripped == clause:
+        return [(clause, None)]          # it names no reading
+    named, _bare = _track_claim(clause)
+    out: List[Tuple[str, Optional[Dict[str, bool]]]] = []
+    # a conjunct with no figure of its own goes with the one before it:
+    # "3 type D doors without the A.1.x plans and without the Roof Plan"
+    segs: List[str] = []
+    for seg in _READING_SPLIT.split(clause):
+        if segs and not _values(reading_phrases(seg, books)[1]):
+            segs[-1] = segs[-1] + " and " + seg
+        elif seg.strip():
+            segs.append(seg)
+    for seg in segs:
+        sp, stripped = reading_phrases(seg, books)
+        if len(named) == 1 and not _track_claim(stripped)[0]:
+            stripped = stripped + " " + _SET_NAME[next(iter(named))]
+        out.append((stripped, sp or None))
+    return out
+
+
+def opening_values(clause: str, books: GlyphBooks,
+                   spec: Optional[Dict[str, bool]] = None) -> set:
+    """The door/window counts this one clause may state (opening_books).
+    On a track whose set is not decided, only what every reading agrees on -
+    or every reading `spec` names (reading_segments) - binds."""
     if not books.tracks:
         return set()
     named, bare = _track_claim(clause)
@@ -2911,8 +3097,8 @@ def opening_values(clause: str, books: GlyphBooks) -> set:
         if len(named) != 1:
             return set()
         b = books.tracks.get(next(iter(named)))
-        return _book_values(bare, b) if b is not None else set()
-    vals = [_book_values(bare, b) for b in books.tracks.values()]
+        return _agreed_values(bare, b, spec) if b is not None else set()
+    vals = [_agreed_values(bare, b, spec) for b in books.tracks.values()]
     if not vals[0] or any(v != vals[0] for v in vals):
         return set()
     return set(vals[0]) - {"0"}
@@ -2970,10 +3156,15 @@ def _opening_items(book: GlyphBook, fam: GlyphFamily) -> List[Tuple[str, str]]:
         if held:
             text += f"; {', '.join(_type_name(t) for t in held)}: no per-apartment figure (a tag of that type on the floor was not placed)"
         out.append((f"unit {u}", text))
-    if fam.why or _building_refused(book) or any(_unread(r) for r in fam.rows):
+    if (not fam.why and book.questions and book.reading is None
+            and not _building_refused(_reading_book(book, frozenset()))):
+        out.append(("building", _undecided_building(book, fam)))
+    elif fam.why or _building_refused(book) or any(_unread(r) for r in fam.rows):
         why = (fam.why or (f"{len(_blocking_refusals(book))} plan(s) carrying these tags were "
-                           f"not read" if _building_refused(book) else
-                           "a tag or symbol could not be read"))
+                           f"not read" if _blocking_refusals(book) or not book.refusals_complete
+                           or book.invariant else
+                           f"{len(book.questions)} drawing-set questions are open"
+                           if book.questions else "a tag or symbol could not be read"))
         out.append(("building", f"Whole building: NOT AVAILABLE - {why}"))
     else:
         parts = [(t, _building_count(book, fam, [t])) for t in fam.tags]
@@ -2984,6 +3175,80 @@ def _opening_items(book: GlyphBook, fam: GlyphFamily) -> List[Tuple[str, str]]:
             if n and len(parts) > 1:
                 text += f"; {n} in all"
             out.append(("building", text))
+    return out
+
+
+def _reading_count(b: GlyphBook, fam: GlyphFamily, tags: Sequence[str]) -> Optional[int]:
+    """One reading's building count - 0 included - or None when it cannot
+    be counted (a page it counts was not read)."""
+    if fam.why or _building_refused(b) or any(_unread(r) for r in fam.rows):
+        return None
+    return len(_resolved(fam, tags))
+
+
+def _reading_name(book: GlyphBook, inc: frozenset, among: Sequence[str]) -> str:
+    return " and ".join(("including " if q in inc else "without ") + book.questions[q]
+                        for q in among)
+
+
+def _undecided_building(book: GlyphBook, fam: GlyphFamily) -> str:
+    """THE SET IS NOT DECIDED (ruling 21): what every reading agrees on,
+    stated; every other figure stated with its reading, never alone. A
+    question whose pages could not be read makes every reading that counts
+    them unknown: said once."""
+    rs = _readings(book) or [book]
+    if len(rs) == 1:
+        return (f"Whole building: NOT AVAILABLE - {len(book.questions)} drawing-set questions "
+                f"are open")
+    unread = sorted({q for r in book.refused for q in [_question_of(r)] if q})
+    known = [q for q in sorted(book.questions) if q not in unread]
+    shown = [b for b in rs if not (b.reading & set(unread))]
+    agree, differ = [], []
+    for t in fam.tags:
+        got = [(b.reading, _reading_count(b, b.families[fam.name], [t])) for b in shown]
+        vals = {v for _r, v in got}
+        if len(vals) == 1 and not unread:
+            v = next(iter(vals))
+            if v:
+                agree.append(f"{_type_name(t)} {v}")
+            continue
+        if len(vals) == 1 and next(iter(vals)) == 0:
+            continue                    # none in any reading that can be counted
+        parts = [f"{'not known' if v is None else v} {_reading_name(book, r, known + unread)}"
+                 for r, v in got]
+        parts += [f"not known including {book.questions[q]} (not read)" for q in unread]
+        differ.append(f"{_type_name(t)}: " + "; ".join(parts))
+    text = "Whole building: " + (", ".join(agree) + " (the same in every reading)"
+                                 if agree else "no figure is the same in every reading")
+    if differ:
+        text += (". THE SET IS NOT DECIDED (a drawing-set question is open): "
+                 + " | ".join(differ))
+    return text
+
+
+def render_set_questions(records: Sequence[Dict[str, Any]], books: GlyphBooks) -> List[str]:
+    """One line per open drawing-set question: what it asks and whether it
+    was asked (the stored question, record_type "set_question")."""
+    stored = {str(r.get("_id") or r.get("id")): r for r in records or []
+              if r.get("record_type") == "set_question"}
+    out: List[str] = []
+    for t, b in books.tracks.items():
+        for q, short in sorted((b.questions or {}).items()):
+            s = stored.get(q) or {}
+            asked = [a for a in s.get("asked") or [] if a.get("sent")]
+            if asked:
+                who = ", ".join(f"{a.get('name') or 'the PM'} ({a.get('channel') or 'WhatsApp'}, "
+                                f"{str(a.get('at') or '')[:10]})" for a in asked)
+                state = f"asked {who}; not answered yet"
+            elif s.get("unasked_reason"):
+                state = f"not asked: {s['unasked_reason']}"
+            else:
+                state = "not asked yet"
+            label = s.get("label") or short
+            out.append(f"- {s.get('code') + ': ' if s.get('code') else ''}{label} - part of "
+                       f"{books.labels.get(t) or 'the set'} or not? Not decided: {state}. Until "
+                       f"it is answered, every figure that depends on it is stated with its "
+                       f"reading and never alone.")
     return out
 
 
@@ -3041,6 +3306,15 @@ def render_opening_evidence(records: Sequence[Dict[str, Any]]) -> str:
                 elif two:
                     lines.append("  (only this set gives a figure here: state it only with the "
                                  "set it is per)")
+    qlines = render_set_questions(records, books)
+    if qlines:
+        ex = next(iter(q for b in books.tracks.values() for q in (b.questions or {}).values()))
+        lines.append("DRAWING-SET QUESTIONS (ruling 21: the system never decides which drawings "
+                     "belong to a set). A figure that differs between readings is stated only "
+                     "with its reading, in one sentence naming the set, e.g. 'The filed set has "
+                     f"N type F doors without {ex} and M type F doors including {ex}.' - never "
+                     "one reading's figure as the count:")
+        lines += qlines
     return "\n".join(lines)
 
 
@@ -3119,12 +3393,19 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     # 6/9/26" says where a figure comes from - its date lends nothing.
     citations = sorted(set(_citation_texts(records)) | {
         l for l in list(books.labels.values()) + list(obooks.labels.values()) if len(l) >= 3}, key=len, reverse=True)
+    # A DRAWING-SET QUESTION'S PAGES ARE NAMED, NOT COUNTED (ruling 21):
+    # "the A.1.x plans" carries a 1 that is no figure.
+    citations = sorted(set(citations) | {l for b in obooks.tracks.values()
+                                         for l in (b.questions or {}).values() if len(l) >= 3},
+                       key=len, reverse=True)
     unsupported: List[str] = []
     # "1,970 sq ft" is one figure: with area rows in hand the thousands comma
     # is not a clause break (_areas.join_thousands). Without them, unchanged.
     if any(_areas.is_area_record(r) for r in records or []):
         text = _areas.join_thousands(text)
-    for clause in _clauses(_undated_set_names(text)):
+    segments = [seg for c in _clauses(_undated_set_names(text))
+                for seg in reading_segments(c, obooks)]
+    for clause, spec in segments:
         # A citation in the clause is removed as text before its numbers are
         # read (_citation_texts): '[M-200.00]' and 'issued 8/18/2026' say
         # where, and lend nothing to what is counted.
@@ -3151,7 +3432,7 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
             # A CLAIM NAMING A SET binds only against that track's rows
             # (glyph_values) - never a printed QTY, which is no track's, and
             # never on untracked rows.
-            allowed = glyph_values(clause, books) | opening_values(clause, obooks)
+            allowed = glyph_values(clause, books) | opening_values(clause, obooks, spec)
             if _areas.is_area_clause(bare):
                 a_add, a_drop = _areas.figures_in_clause(bare, records, named)
                 allowed = (allowed - a_drop) | a_add
@@ -3206,7 +3487,7 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
         # unit, floor, building - nothing refused falls inside.
         allowed |= glyph_values(clause, books)
         # DOORS AND WINDOWS: their own books, every scope per drawing track
-        allowed |= opening_values(clause, obooks)
+        allowed |= opening_values(clause, obooks, spec)
         # AN AREA AGREES WITH WHAT IS PRINTED, OR NEITHER IS SAID
         # (lib.plan_areas, ruling 2026-10-26, like the QTY above): a measured
         # area binds only where the plan prints one that agrees, and a
