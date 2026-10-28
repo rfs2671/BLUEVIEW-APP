@@ -1982,13 +1982,15 @@ def _undated_set_names(text: str) -> str:
 # - and a name with no letter in it is never removed (a file called "588"
 # names nothing a reader could tell from a count).
 #
-# WHAT IS REMOVED IS ONLY WHAT CANNOT BE PROSE. Removing words can move a
-# figure's scope ("4A has 9 WH-1" without "4A" is a building figure), so:
-# a file's whole name, ".pdf" and all; its name without ".pdf" only when it
-# is a file's kind of name - a letter, a digit, a space, 10+ characters
-# ("588 Boyland Mech 7.2"); and a set label only when it carries a digit
-# (only digits were ever the problem). "filed.pdf" never takes "filed" out
-# of "in the filed set".
+# WHAT IS REMOVED IS ONLY WHAT CANNOT BE PROSE OR SCOPE. Removing words can
+# move a figure's scope: with a file "Apartment 4A.pdf", stripping
+# "Apartment 4A" turned "Apartment 4A has 9 WH-1." from refused into a
+# building figure that bound (Codex, #910). So only a file's WHOLE name,
+# ".pdf" and all, is removed - never its bare stem - and a set label only
+# when it carries a digit (only digits were ever the problem); and no name
+# or label carrying a scope word (_SCOPE_WORD: apartment, unit, floor,
+# level, a "4A"-style unit) is ever removed. An answer citing one is
+# refused as before, which is the safe way to be wrong.
 
 #: A set's bare name, for a label said in its place.
 _SET_PLAIN = {_FILED: "filed set", "post_co": "owner's set"}
@@ -1999,18 +2001,23 @@ def _cited_name(v: Any) -> str:
     return v if len(v) >= 3 and re.search(r"[A-Za-z]", v) else ""
 
 
+#: A word that says WHERE in the building: a citation carrying one is never
+#: removed, since removing it could widen a figure's scope.
+_SCOPE_WORD = re.compile(
+    r"\b(?:apt|apartments?|units?|floors?|fl|levels?|lvl|stor(?:y|ey|ies)|cellar|"
+    r"basement|roof|penthouse|mezzanine|duplex|rooms?|suites?|\d+(?:st|nd|rd|th)|"
+    r"\d{1,3}[A-Z])\b", re.I)
+
+
 def _file_name_forms(name: Any) -> List[str]:
-    """A file's name as an answer may write it: whole, without ".pdf", and
-    with its underscores as spaces."""
+    """A file's name as an answer may cite it: whole, ".pdf" and all. Never
+    the bare stem, and never a name that carries a scope word."""
     whole = _cited_name(name)
-    if not whole:
+    if not whole or not whole.lower().endswith(".pdf"):
         return []
-    out = {whole}
-    stem = re.sub(r"\.pdf$", "", whole, flags=re.I).strip()
-    for f in (stem, stem.replace("_", " ")):
-        if (len(f) >= 10 and " " in f and re.search(r"\d", f) and _cited_name(f)):
-            out.add(f)
-    return sorted(out)
+    if _SCOPE_WORD.search(whole[:-4]):
+        return []
+    return [whole]
 
 
 def source_citations(records: Sequence[Dict[str, Any]],
@@ -2024,14 +2031,14 @@ def source_citations(records: Sequence[Dict[str, Any]],
         names.update(_file_name_forms(r.get("file_name")))
         a = ((r.get("payload") or {}).get("arch") or {}) if isinstance(r.get("payload"), dict) else {}
         lab, tr = _cited_name(a.get("drawing_track_label")), a.get("drawing_track")
-        if lab and tr in _SET_PLAIN and re.search(r"\d", lab):
+        if lab and tr in _SET_PLAIN and re.search(r"\d", lab) and not _SCOPE_WORD.search(lab):
             labels.setdefault(lab, tr)
     for src in sources or []:
         if not isinstance(src, dict):
             continue
         names.update(_file_name_forms(src.get("file_name")))
         lab, tr = _cited_name(src.get("label")), src.get("track")
-        if lab and tr in _SET_PLAIN and re.search(r"\d", lab):
+        if lab and tr in _SET_PLAIN and re.search(r"\d", lab) and not _SCOPE_WORD.search(lab):
             labels.setdefault(lab, tr)
     return (sorted(names, key=len, reverse=True),
             sorted(labels.items(), key=lambda kv: len(kv[0]), reverse=True))

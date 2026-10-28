@@ -20,8 +20,14 @@ three ways, by main and by this branch:
      stated AS A FIGURE, citing the file          the file name carries still
      ("There are 588 <subject>. [...]")           binds only on the records
 
+  D  names carrying a scope word (Codex,     -> must not change: such a name
+     #910: "Apartment 4A.pdf", label            is never removed, so "4A"
+     "Apt 4A set 6/9/26"), the answer as        never leaves a claim's scope
+     stored, cited, and as "Apartment 4A has
+     <n> <subject>." for each of its figures
+
 Exit 1 on any A change, any B change other than refused -> passed with A
-passing, or any C change.
+passing, or any C or D change.
 """
 
 from __future__ import annotations
@@ -53,6 +59,9 @@ SOURCES = [{"file_name": FILE, "track": "post_co", "label": LABEL}]
 CITES = (f" [{{sheet}} · {FILE}, {LABEL}]",
          f" ({{sheet}} · {FILE[:-4]}, owner's set)")
 CITED = CITES[0]
+#: D: names that carry a scope word, never removed.
+SCOPED_FILE = "Apartment 4A.pdf"
+SCOPED_SOURCES = [{"file_name": SCOPED_FILE, "track": "post_co", "label": "Apt 4A set 6/9/26"}]
 #: The figures the fixture names carry, each stated as a count in C.
 NAME_FIGURES = sorted(set(re.findall(r"\d+(?:\.\d+)?", FILE + " " + LABEL)))
 
@@ -119,6 +128,14 @@ def probe(main) -> dict:
                 c_main = gate(main, bare, recs, "count", False)
                 s["C_checked"] += 1
                 s["C_changed"] += (c_cited != c_main) or (c_bare != c_main)
+            srecs = [dict(x, file_name=SCOPED_FILE) for x in recs]
+            figs = [v for v in new._values(text)][:4]
+            for t, i in ([(text, intent), (text.rstrip() + f" [{sheet} · {SCOPED_FILE}, Apt 4A set 6/9/26]", intent)]
+                         + [(f"Apartment 4A has {v} {subj}.", "count") for v in figs]):
+                d0 = main.answer_is_grounded(t, srecs, intent=i)[0]
+                d1 = new.answer_is_grounded(t, srecs, intent=i, sources=SCOPED_SOURCES)[0]
+                s["D_checked"] += 1
+                s["D_changed"] += d0 != d1
     return per
 
 
@@ -129,7 +146,8 @@ def main(argv=None) -> int:
     mod = load_main(args.main)
     per = probe(mod)
     cols = ("answers", "A_passed", "A_changed", "B_cited", "B_passed_before", "B_passed_after",
-            "B_refusal_to_correct_bind", "B_bad_change", "C_checked", "C_changed")
+            "B_refusal_to_correct_bind", "B_bad_change", "C_checked", "C_changed",
+            "D_checked", "D_changed")
     print(f"fixture file {FILE!r}, set label {LABEL!r}; name figures {NAME_FIGURES}\n")
     print("claim set      " + "  ".join(cols))
     tot = Counter()
@@ -138,7 +156,7 @@ def main(argv=None) -> int:
         tot.update(s)
         print(f"{name:<14} " + "  ".join(f"{s[c]:>{len(c)}d}" for c in cols))
     print(f"{'TOTAL':<14} " + "  ".join(f"{tot[c]:>{len(c)}d}" for c in cols))
-    bad = tot["A_changed"] or tot["B_bad_change"] or tot["C_changed"]
+    bad = tot["A_changed"] or tot["B_bad_change"] or tot["C_changed"] or tot["D_changed"]
     print("\nzero wrong bindings: " + ("NO" if bad else "yes"))
     return 1 if bad else 0
 

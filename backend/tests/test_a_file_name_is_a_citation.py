@@ -39,7 +39,6 @@ def ok(text, intent="count", records=(PTAC,), sources=SRC):
 class FileNames(unittest.TestCase):
     def test_a_count_citing_its_file_binds(self):
         for t in ("There are 21 PTAC-1 units in the building [M-200.00, 588 Boyland Mech 7.2.pdf].",
-                  "There are 21 PTAC-1 units in the building (M-200.00 · 588 Boyland Mech 7.2).",
                   "There are 21 PTAC-1 units in the building, per 588 Boyland Mech 7.2.PDF."):
             with self.subTest(t=t):
                 self.assertEqual(ok(t), (True, []))
@@ -66,14 +65,28 @@ class FileNames(unittest.TestCase):
 
 
     def test_only_what_cannot_be_prose_is_removed(self):
-        """A short or digitless stem is never taken out of the answer: "4A"
-        out of "4A has 9 WH-1" would make it a building figure."""
-        for name, kept in (("4A.pdf", "4A has"), ("filed.pdf", "in the filed set"),
+        """Never a bare stem: "4A" out of "4A has 9 WH-1" would make it a
+        building figure. The whole name, ".pdf" and all, is the citation."""
+        for name, kept in (("4B Mech.pdf", "4B Mech has"), ("filed.pdf", "in the filed set"),
                            ("Plans.pdf", "the Plans show")):
             with self.subTest(name=name):
                 out = S.strip_source_citations(f"{kept} 3 (see {name})", [{"file_name": name}])
                 self.assertIn(kept, out)
-                self.assertNotIn(name, out)
+        self.assertEqual(ok("There are 21 PTAC-1 units in the building (M-200.00 · 588 Boyland Mech 7.2)."),
+                         (False, ["588", "7.2"]), "a stem without .pdf is not removed: refused as before")
+
+    def test_a_name_or_label_with_a_scope_word_is_never_removed(self):
+        """Codex #910: with "Apartment 4A.pdf", stripping "Apartment 4A"
+        made "Apartment 4A has 9 WH-1." a building figure that bound."""
+        from tests.test_a_count_binds_only_from_a_counting_source import WH_SCHEDULE
+        for name in ("Apartment 4A.pdf", "4A.pdf", "2nd Floor 7.2.pdf", "Unit 3 rev 2.pdf"):
+            with self.subTest(name=name):
+                rec = dict(WH_SCHEDULE, file_name=name)
+                self.assertEqual(S.source_citations([rec]), ([], []))
+                for t in ("Apartment 4A has 9 WH-1.", f"Apartment 4A has 9 WH-1 [{name}]."):
+                    self.assertFalse(S.answer_is_grounded(t, [rec], intent="count")[0], t)
+        lab = [{"file_name": "", "track": "post_co", "label": "Apt 4A set 6/9/26"}]
+        self.assertEqual(S.source_citations([], lab), ([], []))
 
 
 class SetLabels(unittest.TestCase):
