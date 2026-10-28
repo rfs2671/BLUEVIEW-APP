@@ -1217,6 +1217,12 @@ def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[
             "arch_page_id": (a_page or {}).get("page_id"),
             "arch_file": (a_page or {}).get("file_name"),
             "arch_page": (a_page or {}).get("page_number"),
+            # the same page reference lib.plan_structural (lane T3) writes:
+            # clash v1 joins the two on (track, a_sheet.page_id), and both
+            # trades' geometry is in that A page's display points
+            "a_sheet": None if not a_page else {k: a_page.get(k) for k in (
+                "page_id", "file_id", "file_name", "page_number", "sheet_number",
+                "sheet_title", "file_hash")},
             "registration": None if not reg else {
                 "dx": round(reg["dx"], 3), "dy": round(reg["dy"], 3), "anchors": reg.get("anchors"),
                 "best_peak_anchors": reg.get("best_peak_anchors"),

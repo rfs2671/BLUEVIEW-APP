@@ -455,6 +455,7 @@ class TheRowsC1Reads(unittest.TestCase):
         self.assertAlmostEqual(fp["y"], pc[1] + 66.0, places=1)
         self.assertAlmostEqual(fp["r"], 2.25, places=1)
         self.assertEqual(row["arch_sheet"], "A-103.00")
+        self.assertEqual(row["a_sheet"]["page_id"], "A-103.00")     # the clash v1 join key
         self.assertEqual(row["tag_id"], "V-3")
 
     def test_an_unusable_registration_keeps_the_stack_and_refuses_its_place(self):
