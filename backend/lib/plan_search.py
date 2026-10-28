@@ -3923,9 +3923,12 @@ def _is_mark(word: str) -> bool:
     return any(c.isalpha() for c in word) and any(c.isdigit() for c in word)
 
 
-def states_a_count(clause: str) -> bool:
-    """Does this clause (its dimensions and set names already blanked) state
-    a number OF things - a count - rather than a value of something?"""
+def _counted_phrases(clause: str) -> List[Tuple[str, List[str]]]:
+    """(number, the words it numbers) for every count-shaped number in the
+    clause (its dimensions and set names already blanked): a bare number,
+    not one with a unit of measure, followed by a phrase up to the first stop
+    word that holds a mark or "type X", ends in a plural, or follows a 1."""
+    out: List[Tuple[str, List[str]]] = []
     for m in _COUNTED.finditer(clause or ""):
         if _UNIT_VALUE.match(clause, m.start()):
             continue
@@ -3939,10 +3942,155 @@ def states_a_count(clause: str) -> bool:
         low = [w.lower() for w in words]
         if (any(_is_mark(w) for w in words)
                 or any(a == "type" and b for a, b in zip(low, low[1:]))
-                or any(len(f) < len(low[-1]) for f in term_forms(low[-1]))
+                or _is_plural(low[-1])
                 or m.group(1).rstrip(".") == "1"):
+            out.append((m.group(1), words))
+    return out
+
+
+def _is_plural(word: str) -> bool:
+    """The gate's own plural: term_forms has a shorter form of the word."""
+    w = (word or "").lower()
+    return w.isalpha() and any(len(f) < len(w) for f in term_forms(w))
+
+
+def states_a_count(clause: str) -> bool:
+    """Does this clause (its dimensions and set names already blanked) state
+    a number OF things - a count - rather than a value of something?"""
+    return bool(_counted_phrases(clause))
+
+
+# ── A FAMILY'S COUNT IS THE COUNT RULE'S, UNDER EVERY INTENT ──────────────
+#
+# Ruling 51 (Roy, 2026-10-28, verbatim): "a clause whose subject is a plural
+# noun matching a reconciled family or tag family ("exhaust fans", "PTACs",
+# "doors", "roof drains") followed by a bare integer routes to the count rule
+# under every intent; it never takes the value path. A singular tag or a
+# value with a unit ("PTAC-1: 9000", "EF-1: 50 CFM") stays on the value path."
+#
+# THE FAMILIES ARE THE ONES THE COUNT RULE KNOWS, from the records in hand
+# (_count_families): the located-symbol families (glyph_books, plan-only ones
+# among them), the door and window books (opening_books), every schedule with
+# an identifier or quantity column (its name, its rows' marks), and the
+# families set health says are not reconciled (the count rule refuses those).
+# A plural is matched to a family the way the count rule and the search match
+# one - its stem among the family's words (family_words) - or a tag of the
+# family is named beside it ("PTAC-1 units"). A plural no family in hand
+# names is not covered.
+#
+# Two shapes: "exhaust fans: 13." / "The exhaust fans are 13." (the family
+# plural before a bare integer), and "The building has 13 exhaust fans." /
+# "There are 13 EF-1." (a bare integer before the family plural, or before a
+# mark - a mark is a tag whatever the records). Under intent=attribute every
+# count-shaped clause routes (states_a_count, ruling 50).
+
+
+def _count_families(records: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """name -> tags, for every family the count rule can know from these
+    records."""
+    fams: Dict[str, set] = {}
+    books = glyph_books(records)
+    obooks = opening_books(records)
+    for b in [books.totals, *books.tracks.values(), *obooks.tracks.values()]:
+        if b is None:
+            continue
+        for name, fam in b.families.items():
+            fams.setdefault(str(name).upper(), set()).update(str(t).upper() for t in fam.tags or [])
+    for r in records or []:
+        if r.get("record_type") != "schedule":
+            continue
+        payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+        roles = set()
+        for c in payload.get("columns") or []:
+            if isinstance(c, dict):
+                roles.add(c.get("role") if c.get("role") is not None else column_role(c.get("header") or ""))
+            else:
+                roles.add(column_role(str(c or "")))
+        if not roles & {"identifier", "quantity"}:
+            continue
+        name = str(payload.get("name") or "").strip().upper()
+        mine = fams.setdefault(name, set())
+        for row in payload.get("rows") or []:
+            if isinstance(row, list) and row:
+                mark = re.sub(r"\s+", " ", str(row[0] or "")).strip().upper()
+                if _is_mark(mark):
+                    mine.add(mark)
+    for h in _set_health(records):
+        if h.get("kind") == "family_not_reconciled" and h.get("subject"):
+            fams.setdefault(str(h["subject"]).upper(), set())
+    return {n: sorted(t) for n, t in fams.items() if n}
+
+
+def _names_a_family(words: Sequence[str], fams: Dict[str, List[str]]) -> bool:
+    """Is the phrase's plural head one of a family's words, or is a tag of
+    the family named beside a plural head?"""
+    if not words or not _is_plural(words[-1]):
+        return False
+    head = _stem(words[-1])
+    # A generic head ("PTAC units", "door types") is named by the words before it.
+    heads = {head} | ({_stem(w) for w in words[:-1]} if head in _GENERIC_FAMILY_WORDS else set())
+    phrase = " ".join(words)
+    for name, tags in fams.items():
+        if heads & family_words(name) or (tags and _named_tags(phrase, tags)):
             return True
     return False
+
+
+_PHRASE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*")
+
+
+def states_a_family_count(clause: str, fams: Dict[str, List[str]]) -> bool:
+    """Ruling 51: does the clause (dimensions and set names blanked) state a
+    bare integer of a family the records know - its plural before the
+    integer, or after it - or a bare integer of a mark?"""
+    c = clause or ""
+    vals = list(_VALUE_RE.finditer(c))
+    if not vals or any("." in m.group(0).rstrip(".") for m in vals):
+        return False
+    if any(_UNIT_VALUE.match(c, m.start()) for m in vals):
+        return False
+    before = [w for w in _PHRASE_WORD.findall(c[:vals[0].start()]) if w.lower() not in _STOP]
+    if _names_a_family(before, fams):
+        return True
+    for _n, words in _counted_phrases(c):
+        if any(_is_mark(w) for w in words) or _names_a_family(words, fams):
+            return True
+    return False
+
+
+def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool
+                  ) -> Tuple[str, List[str]]:
+    """(the text with every count clause blanked, what the count rule refuses
+    in them). `every`: route every count-shaped clause (intent=attribute,
+    ruling 50); else only a family's or a mark's (ruling 51). A clause with a
+    dimension, or an area clause with area rows in hand, is left as before."""
+    source = _areas.join_thousands(text or "")
+    masked = _dims.mask_quotation_marks(source)
+    hold = list(masked)
+    for f in _dims.find(masked):
+        hold[f.span[0]:f.span[1]] = "\x00" * (f.span[1] - f.span[0])
+    hold_s = "".join(hold)
+    has_areas = any(_areas.is_area_record(r) for r in records or [])
+    citations = _citation_texts(records)
+    fams: Optional[Dict[str, List[str]]] = None
+    out = list(source)
+    bad: List[str] = []
+    for c0, c1 in _clause_spans(hold_s):
+        if "\x00" in hold_s[c0:c1]:
+            continue
+        _named, bare = _track_claim(hold_s[c0:c1])
+        if has_areas and _areas.is_area_clause(bare):
+            continue
+        clause = _strip_citations(bare, citations)
+        route = every and states_a_count(clause)
+        if not route:
+            if fams is None:
+                fams = _count_families(records)
+            route = states_a_family_count(clause, fams)
+        if route:
+            bad += _count_answer_is_bound(source[c0:c1], records)[1]
+            out[c0:c1] = " " * (c1 - c0)
+    return "".join(out), bad
 
 
 # ── A CEILING'S HEIGHT IS NAMED AS ONE ────────────────────────────────────
@@ -4088,11 +4236,6 @@ def _attribute_answer_is_bound(text: str, records: Sequence[Dict[str, Any]],
             unsupported += [v for v in _values(plain)
                             if v not in a_add and (v in a_drop or v not in ok)]
             continue
-        # A COUNT IS DECIDED BY THE COUNT RULE, from its counting sources,
-        # never by a record that names the clause's subject (states_a_count).
-        if states_a_count(_strip_citations(bare, citations)):
-            unsupported += _count_answer_is_bound(source[c0:c1], records)[1]
-            continue
         unsupported += _subject_bound(_track_claim(masked[c0:c1])[1], records,
                                       citations, aliases)
     return (not unsupported), unsupported
@@ -4111,11 +4254,28 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     `sources` (plan_sources.source_of rows for the records' files): their
     file names and set labels are citations (strip_source_citations)."""
     text = strip_source_citations(text or "", records, sources)
+    it = (intent or "").strip().lower()
+    # A COUNT CLAUSE IS DECIDED BY THE COUNT RULE, from its counting sources,
+    # under every intent - never by the value path or the union (_route_counts:
+    # ruling 50 under attribute, ruling 51 under every intent).
+    routed: List[str] = []
+    if it != "count":
+        text, routed = _route_counts(text, records, every=(it == "attribute"))
     # AN ATTRIBUTE BINDS TO THE SUBJECT ITS RECORD NAMES (ruling 2026-10-27,
     # _attribute_answer_is_bound). `aliases`: file_id -> that file's own
     # abbreviations table (abbreviation_table), the alternative names.
-    if (intent or "").strip().lower() == "attribute":
-        return _attribute_answer_is_bound(text, records, aliases)
+    if it == "attribute":
+        _ok, bad = _attribute_answer_is_bound(text, records, aliases)
+    else:
+        _ok, bad = _answer_is_grounded_rest(text, records, intent)
+    bad = routed + bad
+    return (not bad), bad
+
+
+def _answer_is_grounded_rest(text: str, records: Sequence[Dict[str, Any]],
+                             intent: str = "") -> Tuple[bool, List[str]]:
+    """answer_is_grounded for every intent but attribute, any count clause
+    already routed (_route_counts)."""
     # ── A DIMENSION IS ONE VALUE, NOT ITS DIGITS ───────────────────────────
     #
     # "The doors are 3'-5" X 7'-0"." passed with only 3'-0" X 7'-0" printed:

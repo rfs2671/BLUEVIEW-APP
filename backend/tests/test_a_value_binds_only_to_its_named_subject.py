@@ -377,6 +377,65 @@ class ACeilingsHeightIsNamedAsOne(unittest.TestCase):
             self.assertFalse(says(t), t)
 
 
+EF_SCHED = rec(sheet_number="M-200.00", record_type="schedule", file_id="MH",
+               subject_terms=["EXHAUST FAN SCHEDULE"],
+               quote="EXHAUST FAN SCHEDULE TAG | QTY | CFM EF-1 | 20 | 50 EF-2 | 16 | 13",
+               payload={"name": "EXHAUST FAN SCHEDULE",
+                        "columns": [{"header": "TAG", "role": "identifier"},
+                                    {"header": "QTY", "role": "quantity"},
+                                    {"header": "CFM", "role": None}],
+                        "rows": [["EF-1", "20", "50"], ["EF-2", "16", "13"]]})
+# A note that names the exhaust fans and prints 13 - EF-2's CFM is 13 too.
+EF_NOTE = rec(sheet_number="M-001.00", file_id="MH", quote="EXHAUST FANS 13 TOTAL")
+PTAC_SCHED = rec(sheet_number="M-200.00", record_type="schedule", file_id="MH",
+                 subject_terms=["ROOMS PTAC UNITS SCHEDULE"],
+                 quote="ROOMS PTAC UNITS SCHEDULE UNIT NO. | QTY | BTUH PTAC-1 | 21 | 9000",
+                 payload={"name": "ROOMS PTAC UNITS SCHEDULE",
+                          "columns": [{"header": "UNIT NO.", "role": "identifier"},
+                                      {"header": "QTY", "role": "quantity"},
+                                      {"header": "BTUH", "role": None}],
+                          "rows": [["PTAC-1", "21", "9000"]]})
+EVERY = ("", "identify", "existence", "location", "geometry", "attribute")
+
+
+class Ruling51AFamilysCountIsTheCountRulesUnderEveryIntent(unittest.TestCase):
+    """Ruling 51 (2026-10-28): a family's plural with a bare integer routes to
+    the count rule under every intent; a singular tag or a value with a unit
+    stays on the value path."""
+
+    def test_the_evals_count_sentence_never_takes_the_value_path(self):
+        recs = [EF_SCHED, EF_NOTE]
+        for it in EVERY:
+            self.assertFalse(gate("exhaust fans: 13.", recs, intent=it), it)
+            self.assertFalse(gate("The building has 13 exhaust fans.", recs, intent=it), it)
+            self.assertFalse(gate("There are 13 EF-2.", recs, intent=it), it)
+            self.assertFalse(gate("PTACs: 9000.", [PTAC_SCHED], intent=it), it)
+
+    def test_the_count_rule_decides_it_the_same_under_every_intent(self):
+        recs = [EF_SCHED, EF_NOTE, PTAC_SCHED]
+        for t in ("There are 20 EF-1.", "There are 21 PTAC-1.", "exhaust fans: 13.",
+                  "PTAC units: 21.", "The building has 22 PTAC-1."):
+            want = gate(t, recs, intent="count")
+            for it in EVERY:
+                self.assertEqual(gate(t, recs, intent=it), want, (t, it))
+
+    def test_a_singular_tag_or_a_value_with_a_unit_keeps_the_value_path(self):
+        recs = [EF_SCHED, EF_NOTE, PTAC_SCHED]
+        for it in EVERY:
+            self.assertTrue(gate("PTAC-1: 9000.", recs, intent=it), it)
+            self.assertTrue(gate("EF-1: 50 CFM.", recs, intent=it), it)
+            self.assertTrue(gate("EF-2: 13.", recs, intent=it), it)
+            self.assertTrue(gate("exhaust fans: 50 CFM.", recs, intent=it), it)
+
+    def test_the_families_are_the_ones_the_count_rule_knows(self):
+        fams = getattr(ps, "_count_families", lambda _r: {})([EF_SCHED, PTAC_SCHED, EF_NOTE])
+        self.assertEqual(fams, {"EXHAUST FAN SCHEDULE": ["EF-1", "EF-2"],
+                                "ROOMS PTAC UNITS SCHEDULE": ["PTAC-1"]})
+        # A plural no family in hand names is not a family's count: under the
+        # union it keeps the union (under attribute it has the count shape, 50).
+        self.assertTrue(gate("diffusers: 13.", [EF_NOTE, rec(quote="DIFFUSERS 13")], intent=""))
+
+
 class TheEvalStatesAnAttributeOfItsSubject(unittest.TestCase):
 
     CASE = {"id": "x", "question": "how high is the parapet", "subject": "parapet",

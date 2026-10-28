@@ -86,11 +86,15 @@ class TheDigitCollisionThatDefeatedTheContestedRule(unittest.TestCase):
 
     def test_this_is_what_the_union_used_to_allow(self):
         """The old behaviour, kept as a named comparison so the change cannot
-        be quietly undone: under the union both numbers pass."""
+        be quietly undone: under the union both numbers passed. Ruling 51
+        (2026-10-28): a count of a family or a mark is the count rule's under
+        every intent, so the default intent now refuses both, as count does."""
         for n in ("6", "9"):
             ok, _bad = ps.answer_is_grounded(
                 f"There are {n} PTAC-2 units.", BOYLAND)
-            self.assertTrue(ok, f"the union was expected to allow {n}")
+            self.assertFalse(ok, f"the union path allowed {n} - a count took the value path")
+            self.assertEqual(ok, ps.answer_is_grounded(
+                f"There are {n} PTAC-2 units.", BOYLAND, intent="count")[0])
 
 
 class ATrueCountStillPasses(unittest.TestCase):
