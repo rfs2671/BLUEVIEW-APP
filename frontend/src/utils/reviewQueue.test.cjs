@@ -72,6 +72,11 @@ ok(!R.REASON_FILTERS.some((f) => f.key === 'dispute') && !('dispute' in R.KIND_L
 ok(R.itemView(undefined).key === 'item:' && R.itemView({}).records.length === 0,
   'any shape renders (never throws)');
 
+ok(R.reasonLabel('takeoff_refused') === 'Takeoff: not verified'
+  && R.REASON_FILTERS.some((f) => f.key === 'takeoff_refused'), 'takeoff items are a reason');
+ok(R.reasonLabel('clash') === 'Clash' && R.KIND_LABEL.clash === 'Clash'
+  && R.REASON_FILTERS.some((f) => f.key === 'clash'), 'clash items are a reason');
+
 console.log('\nthe default view is "Needs decision"');
 const p0 = R.listParams({});
 ok(p0.status === 'pending' && p0.priority === 'normal', 'pending, normal priority');
