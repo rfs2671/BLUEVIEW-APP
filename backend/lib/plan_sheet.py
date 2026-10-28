@@ -344,9 +344,15 @@ def plan_unit_tags(corners_arr, words, unit_tags: Sequence[str],
     return {t: indoors.get(t, p) for t, p in first.items()}
 
 
-def census_grid(A, B, span_pt=360.0, radius_in=1.0, chunk=64):
-    """(votes, seed, S): offset_census's whole vote grid - votes[i, j] are
-    the anchors the offset seed + (i - S, j - S) matches."""
+def offset_census(A, B, span_pt=360.0, radius_in=1.0, chunk=64):
+    """(count, (dx, dy)): the best offset on a 1pt lattice over the same
+    window best_translation searches, found ANOTHER WAY - each corner of A
+    votes once for every lattice offset that would put it within the match
+    radius of some corner of B. A cell's votes are exactly the anchors that
+    offset matches; no sample is skipped, so no peak can be stepped over.
+
+    It is the independent second reading the registration is checked
+    against: a search that lands on a coincidental peak disagrees with it."""
     A, B = np.asarray(A, dtype=float), np.asarray(B, dtype=float)
     r = _pts(radius_in)
     seed = _seed(A, B)
@@ -364,44 +370,16 @@ def census_grid(A, B, span_pt=360.0, radius_in=1.0, chunk=64):
         near = (np.abs(d) <= S + r + 1).all(-1)
         d, who = d[near], who[near]
         cells = np.floor(d).astype(np.int64)[:, None, :] + offs[None, :, :]
-        ok = (np.hypot(*(cells - d[:, None, :]).transpose(2, 0, 1)) <= r)             & (np.abs(cells) <= S).all(-1)
+        ok = (np.hypot(*(cells - d[:, None, :]).transpose(2, 0, 1)) <= r) \
+            & (np.abs(cells) <= S).all(-1)
         cell = (cells[..., 0] + S) * n + (cells[..., 1] + S)
         # one vote per corner per cell, however many of B it is near there
         key = np.unique(np.broadcast_to(who[:, None], ok.shape)[ok] * (n * n)
                         + cell[ok])
         votes += np.bincount(key % (n * n), minlength=n * n)
-    return votes.reshape(n, n), seed, S
-
-
-#: the second peak is the strongest offset more than this from the best
-#: (pt): four real inches, past the best peak's own slope (every Boyland
-#: peak falls to 4-16% of its height 2pt off)
-SECOND_PEAK_EXCL_PT = 6.0
-
-
-def second_peak(votes) -> int:
-    """The anchors of the strongest offset more than SECOND_PEAK_EXCL_PT
-    from the best one: how nearly ANOTHER alignment fits."""
-    i, j = np.unravel_index(int(np.argmax(votes)), votes.shape)
-    ii, jj = np.ogrid[:votes.shape[0], :votes.shape[1]]
-    far = np.hypot(ii - i, jj - j) > SECOND_PEAK_EXCL_PT
-    return int(votes[far].max()) if far.any() else 0
-
-
-def offset_census(A, B, span_pt=360.0, radius_in=1.0, chunk=64):
-    """(count, (dx, dy)): the best offset on a 1pt lattice over the same
-    window best_translation searches, found ANOTHER WAY - each corner of A
-    votes once for every lattice offset that would put it within the match
-    radius of some corner of B. A cell's votes are exactly the anchors that
-    offset matches; no sample is skipped, so no peak can be stepped over.
-
-    It is the independent second reading the registration is checked
-    against: a search that lands on a coincidental peak disagrees with it."""
-    votes, seed, S = census_grid(A, B, span_pt, radius_in, chunk)
-    n = votes.shape[0]
     top = int(np.argmax(votes))
     i, j = divmod(top, n)
-    return int(votes.flat[top]), (float(seed[0] + i - S), float(seed[1] + j - S))
+    return int(votes[top]), (float(seed[0] + i - S), float(seed[1] + j - S))
 
 
 def plan_extent(sheet: dict):
@@ -449,10 +427,7 @@ def register(arch: dict, mech: dict) -> dict:
     B = np.asarray(mech["corners"], dtype=float)
     (dx, dy), matched, _b, dist = best_translation(
         A, B, radius_in=reg.ANCHOR_MATCH_RADIUS_IN)
-    votes, seed, S = census_grid(A, B, radius_in=reg.ANCHOR_MATCH_RADIUS_IN)
-    top = int(np.argmax(votes))
-    i, j = divmod(top, votes.shape[0])
-    best_n, best_xy = int(votes.flat[top]), (float(seed[0] + i - S), float(seed[1] + j - S))
+    best_n, best_xy = offset_census(A, B, radius_in=reg.ANCHOR_MATCH_RADIUS_IN)
     n = int(len(dist))
     res = (np.array([inches(x) for x in dist]) if n else np.array([np.inf]))
     rms, mx = float(math.sqrt((res ** 2).mean())), float(res.max())
@@ -481,9 +456,6 @@ def register(arch: dict, mech: dict) -> dict:
             "rms_in": rms, "max_in": mx, "usable": not refused,
             "best_peak_anchors": best_n,
             "best_peak": [float(best_xy[0]), float(best_xy[1])],
-            # recorded, never applied here: lib.plan_stacks.registration_usable
-            # reads it (a second offset holding half the best is ambiguous)
-            "second_peak_anchors": second_peak(votes),
             "spread": None if spread is None else [float(v) for v in spread],
             "refused": "; ".join(refused) or None}
 

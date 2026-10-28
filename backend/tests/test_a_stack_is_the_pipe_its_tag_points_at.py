@@ -370,38 +370,27 @@ class PairByTitleLevel(unittest.TestCase):
 
 # ── register ───────────────────────────────────────────────────────────────
 
-class RegistrationThatCanFail(unittest.TestCase):
+class OneRegistrationRule(unittest.TestCase):
+    """Ruling 63 (Roy, 2026-10-28): "one function, T3's rule (single best
+    peak agreeing with the exact 1pt search, >=8 anchors) for all pairs, with
+    each pair's margin shown on its row ... No tuned ratio threshold." The
+    stack pass registers ONLY through plan_sheet.register_offset."""
 
-    def _reg(self, **kw):
-        base = {"usable": True, "refused": None, "best_peak_anchors": 1700, "dx": 10.0, "dy": -20.0}
-        base.update(kw)
-        return base
+    def test_the_stack_pass_registers_through_the_shared_function(self):
+        PS = _ps("register_pair")
+        from unittest.mock import patch
+        seen = []
 
-    def test_usable_when_register_accepts_and_the_peak_stands_alone(self):
-        PS = _ps("registration_usable")
-        self.assertTrue(PS.registration_usable(self._reg(), 400)[0])
-
-    def test_refused_when_register_refuses(self):
-        PS = _ps("registration_usable")
-        ok, why = PS.registration_usable(self._reg(usable=False, refused="only 3 anchors"), 400)
+        def spy(arch, other, **kw):
+            seen.append((arch, other))
+            return {"dx": -25.5, "dy": -66.0, "usable": False, "margin": 1.0,
+                    "refused": "two peaks tie: 200 anchors at (0, 0) and 200 at (30, 0)"}
+        with patch("lib.plan_sheet.register_offset", spy):
+            reg, ok, why = PS.register_pair({"corners": "A"}, {"corners": "P"})
+        self.assertEqual(len(seen), 1)
         self.assertFalse(ok)
-        self.assertIn("only 3 anchors", why[0])
-
-    def test_refused_when_a_second_offset_holds_half_the_best(self):
-        PS = _ps("registration_usable")
-        ok, why = PS.registration_usable(self._reg(), 851)
-        self.assertFalse(ok)
-        self.assertIn("ambiguous", why[0])
-
-    def test_refused_when_the_second_peak_was_not_measured(self):
-        PS = _ps("registration_usable")
-        self.assertFalse(PS.registration_usable(self._reg(), None)[0])
-
-
-class RegisterReportsItsSecondPeak(unittest.TestCase):
-    """register() records how nearly ANOTHER offset fits; the stack pass
-    refuses an offset another one nearly matches. Both on a synthetic pair:
-    200 corners at the true offset, a decoy set of k of them again 30pt off."""
+        self.assertIn("two peaks tie", why[0])
+        self.assertEqual(reg["margin"], 1.0)
 
     def _pair(self, k):
         import numpy as np
@@ -409,26 +398,29 @@ class RegisterReportsItsSecondPeak(unittest.TestCase):
         A = np.round(rng.uniform([0, 0], [1200, 700], size=(200, 2)), 2)
         true = np.array([40.0, -30.0])
         B = np.vstack([A + true, A[:k] + true + np.array([30.0, 0.0])])
-        att = [((A[:, 0].min(), A[:, 1].min(), A[:, 0].max(), A[:, 1].max()), "A-WALL")]
-        return {"corners": A, "att": att}, {"corners": B, "att": []}
+        return {"corners": A}, {"corners": B}
 
-    def test_a_lone_peak_is_usable(self):
-        PS = _ps("registration_usable")
-        from lib import plan_sheet
-        reg = plan_sheet.register(*self._pair(40))
-        self.assertIn("second_peak_anchors", reg)
-        self.assertGreaterEqual(reg["second_peak_anchors"], 40)
-        self.assertLess(reg["second_peak_anchors"], 100)
-        self.assertTrue(PS.registration_usable(reg)[0], reg)
+    def test_no_ratio_threshold_a_strong_second_peak_is_shown_not_refused(self):
+        PS = _ps("register_pair")
+        reg, ok, why = PS.register_pair(*self._pair(150))
+        self.assertTrue(ok, why)
+        self.assertGreater(reg["margin"], 1.0)
+        self.assertLess(reg["margin"], 2.0)          # the old 2x rule refused this
 
-    def test_a_decoy_holding_over_half_the_best_refuses(self):
-        PS = _ps("registration_usable")
-        from lib import plan_sheet
-        reg = plan_sheet.register(*self._pair(150))
-        self.assertTrue(reg["usable"], "register() alone accepts it")
-        ok, why = PS.registration_usable(reg)
+    def test_two_equal_peaks_refuse(self):
+        PS = _ps("register_pair")
+        _reg, ok, _why = PS.register_pair(*self._pair(200))
         self.assertFalse(ok)
-        self.assertIn("ambiguous", why[0])
+
+    def test_every_row_shows_the_pairs_margin(self):
+        PS = _ps("stack_rows", "pipe_segment_row", "locate")
+        t, _pc = _located_tag(PS)
+        reg = {"dx": 0.0, "dy": 0.0, "anchors": 205, "best_peak_anchors": 205,
+               "second_peak_anchors": 107, "margin": 1.916, "usable": True}
+        (row,) = PS.stack_rows("filed", _pg("P-204.00", "x"), _pg("A-103.00", "y"), [t], reg, True, [])
+        self.assertEqual(row["registration"]["margin"], 1.916)
+        seg = PS.pipe_segment_row("filed", _pg("P-204.00", "x"), _pg("A-103.00", "y"), [], reg, True, [])
+        self.assertEqual(seg["registration"]["margin"], 1.916)
 
 
 # ── rows ───────────────────────────────────────────────────────────────────
@@ -754,19 +746,18 @@ class OnTheBoylandSet(unittest.TestCase):
         self.assertEqual(refused, {"P-200.00", "P-207.00"})
         self.assertEqual(got["series"]["P-2"], {"offset": 1, "held_by": 6, "of": 6})
 
-    def test_p204_registers_to_a103_by_a_test_that_could_fail(self):
-        PS = _ps("registration_usable", "to_arch")
+    def test_p204_registers_to_a103_by_the_one_rule(self):
+        PS = _ps("register_pair", "to_arch")
         from lib.plan_page import PlanPage
-        from lib.plan_sheet import load_sheet, register
+        from lib.plan_sheet import load_sheet
         pa, pp = PlanPage(self.ar, 14), PlanPage(self.pl, 12)
         try:
-            reg = register(load_sheet(pa), load_sheet(pp))
+            reg, ok, why = PS.register_pair(load_sheet(pa), load_sheet(pp))
         finally:
             pa.close()
             pp.close()
-        ok, why = PS.registration_usable(reg)
         self.assertTrue(ok, why)
-        self.assertGreater(reg["best_peak_anchors"], 2 * reg["second_peak_anchors"])
+        self.assertGreater(reg["margin"], 1.0)
         ax, ay = PS.to_arch(1604.8, 670.3, reg)
         self.assertAlmostEqual(ax, 1604.8 + 25.5, delta=1.0)
         self.assertAlmostEqual(ay, 670.3 + 66.0, delta=1.0)

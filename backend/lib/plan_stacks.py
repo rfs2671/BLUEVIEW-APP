@@ -40,10 +40,11 @@ parse to the same single level, and the series' number offset (P-2xx = A+1,
 P-1xx = A+0) must be the one a strict majority of the series' level-matched
 sheets hold; a sheet that breaks it, or whose title does not parse, REFUSES.
 
-Registration is used ONLY for the offset of a pair already decided, and only
-when it passes `registration_usable` - plan_sheet.register's own conditions
-(best peak, count, spread, residuals) AND no second peak holding half the
-best's anchors (an alignment another offset nearly matches is ambiguous).
+Registration is used ONLY for the offset of a pair already decided, through
+ONE function every discipline pair shares (operator ruling 63, 2026-10-28):
+plan_sheet.register_offset - a single best peak agreeing with the exact 1pt
+search, at least MIN_ANCHORS anchors, and NO tuned ratio threshold; the
+pair's margin (best / second peak) is shown on every row, never compared.
 
 Pure: no database, no network. Pages come in as lib.plan_page.PlanPage (or
 anything with `.drawings`), page dicts as the index rows.
@@ -1067,36 +1068,29 @@ def pair_by_title_level(others: Iterable[dict], arch: Iterable[dict]) -> Dict[st
 
 # ── registration used only for the offset ─────────────────────────────────
 
-def registration_usable(reg: dict, second: Optional[int] = None) -> Tuple[bool, List[str]]:
-    """(usable, why not): plan_sheet.register's own verdict, AND the best
-    peak must hold at least twice the anchors of any other offset (the
-    second peak) - the same "half" comparison register makes between its
-    offset and the best. Both can fail: a test feeds each its failing case."""
-    if second is None:
-        second = reg.get("second_peak_anchors")
-    why = []
-    if not reg.get("usable"):
-        why.append(f"register refused: {reg.get('refused')}")
-    best = reg.get("best_peak_anchors") or 0
-    if second is None:
-        why.append("second peak not measured")
-    elif 2 * second > best:
-        why.append(f"a second offset holds {second} anchors, over half the best "
-                   f"peak's {best}: the alignment is ambiguous")
-    return (not why), why
-
-
 def register_pair(arch_sheet: dict, other_sheet: dict) -> Tuple[dict, bool, List[str]]:
     """(registration, usable, why not) for a pair ALREADY decided by title
-    level - the ONE place the stack pass registers, so the rule it applies
-    is one call to change (Roy's ruling 63: one shared function for every
-    pair, each pair's margin on its row)."""
-    from lib.plan_sheet import register
-    reg = register(arch_sheet, other_sheet)
-    ok, why = registration_usable(reg)
-    best, second = reg.get("best_peak_anchors") or 0, reg.get("second_peak_anchors")
-    reg["margin"] = round(best / second, 2) if second else None
-    return reg, ok, why
+    level: plan_sheet.register_offset, the one rule for S->A and P->A
+    (ruling 63) - the stack pass's only registration call."""
+    from lib.plan_sheet import register_offset
+    reg = register_offset(arch_sheet, other_sheet)
+    return reg, bool(reg.get("usable")), ([reg["refused"]] if reg.get("refused") else [])
+
+
+def _reg_view(reg: Optional[dict], usable: bool, why_not: Sequence[str]) -> Optional[dict]:
+    """The registration as a row shows it - with the pair's MARGIN (best /
+    second peak), shown and never compared (ruling 63)."""
+    if not reg:
+        return None
+
+    def r3(v):
+        return None if v is None else round(float(v), 3)
+    return {"dx": r3(reg.get("dx")), "dy": r3(reg.get("dy")), "anchors": reg.get("anchors"),
+            "best_peak_anchors": reg.get("best_peak_anchors"),
+            "second_peak_anchors": reg.get("second_peak_anchors"), "margin": reg.get("margin"),
+            "offset_from_best_pt": reg.get("offset_from_best_pt"),
+            "rms_in": r3(reg.get("rms_in")), "max_in": r3(reg.get("max_in")),
+            "usable": usable, "why_not": list(why_not) or None}
 
 
 def to_arch(x: float, y: float, reg: dict) -> Tuple[float, float]:
@@ -1246,13 +1240,7 @@ def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[
             "a_sheet": None if not a_page else {k: a_page.get(k) for k in (
                 "page_id", "file_id", "file_name", "page_number", "sheet_number",
                 "sheet_title", "file_hash")},
-            "registration": None if not reg else {
-                "dx": round(reg["dx"], 3), "dy": round(reg["dy"], 3), "anchors": reg.get("anchors"),
-                "best_peak_anchors": reg.get("best_peak_anchors"),
-                "second_peak_anchors": reg.get("second_peak_anchors"),
-                "margin": reg.get("margin"),
-                "rms_in": round(reg.get("rms_in", 0.0), 3), "max_in": round(reg.get("max_in", 0.0), 3),
-                "usable": usable, "why_not": list(why_not) or None}}
+            "registration": _reg_view(reg, usable, why_not)}
     for t in tags:
         tbase = dict(base, tag_id=t.get("id"), tag_letter=t.get("letter"),
                      tag_number=t.get("number"), tag_read=t.get("read_why"),
@@ -1333,11 +1321,7 @@ def pipe_segment_row(track: str, p_page: dict, a_page: Optional[dict], segs: Seq
             "segments_p": fmt(0.0, 0.0),
             "curves": fmtc(reg["dx"], reg["dy"]) if placed else None,
             "curves_p": fmtc(0.0, 0.0),
-            "registration": None if not reg else {
-                "dx": round(reg["dx"], 3), "dy": round(reg["dy"], 3), "anchors": reg.get("anchors"),
-                "best_peak_anchors": reg.get("best_peak_anchors"),
-                "second_peak_anchors": reg.get("second_peak_anchors"), "margin": reg.get("margin"),
-                "usable": usable, "why_not": list(why_not) or None},
+            "registration": _reg_view(reg, usable, why_not),
             "placement_refused": None if placed else (
                 refused or "registration not usable: " + "; ".join(why_not))}
 
@@ -1369,7 +1353,7 @@ __all__ = [
     "COLLECTION", "ROW_VERSION", "Sheet", "fit_circle", "arcs_of", "pipe_rounds", "circle_of", "split_circle_tags", "trace_leaders",
     "arrowhead_at", "pipe_circles", "stack_at", "signature", "compose", "vote",
     "read_tags", "locate", "tag_system_check", "title_level",
-    "pair_by_title_level", "registration_usable", "register_pair", "pipe_segment_row",
+    "pair_by_title_level", "register_pair", "pipe_segment_row",
     "to_arch", "expand_id", "crosscheck", "stack_rows", "continuity",
     "is_plan", "is_riser_diagram", "where", "printed_size", "read_note", "note_strokes",
 ]
