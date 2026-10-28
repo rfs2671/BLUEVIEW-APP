@@ -84,8 +84,9 @@ def run(pdf: str, plans, types_page=None, doors_page=None, out_dir="walls-out", 
                               title=f"{Path(pdf).name} p{page_no} {sheet_no} {title} - walls by type")
         (out / f"{stem}.json").write_text(json.dumps(res, indent=1, default=str), encoding="utf-8")
         sheets.append(res)
+        refused = res["refused_viewports"]
         logging.info("%s: %s untyped %.1f ambiguous %.1f refused %d", sheet_no, res["by_type"],
-                     res["untyped_lf"], res["ambiguous_lf"], len(res["refused_viewports"]))
+                     res["untyped_lf"], res["ambiguous_lf"], len(refused))
     summary = summarize(sheets, table)
     # ANOTHER FILE'S SCHEDULE IS SAID, NEVER IMPLIED (ruling 21: never pick
     # a set): the report names where the door width and the types came from.
@@ -107,6 +108,7 @@ def summarize(sheets, table):
     for s in sheets:
         per_floor[s.get("floor")].append(s)
     floors, building, building_ok = {}, Counter(), True
+    untyped = ambiguous = 0.0
     no_floor = [s["sheet"] for s in per_floor.pop(None, [])]
     for fl, ss in sorted(per_floor.items()):
         if len(ss) > 1:
@@ -118,6 +120,8 @@ def summarize(sheets, table):
                       "ambiguous_lf": s["ambiguous_lf"],
                       "refused_viewports": [v["title"] for v in s["refused_viewports"]]}
         building.update(s["by_type"])
+        untyped += s["untyped_lf"]
+        ambiguous += s["ambiguous_lf"]
     apartments = defaultdict(Counter)
     for s in sheets:
         for w in s["walls"]:
@@ -129,8 +133,8 @@ def summarize(sheets, table):
         "plans_with_no_floor": no_floor,
         "building_by_type": ({k: round(v, 2) for k, v in sorted(building.items())} if building_ok
                              else "refused: a floor is claimed by two plans"),
-        "building_untyped_lf": round(sum(f.get("untyped_lf", 0) for f in floors.values()), 2),
-        "building_ambiguous_lf": round(sum(f.get("ambiguous_lf", 0) for f in floors.values()), 2),
+        "building_untyped_lf": round(untyped, 2),
+        "building_ambiguous_lf": round(ambiguous, 2),
         "apartments": {k: {t: round(v, 2) for t, v in sorted(c.items())} for k, c in sorted(apartments.items())},
         "types_table": table,
         "reconciliation": W.reconcile({s["sheet"]: [t["text"] for t in s["tags"]] for s in sheets}, table)
