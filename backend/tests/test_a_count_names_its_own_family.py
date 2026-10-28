@@ -134,7 +134,7 @@ class APlanOnlyFamilyByItsOwnWords(unittest.TestCase):
                       "There are 2 J.R. Smith roof drains."):
             self.assertTrue(_ok(right, recs), right)
         for wrong in ("There are 2 RD-1 floor drains.", "There are 2 RD-2 area drains.",
-                      "There are 2 RD-1 water heaters."):
+                      "There are 2 RD-1 water heaters.", "There are 2 overflow area drains."):
             self.assertFalse(_ok(wrong, recs), wrong)
 
 
