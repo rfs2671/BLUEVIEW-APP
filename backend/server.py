@@ -65166,6 +65166,11 @@ async def _write_glyph_records(project_id: str, rows: List[dict]) -> int:
 
 
 _GLYPH_PASS_RUNNING: set = set()
+#: pid -> lib.plan_pass_progress.PassProgress of the pass this process is
+#: running, or the last one it ran (GET .../plan-glyphs/status).
+_GLYPH_PASS_PROGRESS: Dict[str, Any] = {}
+#: One document a project: the last pass's result, kept across a redeploy.
+GLYPH_PASS_RUNS = "plan_glyph_pass_runs"
 _DOOR_SCHEDULE_TEXT = re.compile(r"DOOR\s+SCHEDULE", re.I)
 
 
@@ -65290,7 +65295,8 @@ async def _reindex_in_flight(project_id: str, since: Optional[datetime] = None) 
              "status": r.get("status")} for r in rows]
 
 
-async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict:
+async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
+                           progress=None) -> dict:
     """Run the equipment-placement pass over the project's current sheets
     and write its rows (lib.plan_glyph_pass, lib.plan_emit) - once per
     drawing track (_glyph_track_pages), each mechanical sheet swept once.
@@ -65303,7 +65309,10 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict
     DRAWING-SET QUESTIONS (ruling 21, lib.plan_set_questions): the stored
     answers are applied on this pass, and the questions it raises are
     stored (_store_set_questions) - NEVER SENT from here: asking is its own
-    operator action (POST .../plan-set-questions/ask)."""
+    operator action (POST .../plan-set-questions/ask).
+
+    `progress` (lib.plan_pass_progress.PassProgress, from the run route) is
+    told each track's sheets and every step; it never changes a row."""
     from lib.plan_glyph_pass import run_pass
     from lib.plan_page import PlanPage
 
@@ -65360,6 +65369,8 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict
     from lib import plan_only as _plan_only
     plan_only = _plan_only.families(await db[PLAN_RECORDS].find(
         _plan_only.record_query(pid, sorted(current_ids)), {"embedding": 0}).to_list(2000))
+    if progress is not None:
+        progress.plan_tracks(by_track, schedules, plan_only, opening_schedules)
 
     import tempfile as _tf
     with _tf.TemporaryDirectory(prefix="glyphpass-") as tmp:
@@ -65391,6 +65402,8 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict
             extra = {"opening_schedules": opening_schedules} if opening_schedules else {}
             if opening_schedules and set_answers:
                 extra["set_answers"] = set_answers
+            if progress is not None:
+                extra["progress"] = progress.callback(track)
             out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
                                           door_pages, track=track, sweeps=sweeps,
                                           plan_only=plan_only, **extra)
@@ -65408,6 +65421,8 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict
         # model is shown, and a set with nothing to report says so - an empty
         # collection only ever means "not yet assessed".
         from lib import plan_set_health as _health
+        if progress is not None:
+            progress.server_stage("set_health")
         try:
             health = await asyncio.to_thread(_glyph_set_health, tracks, rows, schedules,
                                              sweeps, open_page)
@@ -65423,6 +65438,8 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
         r["ordinal"] = i
+    if progress is not None:
+        progress.server_stage("writing")
     # A RE-INDEX DURING THE PASS: the pages it read may not be the set's.
     # Nothing is written - the rows and set health from the last good pass
     # stay - and the operator runs it again when the re-index is done.
@@ -82747,15 +82764,44 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
     who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
 
     async def _go():
+        # PROGRESS AND THE LAST RESULT (2026-10-27): the status route reads
+        # this pass's tracker while it runs, and its result after it ends.
+        from lib.plan_pass_progress import ABORTED, PassProgress
+        tracker = PassProgress(pid)
+        _GLYPH_PASS_PROGRESS[pid] = tracker
+        await _record_glyph_pass_result(pid, tracker)
         try:
-            await _plan_glyph_pass(pid, actor=who or None)
+            summary = await _plan_glyph_pass(pid, actor=who or None, progress=tracker)
+            counts = {k: summary[k] for k in ("written", "set_health", "areas_written")
+                      if k in summary}
+            if summary.get("aborted"):
+                tracker.finish(ABORTED, summary=dict(counts, reindex=summary.get("reindex")))
+            else:
+                tracker.finish("ok", summary=counts)
+        except asyncio.CancelledError as e:     # the server shutting down
+            tracker.finish("failed", error=e)
+            raise
         except Exception as e:
             logger.exception("plan glyph pass %s failed: %r", pid, e)
+            tracker.finish("failed", error=e)
         finally:
             _GLYPH_PASS_RUNNING.discard(pid)
+            await _record_glyph_pass_result(pid, tracker)
 
     asyncio.create_task(_go())
     return {"started": True}
+
+
+async def _record_glyph_pass_result(pid: str, tracker) -> None:
+    """Keep the pass's result (lib.plan_pass_progress.PassProgress.
+    last_result) - "running" when it starts - so a status after a redeploy
+    says "unknown" for a pass that never ended, never "ok". Never raises."""
+    try:
+        doc = dict(tracker.last_result() or {}, project_id=pid)
+        await db[GLYPH_PASS_RUNS].delete_many({"project_id": pid})
+        await db[GLYPH_PASS_RUNS].insert_one(doc)
+    except Exception as e:
+        logger.warning("plan glyph pass %s: result not recorded: %r", pid, e)
 
 
 class PlanSetAnswer(BaseModel):
@@ -82840,9 +82886,21 @@ async def plan_glyph_pass_status(project_id: str, current_user=Depends(get_admin
     a re-index in flight that would make a new one refuse to start.
 
     `running` is this server process's own flag - the pass runs in the
-    process that started it."""
+    process that started it. `progress` is that pass's (lib.
+    plan_pass_progress: track, stage, sheets done/total, current sheet,
+    started_at, per-sheet timings, ETA), or the last one this process ran;
+    `last_result` is how the last pass ended - ok, failed (with the error),
+    aborted, or unknown."""
+    from lib.plan_pass_progress import reported_result
     from lib.plan_set_health import COLLECTION as SET_HEALTH
     pid = str(project_id)
+    tracker = _GLYPH_PASS_PROGRESS.get(pid)
+    recorded = None
+    if tracker is None:
+        try:
+            recorded = await db[GLYPH_PASS_RUNS].find_one({"project_id": pid}, {"_id": 0})
+        except Exception as e:
+            logger.warning("plan glyph pass %s: recorded result unreadable: %r", pid, e)
     newest = await db[PLAN_RECORDS].find_one(
         {"project_id": pid, "record_type": "glyph"}, {"created_at": 1},
         sort=[("created_at", -1)])
@@ -82850,7 +82908,9 @@ async def plan_glyph_pass_status(project_id: str, current_user=Depends(get_admin
             "last_written_at": (newest or {}).get("created_at"),
             "rows": await db[PLAN_RECORDS].count_documents({"project_id": pid, "record_type": "glyph"}),
             "set_health_items": await db[SET_HEALTH].count_documents({"project_id": pid}),
-            "reindex_in_flight": await _reindex_in_flight(pid)}
+            "reindex_in_flight": await _reindex_in_flight(pid),
+            "progress": tracker.snapshot() if tracker is not None else None,
+            "last_result": reported_result(tracker, recorded)}
 
 
 @api_router.get("/projects/{project_id}/plan-index/jobs/{job_id}",

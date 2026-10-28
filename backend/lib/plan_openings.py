@@ -320,7 +320,8 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
                  fams: Dict[str, Dict[str, Any]], *, track: str = "filed",
                  refused: Sequence[Tuple[Dict[str, Any], str]] = (),
                  widest_door: Optional[Dict[str, Any]] = None,
-                 answers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                 answers: Optional[Dict[str, str]] = None,
+                 progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None) -> Dict[str, Any]:
     """Every opening row of one drawing track.
 
     `floors` are plan_glyph_pass's floors (each architectural plan with its
@@ -340,8 +341,11 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
     Any other refused plan (two current A-101s; an A-1xx with no mechanical
     partner) carries tags this pass did not read: a refusal row that blocks
     its track's building figures (and its floor's, when it has one).
-    A track with no door or window schedule reconciled writes nothing."""
+    A track with no door or window schedule reconciled writes nothing.
+    `progress` is plan_glyph_pass.run_pass's (one "openings" step a floor;
+    the set-question pages before them are the stage "set_questions")."""
     from lib import plan_set_questions as psq
+    from lib.plan_pass_progress import tell
     from lib.plan_takeoff import Units
 
     run = {n: f for n, f in fams.items() if f["tags"]}
@@ -371,6 +375,8 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
         rows += tagged([emit.sheet_refusal(page, f"doors and windows not read: {why}",
                                            pass_key=f"openings|{sheet}", role=KIND)])
         summary["refused"].append([sheet, why])
+    if questions:
+        tell(progress, "stage", stage="set_questions")
     for q in questions:
         ans = answers.get(q["id"])
         summary["set_questions"].append({"id": q["id"], "label": q["label"],
@@ -420,8 +426,9 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
                 r["payload"].update(mark)
             rows += out
     located: set = set()
-    for f in floors:
+    for i, f in enumerate(floors, 1):
         arch_p, a_sheet = f["arch_p"], f["a_sheet"]
+        tell(progress, "sheet", stage="openings", sheet=a_sheet, i=i, n=len(floors))
         units_ = f.get("units") or {}
         space = f.get("space")
         floor = {"arch": a_sheet, "families": {}}
