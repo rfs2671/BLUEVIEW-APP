@@ -69729,6 +69729,8 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     # (plan_search.normalize_arguments) - before anything reads them.
     subject, attribute, floor = plan_search.normalize_arguments(subject, attribute, intent, floor)
     names = [subject] + [a for a in (also or []) if (a or "").strip() and a != subject]
+    page_ids = await _current_record_page_ids(
+        project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
     # A CEILING HEIGHT OR A FLOOR-TO-FLOOR (lib.plan_floor_to_floor, ruling
     # 2026-10-27): the section's level marks print neither CEILING nor HEIGHT,
     # so no word of the question finds them. The floor-to-floor row derived
@@ -69744,8 +69746,6 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
                                            interp.get("levels") or ())
         except Exception as e:
             logger.warning(f"search_plans level evidence failed for {subject!r}: {e}")
-    page_ids = await _current_record_page_ids(
-        project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
     # Nothing found still says what the question meant (_with_scoped fills
     # `term_senses`; the level mapping is already in `interp`).
     if not page_ids:
@@ -69754,8 +69754,10 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
                          for n in names] if x is not None]
     if not found and (extra or plan_term_senses.terms_in(asked)):
         return levels + _with_scoped(extra, [], asked, interp)
-    if not found:
+    if not found and levels:
         return levels
+    if not found:
+        return []
     ranked = (found[0][0] if len(found) == 1
               else plan_search.rank_by_best(found, intent))
     # An index of the set matches many subjects and answers none of them.
