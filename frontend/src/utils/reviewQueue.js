@@ -24,6 +24,8 @@ export const REASON_LABEL = {
   set_health_info: 'Set health: info',
   registration: 'Registration refused',
   set_ambiguity: 'Set ambiguity',
+  takeoff_refused: 'Takeoff: not verified',
+  clash: 'Clash',
 };
 
 export const KIND_LABEL = {
@@ -31,6 +33,8 @@ export const KIND_LABEL = {
   set_health: 'Set health',
   registration_refusal: 'Registration refusal',
   plan_set_question: 'Plan set question',
+  takeoff: 'Takeoff',
+  clash: 'Clash',
 };
 
 export const STATUS_FILTERS = [
