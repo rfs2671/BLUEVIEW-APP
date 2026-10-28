@@ -33,6 +33,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from lib import plan_cite as _cite
+
 #: The brain answers every company's DMs by default (Oct 21: no trial).
 #: This flag is the off switch: a company (or user) on it, or everyone when
 #: it is on globally, gets the old pipeline. FLAG is the old opt-in name,
@@ -133,8 +135,8 @@ on, and what the drawing list says about it.
 - A sheet's own title block is its title; when the drawing list titles it differently you may mention \
 the list's title as the list's. A sheet the drawing list names that isn't uploaded: say it is listed but \
 not uploaded.
-- When you cite a sheet from a set other than the filed set, name its set as the tool result does: \
-"A-302 (owner's set)".
+- Cite a plans record ONLY by its token from the tool result: "PTAC-1: 21 [src:2]". Never type a file \
+name or a set's name for a citation: each token becomes the sheet, its file and its set when sent.
 
 Context, history
 - Messages starting "[voice note]" were transcribed and may be misheard; read them generously.
@@ -267,7 +269,11 @@ def _numbers(text: str) -> set:
 def unverified(reply: str, sources: Iterable[str]) -> List[str]:
     """The numbers and record ids in `reply` that no source holds (tool
     results, the conversation, the context). Empty when it checks out."""
-    src = "\n".join(s for s in sources if s)
+    # A [src:N] citation token (lib/plan_cite) is a pointer, never a figure:
+    # out of the reply AND the tool results, or "[src:3]" in a tool result
+    # would vouch for a "3" the answer states.
+    reply = _cite.strip_tokens(reply or "")
+    src = "\n".join(_cite.strip_tokens(s) for s in sources if s)
     # An ISO date in a source vouches for its parts: "2026-09-18T00:00:00"
     # from a tool covers "Sep 18" / "2026-09-18" (Oct 20 eval: "18" blocked a
     # right answer). Only ISO dates -- "8:45" still does not vouch for "45".

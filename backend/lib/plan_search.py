@@ -47,6 +47,7 @@ from typing import (Any, Collection, Dict, Iterable, List, NamedTuple,
 
 from lib import plan_areas as _areas
 from lib import plan_dimensions as _dims
+from lib import plan_cite as _cite
 from lib.plan_records import TIER_ORDER, column_role, tier_rank
 from lib.plan_text import SHEET_ID_RE
 
@@ -3725,7 +3726,9 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
 
     `sources` (plan_sources.source_of rows for the records' files): their
     file names and set labels are citations (strip_source_citations)."""
-    text = strip_source_citations(text or "", records, sources)
+    # A [src:N] token (lib/plan_cite) is a pointer to a record: its N is no
+    # figure. Taken out before anything is read.
+    text = strip_source_citations(_cite.strip_tokens(text or ""), records, sources)
     # ── A DIMENSION IS ONE VALUE, NOT ITS DIGITS ───────────────────────────
     #
     # "The doors are 3'-5" X 7'-0"." passed with only 3'-0" X 7'-0" printed:
