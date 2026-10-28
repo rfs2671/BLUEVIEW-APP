@@ -4261,15 +4261,21 @@ _UNIT_WORD = re.compile(r"(?<![A-Za-z])(?:feet|foot|ft|inch(?:es)?|in)\.?(?![A-Z
 
 
 def _subjectless(clause: str, citations: Sequence[str]) -> bool:
-    """A clause whose only words are values, units and stop words: it says
-    its values are of whatever the clause before it named ("The ceiling
-    height - 10'-0"")."""
+    """A clause with a value and no word before it: it says its value is of
+    whatever the clause before it named ("The ceiling height - 10'-0"",
+    "floor-to-floor 14'-0" ..., 10'-0" SECOND FLOOR to THIRD FLOOR"). The
+    words before the value are where #894 reads a clause's subject."""
     masked = _dims.mask_quotation_marks(_strip_citations(clause, citations))
     rest = list(masked)
+    starts = []
     for f in _dims.find(masked):
         rest[f.span[0]:f.span[1]] = " " * (f.span[1] - f.span[0])
-    flat = _VALUE_RE.sub(" ", _SPLIT_RE.sub(" ", _UNIT_RE.sub(" ", "".join(rest))))
-    return not search_terms(_UNIT_WORD.sub(" ", flat))
+        starts.append(f.span[0])
+    flat = _SPLIT_RE.sub(" ", _UNIT_RE.sub(" ", "".join(rest)))
+    starts += [m.start() for m in _VALUE_RE.finditer(flat)]
+    if not starts:
+        return False
+    return not search_terms(_UNIT_WORD.sub(" ", flat[:min(starts)]))
 
 
 def _level_kinds(text: str, citations: Sequence[str]) -> List[Tuple[int, int, str]]:

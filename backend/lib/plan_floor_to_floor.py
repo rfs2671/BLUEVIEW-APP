@@ -350,14 +350,17 @@ def answer_line(r: Dict[str, Any]) -> str:
         asked = set(p.get("asked_levels") or [])
         mine = [i for i in ivs if i.get("from_token") in asked]
         ivs = mine or ivs
-        texts = {i["text"] for i in ivs}
-        if len(texts) == 1 and not mine:
+        # THE FIGURE BEFORE THE STOREY, every time: each clause after the
+        # first then has nothing before its value, and so stays a
+        # floor-to-floor clause for the gate (plan_search._level_kinds).
+        groups: Dict[str, List[str]] = {}
+        for i in ivs:
+            groups.setdefault(i["text"], []).append(f"{i['from']} to {i['to']}")
+        if len(groups) == 1 and not mine:
             body = f"floor-to-floor {ivs[0]['text']} ({where})"
-        elif len(ivs) == 1:
-            body = f"floor-to-floor {ivs[0]['from']} to {ivs[0]['to']} {ivs[0]['text']} ({where})"
         else:
             body = "floor-to-floor " + ", ".join(
-                f"{i['from']} to {i['to']} {i['text']}" for i in ivs) + f" ({where})"
+                f"{t} {' and '.join(spans)}" for t, spans in groups.items()) + f" ({where})"
     line = lead + body
     return line[0].upper() + line[1:]
 

@@ -161,8 +161,10 @@ class WhatTheCrewIsSent(unittest.TestCase):
         ivs = [{"from": "BASE PLANE", "to": "SECOND FLOOR", "text": "14'-0\"", "inches": 168.0},
                {"from": "SECOND FLOOR", "to": "THIRD FLOOR", "text": "10'-0\"", "inches": 120.0}]
         got = ps.render_records([derived_row(intervals=ivs)], "ceiling height")
-        self.assertEqual(got, "Ceiling height not shown; floor-to-floor BASE PLANE to SECOND "
-                              "FLOOR 14'-0\", SECOND FLOOR to THIRD FLOOR 10'-0\" (A-300.00)")
+        self.assertEqual(got, "Ceiling height not shown; floor-to-floor 14'-0\" BASE PLANE to "
+                              "SECOND FLOOR, 10'-0\" SECOND FLOOR to THIRD FLOOR (A-300.00)")
+        # the ruled sentence, storey by storey, binds as it is written
+        self.assertTrue(bound(got, [derived_row(intervals=ivs)], "attribute"), got)
         rows = [derived_row(intervals=ivs)]
         self.assertTrue(bound("The floor-to-floor from the base plane to the second floor "
                               "is 14'-0\".", rows, "attribute"))
@@ -297,9 +299,11 @@ class ALevelTheQuestionNames(unittest.TestCase):
         got = SearchLeadsWithIt()._search("5th floor ceiling", "height")
         self.assertEqual([r.get("record_type") for r in got[:1]], ["levels"])
         self.assertEqual(got[0]["payload"].get("asked_levels"), ["MEZZANINE"])
-        self.assertEqual(ps.render_records(got, "ceiling"),
-                         "Ceiling height not shown; floor-to-floor MEZZANINE to ROOF 10'-0\" "
-                         "(A-300.00)")
+        said = ps.render_records(got, "ceiling")
+        self.assertEqual(said, "Ceiling height not shown; floor-to-floor 10'-0\" MEZZANINE to "
+                               "ROOF (A-300.00)")
+        for i in INTENTS:
+            self.assertTrue(bound(said, got, i), (said, i))
 
 
 class TheEvalCase(unittest.TestCase):
