@@ -1148,6 +1148,21 @@ export const ownerAPI = {
       body);
     return r.data;
   },
+
+  // ── Owner portal: the answer log and "Mark wrong" corrections.
+  answers: async (params) => {
+    const r = await apiClient.get('/api/owner/answers', { params });
+    return r.data;
+  },
+  answer: async (id) => {
+    const r = await apiClient.get(`/api/owner/answers/${encodeURIComponent(id)}`);
+    return r.data;
+  },
+  answerCorrect: async (id, body) => {
+    const r = await apiClient.post(
+      `/api/owner/answers/${encodeURIComponent(id)}/corrections`, body);
+    return r.data;
+  },
 };
 
 /**

@@ -21,9 +21,10 @@ const O = loadEsm('src/utils/ownerPortal.js');
 
 console.log('\nnav');
 ok(O.OWNER_NAV.map((n) => n.label).join('|')
-  === 'Companies|Deleted items|Pending deletion|Review queue|Test mention',
-  'own nav: Companies · Deleted items · Pending deletion · Review queue · Test mention');
+  === 'Companies|Deleted items|Pending deletion|Review queue|Answers|Test mention',
+  'own nav: Companies · Deleted items · Pending deletion · Review queue · Answers · Test mention');
 ok(O.ownerNavActive('/owner/review') === 'review', 'the review queue screen');
+ok(O.ownerNavActive('/owner/answers') === 'answers', 'the answers screen');
 ok(O.ownerNavActive('/owner/mention-test') === 'mention', 'the test mention screen');
 ok(O.ownerNavActive('/owner') === 'companies', '/owner is Companies');
 ok(O.ownerNavActive('/owner/company/abc') === 'companies', 'a company page is under Companies');
@@ -36,7 +37,8 @@ const SHELL = read('src/components/DesktopShell.jsx');
 ok(/BARE_ROUTES = \[[\s\S]*'\/owner',[\s\S]*\];/.test(SHELL),
   'DesktopShell leaves /owner bare (no Dashboard/Projects/Workers rail)');
 for (const f of ['app/owner/index.jsx', 'app/owner/pending-deletion.jsx',
-  'app/owner/deleted.jsx', 'app/owner/company/[id].jsx', 'app/owner/review.jsx']) {
+  'app/owner/deleted.jsx', 'app/owner/company/[id].jsx', 'app/owner/review.jsx',
+  'app/owner/answers.jsx']) {
   const src = read(f);
   ok(!/FloatingNav/.test(src), `${f}: no FloatingNav`);
   ok(/<OwnerNav\b/.test(src), `${f}: renders OwnerNav`);

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Modal,
   RefreshControl, TextInput,
@@ -9,6 +9,7 @@ import { ShieldAlert, Check, X, Square, SquareCheck } from 'lucide-react-native'
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import OwnerNav from '../../src/components/OwnerNav';
+import MarkWrongForm from '../../src/components/MarkWrongForm';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth, isPlatformOperator } from '../../src/context/AuthContext';
@@ -30,7 +31,9 @@ const PAGE = 25;
  * Default "Needs decision": pending, normal priority. An item opens with its
  * question, answer, records and gates; Approve / Deny need an explanation.
  * Nobody is notified (customers do not flag answers). A decided item can be
- * decided again with a new explanation; its history is shown. The Approve / Deny row is pinned at the bottom of the detail (a
+ * decided again with a new explanation; its history is shown. An item with
+ * an answer also carries Mark wrong (MarkWrongForm): the correct answer and
+ * an optional note, saved as an append-only correction. The Approve / Deny row is pinned at the bottom of the detail (a
  * footer outside the scroll), so it is always in view on a phone. The server
  * is the gate: /api/owner/* is 404 to anyone else.
  */
@@ -54,6 +57,8 @@ export default function OwnerReviewScreen() {
   const [open, setOpen] = useState(null);      // { item, state }
   const [explanation, setExplanation] = useState('');
   const [formError, setFormError] = useState('');
+  const [corrections, setCorrections] = useState([]);
+  const openIdRef = useRef(null);
   const [busy, setBusy] = useState(null);
 
   useEffect(() => {
@@ -78,12 +83,24 @@ export default function OwnerReviewScreen() {
   useEffect(() => { load(false); }, [isOperator, status, reason, company, showLow]);
 
   const openItem = async (row) => {
-    setExplanation(''); setFormError('');
+    setExplanation(''); setFormError(''); setCorrections([]);
     setOpen({ item: row, state: 'loading' });
     const res = await settleFetch(() => ownerAPI.reviewItem(row.id));
     setOpen((o) => (o && o.item.id === row.id
       ? { item: res.status === 'ok' && res.data?.item ? res.data.item : row, state: res.status }
       : o));
+    // The answer's corrections so far (Mark wrong lists them above the form).
+    // Kept only while that item is still the open one: a slow response for
+    // an item already closed never lands on the next one.
+    openIdRef.current = row.id;
+    const answerId = row.answer?.id || row.answer_log_id;
+    if (answerId) {
+      const got = await settleFetch(() => ownerAPI.answer(answerId));
+      if (openIdRef.current === row.id && got.status === 'ok'
+        && Array.isArray(got.data?.corrections)) {
+        setCorrections(got.data.corrections);
+      }
+    }
   };
 
   const decide = async (decision) => {
@@ -221,7 +238,7 @@ export default function OwnerReviewScreen() {
         </ScrollView>
 
         <Modal visible={!!open} transparent animationType="fade"
-          onRequestClose={() => setOpen(null)}>
+          onRequestClose={() => { openIdRef.current = null; setOpen(null); }}>
           <View style={s.backdrop}>
             <GlassCard variant="modal" style={s.modalCard} contentStyle={s.modalContent}>
               {ov ? (
@@ -254,6 +271,9 @@ export default function OwnerReviewScreen() {
                       {ov.gates.length === 0 ? <Text style={s.meta}>None recorded.</Text>
                         : ov.gates.map((g, i) => <Text key={`${g}-${i}`} style={s.meta}>{g}</Text>)}
                       {ov.build ? <Text style={s.pending}>{ov.build}</Text> : null}
+                      {ov.answerLog && ov.answerLog.id ? (
+                        <MarkWrongForm answerId={ov.answerLog.id} corrections={corrections} />
+                      ) : null}
                     </>
                   ) : null}
                   {ov.evidence && Object.keys(ov.evidence).length ? (
@@ -321,7 +341,8 @@ export default function OwnerReviewScreen() {
                     </Pressable>
                   </View>
                 ) : null}
-                <Pressable onPress={() => setOpen(null)} style={[s.cancelBtn, s.closeBtn]}
+                <Pressable onPress={() => { openIdRef.current = null; setOpen(null); }}
+                  style={[s.cancelBtn, s.closeBtn]}
                   accessibilityRole="button">
                   <Text style={s.cancelText}>Close</Text>
                 </Pressable>
