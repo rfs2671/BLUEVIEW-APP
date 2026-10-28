@@ -18,6 +18,7 @@ import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { serverMessage } from '../../src/utils/ownerPortal';
 import {
   STATUS_FILTERS, REASON_FILTERS, listParams, itemView, decideRequest,
+  reconcileAfterDecision, companyChoices,
 } from '../../src/utils/reviewQueue';
 import { spacing, borderRadius } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -99,7 +100,10 @@ export default function OwnerReviewScreen() {
       toast.success(decision === 'approve' ? 'Approved' : 'Denied', 'Decided.');
       setOpen({ item: res?.item || it, state: 'ok' });
       setExplanation('');
-      setItems((list) => list.map((r) => (r.id === it.id ? (res?.item || r) : r)));
+      // A decided item that no longer matches the status filter leaves the
+      // list, so the next "Load more" offset (items.length) stays aligned
+      // with the server's shrunken result set.
+      setItems((list) => reconcileAfterDecision(list, it.id, res?.item, status));
     } catch (e) {
       const msg = isOfflineError(e)
         ? 'Deciding needs a connection. Nothing changed.' : serverMessage(e);
@@ -153,11 +157,11 @@ export default function OwnerReviewScreen() {
             {REASON_FILTERS.map((f) => chip(f.key || 'all', f.label, f.key === reason,
               () => setReason(f.key)))}
           </View>
-          {companies.length > 1 ? (
+          {companies.length > 1 || company ? (
             <View style={s.filters}>
               {chip('all-co', 'All companies', company === '', () => setCompany(''))}
-              {companies.map((c) => chip(c.id, c.name || c.id, c.id === company,
-                () => setCompany(c.id)))}
+              {companyChoices(companies, company).map((c) => chip(c.id, c.name || c.id,
+                c.id === company, () => setCompany(c.id)))}
             </View>
           ) : null}
           <Pressable onPress={() => setShowLow(!showLow)} accessibilityRole="checkbox"
