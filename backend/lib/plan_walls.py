@@ -57,8 +57,9 @@ A plans of AR 3.28.25, AR 8.18.26, the owner's post-CO set and SET_UPDATED:
       at (AMBIGUOUS).
 
   A PIECE SHORTER THAN IT IS THICK is a jamb or a junction square: it joins
-  the run whose end it touches; touching none or two, it is listed as a
-  short piece and counted nowhere.
+  the run whose END it touches (its first or last stretch); touching none,
+  two, or a joint inside a run, it is listed as a short piece and counted
+  nowhere.
 
 The lengths in a run's figure:
     drawn_lf     where both faces are drawn
@@ -66,8 +67,12 @@ The lengths in a run's figure:
                  stretches, drafting gaps) and its absorbed end pieces
     opening_lf   doorways bridged inside it - reported, NOT in lf
     lf           drawn_lf + joint_lf
-An L corner belongs to neither wall (each stops at the other's face): the
-square is not in either figure. A wall abutting another stops at its face.
+A CORNER IS WHAT THE FACES SAY. Where both walls stop at the other's
+face (A-101.00's four corners), the square has one face per axis, no band:
+it is in neither figure. Where one wall's both faces run into the square
+(A-100.00's east corners, where the side wall begins below an opening), it
+is that wall's end: W2 there is 70'-0" less ONE W1 = 69'-2". A wall abutting
+another stops at its face; a wall running through a T keeps the square.
 
 Pure of the database and of R2. Nothing here writes.
 """
@@ -76,7 +81,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
