@@ -1605,29 +1605,43 @@ def _is_own(tok: str, own: _Own, prev: str) -> bool:
 def foreign_words(clause: str, own: _Own) -> List[str]:
     """The words of the clause's noun phrases that hold one of `own`'s words
     or tags and are not its own (ruling 71): [] when the clause names the
-    family only by its own text, or names nothing of it."""
-    out: List[str] = []
-    run: List[Tuple[str, bool]] = []
-    hit, end, prev = False, 0, ""
+    family only by its own text, or names nothing of it.
 
-    def close():
-        if hit:
-            out.extend(w for w, foreign in run if foreign)
+    TWO READINGS KEEP A TRUE CLAIM (both measured on this repo's own count
+    tests, which the first version refused):
+      - A LEVEL WORD NAMES WHERE, NOT WHAT: "roof" is a word of ROOF DRAINS,
+        but "The roof level has 2 RD-1" holds no drain in "roof level". A
+        level word the family's text holds is its own, never a phrase's hit.
+      - A VERB BEFORE THE FIGURE IS NO NOUN: "The overflow drains number 2" -
+        a phrase that runs straight into a figure ends at its last own word.
+        ("W1 doors." and "WH-1 water heaters" end at no figure: judged whole.)"""
+    out: List[str] = []
+    run: List[Tuple[str, bool, bool]] = []      # (word, foreign, the family's hit)
+    end, prev = 0, ""
+
+    def close(at_figure: bool = False):
+        if not any(h for _w, _f, h in run):
+            return
+        words = run
+        if at_figure:
+            last = max(i for i, (_w, _f, h) in enumerate(run) if h)
+            words = run[:last + 1]
+        out.extend(w for w, foreign, _h in words if foreign)
 
     for m in _NOUN_TOKEN.finditer(clause or ""):
         tok = m.group(0)
         if (clause[end:m.start()]).strip():
             close()
-            run, hit = [], False
+            run = []
         end = m.end()
         if _is_own(tok, own, prev):
-            run.append((tok, False))
-            hit = True
+            level = bool(_NAMED_LEVEL.fullmatch(tok.rstrip(".")) or _FLOOR_WORD.fullmatch(tok.rstrip(".")))
+            run.append((tok, False, not level))
         elif _noun_break(tok):
-            close()
-            run, hit = [], False
+            close(at_figure=bool(_FIGURE_TOKEN.fullmatch(tok)))
+            run = []
         else:
-            run.append((tok, _stem(tok.rstrip(".")) not in _GENERIC_FAMILY_WORDS))
+            run.append((tok, _stem(tok.rstrip(".")) not in _GENERIC_FAMILY_WORDS, False))
         prev = tok
     close()
     return out

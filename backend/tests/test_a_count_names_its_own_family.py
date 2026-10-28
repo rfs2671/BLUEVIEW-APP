@@ -151,6 +151,14 @@ class TheNounIsThePhraseAroundTheFamilysWords(unittest.TestCase):
         self.assertEqual(f("4A has 0 WH-1 units", own), [])
         # a phrase holding none of the family's words is not its noun
         self.assertEqual(f("There are 9 water coolers", own), [])
+        # a level word the family's text holds is never its noun's hit ...
+        rd = S._own_text("ROOF DRAINS", ["RD-1", "RD-2"],
+                         {"object": "roof drain", "tag_words": {"RD-2": ["overflow"]}})
+        self.assertEqual(f("The roof level has 2 RD-1", rd), [])
+        self.assertEqual(f("There are 2 roof area drains", rd), ["area"])
+        # ... and a phrase running straight into its figure ends at its last own word
+        self.assertEqual(f("The overflow drains number 2", rd), [])
+        self.assertEqual(f("There are 2 overflow drains number", rd), ["number"])
 
 
 if __name__ == "__main__":
