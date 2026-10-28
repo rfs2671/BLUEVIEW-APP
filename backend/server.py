@@ -87,6 +87,8 @@ from lib import punch_brain  # noqa: E402
 from lib import punch_batch  # noqa: E402
 from lib import dm_actions  # noqa: E402
 from lib import answer_log  # noqa: E402
+from lib import review_queue  # noqa: E402
+from lib import answer_corrections  # noqa: E402
 from lib import trades as lib_trades  # noqa: E402
 from lib import dm_brain  # noqa: E402
 from lib import dm_negative_claims  # noqa: E402
@@ -53108,17 +53110,20 @@ async def _handle_dm_start(chat_id: str, body: str = "START",
         profile = wa_dm.phone_digits(u.get("phone") or "")
         if not profile:
             await _reply_dm(chat, wa_dm.PHONE_MISSING_TEXT, "start_phone_missing")
+            await _review_queue_registration([u], "phone_missing", chat)
             return
         if phone and phone not in [wa_dm.phone_digits(v) for v in
                                    _contact_phone_variants(u.get("phone") or "")]:
             _security_event("whatsapp_optin_refused", reason="code_phone_mismatch",
                             jid_kind=kind)
             await _reply_dm(chat, wa_dm.WRONG_PHONE_TEXT, "start_wrong_phone")
+            await _review_queue_registration([u], "code_phone_mismatch", chat)
             return
         others = [x for x in await _find_users_by_phone(profile)
                   if str(x.get("_id")) != str(u.get("_id"))]
         if others:
             await _reply_dm(chat, wa_dm.PHONE_SHARED_TEXT, "start_phone_shared")
+            await _review_queue_registration([u] + others, "phone_shared", chat)
             return
         await _record_optin(u, profile, chat, chat_digits,
                             phone_verified=bool(phone), source="start_code")
@@ -53134,12 +53139,17 @@ async def _handle_dm_start(chat_id: str, body: str = "START",
         _security_event("whatsapp_optin_refused", reason="ambiguous",
                         row_count=len(users), jid_kind=kind)
         await _reply_dm(chat, wa_dm.PHONE_SHARED_TEXT, "start_phone_shared")
+        await _review_queue_registration(users, "ambiguous", chat)
         return
     if len(users) != 1 or not wa_dm.is_dm_eligible(users[0]):
         _security_event("whatsapp_optin_refused",
                         reason="no_user" if not users else "role_not_eligible",
                         row_count=len(users), jid_kind=kind)
         await _reply_dm(chat, wa_dm.NOT_ELIGIBLE_TEXT, "start_not_eligible")
+        # A known person whose role may not use it: queued (no user: no
+        # company to queue it under).
+        if users:
+            await _review_queue_registration(users, "role_not_eligible", chat)
         return
     await _record_optin(users[0], phone, chat, chat_digits,
                         phone_verified=True, source="start")
@@ -57794,6 +57804,7 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
     an answer goes out whether or not its row is written."""
     turn = _ANSWER_TURN.get() or {}
     noted, turn_gates = list(turn.get("records") or []), list(turn.get("gates") or [])
+    shown = list(records or []) + noted
     if turn:
         turn["records"], turn["gates"] = [], []
     try:
@@ -57807,7 +57818,7 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
             "project_ids": answer_log.project_ids(project_ids),
             "asker_last4": answer_log.last4(asker_phone),
             "group_id": group_id if group_id and str(group_id).endswith("@g.us") else None,
-            "records": answer_log.records_snapshot(list(records or []) + noted)
+            "records": answer_log.records_snapshot(shown)
                        + [answer_log.source_snapshot(s) for s in sources or []],
             "tools": answer_log.tools_snapshot(tools),
             "gates": answer_log.redact(list(gates or []) + turn_gates),
@@ -57823,10 +57834,13 @@ async def _answer_log_write(surface: str, *, question: Any, final_text: Any,
         }
         row["content_hash"] = answer_log.content_hash(row)
         await db.answer_log.insert_one(row)
-        return row["_id"]
     except Exception as e:
         logger.warning(f"[answer-log] write failed surface={surface}: {type(e).__name__}")
         return None
+    # An answer its checks refused or doubted is queued for review, naming
+    # this row (lib/review_queue: conflicting_sources). Never raises.
+    await _review_queue_answer(row, shown)
+    return row["_id"]
 
 
 async def _answer_log_get(company_id: Any, log_id: str) -> Optional[dict]:
@@ -57846,6 +57860,415 @@ async def _answer_log_rows(company_id: Any, *, surface: Optional[str] = None,
         q["surface"] = surface
     return await db.answer_log.find(q).sort([("created_at", -1)]) \
         .to_list(max(1, min(int(limit), 500)))
+
+
+# ── THE REVIEW QUEUE (lib/review_queue.py; L6 step 3: the feed only) ──────
+# Uncertain findings for the operator's review (L6.4): a doubted or refused
+# answer, a set-health finding, a refused START, a set-membership question.
+# INSERT ONLY: _review_queue_add is the one writer; an item's _id is derived
+# from what it is about, so the same finding twice is one row. Per company:
+# every item carries its company, and one without is not queued. Nothing
+# here is ever shown to a user, and nothing here changes a row's status.
+
+async def _review_queue_add(doc: Optional[dict]) -> Optional[bool]:
+    """Queue one item (lib/review_queue builds it). True: queued (or already
+    queued); False: nothing to queue; None: the write failed. Never raises:
+    whatever produced the finding goes on either way."""
+    try:
+        if not doc or not doc.get("company_id") or doc.get("kind") not in review_queue.QUEUED_KINDS:
+            return False
+        from pymongo.errors import DuplicateKeyError
+        dup = False
+        try:
+            await db[review_queue.COLLECTION].insert_one(doc)
+        except DuplicateKeyError:
+            dup = True
+        logger.info(f"[review-queue] kind={doc['kind']} reason={doc.get('reason')} "
+                    f"company={doc['company_id']}{' duplicate=true' if dup else ''}")
+        return True
+    except Exception as e:
+        logger.warning(f"[review-queue] write failed kind={(doc or {}).get('kind')}: "
+                       f"{type(e).__name__}")
+        return None
+
+
+async def _review_queue_answer(row: dict, raw_records: list) -> None:
+    """A logged answer whose checks refused or doubted it (conflicting_sources)."""
+    try:
+        doc = review_queue.from_answer(row, raw_records, now=datetime.now(timezone.utc))
+    except Exception as e:
+        logger.warning(f"[review-queue] answer item failed: {type(e).__name__}")
+        return
+    if doc:
+        await _review_queue_add(doc)
+
+
+async def _review_queue_set_health(project_id: str, items: list) -> None:
+    """Each set-health finding of one pass, once per project (set_health)."""
+    try:
+        findings = [it for it in items or []
+                    if isinstance(it, dict) and it.get("kind") not in review_queue.HEALTHY]
+        if not findings:
+            return
+        proj = await db.projects.find_one({"_id": to_query_id(str(project_id))},
+                                          {"company_id": 1})
+        cid = (proj or {}).get("company_id")
+        if not cid:
+            return
+        now = datetime.now(timezone.utc)
+        docs = [review_queue.from_set_health(str(cid), str(project_id), it, now=now)
+                for it in findings]
+    except Exception as e:
+        logger.warning(f"[review-queue] set health items failed: {type(e).__name__}")
+        return
+    for doc in docs:
+        if doc:
+            await _review_queue_add(doc)
+
+
+async def _review_queue_registration(users: list, reason: str, chat: str) -> None:
+    """A START refused for a person the system knows: one item per company
+    of the people it names (registration_refusal). No company, no item."""
+    try:
+        now = datetime.now(timezone.utc)
+        docs = [review_queue.from_registration(
+                    str(u.get("company_id") or ""), u.get("_id"), reason, chat=chat,
+                    role=u.get("role"), now=now)
+                for u in users or [] if isinstance(u, dict) and u.get("company_id")]
+    except Exception as e:
+        logger.warning(f"[review-queue] registration item failed: {type(e).__name__}")
+        return
+    for doc in docs:
+        if doc:
+            await _review_queue_add(doc)
+
+
+async def _review_queue_plan_set_question(company_id: Any, project_id: Any,
+                                          question: dict) -> None:
+    """A set-membership question for the PM (PR #889), queued for the
+    operator too (plan_set_question, reason set_ambiguity).
+    _store_set_questions calls this for each question it opens."""
+    try:
+        doc = review_queue.from_plan_set_question(company_id, project_id, question,
+                                                  now=datetime.now(timezone.utc))
+    except Exception as e:
+        logger.warning(f"[review-queue] plan set question failed: {type(e).__name__}")
+        return
+    if doc:
+        await _review_queue_add(doc)
+
+
+# ── THE OPERATOR'S REVIEW QUEUE (L6.4; lib/review_queue.py, last section) ──
+#
+# PLATFORM OPERATOR ONLY: every route below carries require_operator_404,
+# the #790 / owner-portal gate, so a company admin, a regular user, no token
+# and a bad token all get the same bare 404 and learn nothing exists. The
+# operator reads ACROSS companies (that is the point of the queue); each
+# item's answer_log row is still read through _answer_log_get with THAT
+# item's company, so a row is never joined to another company's answer.
+#
+# ONE WRITER, ONE CHANGE. _review_decide is the only code that changes a
+# queue item, and the only change is its decision: status approved | denied,
+# `decision` (the current one) and `decisions` (each one appended). A decided
+# item may be decided again with a NEW explanation (owner ruling); the same
+# explanation as the current decision is a 409 SAME_EXPLANATION, and a
+# decision made by someone else between the read and the write is a 409
+# DECIDED_MEANWHILE (the update is conditional on the history being the
+# length that was read). answer_log stays insert-only. Every decision is its
+# own audit_logs row. Nobody is notified: customers do not flag answers.
+
+
+class ReviewDecisionIn(BaseModel):
+    """Body for POST /owner/review-queue/{id}/decide. Every field has a
+    default so a malformed body is the route's 422, never a hint."""
+    decision: str = ""
+    explanation: str = ""
+
+
+async def _review_item(item_id: str) -> dict:
+    """One queue item, for the operator. 404 for anything else."""
+    doc = await db[review_queue.COLLECTION].find_one({"_id": str(item_id)}) if item_id else None
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return doc
+
+
+async def _review_view(doc: dict, *, full: bool = False,
+                       memo: Optional[dict] = None) -> dict:
+    """An item with its company, project and answer_log row (that company's
+    only)."""
+    memo = memo if memo is not None else {}
+    cid = str(doc.get("company_id") or "")
+
+    async def once(key, load):
+        if key not in memo:
+            try:
+                memo[key] = await load()
+            except Exception as e:
+                logger.warning(f"[review-queue] view lookup failed: {type(e).__name__}")
+                memo[key] = None
+        return memo[key]
+
+    company = await once(("co", cid), lambda: db.companies.find_one(
+        {"_id": to_query_id(cid)}, {"name": 1})) if cid else None
+    answer = None
+    if doc.get("answer_log_id"):
+        answer = await once(("al", cid, doc["answer_log_id"]),
+                            lambda: _answer_log_get(cid, str(doc["answer_log_id"])))
+    pid = doc.get("project_id")
+    if not pid and answer and len(answer.get("project_ids") or []) == 1:
+        pid = answer["project_ids"][0]
+    project = None
+    if pid:
+        p = await once(("pr", str(pid)), lambda: db.projects.find_one(
+            {"_id": to_query_id(str(pid))}, {"name": 1, "company_id": 1}))
+        # The project's name is shown only when it is this item's company's.
+        if p and str(p.get("company_id") or "") == cid:
+            project = {"id": str(pid), "name": p.get("name")}
+        else:
+            project = {"id": str(pid), "name": None}
+    return review_queue.item_view(doc, company_name=(company or {}).get("name"),
+                                  project=project, answer=answer, full=full)
+
+
+async def _review_decide(item_id: str, *, decision: str, explanation: str,
+                         operator: dict, prior: dict) -> bool:
+    """THE ONE WRITER OF A REVIEW DECISION, and the only code that changes a
+    queue item: the current decision set, and appended to the item's
+    history. Conditional on the history being as long as it was in `prior`
+    (the row the route read): True when this call decided it, False when
+    someone decided it meanwhile (or it is gone)."""
+    change = review_queue.decision_set(decision, explanation, actor_id(operator),
+                                       datetime.now(timezone.utc))
+    hist = review_queue.history(prior)
+    n = len(hist)
+    guard = {"_id": str(item_id), f"decisions.{n}": {"$exists": False}}
+    if isinstance(prior.get("decisions"), list):
+        update = {"$set": change, "$push": {"decisions": change["decision"]}}
+    else:
+        # No history on the row yet (first decision, or a row decided before
+        # the history existed): it is written whole, from what was read.
+        guard["decisions"] = {"$exists": False}
+        guard["status"] = prior.get("status")
+        update = {"$set": {**change, "decisions": hist + [change["decision"]]}}
+    res = await db[review_queue.COLLECTION].update_one(guard, update)
+    return getattr(res, "modified_count", 0) == 1
+
+
+@api_router.get("/owner/review-queue", tags=["Owner"])
+async def owner_review_queue(kind: Optional[str] = None, status: str = "pending",
+                             reason: Optional[str] = None, priority: str = "normal",
+                             company_id: Optional[str] = None, offset: int = 0,
+                             limit: int = 25, operator=Depends(require_operator_404)):
+    """The queue, newest first. Filters: kind, reason, status (pending |
+    approved | denied), priority (normal | low | all), company. THE DEFAULT
+    IS "NEEDS DECISION": pending, normal priority (low hidden). Paged by
+    offset / limit."""
+    # require_operator_404 already answered everyone else; said again here
+    # because this read crosses companies on purpose.
+    if not is_platform_operator(operator):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if kind and kind not in review_queue.KINDS:
+        raise HTTPException(status_code=422, detail="unknown kind")
+    if reason and reason not in review_queue.REASONS:
+        raise HTTPException(status_code=422, detail="unknown reason")
+    if status not in review_queue.STATUSES:
+        raise HTTPException(status_code=422, detail="unknown status")
+    if priority not in review_queue.PRIORITY_FILTERS:
+        raise HTTPException(status_code=422, detail="unknown priority")
+    # Past MAX_OFFSET is a 422, never a silent clamp (a clamped offset would
+    # hand back the same page forever); has_more stops at the cap.
+    if int(offset) > review_queue.MAX_OFFSET:
+        raise HTTPException(status_code=422, detail="offset too large: narrow the filters")
+    offset = max(0, int(offset))
+    limit = max(1, min(int(limit), review_queue.MAX_LIST))
+    q: Dict[str, Any] = {"status": status}
+    if kind:
+        q["kind"] = kind
+    if reason:
+        q["reason"] = reason
+    if company_id:
+        q["company_id"] = str(company_id)
+    if priority != "all":
+        # Equality, served by (status, priority, created_at): every row
+        # carries its priority from insert (L6.3).
+        q["priority"] = priority
+    rows = await db[review_queue.COLLECTION].find(q).sort(
+        [("created_at", -1), ("_id", -1)]).skip(offset).to_list(limit + 1)
+    memo: dict = {}
+    items = [await _review_view(r, memo=memo) for r in rows[:limit]]
+    companies = []
+    for cid in sorted({str(c) for c in await db[review_queue.COLLECTION].distinct(
+            "company_id", {"status": status}) if c}):
+        co = memo.get(("co", cid))
+        if co is None:
+            co = await db.companies.find_one({"_id": to_query_id(cid)}, {"name": 1})
+        companies.append({"id": cid, "name": (co or {}).get("name")})
+    return {"items": items, "offset": offset, "limit": limit,
+            "has_more": len(rows) > limit and offset + limit <= review_queue.MAX_OFFSET,
+            "kinds": list(review_queue.KINDS),
+            "reasons": list(review_queue.REASONS),
+            "statuses": list(review_queue.STATUSES),
+            "priorities": list(review_queue.PRIORITY_FILTERS), "companies": companies}
+
+
+@api_router.get("/owner/review-queue/{item_id}", tags=["Owner"])
+async def owner_review_item(item_id: str, operator=Depends(require_operator_404)):
+    """One item with its full evidence: every record the answer was shown,
+    its tools and gates, and the evidence it was queued with."""
+    doc = await _review_item(item_id)
+    return {"item": await _review_view(doc, full=True)}
+
+
+@api_router.post("/owner/review-queue/{item_id}/decide", tags=["Owner"])
+async def owner_review_decide(item_id: str, body: Optional[ReviewDecisionIn] = None,
+                              operator=Depends(require_operator_404)):
+    """Approve or deny one item, pending or decided (a decided item may be
+    decided again, with a new explanation). The explanation is required.
+    Each decision is its own audit row."""
+    doc = await _review_item(item_id)
+    body = body or ReviewDecisionIn()
+    err = review_queue.check_decision(body.decision, body.explanation)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+    if review_queue.same_explanation(doc.get("decision"), body.explanation):
+        raise HTTPException(status_code=409, detail={
+            "code": "SAME_EXPLANATION",
+            "message": "To decide this again, write a new explanation."})
+    if not await _review_decide(item_id, decision=body.decision,
+                                explanation=body.explanation, operator=operator, prior=doc):
+        raise HTTPException(status_code=409, detail={
+            "code": "DECIDED_MEANWHILE",
+            "message": "This item was just decided by someone else. Reload it."})
+    number = len(review_queue.history(doc)) + 1
+    previous = doc.get("decision") if isinstance(doc.get("decision"), dict) else None
+    await audit_log("review_decision", actor_id(operator), "review_queue", str(item_id),
+                    {"kind": doc.get("kind"), "reason": doc.get("reason"),
+                     "company_id": str(doc.get("company_id") or ""),
+                     "answer_log_id": doc.get("answer_log_id"),
+                     "decision": body.decision,
+                     "explanation": review_queue.clean_explanation(body.explanation),
+                     "decision_number": number,
+                     "previous_decision": (previous or {}).get("decision")})
+    logger.info(f"[review-queue] decided kind={doc.get('kind')} decision={body.decision} "
+                f"number={number}")
+    fresh = await _review_item(item_id)
+    return {"item": await _review_view(fresh, full=True)}
+
+
+# ── ANSWER CORRECTIONS (lib/answer_corrections.py): "Mark wrong" ───────────
+#
+# On any logged answer -- one the queue names, or one the operator found by
+# searching the answer log -- the operator marks it wrong with the correct
+# answer (required) and an optional note. Each is ONE INSERT into
+# answer_corrections (never an update: correcting again is a new row) and
+# one audit_logs row. It is the input feed for the self-learning session;
+# the schema is lib/answer_corrections.py's docstring. PLATFORM OPERATOR
+# ONLY (require_operator_404 on every route); nothing is sent to anyone.
+
+
+class AnswerCorrectionIn(BaseModel):
+    """Body for POST /owner/answers/{id}/corrections. Defaults so a malformed
+    body is the route's 422, never a hint."""
+    correct_answer: str = ""
+    note: Optional[str] = None
+
+
+async def _answer_correction_write(row: dict, *, correct_answer: str, note: Optional[str],
+                                   operator: dict) -> dict:
+    """THE ONE WRITER of answer_corrections: an insert, never an update."""
+    doc = answer_corrections.build(row, correct_answer, note, operator_id=actor_id(operator),
+                                   now=datetime.now(timezone.utc), _id=str(ObjectId()))
+    await db[answer_corrections.COLLECTION].insert_one(doc)
+    return doc
+
+
+async def _answer_corrections_of(answer_log_id: str) -> list:
+    """Every correction of one answer, oldest first (the last is current)."""
+    rows = await db[answer_corrections.COLLECTION].find(
+        {"answer_log_id": str(answer_log_id)}).sort([("ts", 1)]).to_list(200)
+    return [answer_corrections.view(r) for r in rows]
+
+
+async def _answer_row_view(row: dict, memo: dict, *, full: bool = False) -> dict:
+    cid = str(row.get("company_id") or "")
+    key = ("co", cid)
+    if cid and key not in memo:
+        memo[key] = await db.companies.find_one({"_id": to_query_id(cid)}, {"name": 1})
+    n = await db[answer_corrections.COLLECTION].count_documents(
+        {"answer_log_id": str(row.get("_id"))})
+    return {"answer": review_queue.answer_view(row, full=full),
+            "company": {"id": cid, "name": (memo.get(key) or {}).get("name")},
+            "corrections_count": n}
+
+
+@api_router.get("/owner/answers", tags=["Owner"])
+async def owner_answers(q: Optional[str] = None, company_id: Optional[str] = None,
+                        surface: Optional[str] = None, offset: int = 0, limit: int = 25,
+                        operator=Depends(require_operator_404)):
+    """The answer log, searched: newest first, across companies. `q` matches
+    the question or the answer (case-insensitive, literal). Paged."""
+    if not is_platform_operator(operator):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if surface and surface not in answer_log.SURFACES:
+        raise HTTPException(status_code=422, detail="unknown surface")
+    if int(offset) > review_queue.MAX_OFFSET:
+        raise HTTPException(status_code=422, detail="offset too large: narrow the search")
+    offset = max(0, int(offset))
+    limit = max(1, min(int(limit), review_queue.MAX_LIST))
+    query: Dict[str, Any] = {}
+    if company_id:
+        query["company_id"] = str(company_id)
+    if surface:
+        query["surface"] = surface
+    text = " ".join(str(q or "").split())[:200]
+    if text:
+        pat = "(?i)" + re.escape(text)
+        query["$or"] = [{"question": {"$regex": pat}}, {"final_text": {"$regex": pat}}]
+    rows = await db.answer_log.find(query).sort(
+        [("created_at", -1), ("_id", -1)]).skip(offset).to_list(limit + 1)
+    memo: dict = {}
+    items = [await _answer_row_view(r, memo) for r in rows[:limit]]
+    return {"items": items, "offset": offset, "limit": limit,
+            "has_more": len(rows) > limit and offset + limit <= review_queue.MAX_OFFSET,
+            "surfaces": list(answer_log.SURFACES)}
+
+
+@api_router.get("/owner/answers/{answer_log_id}", tags=["Owner"])
+async def owner_answer(answer_log_id: str, operator=Depends(require_operator_404)):
+    """One logged answer in full, with every correction of it."""
+    row = await db.answer_log.find_one({"_id": str(answer_log_id)})
+    if not row:
+        raise HTTPException(status_code=404, detail="Not Found")
+    out = await _answer_row_view(row, {}, full=True)
+    out["corrections"] = await _answer_corrections_of(answer_log_id)
+    return out
+
+
+@api_router.post("/owner/answers/{answer_log_id}/corrections", tags=["Owner"])
+async def owner_answer_correct(answer_log_id: str, body: Optional[AnswerCorrectionIn] = None,
+                               operator=Depends(require_operator_404)):
+    """Mark one logged answer wrong: the correct answer is required, a note
+    optional. Appends one correction row and one audit row."""
+    row = await db.answer_log.find_one({"_id": str(answer_log_id)})
+    if not row:
+        raise HTTPException(status_code=404, detail="Not Found")
+    body = body or AnswerCorrectionIn()
+    err = answer_corrections.check(body.correct_answer, body.note)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+    doc = await _answer_correction_write(row, correct_answer=body.correct_answer,
+                                         note=body.note, operator=operator)
+    await audit_log("answer_correction", actor_id(operator), "answer_log", str(answer_log_id),
+                    {"correction_id": doc["_id"], "company_id": doc["company_id"],
+                     "project_id": doc["project_id"], "surface": doc["surface"],
+                     "code_sha": doc["code_sha"], "model": doc["model"],
+                     "correct_answer": doc["correct_answer"], "note": doc["note"],
+                     "content_hash": doc["content_hash"]})
+    logger.info(f"[answer-correction] answer={answer_log_id} company={doc['company_id']} "
+                f"surface={doc['surface']}")
+    return {"correction": answer_corrections.view(doc),
+            "corrections": await _answer_corrections_of(answer_log_id)}
 
 
 def _dm_gates(path: str, extra: dict, fallback: bool, reason: Any) -> list:
@@ -64743,6 +65166,11 @@ async def _write_glyph_records(project_id: str, rows: List[dict]) -> int:
 
 
 _GLYPH_PASS_RUNNING: set = set()
+#: pid -> lib.plan_pass_progress.PassProgress of the pass this process is
+#: running, or the last one it ran (GET .../plan-glyphs/status).
+_GLYPH_PASS_PROGRESS: Dict[str, Any] = {}
+#: One document a project: the last pass's result, kept across a redeploy.
+GLYPH_PASS_RUNS = "plan_glyph_pass_runs"
 _DOOR_SCHEDULE_TEXT = re.compile(r"DOOR\s+SCHEDULE", re.I)
 
 
@@ -64867,7 +65295,8 @@ async def _reindex_in_flight(project_id: str, since: Optional[datetime] = None) 
              "status": r.get("status")} for r in rows]
 
 
-async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict:
+async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
+                           progress=None) -> dict:
     """Run the equipment-placement pass over the project's current sheets
     and write its rows (lib.plan_glyph_pass, lib.plan_emit) - once per
     drawing track (_glyph_track_pages), each mechanical sheet swept once.
@@ -64880,7 +65309,10 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict
     DRAWING-SET QUESTIONS (ruling 21, lib.plan_set_questions): the stored
     answers are applied on this pass, and the questions it raises are
     stored (_store_set_questions) - NEVER SENT from here: asking is its own
-    operator action (POST .../plan-set-questions/ask)."""
+    operator action (POST .../plan-set-questions/ask).
+
+    `progress` (lib.plan_pass_progress.PassProgress, from the run route) is
+    told each track's sheets and every step; it never changes a row."""
     from lib.plan_glyph_pass import run_pass
     from lib.plan_page import PlanPage
 
@@ -64937,6 +65369,8 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict
     from lib import plan_only as _plan_only
     plan_only = _plan_only.families(await db[PLAN_RECORDS].find(
         _plan_only.record_query(pid, sorted(current_ids)), {"embedding": 0}).to_list(2000))
+    if progress is not None:
+        progress.plan_tracks(by_track, schedules, plan_only, opening_schedules)
 
     import tempfile as _tf
     with _tf.TemporaryDirectory(prefix="glyphpass-") as tmp:
@@ -64968,6 +65402,8 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict
             extra = {"opening_schedules": opening_schedules} if opening_schedules else {}
             if opening_schedules and set_answers:
                 extra["set_answers"] = set_answers
+            if progress is not None:
+                extra["progress"] = progress.callback(track)
             out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
                                           door_pages, track=track, sweeps=sweeps,
                                           plan_only=plan_only, **extra)
@@ -64985,6 +65421,8 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict
         # model is shown, and a set with nothing to report says so - an empty
         # collection only ever means "not yet assessed".
         from lib import plan_set_health as _health
+        if progress is not None:
+            progress.server_stage("set_health")
         try:
             health = await asyncio.to_thread(_glyph_set_health, tracks, rows, schedules,
                                              sweeps, open_page)
@@ -65000,6 +65438,8 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None) -> dict
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
         r["ordinal"] = i
+    if progress is not None:
+        progress.server_stage("writing")
     # A RE-INDEX DURING THE PASS: the pages it read may not be the set's.
     # Nothing is written - the rows and set health from the last good pass
     # stay - and the operator runs it again when the re-index is done.
@@ -65082,6 +65522,7 @@ async def _store_set_questions(pid: str, detected: List[dict], opening_rows: Lis
         await audit_log("plan_set_question_opened", actor, "plan_set_question", d["id"],
                         {"project_id": pid, "code": d["code"], "label": d["label"],
                          "track": d["track"], "figures": d["figures"]})
+        await _review_queue_plan_set_question(company_id, pid, doc)
     for d in plan["refresh"]:
         fields = {"last_seen_at": now}
         if status_of.get(d["id"]) == psq.OPEN:
@@ -65295,6 +65736,8 @@ async def _write_set_health(project_id: str, items: List[dict]) -> int:
     now = datetime.now(timezone.utc)
     docs = [dict(it, project_id=pid, record_type="set_health", created_at=now) for it in items]
     await db[COLLECTION].insert_many(docs)
+    # Each finding queued for review once (lib/review_queue: set_health).
+    await _review_queue_set_health(pid, items)
     return len(docs)
 
 
@@ -82337,15 +82780,44 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
     who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
 
     async def _go():
+        # PROGRESS AND THE LAST RESULT (2026-10-27): the status route reads
+        # this pass's tracker while it runs, and its result after it ends.
+        from lib.plan_pass_progress import ABORTED, PassProgress
+        tracker = PassProgress(pid)
+        _GLYPH_PASS_PROGRESS[pid] = tracker
+        await _record_glyph_pass_result(pid, tracker)
         try:
-            await _plan_glyph_pass(pid, actor=who or None)
+            summary = await _plan_glyph_pass(pid, actor=who or None, progress=tracker)
+            counts = {k: summary[k] for k in ("written", "set_health", "areas_written")
+                      if k in summary}
+            if summary.get("aborted"):
+                tracker.finish(ABORTED, summary=dict(counts, reindex=summary.get("reindex")))
+            else:
+                tracker.finish("ok", summary=counts)
+        except asyncio.CancelledError as e:     # the server shutting down
+            tracker.finish("failed", error=e)
+            raise
         except Exception as e:
             logger.exception("plan glyph pass %s failed: %r", pid, e)
+            tracker.finish("failed", error=e)
         finally:
             _GLYPH_PASS_RUNNING.discard(pid)
+            await _record_glyph_pass_result(pid, tracker)
 
     asyncio.create_task(_go())
     return {"started": True}
+
+
+async def _record_glyph_pass_result(pid: str, tracker) -> None:
+    """Keep the pass's result (lib.plan_pass_progress.PassProgress.
+    last_result) - "running" when it starts - so a status after a redeploy
+    says "unknown" for a pass that never ended, never "ok". Never raises."""
+    try:
+        doc = dict(tracker.last_result() or {}, project_id=pid)
+        await db[GLYPH_PASS_RUNS].delete_many({"project_id": pid})
+        await db[GLYPH_PASS_RUNS].insert_one(doc)
+    except Exception as e:
+        logger.warning("plan glyph pass %s: result not recorded: %r", pid, e)
 
 
 class PlanSetAnswer(BaseModel):
@@ -82430,9 +82902,21 @@ async def plan_glyph_pass_status(project_id: str, current_user=Depends(get_admin
     a re-index in flight that would make a new one refuse to start.
 
     `running` is this server process's own flag - the pass runs in the
-    process that started it."""
+    process that started it. `progress` is that pass's (lib.
+    plan_pass_progress: track, stage, sheets done/total, current sheet,
+    started_at, per-sheet timings, ETA), or the last one this process ran;
+    `last_result` is how the last pass ended - ok, failed (with the error),
+    aborted, or unknown."""
+    from lib.plan_pass_progress import reported_result
     from lib.plan_set_health import COLLECTION as SET_HEALTH
     pid = str(project_id)
+    tracker = _GLYPH_PASS_PROGRESS.get(pid)
+    recorded = None
+    if tracker is None:
+        try:
+            recorded = await db[GLYPH_PASS_RUNS].find_one({"project_id": pid}, {"_id": 0})
+        except Exception as e:
+            logger.warning("plan glyph pass %s: recorded result unreadable: %r", pid, e)
     newest = await db[PLAN_RECORDS].find_one(
         {"project_id": pid, "record_type": "glyph"}, {"created_at": 1},
         sort=[("created_at", -1)])
@@ -82440,7 +82924,9 @@ async def plan_glyph_pass_status(project_id: str, current_user=Depends(get_admin
             "last_written_at": (newest or {}).get("created_at"),
             "rows": await db[PLAN_RECORDS].count_documents({"project_id": pid, "record_type": "glyph"}),
             "set_health_items": await db[SET_HEALTH].count_documents({"project_id": pid}),
-            "reindex_in_flight": await _reindex_in_flight(pid)}
+            "reindex_in_flight": await _reindex_in_flight(pid),
+            "progress": tracker.snapshot() if tracker is not None else None,
+            "last_result": reported_result(tracker, recorded)}
 
 
 @api_router.get("/projects/{project_id}/plan-index/jobs/{job_id}",
@@ -84878,6 +85364,25 @@ async def startup_event():
     await db.whatsapp_dm_answers.create_index([("created_at", -1), ("fallback", 1)])
     # The answer log (lib/answer_log.py): one company's answers, newest first.
     await db.answer_log.create_index([("company_id", 1), ("created_at", -1)])
+    # The review queue (lib/review_queue.py): L6.4 lists it by status, newest
+    # first, across companies (the operator), and one company's newest first.
+    await db.review_queue.create_index([("status", 1), ("created_at", -1)])
+    # Pending items, normal before low, newest first (L6.4's default list).
+    await db.review_queue.create_index([("status", 1), ("priority", 1), ("created_at", -1)])
+    await db.review_queue.create_index([("company_id", 1), ("created_at", -1)])
+    # The operator's list (GET /owner/review-queue): one status, then
+    # optionally one company, kind or reason, newest first.
+    await db.review_queue.create_index([("status", 1), ("company_id", 1), ("created_at", -1)])
+    await db.review_queue.create_index([("status", 1), ("kind", 1), ("created_at", -1)])
+    await db.review_queue.create_index([("status", 1), ("reason", 1), ("created_at", -1)])
+    # Answer corrections (lib/answer_corrections.py): one answer's, oldest
+    # first; and the feed's reads, newest first, overall and per company.
+    await db.answer_corrections.create_index([("answer_log_id", 1), ("ts", 1)])
+    await db.answer_corrections.create_index([("ts", -1)])
+    await db.answer_corrections.create_index([("company_id", 1), ("ts", -1)])
+    # The operator's answer search (GET /owner/answers): newest first,
+    # overall and per company.
+    await db.answer_log.create_index([("created_at", -1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
     await _ensure_index_resilient(
