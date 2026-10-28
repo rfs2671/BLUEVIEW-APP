@@ -119,11 +119,15 @@ class AnMPPlanBorrows(unittest.TestCase):
         self.assertEqual(res["pt_per_in"], QUARTER)
         self.assertEqual(v.pt_per_in, QUARTER)
         self.assertFalse(v.verified, "a borrowed scale is not the drawing's own verification")
+        self.assertTrue(v.borrowed, "a borrowed scale records where it came from")
         self.assertAlmostEqual(v.real_inches(18.0), 12.0)
 
     def test_the_provenance_names_the_lender_and_the_registration(self):
         v, res = _borrow()
-        prov = v.borrowed
+        prov = v.borrowed or {}
+        for k in ("sheet", "viewport", "note", "agreeing", "registration", "anchors_in_view",
+                  "scale_bound"):
+            self.assertIn(k, prov, f"the provenance does not record {k}")
         self.assertEqual(prov["sheet"], "A-103.00")
         self.assertEqual(prov["viewport"], "FOURTH FLOOR PLAN")
         self.assertEqual(prov["note"], '1/4" = 1\'-0"')

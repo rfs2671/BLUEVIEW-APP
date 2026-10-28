@@ -798,7 +798,7 @@ def borrow(borrower_number: str, borrower: Sheet, lender_number: str, lender: Sh
     if vb.note is not None:
         if vb.note.nts or not vb.note.pt_per_in:
             return refuse(f"{borrower_number}'s view says it has no scale ({vb.note.text})")
-        if abs(vb.note.pt_per_in / va.pt_per_in - 1) > AGREE_TOL:
+        if vb.note.pt_per_in and abs(vb.note.pt_per_in / va.pt_per_in - 1) > AGREE_TOL:
             return refuse(f"{borrower_number} prints {vb.note.text}; {lender_number}'s "
                           f"{va.title or 'view'} verifies {va.scale_text}: they contradict")
     prov = {"sheet": lender_number, "viewport": va.title, "note": va.scale_text,
