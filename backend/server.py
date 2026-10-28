@@ -69135,7 +69135,7 @@ async def _current_record_page_ids(project_id: str, *, discipline: str = "",
     return [str(p["_id"]) for p in pages]
 
 
-async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
+async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = False) -> List[dict]:
     """Every located-symbol row a count question about `subject` could rest
     on, and an independent census of each (plan_search, "Located symbols").
 
@@ -69169,14 +69169,18 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                        "rows": (s.get("payload") or {}).get("rows"),
                        "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
                       for s in sched])
-    want = plan_search.glyph_families_for(
-        subject, {n: f.get("tags") or [] for n, f in fams.items()})
+    # EVERYTHING (T5, the takeoff export): every family the set has, not
+    # only those a subject names - the same rows and census, all of them.
+    want = ({n: f.get("tags") or [] for n, f in fams.items()} if everything else
+            plan_search.glyph_families_for(
+                subject, {n: f.get("tags") or [] for n, f in fams.items()}))
     # DOORS AND WINDOWS (lib.plan_openings): their schedules' families, wanted
     # the same way; censused apart (scope OPENING), never mixed with the above.
     from lib import plan_openings as _openings
     ofams_all = _openings.families(await _opening_schedules(pid, page_ids))
-    owant = plan_search.opening_families_for(
-        subject, {n: f.get("tags") or [] for n, f in ofams_all.items()})
+    owant = ({n: f.get("tags") or [] for n, f in ofams_all.items()} if everything else
+             plan_search.opening_families_for(
+                 subject, {n: f.get("tags") or [] for n, f in ofams_all.items()}))
     # PLAN-ONLY FAMILIES (lib.plan_only, ruling 2026-10-26), read at question
     # time from the same pages: a family exists only while a detail or note
     # names its object, and its census carries what the set says of it.
@@ -69185,8 +69189,8 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
     try:
         po_all = _plan_only.families(await db[PLAN_RECORDS].find(
             _plan_only.record_query(pid, page_ids), {"embedding": 0}).to_list(2000))
-        po_want = plan_search.glyph_families_for(
-            subject, {n: f["tags"] for n, f in po_all.items() if n not in fams})
+        po_cand = {n: f["tags"] for n, f in po_all.items() if n not in fams}
+        po_want = po_cand if everything else plan_search.glyph_families_for(subject, po_cand)
         plan_only = {n: po_all[n] for n in po_want}
     except Exception as e:
         logger.warning("plan-only families unavailable for %s: %r", pid, e)
@@ -82901,6 +82905,50 @@ async def answer_plan_set_question(project_id: str, question_id: str, body: Plan
                             detail="no open drawing-set question with that id on this project")
     return {"id": str(doc.get("_id")), "status": doc.get("status"), "answer": doc.get("answer"),
             "applies": "on the next glyph pass"}
+
+
+@api_router.get("/projects/{project_id}/takeoff.xlsx",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_takeoff_xlsx(project_id: str, current_user=Depends(get_admin_user)):
+    """THE TAKEOFF EXPORT (T5, lib/plan_takeoff_export.py): a per-trade Excel
+    of every figure the plan gate binds, each line with its sheets, file and
+    page, and drawing set; and a "Not verified - refused" sheet with every
+    figure it does not, and why. Read-only on the plans: the same evidence a
+    count question reads (_glyph_evidence, every family; _area_evidence).
+    Each refused line is queued once for the operator (_review_queue_takeoff);
+    the file goes out either way."""
+    from lib import plan_takeoff_export as _tx
+    pid = str(project_id)
+    records = await _glyph_evidence(pid, "", everything=True)
+    areas = await _area_evidence(pid)
+    fids = set()
+    for r in list(records) + list(areas):
+        fids.add(r.get("file_id"))
+        a = (r.get("payload") or {}).get("arch") if isinstance(r.get("payload"), dict) else None
+        if isinstance(a, dict):
+            fids.add(a.get("file_id"))
+    sources = await _plan_file_sources(pid, fids)
+    takeoff = await asyncio.to_thread(_tx.build, records, areas, sources)
+    project = await db.projects.find_one({"_id": to_query_id(pid)}, {"name": 1, "company_id": 1})
+    company_id = (project or {}).get("company_id") or get_user_company_id(current_user)
+    for ln in takeoff.refused:
+        await _review_queue_takeoff(company_id, pid, trade=ln.trade,
+                                    item_name=f"{ln.item} {ln.tag}".strip(),
+                                    scope=" ".join(x for x in (ln.scope, ln.level) if x),
+                                    track=ln.set_label, reason=ln.reason,
+                                    sheets=[s for s in ln.sheets.split(", ") if s])
+    now = datetime.now(timezone.utc)
+    name = str((project or {}).get("name") or "project")
+    content = await asyncio.to_thread(_tx.write, takeoff, project_name=name,
+                                      generated=now.strftime("%Y-%m-%d %H:%M UTC"),
+                                      code_sha=_code_sha())
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "project"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 f'attachment; filename="Levelog_takeoff_{safe}_{now:%Y-%m-%d}.xlsx"'},
+    )
 
 
 @api_router.get("/projects/{project_id}/plan-glyphs/status",
