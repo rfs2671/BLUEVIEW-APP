@@ -70,9 +70,13 @@ NEW_KINDS = tuple(k for k in KIND_SWITCH if k not in LEGACY_KINDS)
 DOT_KINDS = ("dot_violation", "dot_permit", "dot_embargo",
              "dot_hearing", "dot_hearing_pending", "dot_default")
 
-#: Kinds posted as ONE group post per project per day (operator ruling
-#: 2026-10-23): every item of the kind due that day, grouped by date.
-DIGEST_KINDS = ("dot_permit", "dot_hearing")
+#: Kinds posted as ONE group post per project per day: every item of these
+#: kinds due that day, in ONE post (operator rulings 2026-10-23, 2026-10-28:
+#: one DOT post per project per day -- holiday embargo, permit expiry and
+#: hearing reminders together, a section each). Each item keeps its own
+#: ledger row; the day's post is `gc:<project>:dot_digest:digest:<date>`.
+DIGEST_KINDS = ("dot_embargo", "dot_permit", "dot_hearing")
+DIGEST_KIND = "dot_digest"
 
 RED, ORANGE, GREEN = "🔴", "🟠", "🟢"
 
@@ -452,7 +456,8 @@ def collect(dob_rows: List[Dict[str, Any]], dot_rows: List[Dict[str, Any]],
             days = (exp - today).days
             t = wa_gc.permit_threshold_due(exp, today)
             if t is not None:
-                out.append({"kind": "dot_permit", "item": f"{rid}:{t}", "rec": r, "exp": exp})
+                out.append({"kind": "dot_permit", "item": f"{rid}:{t}", "rec": r, "exp": exp,
+                            "threshold": t, "days": days})
             elif -30 <= days < 0:
                 out.append({"kind": "dot_permit", "item": f"{rid}:expired", "rec": r, "exp": exp})
 
@@ -470,7 +475,7 @@ def collect(dob_rows: List[Dict[str, Any]], dot_rows: List[Dict[str, Any]],
     for d in dot_summons.hearing_due(latest_dot, today):
         rid = _t(d["row"].get("raw_id"))
         out.append({"kind": "dot_hearing", "rec": d["row"], "days": d["days"],
-                    "hearing": d["hearing"],
+                    "hearing": d["hearing"], "threshold": d["threshold"],
                     "item": f"{rid}:hearing:{d['threshold']}:{d['hearing'].isoformat()}"})
     for d in dot_summons.pending_hearing_due(latest_dot, today):
         rid = _t(d["row"].get("raw_id"))
@@ -481,6 +486,22 @@ def collect(dob_rows: List[Dict[str, Any]], dot_rows: List[Dict[str, Any]],
         out.append({"kind": "dot_default", "rec": d["row"], "result": d["result"],
                     "item": f"{rid}:default"})
     return out
+
+
+def higher_threshold_items(it: Dict[str, Any]) -> List[tuple]:
+    """[(threshold, item key)] of the same record's HIGHER thresholds -- where
+    an earlier CATCH-UP post of it would be (dot_permits.catchup_skipped)."""
+    t = it.get("threshold")
+    if not isinstance(t, int):
+        return []
+    if it.get("kind") == "dot_permit":
+        base = str(it.get("item") or "").rsplit(":", 1)[0]
+        return [(x, f"{base}:{x}") for x in wa_gc.PERMIT_THRESHOLDS if x > t]
+    if it.get("kind") == "dot_hearing" and isinstance(it.get("hearing"), date):
+        rid = _t((it.get("rec") or {}).get("raw_id"))
+        h = it["hearing"].isoformat()
+        return [(x, f"{rid}:hearing:{x}:{h}") for x in dot_summons.HEARING_THRESHOLDS if x > t]
+    return []
 
 
 def baseline_items(items: List[Dict[str, Any]], kind: str, today: date) -> List[str]:
@@ -674,19 +695,11 @@ def _days_es(n: int) -> str:
     return "hoy" if n == 0 else ("mañana" if n == 1 else f"en {n} días")
 
 
-def digest_message(kind: str, items: List[Dict[str, Any]], *, address: str, today: date) -> str:
-    """ONE group post for every item of a DIGEST kind due today, grouped by
-    date, English then Spanish."""
-    n = len(items)
-    if kind == "dot_permit":
-        head = [f"{n} DOT permits: expiry reminders.", f"{n} permisos del DOT: avisos de vencimiento."]
-        key = "exp"
-    elif kind == "dot_hearing":
-        head = [f"{n} DOT hearings coming up.", f"{n} audiencias del DOT próximas."]
-        key = "hearing"
-    else:
-        head = [f"{n} DOT records.", f"{n} registros del DOT."]
-        key = "exp"
+def _digest_lines(kind: str, items: List[Dict[str, Any]], today: date,
+                  lang: Optional[str] = None) -> List[str]:
+    """The date lines of one kind's items. `lang` None: "EN / ES" on one
+    line (the one-kind post); "en" / "es": that language only."""
+    key = "hearing" if kind == "dot_hearing" else "exp"
     groups: Dict[Any, List[Dict[str, Any]]] = {}
     for it in items:
         groups.setdefault(it.get(key), []).append(it)
@@ -699,14 +712,83 @@ def digest_message(kind: str, items: List[Dict[str, Any]], *, address: str, toda
             continue
         days = (d - today).days
         if kind == "dot_permit" and days < 0:
-            lines.append(f"Expired on {nice_date(d)} / Venció el {_es_date(d)}: {nums}")
+            en, es = f"Expired on {nice_date(d)}", f"Venció el {_es_date(d)}"
         elif kind == "dot_hearing":
-            lines.append(f"Hearing {nice_date(d)} ({_days_en(days)}) / Audiencia el {_es_date(d)} "
-                         f"({_days_es(days)}): {nums}")
+            en, es = (f"Hearing {nice_date(d)} ({_days_en(days)})",
+                      f"Audiencia el {_es_date(d)} ({_days_es(days)})")
         else:
-            lines.append(f"Ends {nice_date(d)} ({_days_en(days)}) / Termina el {_es_date(d)} "
-                         f"({_days_es(days)}): {nums}")
-    return "\n".join([f"{ICON.get(kind, ORANGE)} {address}"] + head + lines + ["Source: DOT"])
+            en, es = (f"Ends {nice_date(d)} ({_days_en(days)})",
+                      f"Termina el {_es_date(d)} ({_days_es(days)})")
+        lines.append(f"{en} / {es}: {nums}" if lang is None else f"{en if lang == 'en' else es}: {nums}")
+    return lines
+
+
+#: The sections of the one DOT post, in order: (kind, English, Spanish).
+DIGEST_SECTIONS = (("dot_embargo", "Holiday embargo", "Embargo navideño"),
+                   ("dot_permit", "Permit expiring", "Permiso por vencer"),
+                   ("dot_hearing", "Hearing reminders", "Recordatorios de audiencia"))
+
+
+def _nums(items: List[Dict[str, Any]]) -> str:
+    return ", ".join(f"#{record_number(it['rec'])}"
+                     for it in sorted(items, key=lambda it: record_number(it["rec"])))
+
+
+def _mixed_digest(items: List[Dict[str, Any]], *, address: str, today: date) -> str:
+    """The one DOT post of a day with more than one kind: English, then
+    Spanish, a section per kind."""
+    by = {k: [it for it in items if it["kind"] == k] for k, _e, _s in DIGEST_SECTIONS}
+    kinds = [k for k, _e, _s in DIGEST_SECTIONS if by[k]]
+
+    def count(k, lang):
+        n = len(by[k])
+        s = "s" if n != 1 else ""
+        return {("dot_embargo", "en"): f"{n} permit{s} without a holiday embargo waiver",
+                ("dot_permit", "en"): f"{n} permit{s} expiring",
+                ("dot_hearing", "en"): f"{n} hearing{s} coming up",
+                ("dot_embargo", "es"): f"{n} permiso{s} sin exención del embargo navideño",
+                ("dot_permit", "es"): f"{n} permiso{s} por vencer",
+                ("dot_hearing", "es"): f"{n} audiencia{s} próxima{s}"}[(k, lang)]
+    out = [f"{ORANGE} {address}"]
+    for lang in ("en", "es"):
+        out.append(("DOT today: " if lang == "en" else "DOT hoy: ")
+                   + ", ".join(count(k, lang) for k in kinds) + ".")
+        for k, en, es in DIGEST_SECTIONS:
+            if not by[k]:
+                continue
+            out.append(f"{en if lang == 'en' else es}:")
+            if k == "dot_embargo":
+                out.append(("No waiver (Nov 15 - Jan 2): " if lang == "en" else
+                            "Sin exención (15 nov - 2 ene): ") + _nums(by[k]))
+                out.append(dot_embargo.ACTION_EN if lang == "en" else dot_embargo.ACTION_ES)
+            else:
+                out += _digest_lines(k, by[k], today, lang)
+    return "\n".join(out + ["Source: DOT"])
+
+
+def digest_message(kind: str, items: List[Dict[str, Any]], *, address: str, today: date) -> str:
+    """ONE group post for every DIGEST item due today. One kind: grouped by
+    date, each line English / Spanish. More than one kind (the day's one DOT
+    post, DIGEST_KIND): English then Spanish, a section per kind."""
+    kinds = {it["kind"] for it in items}
+    if len(kinds) > 1:
+        return _mixed_digest(items, address=address, today=today)
+    if kinds:
+        kind = next(iter(kinds))
+    n = len(items)
+    if kind == "dot_permit":
+        head = [f"{n} DOT permits: expiry reminders.", f"{n} permisos del DOT: avisos de vencimiento."]
+    elif kind == "dot_hearing":
+        head = [f"{n} DOT hearings coming up.", f"{n} audiencias del DOT próximas."]
+    elif kind == "dot_embargo":
+        return "\n".join([f"{ICON.get(kind, ORANGE)} {address}",
+                          f"{n} DOT permits: no holiday embargo waiver (Nov 15 - Jan 2).",
+                          f"{n} permisos del DOT: sin exención del embargo navideño (15 nov - 2 ene).",
+                          _nums(items), dot_embargo.ACTION_EN, dot_embargo.ACTION_ES, "Source: DOT"])
+    else:
+        head = [f"{n} DOT records.", f"{n} registros del DOT."]
+    return "\n".join([f"{ICON.get(kind, ORANGE)} {address}"] + head
+                     + _digest_lines(kind, items, today) + ["Source: DOT"])
 
 
 def postable(kind: str, rec: Dict[str, Any]) -> bool:

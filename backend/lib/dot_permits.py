@@ -30,9 +30,12 @@ days out, 3 from 3 days out, through the last day), so a run that misses a day
 still sends; once per (project, permit, threshold, work end) in
 dot_alert_ledger.
 
-THE DIGEST (operator rulings 2026-10-23):
-  * ONE email per project per day lists every permit due that day, grouped by
-    work-end date (`digest_id`); the subject says the count. Each permit still
+THE DIGEST (operator rulings 2026-10-23, 2026-10-28):
+  * ONE DOT email per project per day (`digest_id(project, "dot", day)`):
+    the holiday embargo, the permit expiry and the hearing reminders due that
+    day, a section each (server._dot_daily_digest_tick); the expiry section
+    lists every permit due, grouped by work-end date. A one-kind digest keeps
+    that kind's subject (the count) and trigger type. Each permit still
     has its own ledger row (`expiry_ledger_id`, field `bucket` = the threshold
     window), so nothing sends twice and a failure part-way never re-sends the
     rest.
@@ -150,6 +153,41 @@ def run_marker_id(kind: str, day: date) -> str:
 def late_items(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The items that cannot wait for tomorrow's digest."""
     return [d for d in items if d.get("days") is not None and d["days"] <= LATE_SEND_MAX_DAYS]
+
+
+#: CATCH-UP (operator ruling 2026-10-28). An item first reminded LATE -- with
+#: fewer days left than the threshold it was sent under (e.g. 4 days left in
+#: the 14-day window: the 14-day day was missed) -- skips every LOWER
+#: threshold of the same item that falls within this many days of that send
+#: (the 3-day one at 3 days left), so nobody gets "4 days" then "3 days" on
+#: consecutive days. Applies to every day-threshold DOT reminder: permit
+#: expiry (14/3), hearings (14/7/1), the GC group's DOT permit posts
+#: (30/14/7/1). Derived from the item's own earlier ledger row (`bucket`,
+#: `days_left`): nothing extra is written.
+CATCHUP_SKIP_DAYS = 2
+
+#: The ONE DOT email per project per day (operator ruling 2026-10-28): the
+#: holiday embargo, permit expiry and hearing reminders due that day, one
+#: section each. A digest of one kind keeps that kind's trigger type and
+#: subject; a mixed one is this.
+DIGEST_TRIGGER = "dot_daily_digest"
+DIGEST_KINDS = ("embargo", "expiry", "hearing")
+
+
+def catchup_skipped(threshold: Optional[int], prior: Iterable[Any]) -> bool:
+    """True when `threshold` is not sent: an earlier reminder of the same item
+    (`prior`: its (bucket, days_left) pairs) was a CATCH-UP and this lower
+    threshold falls within CATCHUP_SKIP_DAYS of it."""
+    if threshold is None:
+        return False
+    for p in prior or ():
+        try:
+            bucket, days = int(p[0]), int(p[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if days < bucket and threshold < bucket and 0 < days - threshold <= CATCHUP_SKIP_DAYS:
+            return True
+    return False
 
 
 def hold_id(project_id: str, kind: str, day: date) -> str:
