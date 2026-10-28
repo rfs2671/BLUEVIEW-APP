@@ -33,7 +33,11 @@ SCHEMA (collection `answer_corrections`, schema_version 1):
                                 so a reader can check it corrects THAT row
   operator_id         str     who marked it wrong
   ts                  datetime  when it was marked wrong (UTC)
-  content_hash        str     sha256 over every field above but _id
+  content_hash        str     sha256 over every field above but _id; dates
+                              hash as UTC "YYYY-MM-DDTHH:MM:SS.mmmZ" (both
+                              dates are stored at millisecond precision, as
+                              BSON keeps them, so a row read back hashes the
+                              same: answer_corrections.content_hash(row))
 
 NO PHONE IN FULL: every string goes through answer_log.redact (a phone-like
 run of 7+ digits becomes its last 4), as the answer log itself does.
@@ -43,7 +47,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from lib import answer_log
@@ -77,9 +81,19 @@ def check(correct_answer: Any, note: Any = None) -> Optional[str]:
     return None
 
 
+def ms_utc(v: datetime) -> datetime:
+    """A datetime as Mongo keeps it: UTC, millisecond precision. A naive one
+    (what the driver reads back) is UTC."""
+    v = v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v.astimezone(timezone.utc)
+    return v.replace(microsecond=v.microsecond // 1000 * 1000)
+
+
 def _canon(v: Any) -> Any:
+    # One form for a date whether it is hashed before the insert or after a
+    # read: UTC, milliseconds, "Z" -- BSON keeps ms and the driver returns
+    # naive UTC, so a raw isoformat() would hash differently once read back.
     if isinstance(v, datetime):
-        return v.isoformat()
+        return ms_utc(v).strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms_utc(v).microsecond // 1000:03d}Z"
     if isinstance(v, dict):
         return {str(k): _canon(x) for k, x in sorted(v.items())}
     if isinstance(v, (list, tuple)):
@@ -112,10 +126,12 @@ def build(row: Dict[str, Any], correct_answer: Any, note: Any, *, operator_id: A
         "surface": row.get("surface"),
         "code_sha": row.get("code_sha"),
         "model": row.get("model"),
-        "answer_created_at": row.get("created_at"),
+        "answer_created_at": (ms_utc(row["created_at"])
+                              if isinstance(row.get("created_at"), datetime)
+                              else row.get("created_at")),
         "answer_content_hash": row.get("content_hash"),
         "operator_id": str(operator_id or ""),
-        "ts": now,
+        "ts": ms_utc(now),
     }
     doc["content_hash"] = content_hash(doc)
     return doc

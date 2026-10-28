@@ -336,6 +336,18 @@ class Pure(unittest.TestCase):
         self.assertIsNotNone(ac.check(" "))
         self.assertIsNotNone(ac.check("a" * (ac.MAX_CORRECT + 1)))
 
+    def test_the_hash_survives_a_mongo_round_trip(self):
+        """BSON keeps milliseconds and the driver reads back naive UTC: the
+        hash of the row as read must equal the hash written (Codex, #906)."""
+        from datetime import timezone as tz
+        row = _answer("al_x", A, 0, "q?", "wrong")
+        now = datetime(2026, 10, 28, 9, 1, 2, 345678, tzinfo=tz.utc)
+        doc = ac.build(row, "right", None, operator_id=OP, now=now, _id="c1")
+        self.assertEqual(doc["ts"].microsecond, 345000)
+        read_back = dict(doc, ts=doc["ts"].replace(tzinfo=None),
+                         answer_created_at=doc["answer_created_at"].replace(tzinfo=None))
+        self.assertEqual(ac.content_hash(read_back), doc["content_hash"])
+
     def test_the_hash_covers_the_correction(self):
         row = _answer("al_x", A, 0, "q?", "wrong")
         a = ac.build(row, "right", None, operator_id=OP, now=T0, _id="c1")

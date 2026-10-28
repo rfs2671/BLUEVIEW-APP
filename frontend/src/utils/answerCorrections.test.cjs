@@ -77,6 +77,8 @@ const REV = read('app/owner/review.jsx');
 ok(/<MarkWrongForm answerId=\{ov\.answerLog\.id\}/.test(REV),
   'Review queue: Mark wrong on an item with an answer');
 ok(/ownerAPI\.answer\(answerId\)/.test(REV), 'Review queue: loads the answer\'s corrections');
+ok(/if \(openIdRef\.current === row\.id && got\.status === 'ok'/.test(REV),
+  'Review queue: a late corrections response for a closed item is dropped');
 
 const API = read('src/utils/api.js');
 ok(/apiClient\.get\('\/api\/owner\/answers', \{ params \}\)/.test(API), 'api: GET /api/owner/answers');

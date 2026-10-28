@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Modal,
   RefreshControl, TextInput,
@@ -58,6 +58,7 @@ export default function OwnerReviewScreen() {
   const [explanation, setExplanation] = useState('');
   const [formError, setFormError] = useState('');
   const [corrections, setCorrections] = useState([]);
+  const openIdRef = useRef(null);
   const [busy, setBusy] = useState(null);
 
   useEffect(() => {
@@ -89,10 +90,14 @@ export default function OwnerReviewScreen() {
       ? { item: res.status === 'ok' && res.data?.item ? res.data.item : row, state: res.status }
       : o));
     // The answer's corrections so far (Mark wrong lists them above the form).
+    // Kept only while that item is still the open one: a slow response for
+    // an item already closed never lands on the next one.
+    openIdRef.current = row.id;
     const answerId = row.answer?.id || row.answer_log_id;
     if (answerId) {
       const got = await settleFetch(() => ownerAPI.answer(answerId));
-      if (got.status === 'ok' && Array.isArray(got.data?.corrections)) {
+      if (openIdRef.current === row.id && got.status === 'ok'
+        && Array.isArray(got.data?.corrections)) {
         setCorrections(got.data.corrections);
       }
     }
@@ -233,7 +238,7 @@ export default function OwnerReviewScreen() {
         </ScrollView>
 
         <Modal visible={!!open} transparent animationType="fade"
-          onRequestClose={() => setOpen(null)}>
+          onRequestClose={() => { openIdRef.current = null; setOpen(null); }}>
           <View style={s.backdrop}>
             <GlassCard variant="modal" style={s.modalCard} contentStyle={s.modalContent}>
               {ov ? (
@@ -336,7 +341,8 @@ export default function OwnerReviewScreen() {
                     </Pressable>
                   </View>
                 ) : null}
-                <Pressable onPress={() => setOpen(null)} style={[s.cancelBtn, s.closeBtn]}
+                <Pressable onPress={() => { openIdRef.current = null; setOpen(null); }}
+                  style={[s.cancelBtn, s.closeBtn]}
                   accessibilityRole="button">
                   <Text style={s.cancelText}>Close</Text>
                 </Pressable>
