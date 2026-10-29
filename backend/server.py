@@ -65457,6 +65457,21 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         except Exception as e:
             logger.exception("plan set health %s failed: %r", pid, e)
             health = [_health.unavailable(e, datetime.now(timezone.utc))]
+        # PLUMBING STACKS (lane T4, lib.plan_stacks), while the PDFs are still
+        # here: every stack the P plans tag, placed on each track's
+        # architectural plan paired BY TITLE LEVEL - the rows clash v1 reads.
+        # Their own collection: search and the count gate never read them.
+        # A failure writes one marker row, never sinks the pass.
+        from lib import plan_stacks as _stacks
+        if progress is not None:
+            progress.server_stage("stacks")
+        try:
+            door_in = ((summary["tracks"].get("filed") or {}).get("door") or {}).get("inches")
+            got = await asyncio.to_thread(_stacks.run_stacks, by_track, open_page, None, door_in)
+            stacks = got["rows"] + [_stacks.crosscheck_row(got)]
+        except Exception as e:
+            logger.exception("plan stacks %s failed: %r", pid, e)
+            stacks = [_stacks.unavailable(e, datetime.now(timezone.utc))]
     # one numbering across the tracks: a row is (page_id, ordinal), and every
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
@@ -65475,6 +65490,7 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         return summary
     summary["written"] = await _write_glyph_records(pid, rows)
     summary["set_health"] = await _write_set_health(pid, health)
+    summary["stacks_written"] = await _write_stack_rows(pid, stacks)
     summary["areas_written"] = await _write_area_records(pid, areas)
     try:
         summary["set_questions"] = await _store_set_questions(
@@ -65762,6 +65778,21 @@ async def _write_set_health(project_id: str, items: List[dict]) -> int:
     # Each finding queued for review once (lib/review_queue: set_health).
     await _review_queue_set_health(pid, items)
     return len(docs)
+
+
+async def _write_stack_rows(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's plumbing-stack rows with one pass's
+    (lib.plan_stacks.COLLECTION - their own collection, like set health:
+    no plan record, so search never returns them). WHOLE-PROJECT REPLACE,
+    because the pass is: the pairing and the tag reading are set-wide."""
+    from lib.plan_stacks import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    await db[COLLECTION].insert_many([dict(r, project_id=pid, created_at=now) for r in rows])
+    return len(rows)
 
 
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
@@ -70103,8 +70134,84 @@ async def _check_one_sheet(project_id: str, user_words: str,
         return None
 
 
+async def plan_abbreviation_tables(project_id: str) -> Dict[str, Dict[str, List[str]]]:
+    """file_id -> the abbreviations table its current pages print in their
+    text layer (plan_search.abbreviation_table): the alternative names an
+    attribute's subject may be printed under, in that file's drawings only
+    (plan_search, ruling 2026-10-27). READ-ONLY. A failure costs only the
+    alternative names - every value then needs its subject spelled out -
+    never a binding."""
+    out: Dict[str, Dict[str, List[str]]] = {}
+    if not project_id:
+        return out
+    try:
+        live = await _live_plan_file_ids(project_id)
+        async for p in db.document_page_index.find(
+                {"project_id": project_id, **_current_page_filter(live),
+                 "raw_text": {"$regex": "ABBREVIATION", "$options": "i"}},
+                {"file_id": 1, "raw_text": 1}):
+            table = plan_search.abbreviation_table(p.get("raw_text") or "")
+            if table:
+                mine = out.setdefault(str(p.get("file_id") or ""), {})
+                for ab, ms in table.items():
+                    mine.setdefault(ab, []).extend(m for m in ms if m not in mine.get(ab, []))
+    except Exception as e:
+        logger.warning(f"abbreviation tables unread for {project_id}: {e!r}")
+        return {}
+    return out
+
+
+async def plan_count_families(project_id: str) -> Dict[str, List[str]]:
+    """name -> tags for every family the count rule can count in the project:
+    the mechanical schedules' families (plan_glyph_pass.families, read from
+    the pages the glyph pass reads, as _glyph_evidence reads them - those
+    with no identifier column among them), the door and window schedules'
+    (plan_openings.families) and the plan-only ones (plan_only.families).
+    The gate routes a plural naming one of them, with a bare integer, to the
+    count rule under every intent (plan_search, ruling 51). READ-ONLY. A
+    failure costs only that routing by project family; the families of the
+    records in hand still route."""
+    out: Dict[str, List[str]] = {}
+    if not project_id:
+        return out
+    try:
+        from lib.plan_glyph_pass import families as _families
+        from lib import plan_openings as _openings
+        from lib import plan_only as _plan_only
+        pid = str(project_id)
+        page_ids = await _glyph_page_ids(pid)
+        if not page_ids:
+            return out
+        sched = await db[PLAN_RECORDS].find(
+            {"project_id": pid, "record_type": "schedule",
+             "page_id": {"$in": page_ids}, "sheet_number": {"$regex": "^M-"}},
+            {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
+             "payload.rows": 1},
+        ).to_list(2000)
+        found = [_families([{"name": (s.get("payload") or {}).get("name"),
+                             "columns": (s.get("payload") or {}).get("columns"),
+                             "rows": (s.get("payload") or {}).get("rows"),
+                             "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
+                            for s in sched]),
+                 _openings.families(await _opening_schedules(pid, page_ids)),
+                 _plan_only.families(await db[PLAN_RECORDS].find(
+                     _plan_only.record_query(pid, page_ids), {"embedding": 0}).to_list(2000))]
+        for fams in found:
+            for name, f in (fams or {}).items():
+                tags = (f or {}).get("tags") or []
+                mine = out.setdefault(str(name).strip().upper(), [])
+                mine.extend(str(t).upper() for t in tags if str(t).upper() not in mine)
+    except Exception as e:
+        logger.warning(f"count families unread for {project_id}: {e!r}")
+        return {}
+    return out
+
+
 def gate_plan_answer(text: str, records: List[dict], subject: str = "",
-                     intent: str = "", sources: Any = ()) -> Tuple[str, str]:
+                     intent: str = "", sources: Any = (),
+                     aliases: Optional[Dict[str, Dict[str, List[str]]]] = None,
+                     families: Optional[Dict[str, List[str]]] = None
+                     ) -> Tuple[str, str]:
     """(text_to_send, outcome). THE HARD GATE.
 
     Every number and dimension in a composed answer must appear in a record
@@ -70145,7 +70252,7 @@ def gate_plan_answer(text: str, records: List[dict], subject: str = "",
     # `sources` (plan_sources.source_of rows for the records' files): a file
     # name or set label the answer cites is a citation, not a figure.
     grounded, unsupported = plan_search.answer_is_grounded(
-        text, records, intent=intent, sources=sources)
+        text, records, intent=intent, aliases=aliases, sources=sources, families=families)
     leaked = plan_search.contains_label(text, records)
     if grounded and not leaked:
         return text, "grounded"
@@ -70194,7 +70301,18 @@ async def gate_and_warrant(
     sources = (list((await _plan_file_sources(
         project_id, [r.get("file_id") for r in records or []])).values())
         if project_id else [])
-    sent, outcome = gate_plan_answer(text, records, subject, intent=intent, sources=sources)
+    # AN ATTRIBUTE BINDS TO THE SUBJECT ITS RECORD NAMES, or to one of its
+    # alternative names - the set's own abbreviations (plan_search, ruling
+    # 2026-10-27). Read only for an attribute, and only with a project.
+    aliases = (await plan_abbreviation_tables(project_id)
+               if project_id and (intent or "").strip().lower() == "attribute" else None)
+    # A FAMILY'S COUNT IS THE COUNT RULE'S UNDER EVERY INTENT (ruling 51):
+    # the project's families, so a plural names its family whatever this
+    # search returned. Not for a count, which is the count rule already.
+    families = (await plan_count_families(project_id)
+                if project_id and (intent or "").strip().lower() != "count" else None)
+    sent, outcome = gate_plan_answer(text, records, subject, intent=intent, sources=sources,
+                                     aliases=aliases, families=families)
     if not project_id:
         return sent, outcome
     # TRIGGERED ON `classify_reply`, THE SAME INSTRUMENT THE BENCHMARK COUNTS

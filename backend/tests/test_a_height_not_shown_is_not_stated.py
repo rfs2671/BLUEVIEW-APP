@@ -8,9 +8,10 @@
 answer_is_grounded binds it. So the case puts EVERY dimension its returned
 records print to the gate as a ceiling height (`no_stated_value`), and fails
 on any that binds. Measured 2026-10-27: the gate binds "The ceiling height is
-10'-0"." on A-300.00's floor-to-floor 10'-0" - a printed dimension is bound
-to whatever subject the sentence names - so this case fails until the gate
-ties a value to its subject. That is the case working, not a broken case.
+10'-0"." on A-300.00's floor-to-floor 10'-0" - a printed dimension was bound
+to whatever subject the sentence named. Since the gate binds a value only
+where its record names the claim's subject (ruling 2026-10-27,
+test_a_value_binds_only_to_its_named_subject), none binds.
 
 Each test fails by assertion on the branch before this change.
 """
@@ -71,11 +72,14 @@ class AStatedValueFailsTheCase(unittest.TestCase):
         self.assertTrue(any("9'-0\"" in r and "ceiling height" in r for r in out["reasons"]), out["reasons"])
 
     def test_the_floor_to_floor_dimension_is_put_to_the_gate_as_a_ceiling_height(self):
-        """Today's gate binds it: the case reports that, by name."""
+        """It is put to the gate, and does not bind: A-300.00 never names a
+        ceiling. (Before the ruling of 2026-10-27 it bound, and this test
+        said so.)"""
         out = ev.score_case(_case(), _a300(), {})
         self.assertGreaterEqual(out["checks"].get("printed_values_put_to_the_gate", 0), 1)
-        self.assertEqual(out["checks"].get("no_value_binds"), False)
-        self.assertTrue(any("10'-0\"" in r and "ceiling height" in r for r in out["reasons"]), out["reasons"])
+        self.assertEqual(out["checks"].get("no_value_binds"), True)
+        self.assertFalse(any("ceiling height" in r and "printed value" in r for r in out["reasons"]),
+                         out["reasons"])
 
     def test_nothing_printed_is_nothing_stated(self):
         """Records that print no dimension leave the check vacuous, and say so
