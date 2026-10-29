@@ -184,7 +184,6 @@ def _cloud(n=150, seed=3):
 class TheOffsetIsTheUniqueBestPeakOrRefused(unittest.TestCase):
 
     def test_the_true_offset_is_used(self):
-        _present()
         _shared()
         A = _cloud()
         B = A + np.array([7.0, -242.0])
@@ -194,7 +193,6 @@ class TheOffsetIsTheUniqueBestPeakOrRefused(unittest.TestCase):
         self.assertAlmostEqual(r["dy"], -242.0, delta=0.2)
 
     def test_the_census_agrees_with_plan_sheet(self):
-        _present()
         _shared()
         A = _cloud()
         B = np.vstack([A + np.array([40.0, -30.0]), _cloud(60, 9)])
@@ -207,7 +205,6 @@ class TheOffsetIsTheUniqueBestPeakOrRefused(unittest.TestCase):
         """The search returns a coincidental peak (as the 4pt grid did on
         S-104/A-103: 95 anchors, 2.5ft off; true 204): refused, though its
         residuals are under an inch."""
-        _present()
         _shared()
         A = _cloud()
         true, decoy = np.array([40.0, -30.0]), np.array([75.0, 0.0])
@@ -232,7 +229,6 @@ class TheOffsetIsTheUniqueBestPeakOrRefused(unittest.TestCase):
         self.assertIn("from the best peak", r["refused"])
 
     def test_two_tied_peaks_are_refused(self):
-        _present()
         _shared()
         A = _cloud()
         B = np.vstack([A + np.array([40.0, -30.0]), A + np.array([90.0, 0.0])])
@@ -241,7 +237,6 @@ class TheOffsetIsTheUniqueBestPeakOrRefused(unittest.TestCase):
         self.assertIn("two peaks tie", r["refused"])
 
     def test_too_few_anchors_are_refused(self):
-        _present()
         _shared()
         A = _cloud(12)
         B = np.vstack([A[:6] + np.array([40.0, -30.0]), _cloud(6, 5)])      # 6 match, 6 do not
@@ -251,7 +246,6 @@ class TheOffsetIsTheUniqueBestPeakOrRefused(unittest.TestCase):
 
     def test_a_polygon_moves_by_minus_d_and_not_at_all_when_refused(self):
         _present()
-        _shared()
         rg = {"usable": True, "dx": 6.0, "dy": -242.0}
         self.assertEqual(T.to_arch([[10.0, 300.0]], rg), [[4.0, 542.0]])
         self.assertIsNone(T.to_arch([[10.0, 300.0]], dict(rg, usable=False)))
