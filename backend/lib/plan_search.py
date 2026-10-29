@@ -42,11 +42,13 @@ from __future__ import annotations
 
 import logging
 import re
+from fractions import Fraction
 from typing import (Any, Collection, Dict, Iterable, List, NamedTuple,
                     Optional, Sequence, Tuple)
 
 from lib import plan_areas as _areas
 from lib import plan_dimensions as _dims
+from lib import plan_floor_to_floor as _f2f
 from lib.plan_records import TIER_ORDER, column_role, tier_rank
 from lib.plan_text import SHEET_ID_RE
 
@@ -1129,12 +1131,14 @@ def _values(text: str) -> List[str]:
 
 
 def _vouches_for_nothing(r: Dict[str, Any]) -> bool:
-    """A contested cell, a located symbol outside its scoped count, or an
+    """A contested cell, a located symbol outside its scoped count, an
     area row (lib.plan_areas: it vouches only through its own check,
-    `_areas.figures_in_clause`) - the records `_supported_values` reads
+    `_areas.figures_in_clause`), or a derived floor-to-floor row
+    (lib.plan_floor_to_floor: only a clause naming a floor-to-floor may state its
+    figures, answer_is_grounded) - the records `_supported_values` reads
     nothing from."""
     return (bool((r.get("payload") or {}).get("count_contested")) or is_glyph_evidence(r)
-            or _areas.is_area_record(r))
+            or _areas.is_area_record(r) or _f2f.is_level_record(r))
 
 
 def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
@@ -1164,6 +1168,13 @@ def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
         # printed one agrees, and the printed one, which a disagreement
         # withholds.
         if _areas.is_area_record(r):
+            continue
+        # A DERIVED FLOOR-TO-FLOOR ROW (lib.plan_floor_to_floor) lends its citation
+        # and nothing else: its figures bind only in a clause naming a
+        # floor-to-floor (answer_is_grounded), never in the union.
+        if _f2f.is_level_record(r):
+            for field in ("sheet_number", "filing_id", "issued_date"):
+                ok.update(_values(str(r.get(field) or "")))
             continue
         ok.update(_values(r.get("quote") or ""))
         # ── WHAT A CITATION MAY CONTAIN ────────────────────────────────────
@@ -4295,15 +4306,15 @@ def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
 # where the value is. "The ceiling is 9'." says no height and is left as it
 # is. No other trailing word becomes a subject.
 #
-# THE WORDS MIRROR lib/plan_floor_to_floor.py (#900, stacked on this branch,
-# so not imported): _CEILING and _HEIGHT as #900 spells them; a claim may
-# also say TALL or "floor to ceiling". #900 reconciles when it merges this.
-_CEILING_WORD = re.compile(r"(?<![A-Za-z])(?:ceilings?|clgs?\.?)(?![A-Za-z])", re.I)
-_HEIGHT_WORD = re.compile(r"(?<![A-Za-z])(?:heights?|hights?|hgt\.?|ht\.?|high|clear(?:ance)?|"
-                          r"a\.?\s?f\.?\s?f\.?)(?![A-Za-z])", re.I)
+# THE WORDS ARE lib/plan_floor_to_floor.py's (#900): one ceiling / height
+# vocabulary, read here and by the floor-to-floor row alike. A CLAIM may also
+# say TALL or "floor to ceiling" (_HEIGHT_SAID: claim-side wording only, never
+# asked of a record).
+_CEILING_WORD = _f2f.CEILING_WORD
+_HEIGHT_WORD = _f2f.HEIGHT_WORD
 _HEIGHT_SAID = re.compile(r"(?<![A-Za-z])(?:tall|floor[\s\-]*to[\s\-]*ceiling)(?![A-Za-z])", re.I)
 #: A value directly before the ceiling: "a 9' ceiling", "a 9'-0" CLG", "a 8 ceiling".
-_VALUE_CEILING = re.compile(r"[\d'\"′″]\s*(?:ceilings?|clgs?\.?)(?![A-Za-z])", re.I)
+_VALUE_CEILING = re.compile(r"[\d'\"′″]\s*" + _f2f.CEILING_PATTERN + r"(?![A-Za-z])", re.I)
 
 
 def is_ceiling_height_clause(clause: str) -> bool:
@@ -4324,7 +4335,7 @@ def _without_ceiling_height(text: str) -> str:
 
 def _names_ceiling_height(naming: str) -> bool:
     """A record part naming a ceiling and a height where its value is."""
-    return bool(_CEILING_WORD.search(naming or "") and _HEIGHT_WORD.search(naming or ""))
+    return _f2f.names_ceiling_and_height(naming)
 
 
 def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
@@ -4385,6 +4396,35 @@ def _clause_spans(text: str) -> List[Tuple[int, int]]:
     return out
 
 
+def _ceiling_heights_bound(text: str, records: Sequence[Dict[str, Any]]
+                           ) -> Tuple[str, List[str]]:
+    """(`text` with its ceiling-height clauses blanked, the values those
+    clauses state that no record part naming a ceiling and a height prints).
+
+    Item 21 (#900's question 7): "The ceiling height is 50'-0"." bound on
+    the `building` / `height` search under "", identify, existence, location
+    and geometry - the union vouched on the printed 50'-0" BUILDING & BASE
+    HEIGHT - while #894's ceiling rule (is_ceiling_height_clause,
+    _subject_bound) held it only under attribute. A ceiling-height clause
+    is now decided by that same rule under every intent; no other clause
+    changes. Without a value the clause states nothing and stays."""
+    masked = _dims.mask_quotation_marks(text or "")
+    hold = list(masked)
+    for f in _dims.find(masked):
+        hold[f.span[0]:f.span[1]] = "\x00" * (f.span[1] - f.span[0])
+    hold_s = "".join(hold)
+    citations = _citation_texts(records)
+    spans: List[Tuple[int, int]] = []
+    bad: List[str] = []
+    for c0, c1 in _clause_spans(hold_s):
+        clause = _track_claim(masked[c0:c1])[1]
+        if not is_ceiling_height_clause(clause):
+            continue
+        spans.append((c0, c1))
+        bad += _subject_bound(clause, records, citations, None)
+    return _blank(text or "", spans), bad
+
+
 def _attribute_answer_is_bound(text: str, records: Sequence[Dict[str, Any]],
                                aliases: Optional[Dict[str, Dict[str, List[str]]]] = None
                                ) -> Tuple[bool, List[str]]:
@@ -4423,6 +4463,60 @@ def _attribute_answer_is_bound(text: str, records: Sequence[Dict[str, Any]],
     return (not unsupported), unsupported
 
 
+_NO_LEVEL_KIND, _CEILING_KIND, _FLOOR_TO_FLOOR_KIND = "", "ceiling", "floor_to_floor"
+_UNIT_WORD = re.compile(r"(?<![A-Za-z])(?:feet|foot|ft|inch(?:es)?|in)\.?(?![A-Za-z])", re.I)
+
+
+def _subjectless(clause: str, citations: Sequence[str]) -> bool:
+    """A clause with a value and no word before it: it says its value is of
+    whatever the clause before it named ("The ceiling height - 10'-0"",
+    "floor-to-floor 14'-0" ..., 10'-0" SECOND FLOOR to THIRD FLOOR"). The
+    words before the value are where #894 reads a clause's subject."""
+    masked = _dims.mask_quotation_marks(_strip_citations(clause, citations))
+    rest = list(masked)
+    starts = []
+    for f in _dims.find(masked):
+        rest[f.span[0]:f.span[1]] = " " * (f.span[1] - f.span[0])
+        starts.append(f.span[0])
+    flat = _SPLIT_RE.sub(" ", _UNIT_RE.sub(" ", "".join(rest)))
+    starts += [m.start() for m in _VALUE_RE.finditer(flat)]
+    if not starts:
+        return False
+    return not search_terms(_UNIT_WORD.sub(" ", flat[:min(starts)]))
+
+
+def _level_kinds(text: str, citations: Sequence[str]) -> List[Tuple[int, int, str]]:
+    """(start, end, kind) per clause: a clause naming a ceiling is a ceiling
+    clause (whatever else it names - the conservative reading); one naming a
+    floor-to-floor is a floor-to-floor clause; a subjectless clause carries
+    the kind of the clause before it; anything else has no level kind."""
+    masked = _dims.mask_quotation_marks(text or "")
+    hold = list(masked)
+    for f in _dims.find(masked):
+        hold[f.span[0]:f.span[1]] = "\x00" * (f.span[1] - f.span[0])
+    out, prev = [], _NO_LEVEL_KIND
+    for c0, c1 in _clause_spans("".join(hold)):
+        clause = (text or "")[c0:c1]
+        if _f2f.names_ceiling(clause):
+            kind = _CEILING_KIND
+        elif _f2f.names_floor_to_floor(clause):
+            kind = _FLOOR_TO_FLOOR_KIND
+        elif _subjectless(clause, citations):
+            kind = prev
+        else:
+            kind = _NO_LEVEL_KIND
+        out.append((c0, c1, kind))
+        prev = kind
+    return out
+
+
+def _blank(text: str, spans: Iterable[Tuple[int, int]]) -> str:
+    chars = list(text or "")
+    for a, b in spans:
+        chars[a:b] = " " * (b - a)
+    return "".join(chars)
+
+
 def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
                        intent: str = "",
                        aliases: Optional[Dict[str, Dict[str, List[str]]]] = None,
@@ -4430,6 +4524,64 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
                        families: Optional[Dict[str, Sequence[str]]] = None
                        ) -> Tuple[bool, List[str]]:
     """(ok, the numbers nothing returned can vouch for).
+
+    ── A FLOOR-TO-FLOOR IS NEVER A CEILING HEIGHT (ruling 2026-10-27) ─────
+    #
+    # "derive floor-to-floor from A-300's level marks; answer "ceiling height
+    # not shown; floor-to-floor 10'-0" (A-300.00)". Floor-to-floor must never
+    # bind as a ceiling height." With level evidence among the records - the
+    # derived row (lib.plan_floor_to_floor) or a record printing a level mark - the
+    # answer is decided clause by clause, under EVERY intent:
+    #
+    #   a clause naming a ceiling   decided as before but WITHOUT any level
+    #                               evidence, and a dimension in it equal to
+    #                               a floor-to-floor, or at least the largest,
+    #                               is refused: a ceiling is lower than its
+    #                               floor-to-floor by the slab;
+    #   a clause naming a           the derived row's figures bind in it; the
+    #   floor-to-floor              rest of it is decided as before;
+    #   a subjectless clause        carries the kind of the clause before it;
+    #   any other clause            decided exactly as before, together.
+    #
+    # Without level evidence, or without such a clause, nothing changes.
+    """
+    if not any(_f2f.is_level_evidence(r) for r in records or []):
+        return _answer_is_grounded(text, records, intent, aliases, sources, families)
+    kinds = _level_kinds(text, _citation_texts(records))
+    if all(k == _NO_LEVEL_KIND for _a, _b, k in kinds):
+        return _answer_is_grounded(text, records, intent, aliases, sources, families)
+    plain = [r for r in records if not _f2f.is_level_evidence(r)]
+    f2f = _f2f.floor_to_floor_in(records)
+    stated = set(_f2f.stated_floor_to_floor(records))
+    bad: List[str] = []
+    rest = _blank(text, [(a, b) for a, b, k in kinds if k != _NO_LEVEL_KIND])
+    if _clause_spans(rest):
+        bad += _answer_is_grounded(rest, records, intent, aliases, sources, families)[1]
+    for a, b, kind in kinds:
+        clause = text[a:b]
+        found = [f for f in _dims.find(_dims.mask_quotation_marks(clause)) if f.dims]
+        if kind == _CEILING_KIND:
+            bad += _answer_is_grounded(clause, plain, intent, aliases, sources, families)[1]
+            for f in found:
+                d = f.dims[0]
+                if (d.unit == "in" and f2f and (Fraction(d.value) in f2f or d.value >= max(f2f))
+                        and f.text.strip() not in bad):
+                    bad.append(f.text.strip())
+        elif kind == _FLOOR_TO_FLOOR_KIND:
+            held = [f.span for f in found if len(f.dims) == 1 and f.dims[0].unit == "in"
+                    and Fraction(f.dims[0].value) in stated]
+            bad += _answer_is_grounded(_blank(_dims.mask_quotation_marks(clause), held),
+                                       records, intent, aliases, sources, families)[1]
+    return (not bad), bad
+
+
+def _answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
+                        intent: str = "",
+                        aliases: Optional[Dict[str, Dict[str, List[str]]]] = None,
+                        sources: Iterable[Dict[str, Any]] = (),
+                        families: Optional[Dict[str, Sequence[str]]] = None
+                        ) -> Tuple[bool, List[str]]:
+    """(ok, the numbers nothing returned can vouch for), level evidence aside.
 
     A CHECK ON THE OUTPUT, not an instruction in a prompt. The model composes;
     this decides whether what it composed may be sent. A number with nothing
@@ -4456,7 +4608,15 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     if it == "attribute":
         _ok, bad = _attribute_answer_is_bound(text, records, aliases)
     else:
+        # A CEILING'S HEIGHT IS NAMED AS ONE UNDER EVERY INTENT (Roy's
+        # condition (b), item 21): a ceiling-height clause binds only on a
+        # record part naming a ceiling and a height, as under attribute; the
+        # rest of the answer - every count among it - is decided as before.
+        # Under count too: measured, 80 ceiling-height claims of a printed
+        # 20X40" bound there on the `apartments` / `ceiling height` search.
+        text, ceiling = _ceiling_heights_bound(text, records)
         _ok, bad = _answer_is_grounded_rest(text, records, intent)
+        bad = ceiling + bad
     bad = routed + bad
     return (not bad), bad
 
@@ -4620,7 +4780,22 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
     # An area row is shown through its check (render_area_evidence), never
     # as a quote: its quote is a printed figure the check may withhold.
     everything = list(records or [])
-    records = [r for r in everything if not _areas.is_area_record(r)]
+    records = [r for r in everything if not _areas.is_area_record(r)
+               and not _f2f.is_level_record(r)]
+    # A DERIVED FLOOR-TO-FLOOR ROW IS SAID AS THE OPERATOR RULED IT
+    # (lib.plan_floor_to_floor, 2026-10-27): `Ceiling height not shown; floor-to-floor
+    # 10'-0" (A-300.00)`. When "not shown" is warranted that sentence is the
+    # whole answer - no record returned prints a ceiling height to list.
+    said = [ln for ln in (_f2f.answer_line(r) for r in everything
+                          if _f2f.is_level_record(r)) if ln]
+    if said:
+        alone = any(((r.get("payload") or {}).get("ceiling_asked")
+                     and (r.get("payload") or {}).get("ceiling_heights_printed") == 0)
+                    for r in everything if _f2f.is_level_record(r))
+        if alone:
+            return "\n".join(said)
+        rest = render_records(records, subject, limit) if records else ""
+        return "\n".join(said + ([rest] if rest and rest != NOT_FOUND else []))
     if terms:
         records = [r for r in records if not matched_only_through_label(r, terms)]
     if not records:
