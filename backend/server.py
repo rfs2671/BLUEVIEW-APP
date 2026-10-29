@@ -65747,6 +65747,15 @@ async def _area_evidence(project_id: str) -> List[dict]:
                                      {"_id": 0, "created_at": 0}).to_list(2000)
 
 
+async def _legend_count_evidence(project_id: str) -> List[dict]:
+    """Every stored legend symbol count of the project (lib.plan_legend_symbols,
+    its own collection). None is stored until a pass runs (ruling 78: not
+    before the sub-bid benchmark), and then the export is what it was."""
+    from lib.plan_legend_symbols import COLLECTION
+    return await db[COLLECTION].find({"project_id": str(project_id)},
+                                     {"_id": 0, "created_at": 0}).to_list(5000)
+
+
 async def _write_set_health(project_id: str, items: List[dict]) -> int:
     """Replace the project's set-health items with one pass's (own collection:
     they are no plan record, so search never returns them and the eval's
@@ -82944,14 +82953,15 @@ async def get_project_takeoff_xlsx(project_id: str, current_user=Depends(get_adm
     pid = str(project_id)
     records = await _glyph_evidence(pid, "", everything=True)
     areas = await _area_evidence(pid)
+    legend = await _legend_count_evidence(pid)
     fids = set()
-    for r in list(records) + list(areas):
+    for r in list(records) + list(areas) + list(legend):
         fids.add(r.get("file_id"))
         a = (r.get("payload") or {}).get("arch") if isinstance(r.get("payload"), dict) else None
         if isinstance(a, dict):
             fids.add(a.get("file_id"))
     sources = await _plan_file_sources(pid, fids)
-    takeoff = await asyncio.to_thread(_tx.build, records, areas, sources)
+    takeoff = await asyncio.to_thread(_tx.build, records, areas, sources, legend)
     project = await db.projects.find_one({"_id": to_query_id(pid)}, {"name": 1, "company_id": 1})
     company_id = (project or {}).get("company_id") or get_user_company_id(current_user)
     for ln in takeoff.refused:

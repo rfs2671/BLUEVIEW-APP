@@ -454,6 +454,94 @@ class OnTheBoylandDrawings(unittest.TestCase):
         got = {r.get("mark"): len(r.get("matches") or []) for r in m.count_sheet(page)["rows"]}
         self.assertEqual(got, {"A": 1, "S": 0, "EX": 23, "D": 0, "P": 0})
 
+# ── 7. the sheet's own legend wins (ruling 75) ──────────────────────────────
+
+def set_legend_rows(rows, sheet="P-001.00"):
+    """A legend on ANOTHER page (P-001.00's SYMBOLS LIST), as count_sheet takes
+    it: each row with that page's strokes and words."""
+    m = _ls("strokes_from_drawings")
+    d, w = legend(rows, x0=40.0, y0=1000.0)
+    strk = m.strokes_from_drawings(d)
+    out = []
+    for i, (meaning, _f) in enumerate(rows):
+        y = 1000.0 + (2 + i) * 20.0
+        out.append({"meaning": meaning, "cell": (40.0, y, 100.0, y + 20.0), "sheet": sheet,
+                    "strokes": strk, "words": w})
+    return out
+
+
+class TheSheetsOwnLegendWins(unittest.TestCase):
+
+    def page_and_set(self):
+        d, w = legend([("SANITARY STACK/STACK NO.", lambda c: stack(*centre(c), 8, "S", "#"))])
+        d += stack(600, 400, 11.3, "S", "1") + stack(700, 400, 11.3, "S", "2")
+        d += stack(800, 400, 11.3, "V", "1")
+        extra = set_legend_rows([
+            ("SANITARY STACK/STACK NO.", lambda c: stack(*centre(c), 8, "S", "#")),
+            ("SOIL STACK", lambda c: stack(*centre(c), 8, "S", "#")),
+            ("VENT STACK/STACK NO.", lambda c: stack(*centre(c), 8, "V", "#"))])
+        return Page(d, w), extra
+
+    def test_a_row_both_legends_print_is_counted_once_from_the_sheets_own(self):
+        m = _ls("count_sheet", "SUPERSEDED")
+        page, extra = self.page_and_set()
+        rows = m.count_sheet(page, extra, title_edge=2300.0)["rows"]
+        own = [r for r in rows if r["src"] == "own legend" and r["meaning"].startswith("SANITARY")]
+        self.assertEqual(len(own[0]["matches"]), 2)
+        theirs = {r["meaning"]: r for r in rows if r["src"] == "P-001.00"}
+        # the same meaning, and the same drawing under another meaning
+        for k in ("SANITARY STACK/STACK NO.", "SOIL STACK"):
+            self.assertTrue(theirs[k].get("refused", "").startswith(m.SUPERSEDED), theirs[k])
+        # a row only the set legend prints still counts
+        self.assertEqual(len(theirs["VENT STACK/STACK NO."]["matches"]), 1)
+
+
+# ── 8. P/R against whichever benchmark is loaded, per sheet or per floor ────
+
+class ABenchmarkPerSheetOrPerFloor(unittest.TestCase):
+
+    def results(self):
+        def res(rows):
+            return {"rows": [dict(r, src="own legend") for r in rows]}
+        s4 = {"meaning": "SANITARY STACK/STACK NO.", "matches": [{"box": [0, 0, 1, 1]}] * 4}
+        cw = {"meaning": "COLD WATER STACK/STACK NO.", "matches": [{"box": [0, 0, 1, 1]}] * 4}
+        pipe = {"meaning": "SANITARY PIPING", "refused": "a line type"}
+        return {"P-202.00": res([s4, pipe]), "P-101.00": res([cw]),
+                "P-200.00": res([s4])}
+
+    TITLES = {"P-202.00": "SECOND FLOOR SANITARY & STORM PLAN",
+              "P-101.00": "SECOND FLOOR DOMESTIC WATER & GAS PLANS",
+              "P-200.00": "FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN"}
+
+    def test_per_sheet(self):
+        m = _ls("evaluate")
+        got = m.evaluate(self.results(), {"source": "Roy's sub bid", "kind": "sub_bid",
+                                          "sheets": {"P-202.00": {"SANITARY STACK/STACK NO.":
+                                                                  {"expected": 5},
+                                                                  "SANITARY PIPING": {"expected": 9}}}})
+        self.assertEqual(got["source"], "Roy's sub bid")
+        san, pipe = got["rows"]
+        self.assertEqual((san["tp"], san["fn"], san["basis"]), (4, 1, "per count (an upper bound)"))
+        self.assertEqual(pipe["status"], "refused")       # never scored as zero found
+
+    def test_per_floor_by_the_printed_title_level(self):
+        m = _ls("evaluate")
+        got = m.evaluate(self.results(), {"floors": {
+            "SECOND FLOOR": {"SANITARY STACK/STACK NO.": {"expected": 4},
+                             "COLD WATER STACK/STACK NO.": {"expected": 4}},
+            "FIRST UNDERGROUND": {"SANITARY STACK/STACK NO.": {"expected": 4}}}},
+            titles=self.TITLES)
+        by = {(r["where"], r["symbol"]): r for r in got["rows"]}
+        second = by[("SECOND FLOOR", "SANITARY STACK/STACK NO.")]
+        self.assertEqual(second["sheets"], ["P-101.00", "P-202.00"])
+        self.assertEqual((second["found"], second["tp"]), (4, 4))
+        self.assertEqual(by[("SECOND FLOOR", "COLD WATER STACK/STACK NO.")]["found"], 4)
+        # a level no title names is said, never guessed onto a sheet
+        self.assertEqual(by[("FIRST UNDERGROUND", "SANITARY STACK/STACK NO.")]["status"],
+                         "unresolved")
+        self.assertEqual(got["totals"]["tp"], 8)
+
+
 
 if __name__ == "__main__":
     unittest.main()

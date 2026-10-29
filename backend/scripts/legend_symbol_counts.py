@@ -52,11 +52,15 @@ def main(argv=None) -> int:
     ap.add_argument("--set-legend-sheet", default="set legend")
     ap.add_argument("--json", help="write the results here")
     ap.add_argument("--rows", action="store_true", help="include the rows a pass would store")
+    ap.add_argument("--benchmark", help="a benchmark JSON (per sheet and/or per floor): print P/R")
+    ap.add_argument("--titles", help="JSON {sheet number: printed title}, for a per-floor benchmark")
+    ap.add_argument("--sheets", help="JSON {page number: sheet number}, naming the pages")
     a = ap.parse_args(argv)
     extra = []
     if a.set_legend:
         extra = pls.set_legend(PlanPage(a.pdf, a.set_legend), a.set_legend_sheet)
     out = {}
+    names = json.loads(Path(a.sheets).read_text(encoding="utf-8")) if a.sheets else {}
     for n in pages_arg(a.pages):
         page = PlanPage(a.pdf, n)
         res = pls.count_sheet(page, extra)
@@ -82,6 +86,18 @@ def main(argv=None) -> int:
         page.close()
     if a.json:
         Path(a.json).write_text(json.dumps(out, indent=1, default=float), encoding="utf-8")
+    if a.benchmark:
+        bench = json.loads(Path(a.benchmark).read_text(encoding="utf-8"))
+        titles = json.loads(Path(a.titles).read_text(encoding="utf-8")) if a.titles else {}
+        by_sheet = {names.get(k, k): v for k, v in out.items()}
+        ev = pls.evaluate(by_sheet, bench, titles)
+        print(f"== benchmark: {ev['source']} ({ev['kind']})")
+        for r in ev["rows"]:
+            tail = (f"found {r['found']} expected {r['expected']} TP {r['tp']} FP {r['fp']} "
+                    f"FN {r['fn']} [{r['basis']}]" if r["status"] == "scored"
+                    else f"{r['status']}: {r.get('why', '')}")
+            print(f"   {r['scope']:5s} {r['where']:16s} {r['symbol'][:40]:40s} {tail}")
+        print(f"   TOTAL {ev['totals']}")
     return 0
 
 

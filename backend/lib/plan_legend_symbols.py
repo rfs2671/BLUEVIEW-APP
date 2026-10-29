@@ -822,8 +822,26 @@ def count_sheet(page, legends: Sequence[Dict[str, Any]] = (), *, own: bool = Tru
                 if match_score(ti["T"], parts, mirror=mirror)[0] <= TOL:
                     same[i][j] = mark
                     break
+    # THE SHEET'S OWN LEGEND WINS (ruling 75): a row of another sheet's legend
+    # (P-001.00's SYMBOLS LIST) that the sheet's own legend also prints - the
+    # same meaning, or the same drawing - is counted from the sheet's own row
+    # only, never twice.
+    own_idx = [j for j, (r, _t, _w) in enumerate(lifted) if r.get("sheet") is None]
+    superseded: Dict[int, str] = {}
+    for i, (ri, ti, _w) in enumerate(lifted):
+        if ri.get("sheet") is None:
+            continue
+        for j in own_idx:
+            rj, tj, _w2 = lifted[j]
+            if (_norm(ri["meaning"]) and _norm(ri["meaning"]) == _norm(rj["meaning"])) or (
+                    ti is not None and tj is not None
+                    and match_score(ti["T"], tj["T"], mirror=mirror)[0] <= TOL):
+                superseded[i] = rj["meaning"]
+                break
     out = []
     for i, (row, tmpl, why) in enumerate(lifted):
+        if i in superseded:
+            tmpl, why = None, (f"{SUPERSEDED}: {superseded[i][:48]}")
         rec: Dict[str, Any] = {"meaning": row["meaning"], "cell": list(row["cell"]),
                                "src": row.get("sheet") or "own legend",
                                "text_src": row.get("text_src")}
@@ -889,6 +907,19 @@ def set_legend(page, sheet: str, ocr: Optional[Callable] = None) -> List[Dict[st
 # The rows a pass would store (designed; NOT written by anything)
 # ══════════════════════════════════════════════════════════════════════════
 
+#: A row of another sheet's legend that the sheet's own legend also prints.
+SUPERSEDED = "the sheet's own legend prints this symbol and counts it"
+#: Where a pass would store the rows (its own collection, like lib.plan_areas):
+#: no plan record, so search never returns them.
+COLLECTION = "plan_legend_counts"
+
+
+def _norm(s: str) -> str:
+    """Meanings compared as letters and digits: OCR spaces differ by sheet
+    (STORMSTACK/STACK NO. against STORM STACK/STACK NO.)."""
+    return re.sub(r"[^A-Z0-9]", "", str(s or "").upper())
+
+
 #: The sheet-level refusal when no legend was read on it (and none was handed in).
 NO_LEGEND = "no legend on the sheet: no swatch to match, every symbol refused"
 #: How the count was made. NOT in plan_search.COUNTING_BASES.
@@ -932,11 +963,99 @@ def legend_count_rows(result: Dict[str, Any], page_meta: Dict[str, Any], *,
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Scoring against a benchmark (ruling 81): per sheet, or per floor
+# ══════════════════════════════════════════════════════════════════════════
+
+def _row_for(result: Dict[str, Any], key: str) -> Optional[Dict[str, Any]]:
+    """The row a benchmark key names on one sheet: `mark:X`, or a meaning
+    compared as letters and digits - the sheet's own legend first (ruling 75)."""
+    rows = sorted(result.get("rows") or [], key=lambda r: r.get("src") != "own legend")
+    for r in rows:
+        if key.startswith("mark:") and r.get("mark") == key[5:]:
+            return r
+        if not key.startswith("mark:") and _norm(r.get("meaning")) == _norm(key):
+            if "refused" in r and str(r["refused"]).startswith(SUPERSEDED):
+                continue
+            return r
+    return None
+
+
+def _score(found: int, exp: int, fp_boxes) -> Dict[str, Any]:
+    if fp_boxes is not None:
+        fp = len(fp_boxes)
+        tp, basis = found - fp, "per instance"
+    else:
+        tp = min(found, exp)
+        fp, basis = found - tp, "per count (an upper bound)"
+    fn = max(exp - tp, 0)
+    return {"found": found, "expected": exp, "tp": tp, "fp": fp, "fn": fn, "basis": basis,
+            "p": round(tp / found, 3) if found else None,
+            "r": round(tp / exp, 3) if exp else None}
+
+
+def evaluate(results: Dict[str, Dict[str, Any]], benchmark: Dict[str, Any],
+             titles: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """P/R of `results` ({sheet number: count_sheet result}) against WHICHEVER
+    benchmark is loaded, and whose it is (`source`, `kind`).
+
+    `benchmark["sheets"]`: {sheet: {meaning | "mark:X": {"expected"[,
+    "false_positive_boxes"]}}}. `benchmark["floors"]`: {printed level ("SECOND
+    FLOOR"): {meaning | "mark:X": {"expected"}}} - a sub bid's per-floor
+    quantity. A floor is matched to sheets ONLY by the level their printed
+    title names (`titles`: {sheet: title}; plan_search._title_level, the
+    gate's own reading), and the floor's figure is the sum over those sheets.
+    A level no sheet's title names - FIRST UNDERGROUND FLOOR reads as no
+    level - is unresolved and said, never guessed. A refused row is reported
+    as refused, never scored as zero found."""
+    from lib.plan_search import _title_level
+    out: List[Dict[str, Any]] = []
+    for sheet, wants in sorted((benchmark.get("sheets") or {}).items()):
+        res = results.get(sheet)
+        for key, e in wants.items():
+            row = _row_for(res, key) if res else None
+            rec = {"scope": "sheet", "where": sheet, "symbol": key}
+            if row is None:
+                rec["status"] = "not in any legend read" if res else "sheet not measured"
+            elif "refused" in row:
+                rec.update(status="refused", why=row["refused"])
+            else:
+                rec.update(status="scored", **_score(len(row["matches"]), int(e["expected"]),
+                                                      e.get("false_positive_boxes")))
+            out.append(rec)
+    levels = {s: _title_level(t) for s, t in (titles or {}).items()}
+    for label, wants in sorted((benchmark.get("floors") or {}).items()):
+        lvl = _title_level(label) or _title_level(f"{label} floor")
+        on = sorted(s for s, l in levels.items() if lvl is not None and l == lvl and s in results)
+        for key, e in wants.items():
+            rec = {"scope": "floor", "where": label, "symbol": key, "sheets": on}
+            if not on:
+                rec.update(status="unresolved",
+                           why=f"no measured sheet's printed title names {label!r}")
+                out.append(rec)
+                continue
+            rows = [r for r in (_row_for(results[s], key) for s in on) if r is not None]
+            counted = [r for r in rows if "refused" not in r]
+            if not counted:
+                rec.update(status="refused" if rows else "not in any legend read",
+                           why="; ".join(sorted({str(r["refused"]) for r in rows})))
+            else:
+                rec.update(status="scored", **_score(sum(len(r["matches"]) for r in counted),
+                                                      int(e["expected"]), None))
+            out.append(rec)
+    sc = [r for r in out if r["status"] == "scored"]
+    tp, fp, fn = (sum(r[k] for r in sc) for k in ("tp", "fp", "fn"))
+    return {"source": benchmark.get("source"), "kind": benchmark.get("kind"), "rows": out,
+            "totals": {"tp": tp, "fp": fp, "fn": fn,
+                       "p": round(tp / (tp + fp), 3) if tp + fp else None,
+                       "r": round(tp / (tp + fn), 3) if tp + fn else None}}
+
+
 __all__ = [
     "CAP_PT", "LINK_PT", "TOL", "NEAR_FACTOR", "ASPECT_TOL", "SCALE_MIN", "SCALE_MAX",
     "PART_FLOOR", "DIHEDRAL_NAMES", "COUNT_BASIS", "RECORD_TYPE",
     "strokes_from_drawings", "objects", "norm_parts", "is_hash", "coarse_ok",
     "match_score", "grids", "legend_candidate", "cells_text", "legend_rows",
     "lift_swatch", "dedupe", "read_legends", "count_sheet", "set_legend",
-    "legend_count_rows", "transforms",
+    "legend_count_rows", "transforms", "evaluate", "SUPERSEDED", "COLLECTION",
 ]

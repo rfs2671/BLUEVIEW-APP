@@ -45,6 +45,11 @@ AREAS = "Areas"
 #: (an empty sheet says "none found", not "not looked for").
 TRADES = (DOORS_WINDOWS, EQUIPMENT, ROOF_DRAINS, AREAS)
 REFUSED_SHEET = "Not verified - refused"
+#: A sheet's legend symbol count (lib.plan_legend_symbols, ruling 77): listed,
+#: never a figure, until the sub-bid benchmark has measured the matcher.
+LEGEND_SYMBOLS = "Legend symbols"
+LEGEND_NOT_VERIFIED = ("legend symbol count: not verified until the sub-bid benchmark "
+                       "(drawn symbols, sheet scope)")
 
 BUILDING, FLOOR = "Building", "Floor"
 
@@ -371,11 +376,36 @@ def _area_lines(ctx: _Ctx, rows: Sequence[Dict[str, Any]]) -> None:
              intent="attribute")
 
 
+def _legend_lines(ctx: _Ctx, rows: Sequence[Dict[str, Any]]) -> None:
+    """A STORED LEGEND SYMBOL COUNT IS NEVER A FIGURE (ruling 77). Each counted
+    row (lib.plan_legend_symbols.legend_count_rows, a count above zero) is one
+    "Not verified - refused" line - its sheet, file and page, and its set when
+    the row says one - with LEGEND_NOT_VERIFIED as the reason, and so one
+    review item. No quantity is shown and nothing is put to the gate: its
+    basis, legend_symbol, is not a counting basis. A refused row or a zero is
+    the pass's own record and makes no line."""
+    from lib import plan_legend_symbols as _pls
+    for r in sorted(rows, key=lambda r: (str(r.get("sheet_number") or ""), r.get("ordinal") or 0)):
+        if (r.get("record_type") != _pls.RECORD_TYPE or r.get("status") != "counted"
+                or not r.get("count")):
+            continue
+        sheets, src = _source([r], ctx.sources)
+        fsrc = ctx.sources.get(str(r.get("file_id") or "")) or {}
+        t = r.get("track")
+        set_label = fsrc.get("set_name") or (f"the {t} set" if t else "")
+        ctx.refused.append(Line(LEGEND_SYMBOLS, str(r.get("label") or ""),
+                                str(r.get("mark") or ""), "Sheet", sheets, None, "ea",
+                                set_label, sheets, src, "", "", LEGEND_NOT_VERIFIED))
+
+
 def build(records: Sequence[Dict[str, Any]], area_rows: Sequence[Dict[str, Any]] = (),
-          sources: Optional[Dict[str, dict]] = None) -> Takeoff:
+          sources: Optional[Dict[str, dict]] = None,
+          legend_rows: Sequence[Dict[str, Any]] = ()) -> Takeoff:
     """Every candidate line, put to the gate. `records`: the located-symbol
     evidence (rows, censuses, set health) of every family; `area_rows`: the
-    project's area rows; `sources`: {file_id: plan_sources.source_of}."""
+    project's area rows; `sources`: {file_id: plan_sources.source_of};
+    `legend_rows`: stored legend symbol counts, each listed as not verified
+    (_legend_lines) - none stored, nothing changes."""
     records = list(records or [])
     sources = dict(sources or {})
     ctx = _Ctx(records, sources, list(sources.values()), [], [])
@@ -392,6 +422,8 @@ def build(records: Sequence[Dict[str, Any]], area_rows: Sequence[Dict[str, Any]]
     if area_rows:
         actx = _Ctx(list(area_rows), sources, ctx.src_list, ctx.out, ctx.refused)
         _area_lines(actx, area_rows)
+    if legend_rows:
+        _legend_lines(ctx, legend_rows)
     return Takeoff(ctx.out, ctx.refused)
 
 
