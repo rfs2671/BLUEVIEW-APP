@@ -1,4 +1,4 @@
-"""THE TAKEOFF EXPORT, PER DRAWING SET (rulings 72 and 73, 2026-10-28).
+"""THE TAKEOFF EXPORT, PER DRAWING SET (rulings 72, 73, 101/102, 2026-10-28).
 
 Measured on 588 Boyland 2026-10-28 (read-only probe): WH-1 has 18 located
 rows - 9 in the filed set (6 on M-100 -> A-100.01, 3 on M-105 -> A-105.01)
@@ -10,7 +10,13 @@ which counts each sheet's symbols from one set. The owner's set's 9 were on
 no line.
 
   72. "one line per set, same as doors/windows (owner's set: 6 on A-100.00
-      placed outside apartments; roof 3 refused with the reason)."
+      placed outside apartments; ...)."
+  101/102 (withdrawing 72's roof refusal): "a whole-sheet count binds at
+      sheet scope (Oct 7 rule) in both chat and export. Owner's-set roof line
+      = 3 WH-1 at sheet scope, 'not placed in apartments: A-105.00 has no unit
+      tags'. Owner's building total = 9, agreeing with schedule QTY 9. The
+      export and the chat must apply the same rule; add a test asserting they
+      agree on every equipment line."
   73. "'not checked: schedule QTY unreadable (6 or 9)', not refused."
       PTAC-2's QTY cell on M-200.00 is contested: two readings, 6 and 9
       (plan_ocr.read_grid_twice stores them in payload.contested_cells).
@@ -33,6 +39,7 @@ os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
 from lib import plan_emit as E  # noqa: E402
 from lib import plan_search as S  # noqa: E402
 from lib import plan_takeoff_export as X  # noqa: E402
+from tests import test_a_door_is_counted_by_its_tag as D  # noqa: E402
 from tests import test_two_drawing_tracks as T  # noqa: E402
 
 OWNER = T.LABEL
@@ -102,7 +109,8 @@ class EveryMechanicalLineIsPerItsSet(unittest.TestCase):
     def test_the_owners_set_has_its_own_lines(self):
         recs = _wh_world()
         t = X.build(recs)
-        first = _one(t.lines, tag="WH-1", scope=X.FLOOR, set_label=OWNER)
+        first = _one(t.lines, tag="WH-1", scope=X.FLOOR, set_label=OWNER,
+                     level="FIRST FLOOR HVAC PLANS")
         self.assertEqual((first.qty, first.level), (2, "FIRST FLOOR HVAC PLANS"))
         self.assertIn("A-100.00", first.sheets)
         self.assertEqual(first.check, "placed outside apartments")
@@ -116,20 +124,24 @@ class EveryMechanicalLineIsPerItsSet(unittest.TestCase):
             self.assertTrue(S.answer_is_grounded(ln.sentence, recs, intent="count")[0], ln)
             self.assertTrue(ln.sentence.endswith(f"per {ln.set_label}."), ln)
 
-    def test_a_plan_that_could_place_nothing_is_refused_with_its_reason(self):
+    def test_a_whole_sheet_count_binds_at_sheet_scope(self):
         """The owner's roof: A-105.00 names no unit, so its 3 WH-1 were
-        counted at sheet scope, not placed. Refused, with the stored reason
-        - and the owner's total, which rests on it, too."""
+        counted at sheet scope, not placed. The line stands (rulings 101/102,
+        the Oct 7 rule), and says they were not placed in apartments; the
+        owner's total stands with it, checked against the schedule's QTY."""
         t = X.build(_wh_world())
-        self.assertFalse([ln for ln in t.lines if ln.set_label == OWNER
-                          and (ln.level == "ROOF HVAC PLANS" or ln.scope == X.BUILDING)])
-        roof = _one(t.refused, tag="WH-1", scope=X.FLOOR, set_label=OWNER)
-        self.assertEqual(roof.level, "ROOF HVAC PLANS")
-        self.assertEqual(roof.reason, f"3 located; {WHY}")
+        self.assertFalse([ln for ln in t.refused if ln.tag == "WH-1"])
+        roof = _one(t.lines, tag="WH-1", scope=X.FLOOR, set_label=OWNER,
+                    level="ROOF HVAC PLANS")
+        self.assertEqual((roof.qty, roof.check),
+                         (3, "not placed in apartments: A-105.00 has no unit tags"))
         self.assertIn("A-105.00", roof.sheets)
-        total = _one(t.refused, tag="WH-1", scope=X.BUILDING, set_label=OWNER)
-        self.assertIn("ROOF HVAC PLANS", total.reason)
-        self.assertIn(WHY, total.reason)
+        self.assertEqual(roof.sentence, f"The roof has 3 WH-1 per {OWNER}.")
+        total = _one(t.lines, tag="WH-1", scope=X.BUILDING, set_label=OWNER)
+        self.assertEqual((total.qty, total.check), (5, "schedule QTY 5 agrees"))
+        # the filed set's roof was placed - outside the apartments
+        self.assertEqual(_one(t.lines, tag="WH-1", scope=X.FLOOR, set_label=FILED,
+                              level="ROOF HVAC PLANS").check, "placed outside apartments")
 
     def test_one_symbol_a_placed_plan_could_not_place_is_no_such_refusal(self):
         """'refused: in a wall' on a plan that placed the rest: the floor
@@ -165,6 +177,72 @@ class EveryMechanicalLineIsPerItsSet(unittest.TestCase):
         t = X.build(world(owner_reads=True))
         self.assertEqual(_one(t.refused, tag="SAF-1", scope=X.BUILDING,
                               set_label=OWNER).reason, "no located symbols")
+
+
+def _gate_sentences(recs, ln):
+    """Every sentence the chat could state for `ln`'s subject, scope and set,
+    figure 0..60 - the export's own sentence shape (X._sentence), so a
+    refused line with no figure is checked too."""
+    gb = S.glyph_books(recs)
+    ob = S.opening_books(recs)
+    books = ob if ln.trade == X.DOORS_WINDOWS else gb
+    t = next((t for t, lab in books.labels.items() if lab == ln.set_label), None)
+    book = books.tracks.get(t) if t in books.tracks else books.totals
+    sets = len(books.tracks)
+    subject = ""
+    if ln.scope == X.FLOOR:
+        k = next((k for k, title in book.titles.items() if title == ln.level), ln.level)
+        subject = X._floor_subject(book, k)
+    fam = book.families[ln.item]
+    tag = ln.tag[len("type "):] if ln.tag.startswith("type ") else ln.tag
+    phrase = X._set_phrase(ln.set_label, sets)
+    return {v: X._sentence(subject, v, X._thing(fam, tag, v, book.opening), phrase)
+            for v in range(0, 61)}
+
+
+class TheExportAndTheChatAgree(unittest.TestCase):
+    """Rulings 101/102: one rule in both. For every equipment, roof-drain and
+    door/window line, in each set, at floor (placed or sheet scope) and
+    building scope: a verified line's sentence is one the chat gate binds,
+    with the line's figure and no other; a refused line's subject binds no
+    figure at all in the chat."""
+
+    WORLDS = {
+        "WH-1, both sets, a sheet-scope roof": _wh_world,
+        "PTAC, both sets, doors and windows": lambda: T._world() + D._world(
+            D._first_floor("filed"), D._first_floor("post_co")),
+        "PTAC, the owner's first floor short": lambda: T._world(
+            owner_100=T.OWNER_100[:4], owner_mech=5),
+    }
+
+    def test_every_line(self):
+        for name, world in self.WORLDS.items():
+            with self.subTest(name):
+                recs = world()
+                with self.assertLogs("lib.plan_search", "WARNING") if "short" in name \
+                        else _quiet():
+                    t = X.build(recs)
+                checked = 0
+                for ln, verified in [(ln, True) for ln in t.lines] + [(ln, False) for ln in t.refused]:
+                    if ln.trade == X.AREAS or ln.tag == "(all)":
+                        continue
+                    bound = {v for v, sent in _gate_sentences(recs, ln).items()
+                             if S.answer_is_grounded(sent, recs, intent="count")[0]}
+                    if verified:
+                        self.assertEqual(bound, {int(ln.qty)}, ln)
+                        self.assertTrue(S.answer_is_grounded(ln.sentence, recs, intent="count")[0])
+                    else:
+                        self.assertEqual(bound, set(), ln)
+                    checked += 1
+                self.assertGreaterEqual(checked, 6)
+
+
+class _quiet:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
 
 
 class AnUnreadableQtyIsNotChecked(unittest.TestCase):

@@ -264,25 +264,35 @@ _OUTSIDE = "placed-non-unit"
 _SHEET_SCOPE = "sheet_scope"
 
 
-def _unplaced(rows: Sequence[Dict[str, Any]]) -> List[str]:
-    """The stored reasons of rows whose mechanical sheet HAS an architectural
-    partner that could place nothing on it, so the sheet was counted at sheet
-    scope (plan_glyph_pass.sheet_scope; WH-1 on the owner's A-105.00: "no
-    occupancy table and no unit tags on the sheet: counted at sheet scope, not
-    placed"). Ruling 72 refuses that floor line. A sheet with no architectural
-    partner (SAF-1's M-106.00) and a plan-only family's plan are not this, and
-    neither is one symbol a placed sheet could not place ("in a wall")."""
-    out: List[str] = []
-    for r in rows:
-        p = r.get("payload") if isinstance(r.get("payload"), dict) else {}
-        a = p.get("arch") if isinstance(p.get("arch"), dict) else None
-        u = p.get("units") if isinstance(p.get("units"), dict) else {}
-        if (a and (a.get("sheet_number") or a.get("page_id")) and u.get("method") == _SHEET_SCOPE
-                and p.get("placement") == _NOT_PLACED):
-            why = str(p.get("reason") or "not placed")
-            if why not in out:
-                out.append(why)
-    return out
+def _unplaced_sheet(r: Dict[str, Any]) -> Optional[str]:
+    """The architectural sheet of a row counted at sheet scope because that
+    partner names no unit (plan_glyph_pass.sheet_scope, SHEET_SCOPE_UNITS:
+    no unit tags read) - WH-1 on the owner's A-105.00 - else None.
+
+    A WHOLE-SHEET COUNT BINDS AT SHEET SCOPE (operator ruling 2026-10-07,
+    restated as rulings 101/102, 2026-10-28, withdrawing 72's refusal): in
+    the export as in the chat, the floor line and the set's total stand, and
+    the floor line says the symbols were not placed in apartments. A sheet
+    with no architectural partner (SAF-1's M-106.00) and a plan-only family's
+    plan are not this, and neither is one symbol a placed sheet could not
+    place ("in a wall")."""
+    p = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+    a = p.get("arch") if isinstance(p.get("arch"), dict) else None
+    u = p.get("units") if isinstance(p.get("units"), dict) else {}
+    if (a and a.get("sheet_number") and u.get("method") == _SHEET_SCOPE
+            and p.get("placement") == _NOT_PLACED and not u.get("tags")):
+        return str(a["sheet_number"])
+    return None
+
+
+def _placement_note(rows: Sequence[Dict[str, Any]]) -> str:
+    """Where a floor line's symbols were placed, when all of them were placed
+    the same way: not in apartments (a sheet-scope count), or outside them."""
+    sheets = [_unplaced_sheet(r) for r in rows]
+    if rows and all(sheets):
+        return (f"not placed in apartments: {', '.join(dict.fromkeys(sheets))} "
+                f"has no unit tags")
+    return "placed outside apartments" if _outside_apartments(rows) else ""
 
 
 def _outside_apartments(rows: Sequence[Dict[str, Any]]) -> bool:
@@ -327,8 +337,8 @@ def _book_lines(ctx: _Ctx, book: S.GlyphBook, *, set_label: str, sets: int,
             continue
         trade = trade_of(fam)
         phrase = _set_phrase(set_label, sets) if (opening or per_set) else ""
-        # A SYMBOL PAIRED WITH A PLAN THAT COULD NOT PLACE IT (ruling 72):
-        # its floor line is refused, with the reason the pass stored.
+        # WHERE A MECHANICAL SYMBOL WAS PLACED is said on its floor line
+        # (rulings 72, 101/102): outside the apartments, or not in them.
         mech = not opening and fam.plan_only is None
 
         def label_of(rows):
@@ -355,21 +365,16 @@ def _book_lines(ctx: _Ctx, book: S.GlyphBook, *, set_label: str, sets: int,
             continue
         for tag in fam.tags:
             rows_t = [r for r in fam.rows if r.get("label") == tag]
-            held: List[str] = []        # floors refused because nothing was placed
             for k in sorted({S._row_floor(r) for r in rows_t if S._row_floor(r)} - refused_k):
                 on_k = [r for r in rows_t if S._row_floor(r) == k]
                 n = S._floor_count(book, fam, [tag], k)
                 subject = _floor_subject(book, k)
                 why = None if n and subject else (
                     _floor_why(book, fam, k) if not n else "the floor has no name a check can read")
-                unplaced = _unplaced(on_k) if mech else []
-                if why is None and unplaced:
-                    why = f"{n} located; " + "; ".join(unplaced)
-                    held.append(f"{book.titles.get(k) or k} ({'; '.join(unplaced)})")
                 _put(ctx, trade=trade, item=name, tag=S._type_name(tag) if opening else tag,
                      scope=FLOOR, level=book.titles.get(k) or k, n=n, unit="ea",
                      set_label=label_of(on_k), rows=on_k,
-                     check="placed outside apartments" if mech and _outside_apartments(on_k) else "",
+                     check=_placement_note(on_k) if mech else "",
                      sentence=_sentence(subject, n, _thing(fam, tag, n, opening), phrase)
                      if n else "", why=why)
             n = S._building_count(book, fam, [tag])
@@ -378,8 +383,6 @@ def _book_lines(ctx: _Ctx, book: S.GlyphBook, *, set_label: str, sets: int,
                     and not S._building_refused(book):
                 continue                # a schedule type nothing names: no line at all
             why = None if n else _building_why(book, fam, [tag], located)
-            if why is None and held:
-                why = "a floor's figure is not verified: " + "; ".join(held)
             _put(ctx, trade=trade, item=name, tag=S._type_name(tag) if opening else tag,
                  scope=BUILDING, level="", n=n, unit="ea", set_label=label_of(rows_t),
                  rows=rows_t,
