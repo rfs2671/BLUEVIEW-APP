@@ -3877,6 +3877,7 @@ from lib import plan_search  # noqa: E402
 from lib import plan_areas  # noqa: E402
 from lib import plan_levels  # noqa: E402
 from lib import plan_term_senses  # noqa: E402
+from lib import plan_floor_to_floor  # noqa: E402
 from lib import plan_crop  # noqa: E402
 from lib import plan_sources  # noqa: E402
 
@@ -69652,6 +69653,72 @@ def _with_scoped(extra: List[dict], out: List[dict], asked: str, interp: dict) -
     return out
 
 
+#: Level-mark records read per project, and ceiling records counted for the
+#: "not shown" warrant. NOT a silent cap: a read that fills it derives nothing
+#: (levels) or counts nothing (the warrant), and says so.
+LEVEL_EVIDENCE_MAX = 5000
+
+
+async def _level_evidence(project_id: str, ceiling_asked: bool,
+                          asked_levels: Tuple[str, ...] = ()) -> List[dict]:
+    """The floor-to-floor row (lib.plan_floor_to_floor, ruling 2026-10-27),
+    derived at question time from the level marks a SECTION prints, checked
+    against every current page that prints a mark of the same name - or []
+    when no section prints two marks. READ-ONLY; whole project, like the
+    areas: a floor or discipline filter on the question must not hide the
+    section. `asked_levels`: the levels the question named, as #891 read them
+    against the set (`interp["levels"]`), so the answer names that storey.
+
+    With `ceiling_asked`, also the warrant for "ceiling height not shown":
+    how many parts of the project's current records name a ceiling and a
+    height where they print a dimension (plan_floor_to_floor.names_a_ceiling_height
+    over plan_search.value_parts). None when that count could not be made."""
+    pid = str(project_id)
+    page_ids = await _current_record_page_ids(pid)
+    if not page_ids:
+        return []
+    scope = {"project_id": pid, "page_id": {"$in": page_ids}}
+    rows = await db[PLAN_RECORDS].find(
+        {**scope, "quote": {"$regex": plan_floor_to_floor.LEVEL_MARK_QUERY}},
+        {"_id": 0, "embedding": 0}).to_list(LEVEL_EVIDENCE_MAX)
+    if len(rows) >= LEVEL_EVIDENCE_MAX:
+        logger.warning(f"level evidence cap {LEVEL_EVIDENCE_MAX} reached for {pid}; "
+                       f"no floor-to-floor derived")
+        return []
+    pages: Dict[str, dict] = {}
+    for r in sorted(rows, key=lambda r: (str(r.get("page_id")), r.get("ordinal") or 0)):
+        ms = plan_floor_to_floor.marks(r.get("quote") or "")
+        if ms:
+            pages.setdefault(str(r.get("page_id")), dict(r, marks=[]))["marks"].extend(ms)
+    section = plan_floor_to_floor.choose_section(list(pages.values()))
+    if not section:
+        return []
+    derived = plan_floor_to_floor.derive(section["marks"])
+    where = lambda p: str(p.get("sheet_number") or p.get("file_name") or "?")  # noqa: E731
+    conflicting, agreeing = [], set()
+    for k, p in pages.items():
+        if k == str(section.get("page_id")):
+            continue
+        bad = plan_floor_to_floor.conflicts(derived, [(where(p), m) for m in p["marks"]])
+        conflicting += bad
+        if not bad:
+            agreeing.add(where(p))
+    printed: Optional[int] = None
+    if ceiling_asked:
+        rx = {"$regex": r"CEIL|\bCLG", "$options": "i"}
+        named = await db[PLAN_RECORDS].find(
+            {**scope, "$or": [{"quote": rx}, {"subject_terms": rx}, {"payload.name": rx}]},
+            {"_id": 0, "embedding": 0}).to_list(LEVEL_EVIDENCE_MAX)
+        if len(named) < LEVEL_EVIDENCE_MAX:
+            printed = sum(1 for r in named if not plan_search._vouches_for_nothing(r)
+                          for texts, naming in plan_search.value_parts(r)
+                          if plan_floor_to_floor.names_a_ceiling_height(naming, texts))
+        else:
+            logger.warning(f"ceiling-height warrant cap reached for {pid}; not counted")
+    return [plan_floor_to_floor.level_record(section, derived, conflicting, sorted(agreeing),
+                                             ceiling_asked, printed, asked_levels)]
+
+
 async def search_plans(project_id: str, subject: str, *, intent: str = "",
                        discipline: str = "", floor: str = "",
                        sheet_number: str = "", limit: int = 8,
@@ -69700,14 +69767,31 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     names = [subject] + [a for a in (also or []) if (a or "").strip() and a != subject]
     page_ids = await _current_record_page_ids(
         project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
+    # A CEILING HEIGHT OR A FLOOR-TO-FLOOR (lib.plan_floor_to_floor, ruling
+    # 2026-10-27): the section's level marks print neither CEILING nor HEIGHT,
+    # so no word of the question finds them. The floor-to-floor row derived
+    # from them LEADS - for a ceiling height the set does not print, it is the
+    # answer ("ceiling height not shown; floor-to-floor 10'-0" (A-300.00)") -
+    # and the gate never binds its figures as a ceiling height. A level the
+    # question named (#891, `interp["levels"]`) picks that storey.
+    levels: List[dict] = []
+    said = " ".join([asked] + names[1:])
+    if plan_floor_to_floor.is_level_subject(said):
+        try:
+            levels = await _level_evidence(project_id, plan_floor_to_floor.names_ceiling(said),
+                                           interp.get("levels") or ())
+        except Exception as e:
+            logger.warning(f"search_plans level evidence failed for {subject!r}: {e}")
     # Nothing found still says what the question meant (_with_scoped fills
     # `term_senses`; the level mapping is already in `interp`).
     if not page_ids:
-        return _with_scoped(extra, [], asked, interp)
+        return levels + _with_scoped(extra, [], asked, interp)
     found = [x for x in [await _ranked_for_subject(project_id, page_ids, n, intent)
                          for n in names] if x is not None]
     if not found and (extra or plan_term_senses.terms_in(asked)):
-        return _with_scoped(extra, [], asked, interp)
+        return levels + _with_scoped(extra, [], asked, interp)
+    if not found and levels:
+        return levels
     if not found:
         return []
     ranked = (found[0][0] if len(found) == 1
@@ -69754,7 +69838,7 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
             out += await _area_evidence(project_id)
         except Exception as e:
             logger.warning(f"search_plans area evidence failed for {subject!r}: {e}")
-    return _with_scoped(extra, out, asked, interp)
+    return levels + _with_scoped(extra, out, asked, interp)
 
 
 def _interp_lines(interp: Optional[dict]) -> List[str]:
@@ -69849,6 +69933,9 @@ def _render_records_for_model(records: List[dict], subject: str,
         # printed figure the check may withhold.
         if plan_areas.is_area_record(r):
             continue
+        # The floor-to-floor row is shown through its derivation, below.
+        if plan_floor_to_floor.is_level_record(r):
+            continue
         # The same citation the crew is shown, for the same reason: a model
         # given '?' or 'pNone' will write one into the answer. A record that
         # cannot say where it is is not offered as evidence at all.
@@ -69898,6 +69985,9 @@ def _render_records_for_model(records: List[dict], subject: str,
     health = plan_search.render_set_health(records)
     if health:
         lines.append(health)
+    levels = plan_floor_to_floor.render_level_evidence(records)
+    if levels:
+        lines.append(levels)
     return "\n".join(lines)
 
 

@@ -42,11 +42,13 @@ from __future__ import annotations
 
 import logging
 import re
+from fractions import Fraction
 from typing import (Any, Collection, Dict, Iterable, List, NamedTuple,
                     Optional, Sequence, Tuple)
 
 from lib import plan_areas as _areas
 from lib import plan_dimensions as _dims
+from lib import plan_floor_to_floor as _f2f
 from lib.plan_records import TIER_ORDER, column_role, tier_rank
 from lib.plan_text import SHEET_ID_RE
 
@@ -1129,12 +1131,14 @@ def _values(text: str) -> List[str]:
 
 
 def _vouches_for_nothing(r: Dict[str, Any]) -> bool:
-    """A contested cell, a located symbol outside its scoped count, or an
+    """A contested cell, a located symbol outside its scoped count, an
     area row (lib.plan_areas: it vouches only through its own check,
-    `_areas.figures_in_clause`) - the records `_supported_values` reads
+    `_areas.figures_in_clause`), or a derived floor-to-floor row
+    (lib.plan_floor_to_floor: only a clause naming a floor-to-floor may state its
+    figures, answer_is_grounded) - the records `_supported_values` reads
     nothing from."""
     return (bool((r.get("payload") or {}).get("count_contested")) or is_glyph_evidence(r)
-            or _areas.is_area_record(r))
+            or _areas.is_area_record(r) or _f2f.is_level_record(r))
 
 
 def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
@@ -1164,6 +1168,13 @@ def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
         # printed one agrees, and the printed one, which a disagreement
         # withholds.
         if _areas.is_area_record(r):
+            continue
+        # A DERIVED FLOOR-TO-FLOOR ROW (lib.plan_floor_to_floor) lends its citation
+        # and nothing else: its figures bind only in a clause naming a
+        # floor-to-floor (answer_is_grounded), never in the union.
+        if _f2f.is_level_record(r):
+            for field in ("sheet_number", "filing_id", "issued_date"):
+                ok.update(_values(str(r.get(field) or "")))
             continue
         ok.update(_values(r.get("quote") or ""))
         # ── WHAT A CITATION MAY CONTAIN ────────────────────────────────────
@@ -1501,6 +1512,165 @@ def family_words(name: str) -> frozenset:
 def _named_tags(text: str, tags: Iterable[str]) -> List[str]:
     return [t for t in tags
             if re.search(_ALNUM_BEFORE + re.escape(t) + _ALNUM_AFTER, text or "", re.I)]
+
+
+# ── A COUNT NAMES ITS OWN FAMILY (ruling 71, 2026-10-28) ──────────────────
+#
+# "There are 9 water heaters." bound on WH-1's located 9 (production probe,
+# 2026-10-28): HEATER is a word of the WALL ELECTRIC UNIT HEATER SCHEDULE,
+# and one shared word was all a clause needed to name a family. WH-1 is a
+# wall electric unit heater, not a water heater.
+#
+# Ruling 71: "a count binds only if its noun matches the family's own
+# schedule description or tag (WH-1 = 'wall electric unit heater'; 'water
+# heater' refuses). Use the schedule title/description text, no hand list."
+#
+#   THE NOUN is every phrase of the clause that holds one of the family's
+#   own words or tags: a run of adjacent words, broken by any mark between
+#   two words, by a figure, by a stop word (_STOP) or a per-unit word, and by
+#   a sheet or unit reference ("on A-103.00", "4A") - which say where, never
+#   what. In "There are 9 water heaters on the roof" the phrase is "water
+#   heaters".
+#
+#   ITS OWN TEXT is the family's: the schedule's printed name, word by word,
+#   each in either number or abbreviated (term_pattern), and its tags; a
+#   plan-only family's object, its tags' own words and the names its note
+#   prints for them (lib.plan_only). A word a schedule name shares with
+#   every count question (_GENERIC_FAMILY_WORDS: unit, type, ...) neither
+#   names nor misnames: "16 EF-1 units" is still EF-1.
+#
+#   Every other word in such a phrase is FOREIGN, and a clause with one
+#   names no family through that phrase: "water heaters", "WH-1 fans",
+#   "W1 doors" (W1 is a window) and "PTAC-1 air conditioners" (no PTAC
+#   schedule prints AIR CONDITIONER) refuse. So does a level word inside
+#   the noun ("roof exhaust fans"): state the level apart ("the roof has").
+#
+# What it does not decide: which family a clause naming several is about
+# (_clause_subjects, as before), and the retrieval (glyph_families_for stays
+# wide - fetching a family costs a census, and the agent shown WH-1's rows
+# for "water heaters" can say what the set does have).
+
+#: A word of a clause, as the noun check reads it: letters and digits, with
+#: inner hyphens, dots, slashes and apostrophes ("WH-1", "J.R.", "owner's").
+_NOUN_TOKEN = re.compile(r"[A-Za-z0-9]+(?:[-./'][A-Za-z0-9]+)*\.?")
+_FIGURE_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?\.?")
+_PER_WORDS = frozenset({"each", "every", "per", "apiece"})
+
+
+def _alnum(word: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (word or "").lower())
+
+
+def _noun_break(tok: str) -> bool:
+    """A word that ends a noun phrase: a figure, a stop word, a per-unit
+    word, or a sheet or unit reference."""
+    low = tok.lower().rstrip(".")
+    return bool(_FIGURE_TOKEN.fullmatch(tok) or low in _STOP or low in _PER_WORDS
+                or _SHEET_REF.fullmatch(tok.rstrip(".")) or _UNIT_REF.fullmatch(tok.rstrip(".")))
+
+
+class _Own(NamedTuple):
+    """A family's own text: its words (each read by term_pattern), its tags,
+    and the printed other names of a plan-only family's tags (alnum-only)."""
+    words: Tuple[str, ...]
+    tags: frozenset
+    names: frozenset
+    opening: bool = False
+
+
+def _own_text(name: str, tags: Iterable[str], plan_only: Optional[Dict[str, Any]] = None,
+              opening: bool = False, more: Iterable[str] = ()) -> _Own:
+    words = [w.lower() for w in re.findall(r"[A-Za-z]{2,}", name or "")]
+    names: set = set()
+    po = plan_only or {}
+    if po:
+        words += [w.lower() for w in re.findall(r"[A-Za-z]{2,}", str(po.get("object") or ""))]
+        for ws in (po.get("tag_words") or {}).values():
+            words += [str(w).lower() for w in ws or []]
+        also = po.get("also") if isinstance(po.get("also"), dict) else {}
+        for al in also.values():
+            for a in al or []:
+                names.add(_alnum(a))
+                names.update(_alnum(p) for p in re.findall(r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*\.?", a))
+    for m in more:
+        words += [w.lower() for w in re.findall(r"[A-Za-z]{2,}", m or "")]
+    return _Own(tuple(dict.fromkeys(words)),
+                frozenset(str(t).strip().upper() for t in tags or () if t),
+                frozenset(n for n in names if n), opening)
+
+
+def _is_own(tok: str, own: _Own, prev: str) -> bool:
+    bare = tok.rstrip(".")
+    up = bare.upper()
+    if up in own.tags and (len(up) > 1 or not own.opening or prev.lower() == "type"):
+        return True                     # a lettered door type only as "type F"
+    if own.opening:
+        m = re.fullmatch(r"type-(\w+)|(\w+)-type", bare, re.I)
+        if m and (m.group(1) or m.group(2)).upper() in own.tags:
+            return True                 # "type-F", "F-type" (_named_opening_tags)
+    if own.names and _alnum(tok) in own.names:
+        return True
+    return any(_rx(w).fullmatch(tok) or _rx(w).fullmatch(bare) for w in own.words)
+
+
+def foreign_words(clause: str, own: _Own) -> List[str]:
+    """The words of the clause's noun phrases that hold one of `own`'s words
+    or tags and are not its own (ruling 71): [] when the clause names the
+    family only by its own text, or names nothing of it.
+
+    A LEVEL WORD NAMES WHERE, NOT WHAT: "roof" is a word of ROOF DRAINS, but
+    "The roof level has 2 RD-1" holds no drain in "roof level" (measured on
+    this repo's own count tests). A level word the family's text holds is its
+    own, never a phrase's hit.
+
+    EVERY CLAUSE SHAPE, ONE RULE (ruling 100, 2026-10-28: '"W1 doors 8." must
+    refuse. The noun check applies to every clause shape (colon, no colon,
+    inline)'): a phrase is judged whole wherever its figure stands - "W1
+    doors: 8", "W1 doors 8", "8 W1 doors", "W1 doors (8)". So a verb inside
+    the phrase fails closed too ("The overflow drains number 2"; ruling 99)."""
+    out: List[str] = []
+    run: List[Tuple[str, bool, bool]] = []      # (word, foreign, the family's hit)
+    end, prev = 0, ""
+
+    def close():
+        if any(h for _w, _f, h in run):
+            out.extend(w for w, foreign, _h in run if foreign)
+
+    for m in _NOUN_TOKEN.finditer(clause or ""):
+        tok = m.group(0)
+        if (clause[end:m.start()]).strip():
+            close()
+            run = []
+        end = m.end()
+        if _is_own(tok, own, prev):
+            level = bool(_NAMED_LEVEL.fullmatch(tok.rstrip(".")) or _FLOOR_WORD.fullmatch(tok.rstrip(".")))
+            run.append((tok, False, not level))
+        elif _noun_break(tok):
+            close()
+            run = []
+        else:
+            run.append((tok, _stem(tok.rstrip(".")) not in _GENERIC_FAMILY_WORDS, False))
+        prev = tok
+    close()
+    return out
+
+
+def _family_own(fam: "GlyphFamily", opening: bool = False) -> _Own:
+    return _own_text(fam.name, fam.tags, fam.plan_only, opening)
+
+
+def _ident_own(ident: str, mark_sources: Dict[str, set],
+               fams_of: Dict[str, List["GlyphFamily"]]) -> _Own:
+    """A printed mark's own text (_values_by_ident): the mark, the names of
+    the schedules whose rows print it, and the own text of every family it
+    is a tag of. A schedule named as a whole is its own name."""
+    fams = fams_of.get(ident, [])
+    parts = [_family_own(f) for f in fams]
+    words = list(_own_text("", [], more=[ident] + sorted(mark_sources.get(ident, ()))).words)
+    for p in parts:
+        words += [w for w in p.words if w not in words]
+    return _Own(tuple(words), frozenset({ident}).union(*(p.tags for p in parts)),
+                frozenset().union(*(p.names for p in parts)))
 
 
 def _named_opening_tags(text: str, tags: Iterable[str]) -> List[str]:
@@ -2322,13 +2492,15 @@ def _qty_in_clause(clause: str, book: GlyphBook) -> Tuple[set, set]:
     # building scope. ("The bulkhead has 1 DH-1." is not what the schedule says.)
     building = _building_scope(clause, book)
     for fam in book.families.values():
+        # ruling 71: "There is 1 DH-1 water heater." names no DH-1
+        own_noun = not foreign_words(clause, _family_own(fam))
         for t in _named_tags(clause, fam.tags):
             q = fam.qty.get(t) or ""
             if not re.fullmatch(r"\d+", q):
                 continue
             n_t = len(_resolved(fam, [t]))
             if n_t == 0:
-                if building:
+                if building and own_noun:
                     add.add(q)
             elif not fam.why and not _building_refused(book) and int(q) != n_t:
                 drop.add(q)
@@ -2613,8 +2785,13 @@ def _clause_subjects(clause: str, book: GlyphBook
     # EACH TAG ITS OWN SUBJECT: "4A has 1 EF-1 and 1 EF-2" states two counts
     # of one, not one count of two.
     named = _named_opening_tags if book.opening else _named_tags
+    # A COUNT NAMES ITS OWN FAMILY (ruling 71): a tag, or a family's words,
+    # in a phrase holding a word that is not the family's own ("WH-1 water
+    # heaters", "W1 doors") names nothing of it.
+    own = {n: _family_own(f, book.opening) for n, f in book.families.items()}
     tagged = [(fam, [t]) for fam in book.families.values()
-              for t in named(clause, fam.tags)]
+              for t in named(clause, fam.tags)
+              if not foreign_words(clause, own[fam.name])]
     if tagged:
         return tagged
     words = {_stem(w) for w in re.findall(r"[A-Za-z]{2,}", clause)}
@@ -2622,10 +2799,11 @@ def _clause_subjects(clause: str, book: GlyphBook
     # with a schedule's name - "roof" is a level, and "the roof has 2
     # exhaust fans" must stay the exhaust-fan schedule's (_plan_only_subjects).
     plan = [s for fam in book.families.values() if fam.plan_only is not None
+            and not foreign_words(clause, own[fam.name])
             for s in _plan_only_subjects(words, fam, clause)]
     sched = [n for n, f in book.families.items() if f.plan_only is None]
     hits = {name: family_words(name) & words for name in sched}
-    hits = {n: h for n, h in hits.items() if h}
+    hits = {n: h for n, h in hits.items() if h and not foreign_words(clause, own[n])}
     if not hits:
         return plan
     top = [n for n, h in hits.items() if not any(h < g for g in hits.values())]
@@ -3628,6 +3806,11 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     unreconciled = [h.get("subject") for h in _set_health(records)
                     if h.get("kind") == "family_not_reconciled"]
     mark_sources = _mark_sources(records)
+    fams_of: Dict[str, List[GlyphFamily]] = {}
+    for b in [book] + list(obooks.tracks.values()):
+        for f in b.families.values():
+            for t in f.tags:
+                fams_of.setdefault(str(t).strip().upper(), []).append(f)
     # A DRAWING SET'S NAME IS A CITATION: "per the owner's post-CO set,
     # 6/9/26" says where a figure comes from - its date lends nothing.
     citations = sorted(set(_citation_texts(records)) | {
@@ -3682,6 +3865,12 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
             continue
         allowed: set = set()
         for ident in _idents_named_in(clause, by_ident.keys()):
+            # A PRINTED COUNT NAMES ITS OWN THING TOO (ruling 71): the mark,
+            # in a phrase of the words of the schedules that print it and of
+            # the families it is a tag of - "9 WH-1 water heaters" is not
+            # WH-1's QTY 9.
+            if foreign_words(clause, _ident_own(ident, mark_sources, fams_of)):
+                continue
             allowed |= by_ident[ident]
         # ── A PRINTED COUNT IS A BUILDING FIGURE ───────────────────────────
         #
@@ -4144,15 +4333,15 @@ def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
 # where the value is. "The ceiling is 9'." says no height and is left as it
 # is. No other trailing word becomes a subject.
 #
-# THE WORDS MIRROR lib/plan_floor_to_floor.py (#900, stacked on this branch,
-# so not imported): _CEILING and _HEIGHT as #900 spells them; a claim may
-# also say TALL or "floor to ceiling". #900 reconciles when it merges this.
-_CEILING_WORD = re.compile(r"(?<![A-Za-z])(?:ceilings?|clgs?\.?)(?![A-Za-z])", re.I)
-_HEIGHT_WORD = re.compile(r"(?<![A-Za-z])(?:heights?|hights?|hgt\.?|ht\.?|high|clear(?:ance)?|"
-                          r"a\.?\s?f\.?\s?f\.?)(?![A-Za-z])", re.I)
+# THE WORDS ARE lib/plan_floor_to_floor.py's (#900): one ceiling / height
+# vocabulary, read here and by the floor-to-floor row alike. A CLAIM may also
+# say TALL or "floor to ceiling" (_HEIGHT_SAID: claim-side wording only, never
+# asked of a record).
+_CEILING_WORD = _f2f.CEILING_WORD
+_HEIGHT_WORD = _f2f.HEIGHT_WORD
 _HEIGHT_SAID = re.compile(r"(?<![A-Za-z])(?:tall|floor[\s\-]*to[\s\-]*ceiling)(?![A-Za-z])", re.I)
 #: A value directly before the ceiling: "a 9' ceiling", "a 9'-0" CLG", "a 8 ceiling".
-_VALUE_CEILING = re.compile(r"[\d'\"′″]\s*(?:ceilings?|clgs?\.?)(?![A-Za-z])", re.I)
+_VALUE_CEILING = re.compile(r"[\d'\"′″]\s*" + _f2f.CEILING_PATTERN + r"(?![A-Za-z])", re.I)
 
 
 def is_ceiling_height_clause(clause: str) -> bool:
@@ -4173,7 +4362,7 @@ def _without_ceiling_height(text: str) -> str:
 
 def _names_ceiling_height(naming: str) -> bool:
     """A record part naming a ceiling and a height where its value is."""
-    return bool(_CEILING_WORD.search(naming or "") and _HEIGHT_WORD.search(naming or ""))
+    return _f2f.names_ceiling_and_height(naming)
 
 
 def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
@@ -4234,6 +4423,35 @@ def _clause_spans(text: str) -> List[Tuple[int, int]]:
     return out
 
 
+def _ceiling_heights_bound(text: str, records: Sequence[Dict[str, Any]]
+                           ) -> Tuple[str, List[str]]:
+    """(`text` with its ceiling-height clauses blanked, the values those
+    clauses state that no record part naming a ceiling and a height prints).
+
+    Item 21 (#900's question 7): "The ceiling height is 50'-0"." bound on
+    the `building` / `height` search under "", identify, existence, location
+    and geometry - the union vouched on the printed 50'-0" BUILDING & BASE
+    HEIGHT - while #894's ceiling rule (is_ceiling_height_clause,
+    _subject_bound) held it only under attribute. A ceiling-height clause
+    is now decided by that same rule under every intent; no other clause
+    changes. Without a value the clause states nothing and stays."""
+    masked = _dims.mask_quotation_marks(text or "")
+    hold = list(masked)
+    for f in _dims.find(masked):
+        hold[f.span[0]:f.span[1]] = "\x00" * (f.span[1] - f.span[0])
+    hold_s = "".join(hold)
+    citations = _citation_texts(records)
+    spans: List[Tuple[int, int]] = []
+    bad: List[str] = []
+    for c0, c1 in _clause_spans(hold_s):
+        clause = _track_claim(masked[c0:c1])[1]
+        if not is_ceiling_height_clause(clause):
+            continue
+        spans.append((c0, c1))
+        bad += _subject_bound(clause, records, citations, None)
+    return _blank(text or "", spans), bad
+
+
 def _attribute_answer_is_bound(text: str, records: Sequence[Dict[str, Any]],
                                aliases: Optional[Dict[str, Dict[str, List[str]]]] = None
                                ) -> Tuple[bool, List[str]]:
@@ -4272,6 +4490,60 @@ def _attribute_answer_is_bound(text: str, records: Sequence[Dict[str, Any]],
     return (not unsupported), unsupported
 
 
+_NO_LEVEL_KIND, _CEILING_KIND, _FLOOR_TO_FLOOR_KIND = "", "ceiling", "floor_to_floor"
+_UNIT_WORD = re.compile(r"(?<![A-Za-z])(?:feet|foot|ft|inch(?:es)?|in)\.?(?![A-Za-z])", re.I)
+
+
+def _subjectless(clause: str, citations: Sequence[str]) -> bool:
+    """A clause with a value and no word before it: it says its value is of
+    whatever the clause before it named ("The ceiling height - 10'-0"",
+    "floor-to-floor 14'-0" ..., 10'-0" SECOND FLOOR to THIRD FLOOR"). The
+    words before the value are where #894 reads a clause's subject."""
+    masked = _dims.mask_quotation_marks(_strip_citations(clause, citations))
+    rest = list(masked)
+    starts = []
+    for f in _dims.find(masked):
+        rest[f.span[0]:f.span[1]] = " " * (f.span[1] - f.span[0])
+        starts.append(f.span[0])
+    flat = _SPLIT_RE.sub(" ", _UNIT_RE.sub(" ", "".join(rest)))
+    starts += [m.start() for m in _VALUE_RE.finditer(flat)]
+    if not starts:
+        return False
+    return not search_terms(_UNIT_WORD.sub(" ", flat[:min(starts)]))
+
+
+def _level_kinds(text: str, citations: Sequence[str]) -> List[Tuple[int, int, str]]:
+    """(start, end, kind) per clause: a clause naming a ceiling is a ceiling
+    clause (whatever else it names - the conservative reading); one naming a
+    floor-to-floor is a floor-to-floor clause; a subjectless clause carries
+    the kind of the clause before it; anything else has no level kind."""
+    masked = _dims.mask_quotation_marks(text or "")
+    hold = list(masked)
+    for f in _dims.find(masked):
+        hold[f.span[0]:f.span[1]] = "\x00" * (f.span[1] - f.span[0])
+    out, prev = [], _NO_LEVEL_KIND
+    for c0, c1 in _clause_spans("".join(hold)):
+        clause = (text or "")[c0:c1]
+        if _f2f.names_ceiling(clause):
+            kind = _CEILING_KIND
+        elif _f2f.names_floor_to_floor(clause):
+            kind = _FLOOR_TO_FLOOR_KIND
+        elif _subjectless(clause, citations):
+            kind = prev
+        else:
+            kind = _NO_LEVEL_KIND
+        out.append((c0, c1, kind))
+        prev = kind
+    return out
+
+
+def _blank(text: str, spans: Iterable[Tuple[int, int]]) -> str:
+    chars = list(text or "")
+    for a, b in spans:
+        chars[a:b] = " " * (b - a)
+    return "".join(chars)
+
+
 def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
                        intent: str = "",
                        aliases: Optional[Dict[str, Dict[str, List[str]]]] = None,
@@ -4279,6 +4551,64 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
                        families: Optional[Dict[str, Sequence[str]]] = None
                        ) -> Tuple[bool, List[str]]:
     """(ok, the numbers nothing returned can vouch for).
+
+    ── A FLOOR-TO-FLOOR IS NEVER A CEILING HEIGHT (ruling 2026-10-27) ─────
+    #
+    # "derive floor-to-floor from A-300's level marks; answer "ceiling height
+    # not shown; floor-to-floor 10'-0" (A-300.00)". Floor-to-floor must never
+    # bind as a ceiling height." With level evidence among the records - the
+    # derived row (lib.plan_floor_to_floor) or a record printing a level mark - the
+    # answer is decided clause by clause, under EVERY intent:
+    #
+    #   a clause naming a ceiling   decided as before but WITHOUT any level
+    #                               evidence, and a dimension in it equal to
+    #                               a floor-to-floor, or at least the largest,
+    #                               is refused: a ceiling is lower than its
+    #                               floor-to-floor by the slab;
+    #   a clause naming a           the derived row's figures bind in it; the
+    #   floor-to-floor              rest of it is decided as before;
+    #   a subjectless clause        carries the kind of the clause before it;
+    #   any other clause            decided exactly as before, together.
+    #
+    # Without level evidence, or without such a clause, nothing changes.
+    """
+    if not any(_f2f.is_level_evidence(r) for r in records or []):
+        return _answer_is_grounded(text, records, intent, aliases, sources, families)
+    kinds = _level_kinds(text, _citation_texts(records))
+    if all(k == _NO_LEVEL_KIND for _a, _b, k in kinds):
+        return _answer_is_grounded(text, records, intent, aliases, sources, families)
+    plain = [r for r in records if not _f2f.is_level_evidence(r)]
+    f2f = _f2f.floor_to_floor_in(records)
+    stated = set(_f2f.stated_floor_to_floor(records))
+    bad: List[str] = []
+    rest = _blank(text, [(a, b) for a, b, k in kinds if k != _NO_LEVEL_KIND])
+    if _clause_spans(rest):
+        bad += _answer_is_grounded(rest, records, intent, aliases, sources, families)[1]
+    for a, b, kind in kinds:
+        clause = text[a:b]
+        found = [f for f in _dims.find(_dims.mask_quotation_marks(clause)) if f.dims]
+        if kind == _CEILING_KIND:
+            bad += _answer_is_grounded(clause, plain, intent, aliases, sources, families)[1]
+            for f in found:
+                d = f.dims[0]
+                if (d.unit == "in" and f2f and (Fraction(d.value) in f2f or d.value >= max(f2f))
+                        and f.text.strip() not in bad):
+                    bad.append(f.text.strip())
+        elif kind == _FLOOR_TO_FLOOR_KIND:
+            held = [f.span for f in found if len(f.dims) == 1 and f.dims[0].unit == "in"
+                    and Fraction(f.dims[0].value) in stated]
+            bad += _answer_is_grounded(_blank(_dims.mask_quotation_marks(clause), held),
+                                       records, intent, aliases, sources, families)[1]
+    return (not bad), bad
+
+
+def _answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
+                        intent: str = "",
+                        aliases: Optional[Dict[str, Dict[str, List[str]]]] = None,
+                        sources: Iterable[Dict[str, Any]] = (),
+                        families: Optional[Dict[str, Sequence[str]]] = None
+                        ) -> Tuple[bool, List[str]]:
+    """(ok, the numbers nothing returned can vouch for), level evidence aside.
 
     A CHECK ON THE OUTPUT, not an instruction in a prompt. The model composes;
     this decides whether what it composed may be sent. A number with nothing
@@ -4305,7 +4635,15 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     if it == "attribute":
         _ok, bad = _attribute_answer_is_bound(text, records, aliases)
     else:
+        # A CEILING'S HEIGHT IS NAMED AS ONE UNDER EVERY INTENT (Roy's
+        # condition (b), item 21): a ceiling-height clause binds only on a
+        # record part naming a ceiling and a height, as under attribute; the
+        # rest of the answer - every count among it - is decided as before.
+        # Under count too: measured, 80 ceiling-height claims of a printed
+        # 20X40" bound there on the `apartments` / `ceiling height` search.
+        text, ceiling = _ceiling_heights_bound(text, records)
         _ok, bad = _answer_is_grounded_rest(text, records, intent)
+        bad = ceiling + bad
     bad = routed + bad
     return (not bad), bad
 
@@ -4469,7 +4807,22 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
     # An area row is shown through its check (render_area_evidence), never
     # as a quote: its quote is a printed figure the check may withhold.
     everything = list(records or [])
-    records = [r for r in everything if not _areas.is_area_record(r)]
+    records = [r for r in everything if not _areas.is_area_record(r)
+               and not _f2f.is_level_record(r)]
+    # A DERIVED FLOOR-TO-FLOOR ROW IS SAID AS THE OPERATOR RULED IT
+    # (lib.plan_floor_to_floor, 2026-10-27): `Ceiling height not shown; floor-to-floor
+    # 10'-0" (A-300.00)`. When "not shown" is warranted that sentence is the
+    # whole answer - no record returned prints a ceiling height to list.
+    said = [ln for ln in (_f2f.answer_line(r) for r in everything
+                          if _f2f.is_level_record(r)) if ln]
+    if said:
+        alone = any(((r.get("payload") or {}).get("ceiling_asked")
+                     and (r.get("payload") or {}).get("ceiling_heights_printed") == 0)
+                    for r in everything if _f2f.is_level_record(r))
+        if alone:
+            return "\n".join(said)
+        rest = render_records(records, subject, limit) if records else ""
+        return "\n".join(said + ([rest] if rest and rest != NOT_FOUND else []))
     if terms:
         records = [r for r in records if not matched_only_through_label(r, terms)]
     if not records:
