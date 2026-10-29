@@ -404,6 +404,18 @@ class OnTheBoylandSet(unittest.TestCase):
             self.assertEqual(P.removal_layer_items(pg, f"A.1.{number - 10}", FAMS,
                                                    track="filed"), [], number)
 
+    def test_the_gas_change_roof_plan_carries_no_removal_layer(self):
+        """Ruling 39 / 108: the unnumbered Roof Plan of the gas-change file
+        (page 2, an open set question) is checked; it draws nothing on one,
+        nor does the file's A-100.00 (page 1)."""
+        _present()
+        q = {"id": "ea33f26741467e17", "short": "the unnumbered Roof Plan"}
+        for number in (1, 2):
+            pg = _page("AR - 6.9.26 (Gas change).pdf", number)
+            self.assertGreater(len({d.get("layer") for d in pg.drawings}), 5, number)
+            self.assertEqual(P.removal_layer_items(pg, f"p{number}", FAMS, track="filed",
+                                                   question=q), [], number)
+
     def test_the_filed_plans_write_nothing(self):
         _present()
         for name, number in (("AR - 8.18.26.pdf", 6), ("AR - 8.18.26.pdf", 7),
