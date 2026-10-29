@@ -1607,26 +1607,23 @@ def foreign_words(clause: str, own: _Own) -> List[str]:
     or tags and are not its own (ruling 71): [] when the clause names the
     family only by its own text, or names nothing of it.
 
-    TWO READINGS KEEP A TRUE CLAIM (both measured on this repo's own count
-    tests, which the first version refused):
-      - A LEVEL WORD NAMES WHERE, NOT WHAT: "roof" is a word of ROOF DRAINS,
-        but "The roof level has 2 RD-1" holds no drain in "roof level". A
-        level word the family's text holds is its own, never a phrase's hit.
-      - A VERB BEFORE THE FIGURE IS NO NOUN: "The overflow drains number 2" -
-        a phrase that runs straight into a figure ends at its last own word.
-        ("W1 doors." and "WH-1 water heaters" end at no figure: judged whole.)"""
+    A LEVEL WORD NAMES WHERE, NOT WHAT: "roof" is a word of ROOF DRAINS, but
+    "The roof level has 2 RD-1" holds no drain in "roof level" (measured on
+    this repo's own count tests). A level word the family's text holds is its
+    own, never a phrase's hit.
+
+    EVERY CLAUSE SHAPE, ONE RULE (ruling 100, 2026-10-28: '"W1 doors 8." must
+    refuse. The noun check applies to every clause shape (colon, no colon,
+    inline)'): a phrase is judged whole wherever its figure stands - "W1
+    doors: 8", "W1 doors 8", "8 W1 doors", "W1 doors (8)". So a verb inside
+    the phrase fails closed too ("The overflow drains number 2"; ruling 99)."""
     out: List[str] = []
     run: List[Tuple[str, bool, bool]] = []      # (word, foreign, the family's hit)
     end, prev = 0, ""
 
-    def close(at_figure: bool = False):
-        if not any(h for _w, _f, h in run):
-            return
-        words = run
-        if at_figure:
-            last = max(i for i, (_w, _f, h) in enumerate(run) if h)
-            words = run[:last + 1]
-        out.extend(w for w, foreign, _h in words if foreign)
+    def close():
+        if any(h for _w, _f, h in run):
+            out.extend(w for w, foreign, _h in run if foreign)
 
     for m in _NOUN_TOKEN.finditer(clause or ""):
         tok = m.group(0)
@@ -1638,7 +1635,7 @@ def foreign_words(clause: str, own: _Own) -> List[str]:
             level = bool(_NAMED_LEVEL.fullmatch(tok.rstrip(".")) or _FLOOR_WORD.fullmatch(tok.rstrip(".")))
             run.append((tok, False, not level))
         elif _noun_break(tok):
-            close(at_figure=bool(_FIGURE_TOKEN.fullmatch(tok)))
+            close()
             run = []
         else:
             run.append((tok, _stem(tok.rstrip(".")) not in _GENERIC_FAMILY_WORDS, False))

@@ -118,6 +118,13 @@ class AWindowIsNotADoor(unittest.TestCase):
         self.assertTrue(_ok("The second floor has 8 W1.", recs))
         self.assertTrue(_ok("The second floor has 8 W1 windows.", recs))
         self.assertFalse(_ok("The second floor has 8 W1 doors.", recs))
+        # every clause shape (ruling 100): colon, no colon, inline
+        for shape in ("W1 doors 8.", "W1 doors: 8.", "W1 doors (8).",
+                      "W1 doors on the second floor 8.", "W1 doors on the second floor: 8."):
+            self.assertFalse(_ok(shape, recs), shape)
+        for shape in ("W1 8.", "W1: 8.", "W1 windows 8.", "W1 windows (8).",
+                      "W1 windows on the second floor: 8."):
+            self.assertTrue(_ok(shape, recs), shape)
         self.assertTrue(_ok("The second floor has 4 type B doors.", recs))
         self.assertTrue(_ok("The second floor has 4 type B interior doors.", recs))
         self.assertFalse(_ok("The second floor has 4 type B windows.", recs))
@@ -156,9 +163,15 @@ class TheNounIsThePhraseAroundTheFamilysWords(unittest.TestCase):
                          {"object": "roof drain", "tag_words": {"RD-2": ["overflow"]}})
         self.assertEqual(f("The roof level has 2 RD-1", rd), [])
         self.assertEqual(f("There are 2 roof area drains", rd), ["area"])
-        # ... and a phrase running straight into its figure ends at its last own word
-        self.assertEqual(f("The overflow drains number 2", rd), [])
-        self.assertEqual(f("There are 2 overflow drains number", rd), ["number"])
+        # every clause shape, one rule (ruling 100): wherever the figure stands
+        w1 = S._own_text("WINDOW SCHEDULE", ["W1", "W2", "W3"], opening=True)
+        for shape in ("W1 doors 8", "W1 doors: 8", "8 W1 doors", "W1 doors (8)",
+                      "The second floor has W1 doors (8)"):
+            self.assertEqual(f(shape, w1), ["doors"], shape)
+        for shape in ("W1 windows 8", "W1: 8", "8 W1 windows", "W1 windows (8)"):
+            self.assertEqual(f(shape, w1), [], shape)
+        # a verb inside the phrase fails closed (ruling 99)
+        self.assertEqual(f("The overflow drains number 2", rd), ["number"])
 
 
 if __name__ == "__main__":
