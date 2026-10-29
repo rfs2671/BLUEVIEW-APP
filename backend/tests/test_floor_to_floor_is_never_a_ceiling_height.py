@@ -433,6 +433,24 @@ class RoysItems15To23(unittest.TestCase):
         # a printed ceiling height below the floor-to-floor is still a value
         self.assertTrue(bound("The ceiling height is 8'-6\".", records, "attribute"))
 
+    def test_21_no_ceiling_height_binds_on_another_subjects_figure_without_level_marks(self):
+        # the `building` / `height` search: no level row, no mark; the union
+        # vouched for 50'-0" under five intents (Roy's condition (b))
+        building = [rec("50'-0\" BUILDING & BASE HEIGHT", sheet="Z-002.01", page="pgz2",
+                        title="BUILDING HEIGHT AND SETBACK DIAGRAMS"),
+                    rec("TABLE 504.3 ALLOWABLE BUILDING HEIGHT IN FEET ABOVE GRADE PLANE",
+                        sheet="GN-001.00", page="pggn1", title="CODE NOTES")]
+        for claim in ["The ceiling height is 50'-0\".", "Ceiling heights are 50'-0\".",
+                      "A 50'-0\" ceiling.", "The CLG HT is 50'-0\"."]:
+            leaks = [i or '""' for i in INTENTS if _gate(claim, building, i)]
+            self.assertEqual(leaks, [], claim)
+        # the union is kept for everything else, and a printed ceiling height binds
+        for i in ("", "identify", "existence", "location", "geometry"):
+            self.assertTrue(_gate("The building height is 50'-0\".", building, i), i)
+            printed = building + [rec("CEILING HEIGHT 8'-6\"", sheet="A-600.00", page="pg600",
+                                      title="ROOM FINISH SCHEDULE")]
+            self.assertTrue(_gate("The ceiling height is 8'-6\".", printed, i), i)
+
     def test_22_clg_ht_hgt_and_aff_are_ceiling_and_height_words(self):
         L = levels_mod()
         for naming in ["CLG HT", "CLG. HGT.", "CEILING A.F.F.", "CLG AFF", "CEILING HEIGHT"]:

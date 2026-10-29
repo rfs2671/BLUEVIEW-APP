@@ -4218,6 +4218,35 @@ def _clause_spans(text: str) -> List[Tuple[int, int]]:
     return out
 
 
+def _ceiling_heights_bound(text: str, records: Sequence[Dict[str, Any]]
+                           ) -> Tuple[str, List[str]]:
+    """(`text` with its ceiling-height clauses blanked, the values those
+    clauses state that no record part naming a ceiling and a height prints).
+
+    Item 21 (#900's question 7): "The ceiling height is 50'-0"." bound on
+    the `building` / `height` search under "", identify, existence, location
+    and geometry - the union vouched on the printed 50'-0" BUILDING & BASE
+    HEIGHT - while #894's ceiling rule (is_ceiling_height_clause,
+    _subject_bound) held it only under attribute. A ceiling-height clause
+    is now decided by that same rule under every non-count intent; no other
+    clause changes. Without a value the clause states nothing and stays."""
+    masked = _dims.mask_quotation_marks(text or "")
+    hold = list(masked)
+    for f in _dims.find(masked):
+        hold[f.span[0]:f.span[1]] = "\x00" * (f.span[1] - f.span[0])
+    hold_s = "".join(hold)
+    citations = _citation_texts(records)
+    spans: List[Tuple[int, int]] = []
+    bad: List[str] = []
+    for c0, c1 in _clause_spans(hold_s):
+        clause = _track_claim(masked[c0:c1])[1]
+        if not is_ceiling_height_clause(clause):
+            continue
+        spans.append((c0, c1))
+        bad += _subject_bound(clause, records, citations, None)
+    return _blank(text or "", spans), bad
+
+
 def _attribute_answer_is_bound(text: str, records: Sequence[Dict[str, Any]],
                                aliases: Optional[Dict[str, Dict[str, List[str]]]] = None
                                ) -> Tuple[bool, List[str]]:
@@ -4401,7 +4430,16 @@ def _answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     if it == "attribute":
         _ok, bad = _attribute_answer_is_bound(text, records, aliases)
     else:
+        # A CEILING'S HEIGHT IS NAMED AS ONE UNDER EVERY NON-COUNT INTENT
+        # (Roy's condition (b), item 21): a ceiling-height clause binds only
+        # on a record part naming a ceiling and a height, as under
+        # attribute; the rest of the answer is decided as before. A count
+        # keeps the count rule untouched.
+        ceiling: List[str] = []
+        if it != "count":
+            text, ceiling = _ceiling_heights_bound(text, records)
         _ok, bad = _answer_is_grounded_rest(text, records, intent)
+        bad = ceiling + bad
     bad = routed + bad
     return (not bad), bad
 
