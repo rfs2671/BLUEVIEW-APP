@@ -1830,14 +1830,17 @@ def glyph_census(kind: str, project_id: str, page_ids: Sequence[str], count: int
                  track: Optional[str] = None,
                  plan_only: Optional[Dict[str, Any]] = None,
                  scope: Optional[str] = None,
-                 reads: Optional[Dict[str, Sequence[str]]] = None) -> Dict[str, Any]:
+                 reads: Optional[Dict[str, Sequence[str]]] = None,
+                 qty_readings: Optional[Dict[str, Sequence[str]]] = None) -> Dict[str, Any]:
     """What the database said, at question time, about one filter - and, for
     a family, what its schedule's QTY column prints per tag (`qty`, read by
     schedule_quantities), so a building total can be checked against it.
     One per drawing track when the rows carry one (`track`); with `reads`,
     the pages and sheet numbers that track's pass reads
     (server._glyph_track_pages), so a track that does not read a sheet is
-    known not to (_unread_by_other_tracks)."""
+    known not to (_unread_by_other_tracks). With `qty_readings`, what the two
+    readings of each contested QTY cell said (schedule_quantity_readings) -
+    for a reader, never a figure: the gate reads only `qty`."""
     out = {"record_type": GLYPH_CENSUS, "kind": kind,
            "project_id": str(project_id), "page_ids": sorted(map(str, page_ids)),
            "family": family, "tags": sorted(tags), "count": int(count),
@@ -1855,6 +1858,8 @@ def glyph_census(kind: str, project_id: str, page_ids: Sequence[str], count: int
     if reads is not None:
         out["reads"] = {"pages": sorted(map(str, reads.get("pages") or ())),
                         "sheets": sorted(map(str, reads.get("sheets") or ()))}
+    if qty_readings:
+        out["qty_readings"] = {str(t): [str(v) for v in vs] for t, vs in qty_readings.items()}
     return out
 
 
@@ -1874,6 +1879,28 @@ def schedule_quantities(payload: Dict[str, Any], tags: Sequence[str]) -> Dict[st
         mark = re.sub(r"\s+", " ", str(row[0] or "")).strip().upper()
         if mark in want and qcols[0] < len(row):
             out[mark] = re.sub(r"\s+", " ", str(row[qcols[0]] or "")).strip()
+    return out
+
+
+def schedule_quantity_readings(payload: Dict[str, Any], tags: Sequence[str]
+                               ) -> Dict[str, List[str]]:
+    """tag -> the two readings of its QTY cell, where they disagree and the
+    cell is printed "(readings disagree)" (plan_ocr.read_grid_twice stores
+    them in payload.contested_cells: the row's mark, the column, the
+    readings). PTAC-2 on M-200.00: ['6', '9']. Only tags in `tags`, only the
+    schedule's quantity column."""
+    payload = payload if isinstance(payload, dict) else {}
+    qcols = _quantity_columns(payload)
+    want = {str(t).strip().upper() for t in tags}
+    out: Dict[str, List[str]] = {}
+    if not qcols:
+        return out
+    for c in payload.get("contested_cells") or []:
+        if not isinstance(c, dict) or c.get("col") != qcols[0]:
+            continue
+        mark = re.sub(r"\s+", " ", str(c.get("mark") or "")).strip().upper()
+        if mark in want:
+            out[mark] = [re.sub(r"\s+", " ", str(v)).strip() for v in c.get("readings") or []]
     return out
 
 

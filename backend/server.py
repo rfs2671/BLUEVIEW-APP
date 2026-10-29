@@ -69217,7 +69217,7 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
         {"project_id": pid, "record_type": "schedule",
          "page_id": {"$in": page_ids}, "sheet_number": {"$regex": "^M-"}},
         {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
-         "payload.rows": 1},
+         "payload.rows": 1, "payload.contested_cells": 1},
     ).to_list(2000)
     fams = _families([{"name": (s.get("payload") or {}).get("name"),
                        "columns": (s.get("payload") or {}).get("columns"),
@@ -69347,6 +69347,10 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
         src = best if scope is None else obest
         qty = (plan_search.schedule_quantities((src.get(name) or {}).get("payload"), tags)
                if kind == "family" else None)
+        # what the two readings of a contested QTY cell said - for the
+        # takeoff's cross-check column only (ruling 73), never a figure
+        qty_readings = (plan_search.schedule_quantity_readings(
+            (src.get(name) or {}).get("payload"), tags) if kind == "family" else None)
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
                                                family=name, tags=tags, qty=qty,
                                                track=track,
@@ -69354,7 +69358,8 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
                                                           if scope is None else None),
                                                scope=scope,
                                                reads=(reads.get(track) if kind == "family"
-                                                      and scope is None else None)))
+                                                      and scope is None else None),
+                                               qty_readings=qty_readings))
     return rows + census + health
 
 
