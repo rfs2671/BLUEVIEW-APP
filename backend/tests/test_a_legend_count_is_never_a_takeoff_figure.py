@@ -153,6 +153,10 @@ def _route(legend):
     async def _legend(pid):
         return list(legend)
 
+    async def _lights(pid):
+        # stored light fixture tag counts (T6): none here
+        return []
+
     server.app.dependency_overrides[server.get_current_user] = _user
     try:
         with patch.object(server, "db", T5._Db(T5.PROJECT)), \
@@ -160,6 +164,7 @@ def _route(legend):
                 patch.object(server, "_area_evidence", _areas), \
                 patch.object(server, "_plan_file_sources", _sources), \
                 patch.object(server, "_legend_count_evidence", _legend), \
+                patch.object(server, "_light_fixture_evidence", _lights), \
                 patch.object(server, "_review_queue_takeoff", _queue):
             return TestClient(server.app).get("/api/projects/proj1/takeoff.xlsx"), queued
     finally:

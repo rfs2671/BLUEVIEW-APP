@@ -499,14 +499,45 @@ def _legend_lines(ctx: _Ctx, rows: Sequence[Dict[str, Any]]) -> None:
                                 set_label, sheets, src, "", "", LEGEND_NOT_VERIFIED))
 
 
+def _light_fixture_lines(ctx: _Ctx, rows: Sequence[Dict[str, Any]]) -> None:
+    """A STORED LIGHT FIXTURE TAG COUNT IS NEVER A FIGURE (T6, ruling 77 as
+    applied to T2's legend counts). Each counted row of
+    lib.plan_light_fixtures.fixture_rows (a count above zero) is one "Not
+    verified - refused" line - its drawing's level, its sheet, file and page,
+    its set - with plan_light_fixtures.NOT_VERIFIED as the reason, and so one
+    review item; a conflict row (the count disagrees with a printed total) is
+    a refused line with its own reason. No quantity is shown and nothing is
+    put to the gate: its basis, fixture_tag, is not a counting basis. A
+    refused tag, an untagged drawing or a zero is the pass's own record and
+    makes no line."""
+    from lib import plan_light_fixtures as _plf
+    for r in sorted(rows, key=lambda r: (str(r.get("sheet_number") or ""), str(r.get("title") or ""),
+                                         str(r.get("tag") or ""))):
+        if r.get("record_type") != _plf.RECORD_TYPE or r.get("status") not in ("counted", "conflict"):
+            continue
+        if r.get("status") == "counted" and not r.get("count"):
+            continue
+        sheets, src = _source([r], ctx.sources)
+        fsrc = ctx.sources.get(str(r.get("file_id") or "")) or {}
+        t = r.get("track")
+        set_label = fsrc.get("set_name") or (f"the {t} set" if t else "")
+        level = " / ".join(r.get("level_names") or []) or str(r.get("title") or "")
+        why = _plf.NOT_VERIFIED if r.get("status") == "counted" else str(r.get("refused") or "")
+        ctx.refused.append(Line(_plf.TRADE, "Light fixture", str(r.get("tag") or ""),
+                                FLOOR if r.get("levels") else "Sheet", level, None, "ea",
+                                set_label, sheets, src, "", "", why))
+
+
 def build(records: Sequence[Dict[str, Any]], area_rows: Sequence[Dict[str, Any]] = (),
           sources: Optional[Dict[str, dict]] = None,
-          legend_rows: Sequence[Dict[str, Any]] = ()) -> Takeoff:
+          legend_rows: Sequence[Dict[str, Any]] = (),
+          light_rows: Sequence[Dict[str, Any]] = ()) -> Takeoff:
     """Every candidate line, put to the gate. `records`: the located-symbol
     evidence (rows, censuses, set health) of every family; `area_rows`: the
     project's area rows; `sources`: {file_id: plan_sources.source_of};
     `legend_rows`: stored legend symbol counts, each listed as not verified
-    (_legend_lines) - none stored, nothing changes."""
+    (_legend_lines); `light_rows`: stored light fixture tag counts, likewise
+    (_light_fixture_lines) - none stored, nothing changes."""
     records = list(records or [])
     sources = dict(sources or {})
     ctx = _Ctx(records, sources, list(sources.values()), [], [], _qty_readings(records))
@@ -531,6 +562,8 @@ def build(records: Sequence[Dict[str, Any]], area_rows: Sequence[Dict[str, Any]]
         _area_lines(actx, area_rows)
     if legend_rows:
         _legend_lines(ctx, legend_rows)
+    if light_rows:
+        _light_fixture_lines(ctx, light_rows)
     return Takeoff(ctx.out, ctx.refused)
 
 
