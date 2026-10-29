@@ -4128,15 +4128,15 @@ def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
 # where the value is. "The ceiling is 9'." says no height and is left as it
 # is. No other trailing word becomes a subject.
 #
-# THE WORDS MIRROR lib/plan_floor_to_floor.py (#900, stacked on this branch,
-# so not imported): _CEILING and _HEIGHT as #900 spells them; a claim may
-# also say TALL or "floor to ceiling". #900 reconciles when it merges this.
-_CEILING_WORD = re.compile(r"(?<![A-Za-z])(?:ceilings?|clgs?\.?)(?![A-Za-z])", re.I)
-_HEIGHT_WORD = re.compile(r"(?<![A-Za-z])(?:heights?|hights?|hgt\.?|ht\.?|high|clear(?:ance)?|"
-                          r"a\.?\s?f\.?\s?f\.?)(?![A-Za-z])", re.I)
+# THE WORDS ARE lib/plan_floor_to_floor.py's (#900): one ceiling / height
+# vocabulary, read here and by the floor-to-floor row alike. A CLAIM may also
+# say TALL or "floor to ceiling" (_HEIGHT_SAID: claim-side wording only, never
+# asked of a record).
+_CEILING_WORD = _f2f.CEILING_WORD
+_HEIGHT_WORD = _f2f.HEIGHT_WORD
 _HEIGHT_SAID = re.compile(r"(?<![A-Za-z])(?:tall|floor[\s\-]*to[\s\-]*ceiling)(?![A-Za-z])", re.I)
 #: A value directly before the ceiling: "a 9' ceiling", "a 9'-0" CLG", "a 8 ceiling".
-_VALUE_CEILING = re.compile(r"[\d'\"′″]\s*(?:ceilings?|clgs?\.?)(?![A-Za-z])", re.I)
+_VALUE_CEILING = re.compile(r"[\d'\"′″]\s*" + _f2f.CEILING_PATTERN + r"(?![A-Za-z])", re.I)
 
 
 def is_ceiling_height_clause(clause: str) -> bool:
@@ -4157,7 +4157,7 @@ def _without_ceiling_height(text: str) -> str:
 
 def _names_ceiling_height(naming: str) -> bool:
     """A record part naming a ceiling and a height where its value is."""
-    return bool(_CEILING_WORD.search(naming or "") and _HEIGHT_WORD.search(naming or ""))
+    return _f2f.names_ceiling_and_height(naming)
 
 
 def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
@@ -4339,22 +4339,22 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     # Without level evidence, or without such a clause, nothing changes.
     """
     if not any(_f2f.is_level_evidence(r) for r in records or []):
-        return _answer_is_grounded(text, records, intent, aliases)
+        return _answer_is_grounded(text, records, intent, aliases, sources, families)
     kinds = _level_kinds(text, _citation_texts(records))
     if all(k == _NO_LEVEL_KIND for _a, _b, k in kinds):
-        return _answer_is_grounded(text, records, intent, aliases)
+        return _answer_is_grounded(text, records, intent, aliases, sources, families)
     plain = [r for r in records if not _f2f.is_level_evidence(r)]
     f2f = _f2f.floor_to_floor_in(records)
     stated = set(_f2f.stated_floor_to_floor(records))
     bad: List[str] = []
     rest = _blank(text, [(a, b) for a, b, k in kinds if k != _NO_LEVEL_KIND])
     if _clause_spans(rest):
-        bad += _answer_is_grounded(rest, records, intent, aliases)[1]
+        bad += _answer_is_grounded(rest, records, intent, aliases, sources, families)[1]
     for a, b, kind in kinds:
         clause = text[a:b]
         found = [f for f in _dims.find(_dims.mask_quotation_marks(clause)) if f.dims]
         if kind == _CEILING_KIND:
-            bad += _answer_is_grounded(clause, plain, intent, aliases)[1]
+            bad += _answer_is_grounded(clause, plain, intent, aliases, sources, families)[1]
             for f in found:
                 d = f.dims[0]
                 if (d.unit == "in" and f2f and (Fraction(d.value) in f2f or d.value >= max(f2f))
@@ -4364,13 +4364,15 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
             held = [f.span for f in found if len(f.dims) == 1 and f.dims[0].unit == "in"
                     and Fraction(f.dims[0].value) in stated]
             bad += _answer_is_grounded(_blank(_dims.mask_quotation_marks(clause), held),
-                                       records, intent, aliases)[1]
+                                       records, intent, aliases, sources, families)[1]
     return (not bad), bad
 
 
 def _answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
                         intent: str = "",
-                        aliases: Optional[Dict[str, Dict[str, List[str]]]] = None
+                        aliases: Optional[Dict[str, Dict[str, List[str]]]] = None,
+                        sources: Iterable[Dict[str, Any]] = (),
+                        families: Optional[Dict[str, Sequence[str]]] = None
                         ) -> Tuple[bool, List[str]]:
     """(ok, the numbers nothing returned can vouch for), level evidence aside.
 

@@ -79,11 +79,18 @@ LEVEL_MARK = re.compile(
 #: Mongo's spelling of the same shape, to fetch candidates (re-checked above).
 LEVEL_MARK_QUERY = r"[A-Z]\s+\d+(\.\d+)?\s*'\s*[+\-]?\s*\d+\s*'\s*-\s*\d+"
 
+#: THE ONE CEILING / HEIGHT VOCABULARY. The question's trigger
+#: (`is_level_subject`), the "not shown" warrant (`names_a_ceiling_height`),
+#: the gate's level kinds (plan_search._level_kinds) and #894's
+#: ceiling-height subject rule (plan_search.is_ceiling_height_clause,
+#: _names_ceiling_height) all read these two; no module keeps its own copy.
 #: What a ceiling is printed as: CEILING(S), CLG, CLG.
-_CEILING = re.compile(r"(?<![A-Za-z])(?:ceilings?|clgs?\.?)(?![A-Za-z])", re.I)
-#: What a height is printed as.
-_HEIGHT = re.compile(r"(?<![A-Za-z])(?:heights?|hights?|hgt\.?|ht\.?|high|clear(?:ance)?|"
-                     r"a\.?\s?f\.?\s?f\.?)(?![A-Za-z])", re.I)
+CEILING_PATTERN = r"(?:ceilings?|clgs?\.?)"
+CEILING_WORD = re.compile(r"(?<![A-Za-z])" + CEILING_PATTERN + r"(?![A-Za-z])", re.I)
+#: What a height is printed as (Roy's item 22: CLG, HT, HGT and AFF count).
+HEIGHT_WORD = re.compile(r"(?<![A-Za-z])(?:heights?|hights?|hgt\.?|ht\.?|high|clear(?:ance)?|"
+                         r"a\.?\s?f\.?\s?f\.?)(?![A-Za-z])", re.I)
+_CEILING, _HEIGHT = CEILING_WORD, HEIGHT_WORD
 #: A floor-to-floor, by name.
 _FLOOR_TO_FLOOR = re.compile(
     r"(?<![A-Za-z])(?:floor[\s\-]*to[\s\-]*floor|f\.?\s?t\.?\s?f\.?|flr[\s\-.]*to[\s\-]*flr\.?|"
@@ -226,13 +233,20 @@ def is_level_subject(subject: str, attribute: str = "") -> bool:
     return (names_ceiling(text) and bool(_HEIGHT.search(text))) or names_floor_to_floor(text)
 
 
+def names_ceiling_and_height(naming: str) -> bool:
+    """Does the text name a ceiling AND a height (CEILING HEIGHT, CLG HT,
+    CEILING A.F.F.)? The record-side test both the warrant here and #894's
+    ceiling-height subject rule (plan_search._names_ceiling_height) apply."""
+    return bool(CEILING_WORD.search(naming or "") and HEIGHT_WORD.search(naming or ""))
+
+
 def names_a_ceiling_height(naming: str, value_texts: Sequence[str]) -> bool:
     """Does one part of a record (plan_search.value_parts: the text naming
     it, the texts its values are read from) name a ceiling AND a height and
     print a dimension? The warrant for "not shown" is that no part does.
     CLG and HT count here although no table of this set defines them: the
     wider the count, the rarer "not shown"."""
-    if not (names_ceiling(naming) and _HEIGHT.search(naming or "")):
+    if not names_ceiling_and_height(naming):
         return False
     return any(f.dims for t in value_texts
                for f in _dims.find(_dims.unreverse(_dims.mask_quotation_marks(t or ""))))
@@ -345,7 +359,9 @@ def storeys_named(ivs: Sequence[Dict[str, Any]], asked: Sequence[str],
     FLOOR - named as the marks print it, never renamed (#900 questions 3 and
     4, Roy's items 17 and 18, both accepted: "The first storey is BASE PLANE
     to SECOND FLOOR"; "Never rename BASE PLANE to FIRST FLOOR"; "When #891
-    maps the question to a level, the answer names that storey"). When a
+    maps the question to a level, the answer names that storey"; RULED 48,
+    accept: a "1st floor" with no FIRST FLOOR mark gives the storey BASE
+    PLANE to SECOND FLOOR, named as printed). When a
     level token stands at the foot of that storey
     instead, it is some other level, and nothing is guessed: every storey is
     said."""
@@ -429,6 +445,7 @@ __all__ = ["RECORD_TYPE", "LEVEL_MARK", "LEVEL_MARK_QUERY", "marks", "derive", "
            "level_token", "level_label",
            "choose_section", "is_level_record", "is_level_mark_record", "is_level_evidence",
            "names_ceiling", "names_floor_to_floor", "is_level_subject",
+           "CEILING_PATTERN", "CEILING_WORD", "HEIGHT_WORD", "names_ceiling_and_height",
            "names_a_ceiling_height", "level_record", "stated_floor_to_floor", "storeys_named",
            "floor_to_floor_in", "figure_texts", "answer_line", "render_level_evidence",
            "feet_inches"]
