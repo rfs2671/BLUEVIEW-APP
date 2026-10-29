@@ -85,20 +85,21 @@ class ThePassWritesWhatTheStepReturns(G._Route):
             return {"rows": [_row(1), _row(2, "post_co", T.OWNER_SET_NOTE.format(sheet="S-104.00"))],
                     "by_track": {}}
         got, written, last = self._run(pass_rows)
-        self.assertEqual(seen["tracks"], ["filed", "post_co"])
-        self.assertEqual(seen["pid"], G.PID)
-        self.assertEqual([r["tag"] for r in got["rows"]], ["SW 1", "SW 2"])
+        self.assertEqual(seen.get("tracks"), ["filed", "post_co"])
+        self.assertEqual(seen.get("pid"), G.PID)
+        self.assertEqual([r.get("tag") for r in got.get("rows", [])], ["SW 1", "SW 2"])
         self.assertEqual(last["result"], "ok")
-        self.assertEqual(last["summary"]["structure_written"], 2)
+        self.assertEqual((last.get("summary") or {}).get("structure_written"), 2)
         self.assertGreater(written["rows"], 0)                    # the glyph rows still written
 
     def test_a_failed_step_writes_one_marker_and_the_pass_still_ends_ok(self):
         def pass_rows(*a, **k):
             raise ValueError("S-104 unreadable")
         got, written, last = self._run(pass_rows)
-        self.assertEqual(len(got["rows"]), 1)
-        self.assertEqual(got["rows"][0]["record_type"], "structure_unavailable")
-        self.assertIn("ValueError: S-104 unreadable", got["rows"][0]["error"])
+        rows = got.get("rows", [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("record_type"), "structure_unavailable")
+        self.assertIn("ValueError: S-104 unreadable", rows[0].get("error", ""))
         self.assertEqual(last["result"], "ok")
         self.assertGreater(written["rows"], 0)
 
@@ -146,8 +147,8 @@ class TheStoredRows(unittest.TestCase):
         t = T.track_row("post_co", res, project_id=G.PID, company_id="co1")
         self.assertEqual(t["record_type"], "structure_track")
         self.assertEqual(t["rows"], 3)
-        self.assertEqual(t["pairs"][0]["registration"]["margin"], 1.916)
-        self.assertEqual(t["pairs"][0]["registration"]["wall_share_second"], 0.3473)
+        self.assertEqual(t["pairs"][0]["registration"].get("margin"), 1.916)
+        self.assertEqual(t["pairs"][0]["registration"].get("wall_share_second"), 0.3473)
         self.assertEqual(t["refused"][0]["sheet"], "S-107.00")
         self.assertEqual(t["structure_notes"], [note])
 
