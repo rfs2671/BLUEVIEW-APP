@@ -315,8 +315,8 @@ class _Route(unittest.TestCase):
         st.enter_context(patch.object(server, "_r2_client", _R2()))
         st.enter_context(patch("lib.plan_page.PlanPage", lambda path, n: _Page()))
         for n, fn in (("rows", "_write_glyph_records"), ("health", "_write_set_health"),
-                      ("areas", "_write_area_records")):
-            st.enter_context(patch.object(server, fn, writer(n)))
+                      ("areas", "_write_area_records"), ("structure", "_write_structural_rows")):
+            st.enter_context(patch.object(server, fn, writer(n), create=True))
         return written
 
     def _run_route(self, fake_pass):
@@ -388,7 +388,8 @@ class TheStatusSaysWhereARunningPassIs(_Route):
         self.assertEqual(after["last_result"]["result"], "ok")
         self.assertEqual(after["last_result"]["summary"],
                          {"written": written["rows"], "set_health": written["health"],
-                          "areas_written": written["areas"]})
+                          "areas_written": written["areas"],
+                          "structure_written": written.get("structure")})
         self.assertTrue(after["last_result"]["ended_at"])
         self.assertIsNotNone(after["last_result"]["duration_s"])
         self.assertEqual((after["progress"]["sheets_done"], after["progress"]["sheets_total"]), (11, 11))
@@ -522,7 +523,7 @@ class ABrokenTrackerDoesNotFailTheServerPass(_Route):
             st.enter_context(patch.object(P.log, "info", side_effect=OSError("disk full")))
             asyncio.run(go())
         self.assertEqual(server._GLYPH_PASS_PROGRESS[PID].last_result()["result"], "ok")
-        self.assertEqual(set(written), {"rows", "health", "areas"})
+        self.assertEqual(set(written), {"rows", "health", "areas", "structure"})
         self.assertGreater(written["rows"], 0)
 
 

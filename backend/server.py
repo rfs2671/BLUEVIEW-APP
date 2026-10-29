@@ -65457,6 +65457,26 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         except Exception as e:
             logger.exception("plan set health %s failed: %r", pid, e)
             health = [_health.unavailable(e, datetime.now(timezone.utc))]
+        # STRUCTURE (lane T3, lib.plan_structural; ruling 106, 2026-10-29),
+        # while the PDFs are still here: every S-1xx framing plan's shear
+        # walls, frames, posts, beams, joists and hold-down zones, paired to
+        # each track's architectural plan BY TITLE LEVEL and registered by
+        # the one offset rule (plan_sheet.register_offset) plus the S wall
+        # check. A track with no S sheets (the owner's post-CO set) reads the
+        # filed set's, every row labelled (ruling 68). Own collection: search
+        # and the count gate never read it. A failure writes one marker row,
+        # never sinks the pass.
+        from lib import plan_structural as _structural
+        if progress is not None:
+            progress.server_stage("structure")
+        try:
+            cid = next((p.get("company_id") for _t, ps in by_track for p in ps
+                        if p.get("company_id")), None)
+            structure = (await asyncio.to_thread(_structural.pass_rows, by_track, open_page,
+                                                 project_id=pid, company_id=cid))["rows"]
+        except Exception as e:
+            logger.exception("plan structure %s failed: %r", pid, e)
+            structure = [_structural.unavailable(e, datetime.now(timezone.utc), project_id=pid)]
     # one numbering across the tracks: a row is (page_id, ordinal), and every
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
@@ -65476,6 +65496,7 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
     summary["written"] = await _write_glyph_records(pid, rows)
     summary["set_health"] = await _write_set_health(pid, health)
     summary["areas_written"] = await _write_area_records(pid, areas)
+    summary["structure_written"] = await _write_structural_rows(pid, structure)
     try:
         summary["set_questions"] = await _store_set_questions(
             pid, set_questions, opening_rows, actor or "system:glyph_pass")
@@ -65735,6 +65756,23 @@ async def _write_area_records(project_id: str, rows: List[dict]) -> int:
         r["ordinal"] = i
         r["created_at"] = now
     await db[COLLECTION].insert_many(rows)
+    return len(rows)
+
+
+async def _write_structural_rows(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's structure rows with one pass's
+    (lib.plan_structural.COLLECTION). WHOLE-PROJECT REPLACE, because the
+    pass is: the pairing, the series offset and the shear wall schedule are
+    read across the set. Own collection, like areas and set health: no plan
+    record, so search never returns them and the eval baseline does not move."""
+    from lib.plan_structural import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    await db[COLLECTION].insert_many([dict(r, project_id=pid, ordinal=i, created_at=now)
+                                      for i, r in enumerate(rows)])
     return len(rows)
 
 
@@ -82823,8 +82861,8 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
         await _record_glyph_pass_result(pid, tracker)
         try:
             summary = await _plan_glyph_pass(pid, actor=who or None, progress=tracker)
-            counts = {k: summary[k] for k in ("written", "set_health", "areas_written")
-                      if k in summary}
+            counts = {k: summary[k] for k in ("written", "set_health", "areas_written",
+                                              "structure_written") if k in summary}
             if summary.get("aborted"):
                 tracker.finish(ABORTED, summary=dict(counts, reindex=summary.get("reindex")))
             else:
