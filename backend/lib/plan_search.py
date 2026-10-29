@@ -4228,8 +4228,8 @@ def _ceiling_heights_bound(text: str, records: Sequence[Dict[str, Any]]
     and geometry - the union vouched on the printed 50'-0" BUILDING & BASE
     HEIGHT - while #894's ceiling rule (is_ceiling_height_clause,
     _subject_bound) held it only under attribute. A ceiling-height clause
-    is now decided by that same rule under every non-count intent; no other
-    clause changes. Without a value the clause states nothing and stays."""
+    is now decided by that same rule under every intent; no other clause
+    changes. Without a value the clause states nothing and stays."""
     masked = _dims.mask_quotation_marks(text or "")
     hold = list(masked)
     for f in _dims.find(masked):
@@ -4430,14 +4430,13 @@ def _answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     if it == "attribute":
         _ok, bad = _attribute_answer_is_bound(text, records, aliases)
     else:
-        # A CEILING'S HEIGHT IS NAMED AS ONE UNDER EVERY NON-COUNT INTENT
-        # (Roy's condition (b), item 21): a ceiling-height clause binds only
-        # on a record part naming a ceiling and a height, as under
-        # attribute; the rest of the answer is decided as before. A count
-        # keeps the count rule untouched.
-        ceiling: List[str] = []
-        if it != "count":
-            text, ceiling = _ceiling_heights_bound(text, records)
+        # A CEILING'S HEIGHT IS NAMED AS ONE UNDER EVERY INTENT (Roy's
+        # condition (b), item 21): a ceiling-height clause binds only on a
+        # record part naming a ceiling and a height, as under attribute; the
+        # rest of the answer - every count among it - is decided as before.
+        # Under count too: measured, 80 ceiling-height claims of a printed
+        # 20X40" bound there on the `apartments` / `ceiling height` search.
+        text, ceiling = _ceiling_heights_bound(text, records)
         _ok, bad = _answer_is_grounded_rest(text, records, intent)
         bad = ceiling + bad
     bad = routed + bad

@@ -445,6 +445,11 @@ class RoysItems15To23(unittest.TestCase):
             leaks = [i or '""' for i in INTENTS if _gate(claim, building, i)]
             self.assertEqual(leaks, [], claim)
         # the union is kept for everything else, and a printed ceiling height binds
+        # under count too (measured: a printed 20X40" bound as a ceiling height)
+        schedule = [rec("FIXTURE SCHEDULE | L-1 | 20X40\" LINEAR", sheet="A.3.0", page="pga30",
+                        title="LIGHTING SCHEDULE")]
+        for claim in ["The ceiling height is 20X40\".", "Ceilings are 20X40\" high."]:
+            self.assertEqual([i or '""' for i in INTENTS if _gate(claim, schedule, i)], [], claim)
         for i in ("", "identify", "existence", "location", "geometry"):
             self.assertTrue(_gate("The building height is 50'-0\".", building, i), i)
             printed = building + [rec("CEILING HEIGHT 8'-6\"", sheet="A-600.00", page="pg600",
