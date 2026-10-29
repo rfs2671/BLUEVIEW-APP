@@ -461,5 +461,47 @@ class RoysItems15To23(unittest.TestCase):
         self.assertEqual(out["outcome"], "fail")
 
 
+def _gate(text, records, intent, **kw):
+    """The gate's verdict; a gate that raises has failed the claim's check."""
+    try:
+        return ps.answer_is_grounded(text, records, intent=intent, **kw)[0]
+    except Exception as e:  # the rebase onto #894 raised NameError here
+        raise AssertionError(f"answer_is_grounded raised {e!r}")
+
+
+class TheLevelPathKeepsMainsGate(unittest.TestCase):
+    """Under level evidence the answer is decided clause by clause; every
+    clause still gets #894's `sources` (citations stripped) and `families`
+    (ruling 51: a family's plural with a bare integer is the count rule's,
+    under every intent). The clean rebase onto #894 dropped both."""
+
+    def test_the_projects_families_route_a_count_under_level_evidence(self):
+        project = {"EXHAUST FAN SCHEDULE": ["EF-1", "EF-2"]}
+        records = A300 + [derived_row(), rec("EXHAUST FANS 13", sheet="M-001.00", page="pgm1",
+                                             title="MECHANICAL NOTES")]
+        claim = RULED + ". The first floor has 13 exhaust fans."
+        leaks = [i or '""' for i in INTENTS if i != "count"
+                 and _gate(claim, records, i, families=project)]
+        self.assertEqual(leaks, [], "a family's count bound through the value path")
+        # the ruled sentence alone still binds with them
+        self.assertEqual([i or '""' for i in INTENTS
+                          if not _gate(RULED, records, i, families=project)], [])
+
+    def test_one_ceiling_and_height_vocabulary(self):
+        # #894 mirrored #900's words to be reconciled at this merge: one list
+        L = levels_mod()
+        self.assertIs(getattr(ps, "_CEILING_WORD", None), getattr(L, "CEILING_WORD", 0))
+        self.assertIs(getattr(ps, "_HEIGHT_WORD", None), getattr(L, "HEIGHT_WORD", 0))
+        for naming in ["CLG HT", "CEILING A.F.F.", "CEILING", "WALL HGT"]:
+            self.assertEqual(ps._names_ceiling_height(naming), L.names_ceiling_and_height(naming))
+
+    def test_a_source_citation_is_stripped_under_level_evidence(self):
+        sources = [{"file_name": "AR - 6.9.26 (Gas change).pdf"}]
+        claim = RULED[:-1] + ", AR - 6.9.26 (Gas change).pdf)"
+        refused = [i or '""' for i in INTENTS
+                   if not _gate(claim, [derived_row()] + CEILINGS, i, sources=sources)]
+        self.assertEqual(refused, [], claim)
+
+
 if __name__ == "__main__":
     unittest.main()
