@@ -152,8 +152,14 @@ class WhatDoesNotChange(unittest.TestCase):
 
     def test_other_intents_keep_the_union_and_a_count_keeps_its_rule(self):
         self.assertFalse(gate("The ceiling height is 10'-0\".", A300))
-        self.assertTrue(gate("The ceiling height is 10'-0\".", A300, intent=""))
-        self.assertTrue(gate("The ceiling height is 10'-0\".", A300, intent="identify"))
+        # Other intents keep the union for every clause but a ceiling's
+        # height: Roy's condition (b) on #900 ("no wrong ceiling height
+        # binds", item 21) decides a ceiling-height clause by the ceiling rule
+        # under every non-count intent (plan_search._ceiling_heights_bound).
+        self.assertFalse(gate("The ceiling height is 10'-0\".", A300, intent=""))
+        self.assertFalse(gate("The ceiling height is 10'-0\".", A300, intent="identify"))
+        self.assertTrue(gate("The parapet is 10'-0\".", A300, intent=""))
+        self.assertTrue(gate("The parapet is 10'-0\".", A300, intent="identify"))
         qty = rec(sheet_number="M-200.00", record_type="schedule", quote="PTAC SCHEDULE UNIT NO. | QTY PTAC-1 | 21",
                   payload={"name": "PTAC SCHEDULE",
                            "columns": [{"header": "UNIT NO.", "role": "identifier"},
