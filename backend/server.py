@@ -70132,49 +70132,50 @@ async def plan_count_families(project_id: str) -> Dict[str, List[str]]:
     with no identifier column among them), the door and window schedules'
     (plan_openings.families) and the plan-only ones (plan_only.families).
     The gate routes a plural naming one of them, with a bare integer, to the
-    count rule under every intent (plan_search, ruling 51). READ-ONLY. A
-    failure costs only that routing by project family; the families of the
-    records in hand still route."""
+    count rule under every intent (plan_search, ruling 51). READ-ONLY.
+
+    A FAILED READ RAISES (ruling 83, Roy 2026-10-29: "a failed family read
+    refuses the count"). It returned {} here, and the gate then routed on the
+    families of the records in hand alone - the gap ruling 51 closed, reopened
+    by a database hiccup. The caller (gate_and_warrant) turns the failure into
+    a refusal of every count the families could have decided."""
     out: Dict[str, List[str]] = {}
     if not project_id:
         return out
-    try:
-        from lib.plan_glyph_pass import families as _families
-        from lib import plan_openings as _openings
-        from lib import plan_only as _plan_only
-        pid = str(project_id)
-        page_ids = await _glyph_page_ids(pid)
-        if not page_ids:
-            return out
-        sched = await db[PLAN_RECORDS].find(
-            {"project_id": pid, "record_type": "schedule",
-             "page_id": {"$in": page_ids}, "sheet_number": {"$regex": "^M-"}},
-            {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
-             "payload.rows": 1},
-        ).to_list(2000)
-        found = [_families([{"name": (s.get("payload") or {}).get("name"),
-                             "columns": (s.get("payload") or {}).get("columns"),
-                             "rows": (s.get("payload") or {}).get("rows"),
-                             "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
-                            for s in sched]),
-                 _openings.families(await _opening_schedules(pid, page_ids)),
-                 _plan_only.families(await db[PLAN_RECORDS].find(
-                     _plan_only.record_query(pid, page_ids), {"embedding": 0}).to_list(2000))]
-        for fams in found:
-            for name, f in (fams or {}).items():
-                tags = (f or {}).get("tags") or []
-                mine = out.setdefault(str(name).strip().upper(), [])
-                mine.extend(str(t).upper() for t in tags if str(t).upper() not in mine)
-    except Exception as e:
-        logger.warning(f"count families unread for {project_id}: {e!r}")
-        return {}
+    from lib.plan_glyph_pass import families as _families
+    from lib import plan_openings as _openings
+    from lib import plan_only as _plan_only
+    pid = str(project_id)
+    page_ids = await _glyph_page_ids(pid)
+    if not page_ids:
+        return out
+    sched = await db[PLAN_RECORDS].find(
+        {"project_id": pid, "record_type": "schedule",
+         "page_id": {"$in": page_ids}, "sheet_number": {"$regex": "^M-"}},
+        {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
+         "payload.rows": 1},
+    ).to_list(2000)
+    found = [_families([{"name": (s.get("payload") or {}).get("name"),
+                         "columns": (s.get("payload") or {}).get("columns"),
+                         "rows": (s.get("payload") or {}).get("rows"),
+                         "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
+                        for s in sched]),
+             _openings.families(await _opening_schedules(pid, page_ids)),
+             _plan_only.families(await db[PLAN_RECORDS].find(
+                 _plan_only.record_query(pid, page_ids), {"embedding": 0}).to_list(2000))]
+    for fams in found:
+        for name, f in (fams or {}).items():
+            tags = (f or {}).get("tags") or []
+            mine = out.setdefault(str(name).strip().upper(), [])
+            mine.extend(str(t).upper() for t in tags if str(t).upper() not in mine)
     return out
 
 
 def gate_plan_answer(text: str, records: List[dict], subject: str = "",
                      intent: str = "", sources: Any = (),
                      aliases: Optional[Dict[str, Dict[str, List[str]]]] = None,
-                     families: Optional[Dict[str, List[str]]] = None
+                     families: Optional[Dict[str, List[str]]] = None,
+                     families_unread: Optional[str] = None
                      ) -> Tuple[str, str]:
     """(text_to_send, outcome). THE HARD GATE.
 
@@ -70216,7 +70217,8 @@ def gate_plan_answer(text: str, records: List[dict], subject: str = "",
     # `sources` (plan_sources.source_of rows for the records' files): a file
     # name or set label the answer cites is a citation, not a figure.
     grounded, unsupported = plan_search.answer_is_grounded(
-        text, records, intent=intent, aliases=aliases, sources=sources, families=families)
+        text, records, intent=intent, aliases=aliases, sources=sources, families=families,
+        families_unread=families_unread)
     leaked = plan_search.contains_label(text, records)
     if grounded and not leaked:
         return text, "grounded"
@@ -70273,10 +70275,19 @@ async def gate_and_warrant(
     # A FAMILY'S COUNT IS THE COUNT RULE'S UNDER EVERY INTENT (ruling 51):
     # the project's families, so a plural names its family whatever this
     # search returned. Not for a count, which is the count rule already.
-    families = (await plan_count_families(project_id)
-                if project_id and (intent or "").strip().lower() != "count" else None)
+    # A FAILED READ REFUSES THE COUNT (ruling 83): never the families in hand.
+    families: Optional[Dict[str, List[str]]] = None
+    families_unread: Optional[str] = None
+    if project_id and (intent or "").strip().lower() != "count":
+        try:
+            families = await plan_count_families(project_id)
+        except Exception as e:
+            families_unread = f"{type(e).__name__} {e!r}"[:200]
+            logger.warning("count families unread for %s - every count is refused: %r",
+                           project_id, e)
     sent, outcome = gate_plan_answer(text, records, subject, intent=intent, sources=sources,
-                                     aliases=aliases, families=families)
+                                     aliases=aliases, families=families,
+                                     families_unread=families_unread)
     if not project_id:
         return sent, outcome
     # TRIGGERED ON `classify_reply`, THE SAME INSTRUMENT THE BENCHMARK COUNTS
