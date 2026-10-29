@@ -357,7 +357,8 @@ def _sentence(anchor: str, value: Any, scope: Optional[Dict[str, Any]] = None) -
 
 def _invented_number(records: Sequence[Dict[str, Any]], anchor: str = "",
                      intent: str = "",
-                     scope: Optional[Dict[str, Any]] = None) -> str:
+                     scope: Optional[Dict[str, Any]] = None,
+                     aliases: Optional[Dict[str, Any]] = None) -> str:
     """A number none of the returned records can vouch for FOR THIS SUBJECT.
 
     ── WHY THE PROBE CARRIES A MARK ───────────────────────────────────────
@@ -375,7 +376,7 @@ def _invented_number(records: Sequence[Dict[str, Any]], anchor: str = "",
     n = _INVENTED_START
     while True:
         ok, _bad = ps.answer_is_grounded(_sentence(anchor, n, scope), records,
-                                         intent=intent)
+                                         intent=intent, aliases=aliases)
         if not ok:
             return str(n)
         n += 1
@@ -424,9 +425,12 @@ def _matches_without_label(r: Dict[str, Any], terms: Sequence[str]) -> bool:
     return ps.match_score(dict(r, label=None), terms) > 0
 
 
-def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
+def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]],
+             aliases: Optional[Dict[str, Any]] = None
              ) -> Tuple[List[str], Dict[str, Any], str]:
-    """(reasons, checks, render). Empty reasons is a pass."""
+    """(reasons, checks, render). Empty reasons is a pass. `aliases`: the
+    project's abbreviations tables by file (plan_search.answer_is_grounded),
+    as the gate is given them."""
     exp = case.get("expect") or {}
     subject = case.get("subject") or ""
     terms = ps.search_terms(subject)
@@ -480,12 +484,17 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
     # The mark the probe hangs on: a case's own first claim when it has one,
     # so the refusal is about the VALUE being unsupported and nothing else.
     claims = _claims(case)
-    anchor = str(claims[0]["subject"]) if claims else ""
-    scope = claims[0].get("scope") if claims else None
     intent = str(case.get("intent") or "")
-    invented = _invented_number(returned, anchor, intent, scope)
+    # AN ATTRIBUTE IS BOUND TO ITS SUBJECT (plan_search, ruling 2026-10-27),
+    # so an attribute case with no claims of its own probes with the case's
+    # subject: "There are N." names nothing and would be refused for that,
+    # whatever N is - the vacuous probe the note above describes.
+    anchor = (str(claims[0]["subject"]) if claims
+              else subject if intent == "attribute" else "")
+    scope = claims[0].get("scope") if claims else None
+    invented = _invented_number(returned, anchor, intent, scope, aliases)
     allowed, _ = ps.answer_is_grounded(_sentence(anchor, invented, scope), returned,
-                                       intent=intent)
+                                       intent=intent, aliases=aliases)
     checks["gate_refuses_an_invented_number"] = not allowed
     if allowed:
         reasons.append(f"the gate allowed {invented} for "
@@ -528,7 +537,7 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
     # true claim is, at the scope it names.
     for claim in exp.get("refused") or []:
         sent = _sentence(str(claim["subject"]), claim["value"], claim.get("scope"))
-        ok, _bad = ps.answer_is_grounded(sent, returned, intent=intent)
+        ok, _bad = ps.answer_is_grounded(sent, returned, intent=intent, aliases=aliases)
         checks[f"refuses:{sent}"] = not ok
         if ok:
             reasons.append(f"the gate allowed {sent!r}, which the case says is wrong")
@@ -548,7 +557,8 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
         printed = sorted({f.text.strip() for t in texts
                           for f in plan_dimensions.find(plan_dimensions.unreverse(t)) if f.dims})
         bound = [d for d in printed
-                 if ps.answer_is_grounded(_sentence(subject, d), returned, intent=intent)[0]]
+                 if ps.answer_is_grounded(_sentence(subject, d), returned, intent=intent,
+                                          aliases=aliases)[0]]
         checks["printed_values_put_to_the_gate"] = len(printed)
         checks["no_value_binds"] = not bound
         if bound:
@@ -579,7 +589,7 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
                 f"on {first.get('sheet_number')}, and no sheet states one")
         binds = [n for n in _candidate_numbers(returned)
                  if ps.answer_is_grounded(f"There are {n} {subject}.", returned,
-                                          intent="count")[0]]
+                                          intent="count", aliases=aliases)[0]]
         checks["no_unscoped_count_binds"] = not binds
         if binds:
             reasons.append(f"an unscoped count of {subject!r} binds: {binds[:6]}")
@@ -631,10 +641,15 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
             true_answer = " ".join(_sentence(str(c["subject"]), c["value"],
                                              c.get("scope"))
                                    for c in claims)
+        elif intent == "attribute":
+            # Each value OF the subject: an attribute binds only where its
+            # record names the subject (plan_search, ruling 2026-10-27), and
+            # "The drawings show 42." names none.
+            true_answer = " ".join(_sentence(subject, v) for v in values)
         else:
             true_answer = "The drawings show " + ", ".join(values) + "."
         ok, missing = ps.answer_is_grounded(true_answer, returned,
-                                            intent=intent)
+                                            intent=intent, aliases=aliases)
         checks["gate_allows_the_true_answer"] = ok
         if not ok:
             reasons.append(f"the gate would refuse the true answer; nothing "
@@ -684,7 +699,8 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
 
 
 def score_case(case: Dict[str, Any], returned: Sequence[Dict[str, Any]],
-               stale: Dict[Any, str]) -> Dict[str, Any]:
+               stale: Dict[Any, str],
+               aliases: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """PASS, FAIL or STALE, with every check that decided it.
 
     ── WHEN STALE DATA KEEPS A CASE OUT OF THE RATE ───────────────────────
@@ -699,7 +715,7 @@ def score_case(case: Dict[str, Any], returned: Sequence[Dict[str, Any]],
     #
     # A case never PASSES on the strength of a stale record.
     """
-    reasons, checks, render = _verdict(case, returned)
+    reasons, checks, render = _verdict(case, returned, aliases)
     lead = list(returned[:CITE_K])
     stale_hits = [(r.get("sheet_number"),
                    (r.get("payload") or {}).get("tag") or (r.get("quote") or "")[:40],
@@ -709,7 +725,7 @@ def score_case(case: Dict[str, Any], returned: Sequence[Dict[str, Any]],
     without = None
     if stale_hits:
         clean = [r for r in returned if record_key(r) not in stale]
-        clean_reasons, _c, _r = _verdict(case, clean)
+        clean_reasons, _c, _r = _verdict(case, clean, aliases)
         without = "pass" if not clean_reasons else "fail"
         if not (outcome == "fail" and without == "fail"):
             outcome = "stale"
