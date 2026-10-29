@@ -1514,6 +1514,165 @@ def _named_tags(text: str, tags: Iterable[str]) -> List[str]:
             if re.search(_ALNUM_BEFORE + re.escape(t) + _ALNUM_AFTER, text or "", re.I)]
 
 
+# ── A COUNT NAMES ITS OWN FAMILY (ruling 71, 2026-10-28) ──────────────────
+#
+# "There are 9 water heaters." bound on WH-1's located 9 (production probe,
+# 2026-10-28): HEATER is a word of the WALL ELECTRIC UNIT HEATER SCHEDULE,
+# and one shared word was all a clause needed to name a family. WH-1 is a
+# wall electric unit heater, not a water heater.
+#
+# Ruling 71: "a count binds only if its noun matches the family's own
+# schedule description or tag (WH-1 = 'wall electric unit heater'; 'water
+# heater' refuses). Use the schedule title/description text, no hand list."
+#
+#   THE NOUN is every phrase of the clause that holds one of the family's
+#   own words or tags: a run of adjacent words, broken by any mark between
+#   two words, by a figure, by a stop word (_STOP) or a per-unit word, and by
+#   a sheet or unit reference ("on A-103.00", "4A") - which say where, never
+#   what. In "There are 9 water heaters on the roof" the phrase is "water
+#   heaters".
+#
+#   ITS OWN TEXT is the family's: the schedule's printed name, word by word,
+#   each in either number or abbreviated (term_pattern), and its tags; a
+#   plan-only family's object, its tags' own words and the names its note
+#   prints for them (lib.plan_only). A word a schedule name shares with
+#   every count question (_GENERIC_FAMILY_WORDS: unit, type, ...) neither
+#   names nor misnames: "16 EF-1 units" is still EF-1.
+#
+#   Every other word in such a phrase is FOREIGN, and a clause with one
+#   names no family through that phrase: "water heaters", "WH-1 fans",
+#   "W1 doors" (W1 is a window) and "PTAC-1 air conditioners" (no PTAC
+#   schedule prints AIR CONDITIONER) refuse. So does a level word inside
+#   the noun ("roof exhaust fans"): state the level apart ("the roof has").
+#
+# What it does not decide: which family a clause naming several is about
+# (_clause_subjects, as before), and the retrieval (glyph_families_for stays
+# wide - fetching a family costs a census, and the agent shown WH-1's rows
+# for "water heaters" can say what the set does have).
+
+#: A word of a clause, as the noun check reads it: letters and digits, with
+#: inner hyphens, dots, slashes and apostrophes ("WH-1", "J.R.", "owner's").
+_NOUN_TOKEN = re.compile(r"[A-Za-z0-9]+(?:[-./'][A-Za-z0-9]+)*\.?")
+_FIGURE_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?\.?")
+_PER_WORDS = frozenset({"each", "every", "per", "apiece"})
+
+
+def _alnum(word: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (word or "").lower())
+
+
+def _noun_break(tok: str) -> bool:
+    """A word that ends a noun phrase: a figure, a stop word, a per-unit
+    word, or a sheet or unit reference."""
+    low = tok.lower().rstrip(".")
+    return bool(_FIGURE_TOKEN.fullmatch(tok) or low in _STOP or low in _PER_WORDS
+                or _SHEET_REF.fullmatch(tok.rstrip(".")) or _UNIT_REF.fullmatch(tok.rstrip(".")))
+
+
+class _Own(NamedTuple):
+    """A family's own text: its words (each read by term_pattern), its tags,
+    and the printed other names of a plan-only family's tags (alnum-only)."""
+    words: Tuple[str, ...]
+    tags: frozenset
+    names: frozenset
+    opening: bool = False
+
+
+def _own_text(name: str, tags: Iterable[str], plan_only: Optional[Dict[str, Any]] = None,
+              opening: bool = False, more: Iterable[str] = ()) -> _Own:
+    words = [w.lower() for w in re.findall(r"[A-Za-z]{2,}", name or "")]
+    names: set = set()
+    po = plan_only or {}
+    if po:
+        words += [w.lower() for w in re.findall(r"[A-Za-z]{2,}", str(po.get("object") or ""))]
+        for ws in (po.get("tag_words") or {}).values():
+            words += [str(w).lower() for w in ws or []]
+        also = po.get("also") if isinstance(po.get("also"), dict) else {}
+        for al in also.values():
+            for a in al or []:
+                names.add(_alnum(a))
+                names.update(_alnum(p) for p in re.findall(r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*\.?", a))
+    for m in more:
+        words += [w.lower() for w in re.findall(r"[A-Za-z]{2,}", m or "")]
+    return _Own(tuple(dict.fromkeys(words)),
+                frozenset(str(t).strip().upper() for t in tags or () if t),
+                frozenset(n for n in names if n), opening)
+
+
+def _is_own(tok: str, own: _Own, prev: str) -> bool:
+    bare = tok.rstrip(".")
+    up = bare.upper()
+    if up in own.tags and (len(up) > 1 or not own.opening or prev.lower() == "type"):
+        return True                     # a lettered door type only as "type F"
+    if own.opening:
+        m = re.fullmatch(r"type-(\w+)|(\w+)-type", bare, re.I)
+        if m and (m.group(1) or m.group(2)).upper() in own.tags:
+            return True                 # "type-F", "F-type" (_named_opening_tags)
+    if own.names and _alnum(tok) in own.names:
+        return True
+    return any(_rx(w).fullmatch(tok) or _rx(w).fullmatch(bare) for w in own.words)
+
+
+def foreign_words(clause: str, own: _Own) -> List[str]:
+    """The words of the clause's noun phrases that hold one of `own`'s words
+    or tags and are not its own (ruling 71): [] when the clause names the
+    family only by its own text, or names nothing of it.
+
+    A LEVEL WORD NAMES WHERE, NOT WHAT: "roof" is a word of ROOF DRAINS, but
+    "The roof level has 2 RD-1" holds no drain in "roof level" (measured on
+    this repo's own count tests). A level word the family's text holds is its
+    own, never a phrase's hit.
+
+    EVERY CLAUSE SHAPE, ONE RULE (ruling 100, 2026-10-28: '"W1 doors 8." must
+    refuse. The noun check applies to every clause shape (colon, no colon,
+    inline)'): a phrase is judged whole wherever its figure stands - "W1
+    doors: 8", "W1 doors 8", "8 W1 doors", "W1 doors (8)". So a verb inside
+    the phrase fails closed too ("The overflow drains number 2"; ruling 99)."""
+    out: List[str] = []
+    run: List[Tuple[str, bool, bool]] = []      # (word, foreign, the family's hit)
+    end, prev = 0, ""
+
+    def close():
+        if any(h for _w, _f, h in run):
+            out.extend(w for w, foreign, _h in run if foreign)
+
+    for m in _NOUN_TOKEN.finditer(clause or ""):
+        tok = m.group(0)
+        if (clause[end:m.start()]).strip():
+            close()
+            run = []
+        end = m.end()
+        if _is_own(tok, own, prev):
+            level = bool(_NAMED_LEVEL.fullmatch(tok.rstrip(".")) or _FLOOR_WORD.fullmatch(tok.rstrip(".")))
+            run.append((tok, False, not level))
+        elif _noun_break(tok):
+            close()
+            run = []
+        else:
+            run.append((tok, _stem(tok.rstrip(".")) not in _GENERIC_FAMILY_WORDS, False))
+        prev = tok
+    close()
+    return out
+
+
+def _family_own(fam: "GlyphFamily", opening: bool = False) -> _Own:
+    return _own_text(fam.name, fam.tags, fam.plan_only, opening)
+
+
+def _ident_own(ident: str, mark_sources: Dict[str, set],
+               fams_of: Dict[str, List["GlyphFamily"]]) -> _Own:
+    """A printed mark's own text (_values_by_ident): the mark, the names of
+    the schedules whose rows print it, and the own text of every family it
+    is a tag of. A schedule named as a whole is its own name."""
+    fams = fams_of.get(ident, [])
+    parts = [_family_own(f) for f in fams]
+    words = list(_own_text("", [], more=[ident] + sorted(mark_sources.get(ident, ()))).words)
+    for p in parts:
+        words += [w for w in p.words if w not in words]
+    return _Own(tuple(words), frozenset({ident}).union(*(p.tags for p in parts)),
+                frozenset().union(*(p.names for p in parts)))
+
+
 def _named_opening_tags(text: str, tags: Iterable[str]) -> List[str]:
     """The door/window types a clause names. A tag of two or more characters
     (D1, W3) as a whole word, as printed - upper case. A ONE-LETTER TYPE
@@ -2306,13 +2465,15 @@ def _qty_in_clause(clause: str, book: GlyphBook) -> Tuple[set, set]:
     # building scope. ("The bulkhead has 1 DH-1." is not what the schedule says.)
     building = _building_scope(clause, book)
     for fam in book.families.values():
+        # ruling 71: "There is 1 DH-1 water heater." names no DH-1
+        own_noun = not foreign_words(clause, _family_own(fam))
         for t in _named_tags(clause, fam.tags):
             q = fam.qty.get(t) or ""
             if not re.fullmatch(r"\d+", q):
                 continue
             n_t = len(_resolved(fam, [t]))
             if n_t == 0:
-                if building:
+                if building and own_noun:
                     add.add(q)
             elif not fam.why and not _building_refused(book) and int(q) != n_t:
                 drop.add(q)
@@ -2597,8 +2758,13 @@ def _clause_subjects(clause: str, book: GlyphBook
     # EACH TAG ITS OWN SUBJECT: "4A has 1 EF-1 and 1 EF-2" states two counts
     # of one, not one count of two.
     named = _named_opening_tags if book.opening else _named_tags
+    # A COUNT NAMES ITS OWN FAMILY (ruling 71): a tag, or a family's words,
+    # in a phrase holding a word that is not the family's own ("WH-1 water
+    # heaters", "W1 doors") names nothing of it.
+    own = {n: _family_own(f, book.opening) for n, f in book.families.items()}
     tagged = [(fam, [t]) for fam in book.families.values()
-              for t in named(clause, fam.tags)]
+              for t in named(clause, fam.tags)
+              if not foreign_words(clause, own[fam.name])]
     if tagged:
         return tagged
     words = {_stem(w) for w in re.findall(r"[A-Za-z]{2,}", clause)}
@@ -2606,10 +2772,11 @@ def _clause_subjects(clause: str, book: GlyphBook
     # with a schedule's name - "roof" is a level, and "the roof has 2
     # exhaust fans" must stay the exhaust-fan schedule's (_plan_only_subjects).
     plan = [s for fam in book.families.values() if fam.plan_only is not None
+            and not foreign_words(clause, own[fam.name])
             for s in _plan_only_subjects(words, fam, clause)]
     sched = [n for n, f in book.families.items() if f.plan_only is None]
     hits = {name: family_words(name) & words for name in sched}
-    hits = {n: h for n, h in hits.items() if h}
+    hits = {n: h for n, h in hits.items() if h and not foreign_words(clause, own[n])}
     if not hits:
         return plan
     top = [n for n, h in hits.items() if not any(h < g for g in hits.values())]
@@ -3612,6 +3779,11 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     unreconciled = [h.get("subject") for h in _set_health(records)
                     if h.get("kind") == "family_not_reconciled"]
     mark_sources = _mark_sources(records)
+    fams_of: Dict[str, List[GlyphFamily]] = {}
+    for b in [book] + list(obooks.tracks.values()):
+        for f in b.families.values():
+            for t in f.tags:
+                fams_of.setdefault(str(t).strip().upper(), []).append(f)
     # A DRAWING SET'S NAME IS A CITATION: "per the owner's post-CO set,
     # 6/9/26" says where a figure comes from - its date lends nothing.
     citations = sorted(set(_citation_texts(records)) | {
@@ -3666,6 +3838,12 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
             continue
         allowed: set = set()
         for ident in _idents_named_in(clause, by_ident.keys()):
+            # A PRINTED COUNT NAMES ITS OWN THING TOO (ruling 71): the mark,
+            # in a phrase of the words of the schedules that print it and of
+            # the families it is a tag of - "9 WH-1 water heaters" is not
+            # WH-1's QTY 9.
+            if foreign_words(clause, _ident_own(ident, mark_sources, fams_of)):
+                continue
             allowed |= by_ident[ident]
         # ── A PRINTED COUNT IS A BUILDING FIGURE ───────────────────────────
         #
