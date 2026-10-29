@@ -12,11 +12,17 @@ inch, which is the evidence the two share a paper scale.
 
 What this guards, each a condition that can fail:
 
-  * the registration must be USABLE. The roof is the case: the old 4pt
-    search put A-105.01/M-105.00 21.8in off on 108 anchors where the true
-    peak holds 239, and called it usable. register() now refuses that offset
-    (under half the best peak), and a borrow resting on it is refused - a
-    test below forces the old search and asserts the refusal;
+  * the registration must be USABLE BY THE ONE OFFSET RULE (Roy, ruling
+    63): plan_sheet.register_offset - the offset agrees with the exact 1pt
+    census' single best peak (R1, R2) and holds >= 8 anchors (R3); its
+    margin is carried in the provenance. A registration register_offset did
+    not judge lends nothing. Two real cases:
+      - the roof: the old 4pt search put A-105.01/M-105.00 21.8in off on
+        108 anchors where the true peak holds 239. R1 refuses it, and a
+        borrow resting on it is refused - a test forces the old search;
+      - M-106.00 (bulkhead) on A-105.01: its offset sits 9pt (6in) from the
+        census' best peak, 101 anchors against 104. register() calls that
+        usable (over half the best); R1 refuses it, and nothing is lent;
   * the lender's viewport must have verified on its OWN dimensions: never an
     unverified one (A-105.x's 3/32" BULKHEAD PLAN), never a borrowed one;
   * only M or P borrows, and only from A - never S, never M from P;
@@ -36,7 +42,6 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import numpy as np
 
@@ -98,11 +103,19 @@ def _anchors(n=300, lo=150, hi=950, shift=(0.0, 0.0), seed=3):
     return A, A + np.asarray(shift) + rng.uniform(-0.4, 0.4, size=(n, 2))
 
 
+#: register_offset's shape (plan_sheet, ruling 63)
 USABLE = {"dx": 0.0, "dy": 0.0, "anchors": 300, "best_peak_anchors": 300,
-          "best_peak": [0.0, 0.0], "spread": [0.95, 0.9], "rms_in": 0.2, "max_in": 0.4,
-          "usable": True, "refused": None}
-REFUSED = dict(USABLE, anchors=108, best_peak_anchors=239, usable=False,
-               refused="the offset holds 108 anchors, under half the 239 of the best peak")
+          "best_peak": [0.0, 0.0], "second_peak_anchors": 40, "second_peak": [30.0, 0.0],
+          "margin": 7.5, "offset_from_best_pt": 0.3, "rms_in": 0.2, "max_in": 0.4,
+          "sweep": "exact 1pt census", "usable": True, "refused": None}
+REFUSED = dict(USABLE, dx=32.0, anchors=108, best_peak_anchors=239, margin=2.06,
+               offset_from_best_pt=32.0, usable=False,
+               refused="the offset (32.0, 0.0) holds 108 anchors and is 32.0pt from the best "
+                       "peak (0.0, 0.0), which holds 239")
+#: register()'s shape: usable by the half rule, never judged by the one offset rule
+REGISTER_SHAPED = {"dx": 0.0, "dy": 0.0, "anchors": 300, "best_peak_anchors": 300,
+                   "best_peak": [0.0, 0.0], "spread": [0.95, 0.9], "rms_in": 0.2,
+                   "max_in": 0.4, "usable": True, "refused": None}
 
 
 def _borrow(borrower="M-103.00", lender="A-103.00", b=None, a=None, reg_=USABLE, pts=None):
@@ -160,7 +173,20 @@ class OnlyWhenTheRegistrationIsUsable(unittest.TestCase):
         self.assertIsNone(v)
         self.assertEqual(res["status"], "refused")
         self.assertIn("not usable", res["why"])
-        self.assertIn("under half", res["why"])
+        self.assertIn("from the best peak", res["why"])
+
+    def test_a_registration_the_one_offset_rule_did_not_judge_lends_nothing(self):
+        """register()'s answer - usable by the half rule, with no census
+        peaks on it - is not the one rule (ruling 63)."""
+        v, res = _borrow(reg_=REGISTER_SHAPED)
+        self.assertIsNone(v)
+        self.assertIn("register_offset", res["why"])
+
+    def test_the_margin_rides_in_the_provenance(self):
+        v, res = _borrow()
+        self.assertEqual((v.borrowed or {}).get("margin"), 7.5)
+        self.assertEqual(res["registration"]["margin"], 7.5)
+        self.assertEqual(res["registration"]["second_peak_anchors"], 40)
 
 
 class OnlyAVerifiedAPlanLends(unittest.TestCase):
@@ -254,19 +280,13 @@ def _read(name, page):
     return _CACHE[(name, page)]
 
 
-def _old_step(A, B, **kw):
-    return _BT(A, B, coarse_pt=4.0, **kw)
-
-
-_BT = PS.best_translation
-
 ROOF_A, ROOF_M = ("AR - 8.18.26.pdf", 7, "A-105.01"), ("MH - 7.2.26.pdf", 7, "M-105.00")
 
 
 def _borrow_real(a, m, reg_=None):
     _need()
     (adata, ash), (mdata, msh) = _read(a[0], a[1]), _read(m[0], m[1])
-    r = PS.register(adata, mdata) if reg_ is None else reg_
+    r = PS.register_offset(adata, mdata) if reg_ is None else reg_
     pa, pm = PS.matched_anchors(adata, mdata, r)
     return r, ps.borrow(m[2], msh, a[2], ash, r, pa, pm)
 
@@ -283,21 +303,48 @@ class TheRoofBorrowsOnlyFromItsTruePeak(unittest.TestCase):
         self.assertEqual(res["from"]["viewport"]["title"], "ROOF PLAN")
         self.assertEqual(res["pt_per_in"], QUARTER)
         self.assertEqual(v.borrowed["registration"]["anchors"], r["anchors"])
+        self.assertIsNotNone(v.borrowed["margin"], "the pair's margin is not on the borrow")
+        self.assertLessEqual(r["offset_from_best_pt"], 1.5)
 
     def test_the_old_wrong_peak_lends_nothing(self):
-        """The 4pt search's answer (5.99, -45.0): 108 anchors under the true
-        239. register() refuses it, and so the borrow is refused - drop the
-        usable condition and this borrows on a refused registration."""
+        """The 4pt search's answer (5.99, -45.0): 108 anchors, 32pt from the
+        census' best peak of 239. R1 refuses it, and so the borrow is
+        refused - drop the usable condition and this borrows on a refused
+        registration."""
         _need()
         (adata, _a), (mdata, _m) = _read(*ROOF_A[:2]), _read(*ROOF_M[:2])
-        with patch.object(PS, "best_translation", _old_step):
-            r = PS.register(adata, mdata)
+        r = PS.register_offset(adata, mdata, coarse_pt=4.0)
         self.assertLess(np.hypot(r["dx"] - 5.99, r["dy"] + 45.0), 1.0, r)
         self.assertFalse(r["usable"])
         _r, (v, res) = _borrow_real(ROOF_A, ROOF_M, reg_=r)
         self.assertIsNone(v)
         self.assertEqual(res["status"], "refused")
-        self.assertIn("under half", res["why"])
+        self.assertIn("from the best peak", res["why"])
+
+
+BULKHEAD_M = ("MH - 7.2.26.pdf", 8, "M-106.00")
+
+
+class TheBulkheadIsRefusedByR1(unittest.TestCase):
+    """M-106.00 on A-105.01 (measured; production never pairs it - there is
+    no A-106): register() calls it usable at (-75.0, -45.5) with 101 anchors,
+    over half the census' 104 - but that best peak is at (-65.75, -44.12),
+    9pt (6 real inches) away. Two placements 6in apart is the case the one
+    offset rule exists for (ruling 63): R1 refuses it, and nothing is lent."""
+
+    def test_m106_is_refused_and_lends_nothing(self):
+        _need()
+        (adata, _a), (mdata, _m) = _read(*ROOF_A[:2]), _read(*BULKHEAD_M[:2])
+        half_rule = PS.register(adata, mdata)
+        self.assertTrue(half_rule["usable"], "the half rule no longer accepts M-106: re-measure")
+        r = PS.register_offset(adata, mdata)
+        self.assertFalse(r["usable"], r)
+        self.assertGreater(r["offset_from_best_pt"], 1.5)
+        self.assertIn("from the best peak", r["refused"])
+        _r, (v, res) = _borrow_real(ROOF_A, BULKHEAD_M, reg_=r)
+        self.assertIsNone(v)
+        self.assertEqual(res["status"], "refused")
+        self.assertIn("not usable", res["why"])
 
 
 class RunPassCallsTheReader(unittest.TestCase):
@@ -358,6 +405,8 @@ class TheGlyphPassRecordsEachMechanicalPlansScale(unittest.TestCase):
         self.assertEqual(res["from"]["viewport"]["title"], "FOURTH FLOOR PLAN")
         self.assertEqual(res["pt_per_in"], QUARTER)
         self.assertTrue(res["registration"]["usable"])
+        self.assertIsNotNone(res["registration"]["margin"], "the pair's margin is not recorded")
+        self.assertLessEqual(res["registration"]["offset_from_best_pt"], 1.5)
         self.assertIn("m103", shared, "the mechanical read is not kept for the next track")
 
 

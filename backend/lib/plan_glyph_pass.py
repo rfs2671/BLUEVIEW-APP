@@ -675,25 +675,31 @@ def _level_words(f: Dict[str, Any], u: str) -> List[str]:
 def mech_scale(f: Dict[str, Any], open_page, scale_sheets: Dict[Any, Any]) -> Dict[str, Any]:
     """The floor's mechanical plan's scale: its own where its drawing
     verifies, else BORROWED from the floor's architectural plan - only when
-    their registration is usable (plan_sheet.register) and the architectural
-    viewport verified on its own dimensions (plan_scale.borrow, ruling 5).
+    their registration is usable by the one offset rule
+    (plan_sheet.register_offset, ruling 63; its margin is recorded) and the
+    architectural viewport verified on its own dimensions (plan_scale.borrow,
+    ruling 5). The placement's own registration (register()) is untouched.
     The result names the lender and the registration's evidence, or why
     there is no scale. Recorded in the pass summary ("mech_scales"); a read
     that fails is said there and never sinks the pass."""
     from lib import plan_scale as ps
-    from lib.plan_sheet import matched_anchors
+    from lib.plan_sheet import load_sheet, matched_anchors, register_offset
     a_sheet, m_sheet = f.get("a_sheet"), f.get("m_sheet")
     try:
-        reg_ = _partner_registration(f, open_page)
-        if "scale_sheet" not in f:
-            f["scale_sheet"] = ps.read_sheet(open_page(f["arch_p"]))
-        mech_p = f["mech_p"]
-        k = mech_p.get("page_id") or (mech_p.get("file_id"), mech_p.get("page_number"))
-        if k not in scale_sheets:
-            scale_sheets[k] = ps.read_sheet(open_page(mech_p))
-        a_pts, m_pts = matched_anchors(f["data"], f["mech_data"], reg_)
-        _v, res = ps.borrow(m_sheet, scale_sheets[k], a_sheet, f["scale_sheet"], reg_,
-                            a_pts, m_pts)
+        mech = f.get("mech_data") or load_sheet(open_page(f["mech_p"]))
+        reg_ = register_offset(f["data"], mech)
+        if not reg_.get("usable"):          # refused before any sheet is read
+            _v, res = ps.borrow(m_sheet, None, a_sheet, None, reg_, (), ())
+        else:
+            if "scale_sheet" not in f:
+                f["scale_sheet"] = ps.read_sheet(open_page(f["arch_p"]))
+            mech_p = f["mech_p"]
+            k = mech_p.get("page_id") or (mech_p.get("file_id"), mech_p.get("page_number"))
+            if k not in scale_sheets:
+                scale_sheets[k] = ps.read_sheet(open_page(mech_p))
+            a_pts, m_pts = matched_anchors(f["data"], mech, reg_)
+            _v, res = ps.borrow(m_sheet, scale_sheets[k], a_sheet, f["scale_sheet"], reg_,
+                                a_pts, m_pts)
     except Exception as e:                          # one floor never sinks the pass
         log.exception("mechanical scale %s / %s failed: %r", m_sheet, a_sheet, e)
         res = {"sheet": m_sheet, "status": "refused", "pt_per_in": None,

@@ -688,9 +688,15 @@ def read_sheet(page) -> Sheet:
 #
 # What makes it a borrow and not an assumption, each a condition that fails:
 #   1. only M or P borrows, and only from A (sheet numbers);
-#   2. the registration is USABLE (plan_sheet.register: the offset holds at
-#      least half the best peak's anchors, >= MIN_ANCHORS, spread over the
-#      plan) - the roof's old wrong peak (108 of 239) is refused there;
+#   2. the registration is USABLE BY THE ONE OFFSET RULE (Roy, ruling 63:
+#      "one function, T3's rule (single best peak agreeing with the exact
+#      1pt search, >=8 anchors) for all pairs, with each pair's margin shown
+#      on its row"): plan_sheet.register_offset - R1 the offset is within one
+#      match radius of the exact census' best peak, R2 no second peak ties
+#      it, R3 >= MIN_ANCHORS. A registration that register_offset did not
+#      judge (no census peaks on it) lends nothing. The roof's old wrong
+#      peak (108 of 239, 32pt from the best) and M-106 on A-105.01 (9pt from
+#      its best peak) are refused by R1. Its margin rides in the provenance;
 #   3. the lender viewport VERIFIED ON ITS OWN DIMENSIONS - never a borrowed
 #      scale, never an unverified one (A-105.x's 3/32" BULKHEAD PLAN);
 #   4. more than half of the matched anchors join ONE lender viewport to ONE
@@ -724,15 +730,17 @@ def borrow(borrower_number: str, borrower: Sheet, lender_number: str, lender: Sh
            registration: dict, lender_pts, borrower_pts) -> Tuple[Optional[Viewport], dict]:
     """(the borrower's scaled viewport or None, the scale result).
 
-    `registration` is plan_sheet.register(lender's sheet, borrower's sheet);
+    `registration` is plan_sheet.register_offset(lender's sheet, borrower's
+    sheet) - the one offset rule (ruling 63);
     `lender_pts` / `borrower_pts` are its matched anchors, pairwise
     (plan_sheet.matched_anchors). The result always names the sheet, the
     status - "own" | "borrowed" | "refused" - and why not, and for a borrow
     the provenance: the lender's sheet and viewport and the registration's
     evidence. The rules are the block above, in order."""
     from lib.plan_registration import ANCHOR_MATCH_RADIUS_IN
-    reg_keys = ("dx", "dy", "anchors", "best_peak_anchors", "best_peak", "spread",
-                "rms_in", "max_in", "usable", "refused")
+    reg_keys = ("dx", "dy", "anchors", "best_peak_anchors", "best_peak",
+                "second_peak_anchors", "second_peak", "margin", "offset_from_best_pt",
+                "rms_in", "max_in", "sweep", "usable", "refused")
     out: Dict[str, object] = {
         "sheet": borrower_number, "status": "refused", "pt_per_in": None, "viewport": None,
         "from": {"sheet": lender_number, "viewport": None},
@@ -747,6 +755,9 @@ def borrow(borrower_number: str, borrower: Sheet, lender_number: str, lender: Sh
         return refuse(f"only {'/'.join(BORROWERS)} sheets borrow, and only from "
                       f"{'/'.join(LENDERS)}: {borrower_number} from {lender_number}")
     # 2
+    if "offset_from_best_pt" not in registration or "second_peak_anchors" not in registration:
+        return refuse(f"the registration to {lender_number} was not judged by the one offset "
+                      f"rule (plan_sheet.register_offset): no exact-census peaks on it")
     if not registration.get("usable"):
         return refuse(f"the registration to {lender_number} is not usable: "
                       f"{registration.get('refused') or 'refused'}")
@@ -803,6 +814,7 @@ def borrow(borrower_number: str, borrower: Sheet, lender_number: str, lender: Sh
                           f"{va.title or 'view'} verifies {va.scale_text}: they contradict")
     prov = {"sheet": lender_number, "viewport": va.title, "note": va.scale_text,
             "agreeing": va.agreeing, "anchors_in_view": n, "anchors_matched": len(A),
+            "margin": registration.get("margin"),
             "scale_bound": out["scale_bound"], "match_radius_in": ANCHOR_MATCH_RADIUS_IN,
             "registration": out["registration"]}
     lent = replace(vb, pt_per_in=va.pt_per_in, borrowed=prov)
