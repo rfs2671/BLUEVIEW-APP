@@ -82,6 +82,11 @@ BASELINE = {
     # sees the read in _sheet_index_lines and _find_named_sheet and no writer
     # (2026-09-16). Same shape as the document_page_chunks four above.
     ("document_page_index", "is_document"),
+    # raw_text: the same writer - _index_single_page sets it inside `doc`
+    # (doc.update({..., "raw_text": ...}) then {"$set": doc}), so the sweep
+    # sees only the read: plan_abbreviation_tables filters current pages on
+    # it to find the set's ABBREVIATIONS table (2026-10-27).
+    ("document_page_index", "raw_text"),
     ("document_page_index", "page_number"),
     ("document_page_index", "project_id"),
     ("document_page_index", "sheet_number"),
