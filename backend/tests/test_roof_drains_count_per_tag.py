@@ -138,8 +138,10 @@ class PerTagOnly(unittest.TestCase):
 
     def test_each_tag_binds_its_own_count(self):
         recs = _records()
+        # "The overflow drains number 2." fails closed since rulings 99/100 (a
+        # verb in the noun phrase); the subject-before-figure shape is kept.
         for s in ("RD-1: 2.", "There are 2 RD-2.", "There are 2 overflow roof drains.",
-                  "The overflow drains number 2.", "There are 2 RD-1 roof drains on P-206."):
+                  "The overflow drains are 2.", "There are 2 RD-1 roof drains on P-206."):
             self.assertTrue(_ok(s, recs), s)
 
     def test_a_wrong_figure_for_a_tag_refuses(self):

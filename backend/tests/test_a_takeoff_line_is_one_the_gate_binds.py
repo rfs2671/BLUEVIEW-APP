@@ -77,11 +77,16 @@ class EveryExportedFigureIsBound(unittest.TestCase):
         self.assertIn("A-100.00: AR - 8.18.26.pdf p4", ptac.source)
 
     def test_the_figures_the_gate_states(self):
+        """One line per drawing set (ruling 72), as a door or window line is."""
         t = X.build(_world())
-        self.assertEqual([ln.qty for ln in _find(t.lines, tag="PTAC-3", scope=X.BUILDING)], [3])
-        self.assertEqual([ln.qty for ln in _find(t.lines, tag="PTAC-1", scope=X.FLOOR,
-                                                 level="SECOND FLOOR HVAC PLANS")], [2])
-        self.assertEqual(sum(ln.trade == X.EQUIPMENT for ln in t.lines), 8)
+        self.assertEqual({ln.set_label: ln.qty
+                          for ln in _find(t.lines, tag="PTAC-3", scope=X.BUILDING)},
+                         {"the filed set": 3, OWNER: 3})
+        self.assertEqual({ln.set_label: ln.qty
+                          for ln in _find(t.lines, tag="PTAC-1", scope=X.FLOOR,
+                                          level="SECOND FLOOR HVAC PLANS")},
+                         {"the filed set": 2, OWNER: 2})
+        self.assertEqual(sum(ln.trade == X.EQUIPMENT for ln in t.lines), 16)
 
     def test_a_door_type_is_per_its_set(self):
         """Type F is drawn in the owner's set only: one line, per that set,
@@ -111,15 +116,25 @@ class WhatIsNotBoundIsRefusedWithItsReason(unittest.TestCase):
     def test_a_floor_whose_track_is_short_of_its_sheet(self):
         with self.assertLogs("lib.plan_search", "WARNING"):
             t = X.build(T._world(owner_100=T.OWNER_100[:4], owner_mech=5))
-        self.assertFalse(_find(t.lines, tag="PTAC-1", scope=X.BUILDING))
-        self.assertFalse([ln for ln in t.lines if ln.level == "FIRST FLOOR HVAC PLANS"])
+        # the owner's set is short on its first floor: ITS lines there and
+        # its totals are refused ...
+        self.assertFalse(_find(t.lines, tag="PTAC-1", scope=X.BUILDING, set_has="owner"))
+        self.assertFalse([ln for ln in t.lines if ln.level == "FIRST FLOOR HVAC PLANS"
+                          and ln.set_label == OWNER])
         floor = [ln for ln in t.refused if ln.level == "FIRST FLOOR HVAC PLANS"]
-        self.assertEqual(len(floor), 1)
+        self.assertEqual([ln.set_label for ln in floor], [OWNER])
         self.assertIn("4 located on the post_co track against 5", floor[0].reason)
         for tag in T.TAGS:
             self.assertIn("against 5", _find(t.refused, tag=tag, scope=X.BUILDING)[0].reason)
-        # the other floor stands
-        self.assertEqual([ln.qty for ln in _find(t.lines, tag="PTAC-1", scope=X.FLOOR)], [2])
+        # ... and the filed set, counted on its own (ruling 72), stands
+        self.assertEqual([(ln.qty, ln.set_label)
+                          for ln in _find(t.lines, tag="PTAC-1", scope=X.BUILDING)],
+                         [(3, "the filed set")])
+        self.assertEqual(sorted((ln.set_label, ln.level, ln.qty)
+                                for ln in _find(t.lines, tag="PTAC-1", scope=X.FLOOR)),
+                         [("the filed set", "FIRST FLOOR HVAC PLANS", 1),
+                          ("the filed set", "SECOND FLOOR HVAC PLANS", 2),
+                          (OWNER, "SECOND FLOOR HVAC PLANS", 2)])
 
     def test_a_total_the_schedule_qty_contradicts(self):
         t = X.build(T._untracked(qty={"PTAC-1": "9"}))

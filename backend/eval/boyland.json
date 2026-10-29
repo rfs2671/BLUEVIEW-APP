@@ -696,12 +696,13 @@
         "text": [
           "10'-0\""
         ],
-        "no_stated_value": true
+        "no_stated_value": true,
+        "render": "Ceiling height not shown; floor-to-floor 10'-0\" (A-300.00)"
       },
       "truth": {
         "how": "by_eye",
         "source": "AR - 3.28.25.pdf p20, A-300.00 (building section/elevation): level marks and the dimensions between them",
-        "evidence": "RULED 2026-10-27 (operator): truth = floor-to-floor 10'-0\" (A-300.00); ceiling height not shown on the drawings. A-300.00 prints the levels SECOND FLOOR 43.37' +10'-0\", THIRD FLOOR 53.37' +20'-0\", FOURTH FLOOR 63.37' +30'-0\" and six 10'-0\" dimensions between them; no sheet prints a ceiling height (2026-09-19: 77 records mention CEILING, none a height; CLG only in the abbreviations table). The case expects A-300.00's 10'-0\" and FAILS IF ANY CEILING HEIGHT VALUE IS STATED: every dimension the returned records print is put to the gate as the ceiling height and must be refused (no_stated_value). Measured 2026-10-27: search for 'ceiling height' does not return A-300.00 (it prints neither word), and the gate binds 'The ceiling height is 10'-0\".' on A-300.00's floor-to-floor dimension - both open."
+        "evidence": "RULED 2026-10-27 (operator): truth = floor-to-floor 10'-0\" (A-300.00); ceiling height not shown on the drawings. A-300.00 prints the levels SECOND FLOOR 43.37' +10'-0\", THIRD FLOOR 53.37' +20'-0\", FOURTH FLOOR 63.37' +30'-0\" and six 10'-0\" dimensions between them; no sheet prints a ceiling height (2026-09-19: 77 records mention CEILING, none a height; CLG only in the abbreviations table). The case expects A-300.00's 10'-0\" and FAILS IF ANY CEILING HEIGHT VALUE IS STATED: every dimension the returned records print is put to the gate as the ceiling height and must be refused (no_stated_value). RULED 2026-10-27 (operator, queue item 3): derive floor-to-floor from A-300's level marks; answer \"ceiling height not shown; floor-to-floor 10'-0\" (A-300.00)\" (expect.render); floor-to-floor must never bind as a ceiling height. Measured 2026-10-27: the seven marks (BASE PLANE 0'-0\" to BULKHEAD +60'-0\") are 10'-0\" apart every time by elevation, by height, by drawn spacing at 3/16\"=1'-0\" and by the six 10'-0\" strings between them; search_plans returns the floor-to-floor row derived from them first (lib.plan_floor_to_floor)."
       }
     },
     {
