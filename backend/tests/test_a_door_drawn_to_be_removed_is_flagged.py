@@ -222,7 +222,11 @@ class AFlagNotABinding(unittest.TestCase):
         self.assertEqual(dump(a["summary"]), dump(b["summary"]))
         self.assertEqual(_flags(b["health"]), [])
         self.assertEqual(len(_flags(a["health"])), 1)
-        self.assertEqual(dump([h for h in a["health"] if h.get("kind") != KIND]), dump(b["health"]))
+        # the sheet-level removal_layer_ink item (ruling 37) is the other
+        # flag the layer writes; every other health item is identical
+        self.assertEqual(dump([h for h in a["health"]
+                               if h.get("kind") not in (KIND, "removal_layer_ink")]),
+                         dump(b["health"]))
 
     def test_the_tags_on_the_removal_layer_are_still_contested_or_unread(self):
         """The pass's reading of F, G and the lower W1 is unchanged: F took
