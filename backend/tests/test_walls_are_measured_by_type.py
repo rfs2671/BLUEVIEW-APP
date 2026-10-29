@@ -180,8 +180,7 @@ class EachTypeIsTaggedLengthWithTheUntypedBesideIt(unittest.TestCase):
         self.assertIn("figures", res, "no per-type figures with the untyped LF beside them")
         self.assertEqual(res["figures"], {"P2": {"tagged_lf": 10.0, "untyped_lf_beside": 4.0,
                                                  "ambiguous_lf_beside": 0.0}})
-        for k in res:
-            self.assertNotIn("total", k.lower(), f"an all-walls figure: {k}")
+        self.assertEqual([k for k in res if "total" in k.lower()], [], "an all-walls figure")
 
     def test_the_report_carries_it_per_floor_and_for_the_building(self):
         from scripts.plan_walls_report import summarize
