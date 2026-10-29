@@ -197,6 +197,30 @@ class EachTypeIsTaggedLengthWithTheUntypedBesideIt(unittest.TestCase):
         self.assertFalse([k for k in out if "total" in k.lower()])
 
 
+class InkToBeRemovedIsNoWall(unittest.TestCase):
+    """A layer lib.plan_space_layers.is_removal_layer names (TO REMOVE, any
+    -DEMO) is demolition: an A-WALL-DEMO wall is no wall LF, and an
+    A-DOOR-DEMO door opens no wall (#918's agreement table)."""
+
+    def test_a_demo_wall_is_not_measured(self):
+        d, w = tag("P2", 150, 160, leader_to=(150, 100 + 6 * Q))
+        demo = h_wall(600, 100, 100 + 48 * Q, 4)
+        demo["layer"] = "XR FLOOR PLANS|A-WALL-DEMO"
+        res = build([h_wall(100, 100, 100 + 120 * Q, 6), demo, d], [w])
+        self.assertEqual(res["by_type"], {"P2": 10.0})
+        self.assertEqual(res["untyped_lf"], 0.0, res["walls"])
+        self.assertEqual(len(res["walls"]), 1)
+
+    def test_a_demo_door_opens_no_gap(self):
+        left = h_wall(100, 100, 100 + 60 * Q, 4)
+        right = h_wall(100, 100 + 96 * Q, 100 + 156 * Q, 4)
+        d, w = tag("P3", 150, 160, leader_to=(150, 100 + 4 * Q))
+        door = _draw("XR FLOOR PLANS|A-DOOR-DEMO", _seg(100 + 62 * Q, 103, 100 + 62 * Q, 103 + 36 * Q))
+        res = build([left, right, d, door], [w], door=56.0)
+        self.assertEqual(res["by_type"], {"P3": 5.0})
+        self.assertEqual(res["untyped_lf"], 5.0)
+
+
 class RefusedWhereTheScaleDoesNotVerify(unittest.TestCase):
 
     def test_a_wall_in_an_unverified_viewport_has_no_length(self):

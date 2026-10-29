@@ -141,7 +141,7 @@ class ProgressAdvancesPerSheetOnBothTracks(unittest.TestCase):
         self.assertEqual(plans, {"filed": FILED_STEPS, "post_co": OWNER_STEPS})
         self.assertEqual([t for t, k, _ in seen if k == "done"], ["filed", "post_co"])
         stages = [i["stage"] for t, k, i in seen if k == "stage" and t == "post_co"]
-        self.assertEqual(stages, ["door", "seeding", "areas", "voids"])
+        self.assertEqual(stages, ["door", "seeding", "areas", "walls", "voids"])
 
     def test_the_owners_takeoff_says_its_sweep_is_reused(self):
         """Why the owner's track logged nothing: its mechanical sheet was
@@ -279,7 +279,7 @@ class _Route(unittest.TestCase):
     def _server_pass(self, st, takeoff=_takeoff):
         """The real _plan_glyph_pass and run_pass on FILED + OWNER, with the
         OCR, R2, the database reads and the three writers stubbed. Returns
-        {rows, health, areas}: what each writer was handed."""
+        {rows, health, areas, walls}: what each writer was handed."""
         async def pages(pid):           # every file has an R2 key: open_page reaches the stub
             return [("filed", FILED), ("post_co", OWNER)], {
                 f: {"r2_key": f"k/{f}"} for f in ("mech", "ar", "own", "plumb")}
@@ -315,8 +315,10 @@ class _Route(unittest.TestCase):
         st.enter_context(patch.object(server, "_r2_client", _R2()))
         st.enter_context(patch("lib.plan_page.PlanPage", lambda path, n: _Page()))
         for n, fn in (("rows", "_write_glyph_records"), ("health", "_write_set_health"),
-                      ("areas", "_write_area_records")):
-            st.enter_context(patch.object(server, fn, writer(n)))
+                      ("areas", "_write_area_records"), ("walls", "_write_wall_records")):
+            # create=True: on a tree without the walls writer the patch still
+            # applies, and the test fails by its assertion, not at patch time
+            st.enter_context(patch.object(server, fn, writer(n), create=True))
         return written
 
     def _run_route(self, fake_pass):
@@ -386,9 +388,10 @@ class TheStatusSaysWhereARunningPassIs(_Route):
 
         self.assertFalse(after["running"])
         self.assertEqual(after["last_result"]["result"], "ok")
+        self.assertIn("walls", written, "the wall rows were never handed to their writer")
         self.assertEqual(after["last_result"]["summary"],
                          {"written": written["rows"], "set_health": written["health"],
-                          "areas_written": written["areas"]})
+                          "areas_written": written["areas"], "walls_written": written["walls"]})
         self.assertTrue(after["last_result"]["ended_at"])
         self.assertIsNotNone(after["last_result"]["duration_s"])
         self.assertEqual((after["progress"]["sheets_done"], after["progress"]["sheets_total"]), (11, 11))
@@ -522,7 +525,7 @@ class ABrokenTrackerDoesNotFailTheServerPass(_Route):
             st.enter_context(patch.object(P.log, "info", side_effect=OSError("disk full")))
             asyncio.run(go())
         self.assertEqual(server._GLYPH_PASS_PROGRESS[PID].last_result()["result"], "ok")
-        self.assertEqual(set(written), {"rows", "health", "areas"})
+        self.assertEqual(set(written), {"rows", "health", "areas", "walls"})
         self.assertGreater(written["rows"], 0)
 
 

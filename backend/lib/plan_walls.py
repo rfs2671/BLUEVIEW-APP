@@ -86,7 +86,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from lib.plan_space_layers import role_of
+from lib.plan_space_layers import is_removal_layer, role_of
 
 # ── constants (inches are REAL inches, converted by the viewport's scale) ──
 
@@ -164,7 +164,9 @@ def wall_lines(page) -> Dict[str, List[Tuple[float, float, float]]]:
     segments on every wall-role layer (plan_space_layers.role_of)."""
     out: Dict[str, List[Tuple[float, float, float]]] = {"h": [], "v": []}
     for d in page.drawings:
-        if role_of(d.get("layer")) != "wall":
+        # ink TO BE REMOVED is no wall (lib.plan_space_layers.is_removal_layer,
+        # #918): an A-WALL-DEMO wall is demolition, never wall LF
+        if role_of(d.get("layer")) != "wall" or is_removal_layer(d.get("layer")):
             continue
         for it in d["items"]:
             if it[0] != "l":
@@ -229,7 +231,8 @@ def opening_boxes(page) -> List[Tuple[float, float, float, float]]:
     from lib.plan_sheet import symbol_objects
     out = []
     for o in symbol_objects(page):
-        if role_of(o.get("layer")) in ("door", "glaz") and o.get("points"):
+        # a door or window drawn to be removed opens no wall (#918)
+        if role_of(o.get("layer")) in ("door", "glaz") and not is_removal_layer(o.get("layer"))                 and o.get("points"):
             xs = [p[0] for p in o["points"]]
             ys = [p[1] for p in o["points"]]
             out.append((min(xs), min(ys), max(xs), max(ys)))
@@ -808,7 +811,87 @@ def render(page, result: Dict[str, Any], path: str, *, title: str = "", dpi: int
     return path
 
 
+# ── stored rows (the glyph pass's `walls` step; plan_glyph_pass) ──────────
+
+#: Its own collection, like plan_areas: a wall row is no plan record, so
+#: search never ranks it and the eval's record baseline does not move.
+COLLECTION = "plan_walls"
+RECORD_TYPE = "wall"
+#: 1 (2026-10-28): first version.
+WALLS_VERSION = 1
+#: payload.kind of a row
+WALL, REFUSED_VIEWPORT, REFUSED_SHEET, UNATTACHED_TAG = (
+    "wall", "refused_viewport", "refused_sheet", "unattached_tag")
+REFUSED, UNATTACHED = "refused", "unattached"
+#: The page fields every row cites (plan_areas.CITE).
+CITE = ("project_id", "company_id", "file_id", "file_hash", "file_name",
+        "page_id", "page_number", "sheet_number", "sheet_title", "discipline")
+
+
+def _in_box(x: float, y: float, b) -> bool:
+    return b[0] <= x <= b[2] and b[1] <= y <= b[3]
+
+
+def wall_rows(result: Dict[str, Any], page: Dict[str, Any], *,
+              track: Optional[str] = None) -> List[Dict[str, Any]]:
+    """The rows one plan writes (floor_walls' result, the page it cites):
+
+      wall              one per wall (a run, or its part where the type
+                        changes): status typed / untyped / ambiguous, its
+                        type, lf (drawn + joints), drawn / joint / opening
+                        LF, thickness, where it is, its tags, its apartments
+      refused_viewport  one per drawing whose scale did not verify: no wall
+                        in it has a length; the tags drawn in it are named
+                        on this row, not one row each
+      refused_sheet     the plan as a whole (no wall layer, no wall legend)
+      unattached_tag    a tag that names no wall, in a drawing that verified
+
+    Every row says its track and the plan's floor - the ONE level its title
+    names (floor_of), or None. Nothing here is a total: a floor's or the
+    building's figure is the sum of its typed rows, with its untyped rows'
+    LF beside it (ruling 52)."""
+    floor = floor_of(page.get("sheet_title"))
+    base = {k: page.get(k) for k in CITE}
+
+    def row(kind, status, **payload):
+        return {**base, "record_type": RECORD_TYPE, "unit": None, "status": status,
+                "payload": {"kind": kind, "track": track, "floor": floor,
+                            "drawing_track": page.get("drawing_track"),
+                            "drawing_track_label": page.get("drawing_track_label"),
+                            "walls_version": WALLS_VERSION, **payload}}
+    out: List[Dict[str, Any]] = []
+    if result.get("refusal"):
+        out.append(row(REFUSED_SHEET, REFUSED, why=result["refusal"]))
+    scale = {v["title"]: v["scale"] for v in result.get("viewports") or []}
+    for w in result.get("walls") or []:
+        xs = [r[0] for r in w["pieces"]] + [r[2] for r in w["pieces"]]
+        ys = [r[1] for r in w["pieces"]] + [r[3] for r in w["pieces"]]
+        out.append(row(WALL, w["status"], wall_type=w.get("type"), lf=w["lf"],
+                       drawn_lf=w["drawn_lf"], joint_lf=w["joint_lf"], opening_lf=w["opening_lf"],
+                       thick_in=w["thick_in"], axis=w["axis"],
+                       rect=[min(xs), min(ys), max(xs), max(ys)], pieces=w["pieces"],
+                       tags=w["tags"], apartments=w.get("apartments"),
+                       viewport=w.get("viewport"), scale_text=scale.get(w.get("viewport"), ""),
+                       why=w.get("why") or ""))
+    refused = result.get("refused_viewports") or []
+    in_refused: Dict[int, List[str]] = defaultdict(list)
+    for u in result.get("unattached") or []:
+        k = next((i for i, v in enumerate(refused) if _in_box(u["x"], u["y"], v["bbox"])), None)
+        if k is not None:
+            in_refused[k].append(u["text"])
+            continue
+        out.append(row(UNATTACHED_TAG, UNATTACHED, tag=u["text"], at=[u["x"], u["y"]], why=u["why"]))
+    for k, v in enumerate(refused):
+        out.append(row(REFUSED_VIEWPORT, REFUSED, viewport=v["title"], rect=v["bbox"], why=v["why"],
+                       wall_line_paper_pt=v["wall_line_paper_pt"],
+                       tags_in_it=sorted(in_refused.get(k, []))))
+    for i, r in enumerate(out):
+        r["ordinal"] = i
+    return out
+
+
 __all__ = ["MIN_FACE_IN", "MIN_T_IN", "LAYER_GAP_IN", "THICK_MARGIN_IN", "CENTER_TOL_IN", "THICK_TOL_IN",
            "SMALL_GAP_IN", "TYPED", "UNTYPED", "AMBIGUOUS", "Piece", "wall_lines", "bands",
            "opening_boxes", "read_tags", "attach", "join_runs", "absorb_short", "split_types", "scope_of",
-           "apportion", "floor_walls", "figures", "floor_of", "partition_types", "reconcile", "colours", "render"]
+           "apportion", "floor_walls", "figures", "floor_of", "wall_rows", "COLLECTION", "RECORD_TYPE",
+           "WALLS_VERSION", "WALL", "REFUSED_VIEWPORT", "REFUSED_SHEET", "UNATTACHED_TAG", "REFUSED", "UNATTACHED", "partition_types", "reconcile", "colours", "render"]

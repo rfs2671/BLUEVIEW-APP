@@ -246,6 +246,16 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     tell(progress, "stage", stage="areas")
     areas, summary["areas"] = floor_area_rows(floors_in if run_fams else [], open_page,
                                               track=track)
+    # WALLS (lib.plan_walls, ruling 62, 2026-10-28): every architectural plan
+    # of this track - each paired floor, and each plan the pairing refused for
+    # want of a mechanical partner - its walls by type, refused where the scale
+    # does not verify. Like areas, read BEFORE a void joins a unit, and on
+    # every floor whether or not the set has an equipment schedule: a wall
+    # needs none. A floor with no membership map gets no apartments.
+    tell(progress, "stage", stage="walls")
+    walls, summary["walls"] = floor_wall_rows(
+        floors_in, open_page, track=track, widest_door_in=door["inches"],
+        others=[p for p, _why, role in paired["refused"] if role == derive.ROLE_ARCHITECTURAL])
     tell(progress, "stage", stage="voids")
     summary["voids"] = assign_voids(floors_in)
     opening = popen.run_openings(
@@ -319,7 +329,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         r.setdefault("payload", {})["track"] = track
     summary["rows"] = len(rows)
     tell(progress, "done")
-    return {"rows": rows, "summary": summary, "areas": areas,
+    return {"rows": rows, "summary": summary, "areas": areas, "walls": walls,
             "opening_rows": opening["rows"], "opening_health": opening["health"],
             "set_questions": opening.get("questions") or []}
 
@@ -389,6 +399,44 @@ def floor_area_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str,
         notes.append(f"{f.get('a_sheet')}: " + ", ".join(f"{k} {v}" for k, v in sorted(tally.items())))
     for n in notes:
         log.info("glyph pass areas: %s", n)
+    return rows, notes
+
+
+def floor_wall_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any], *,
+                    track: str = "filed", widest_door_in: Optional[float] = None,
+                    others: Sequence[Dict[str, Any]] = ()) -> "tuple[List[Dict[str, Any]], List[str]]":
+    """(wall rows, a line per plan) - lib.plan_walls on every floor's
+    architectural plan (its membership map, when the pass built one, gives
+    the apartments) and on each of `others` (plans the pairing refused: no
+    apartments). Each plan once. One plan that fails never sinks the pass: it
+    is said, and writes no row."""
+    from lib import plan_walls
+
+    rows: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    seen = set()
+    todo = [(f["arch_p"], f.get("space")) for f in floors] + [(p, None) for p in others]
+    for page, space in todo:
+        key = page.get("page_id") or (page.get("file_id"), page.get("page_number"))
+        if key in seen:
+            continue
+        seen.add(key)
+        sheet = page.get("sheet_number")
+        try:
+            res = plan_walls.floor_walls(open_page(page), space=space, widest_door_in=widest_door_in)
+        except Exception as e:                      # one plan never sinks the pass
+            log.exception("walls %s failed: %r", sheet, e)
+            notes.append(f"{sheet}: walls failed ({type(e).__name__}) - no wall rows")
+            continue
+        got = plan_walls.wall_rows(res, page, track=track)
+        rows += got
+        kinds: Dict[str, int] = {}
+        for r in got:
+            k = r["payload"]["kind"] + ("" if r["payload"]["kind"] != plan_walls.WALL else f":{r['status']}")
+            kinds[k] = kinds.get(k, 0) + 1
+        notes.append(f"{sheet}: " + (", ".join(f"{k} {v}" for k, v in sorted(kinds.items())) or "no rows"))
+    for n in notes:
+        log.info("glyph pass walls (%s): %s", track, n)
     return rows, notes
 
 
