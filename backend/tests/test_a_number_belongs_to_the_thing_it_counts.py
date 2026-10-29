@@ -86,11 +86,15 @@ class TheDigitCollisionThatDefeatedTheContestedRule(unittest.TestCase):
 
     def test_this_is_what_the_union_used_to_allow(self):
         """The old behaviour, kept as a named comparison so the change cannot
-        be quietly undone: under the union both numbers pass."""
+        be quietly undone: under the union both numbers passed. Ruling 51
+        (2026-10-28): a count of a family or a mark is the count rule's under
+        every intent, so the default intent now refuses both, as count does."""
         for n in ("6", "9"):
             ok, _bad = ps.answer_is_grounded(
                 f"There are {n} PTAC-2 units.", BOYLAND)
-            self.assertTrue(ok, f"the union was expected to allow {n}")
+            self.assertFalse(ok, f"the union path allowed {n} - a count took the value path")
+            self.assertEqual(ok, ps.answer_is_grounded(
+                f"There are {n} PTAC-2 units.", BOYLAND, intent="count")[0])
 
 
 class ATrueCountStillPasses(unittest.TestCase):
@@ -128,9 +132,12 @@ class ATrueCountStillPasses(unittest.TestCase):
             "The zoning analysis shows 6 dwelling units.", BOYLAND,
             intent="count")
         self.assertEqual((ok, bad), (False, ["6"]))
+        # An intent other than count or attribute keeps the union. (An
+        # attribute binds only where its record names its subject, ruling
+        # 2026-10-27 - test_a_value_binds_only_to_its_named_subject.)
         ok, _bad = ps.answer_is_grounded(
             "The zoning analysis shows 6 dwelling units.", BOYLAND,
-            intent="attribute")
+            intent="identify")
         self.assertTrue(ok)
 
 
@@ -152,15 +159,22 @@ class OneMarkMayNotBorrowAnothersNumber(unittest.TestCase):
 
 class EveryOtherIntentKeepsTheUnion(unittest.TestCase):
     """Of ten suite cases stating a number, the two that bind to no mark are
-    both attribute cases. Binding them would refuse true answers to catch
-    nothing, so the union stands everywhere except a count."""
+    both attribute cases, so the union stood everywhere except a count.
+    RULING 2026-10-27: an attribute binds only where its record names the
+    claim's subject (test_a_value_binds_only_to_its_named_subject) - not to
+    a mark, so the two cases' 42" PARAPET and PASSIVE RECREATION 1970 SF.
+    still bind. Every other intent keeps the union."""
 
     def test_an_attribute_answer_is_not_bound(self):
+        ok, _bad = ps.answer_is_grounded(
+            "The sheet list shows 9.", BOYLAND, intent="attribute")
+        self.assertFalse(ok, "an attribute bound to a subject no record names")
         for intent in ("attribute", "existence", "location", "identify",
                        "geometry", ""):
-            ok, _bad = ps.answer_is_grounded(
-                "The sheet list shows 9.", BOYLAND, intent=intent)
-            self.assertTrue(ok, f"intent {intent!r} was bound like a count")
+            if intent != "attribute":
+                ok, _bad = ps.answer_is_grounded(
+                    "The sheet list shows 9.", BOYLAND, intent=intent)
+                self.assertTrue(ok, f"intent {intent!r} was bound like a count")
             # A DIMENSION IS NOT A LOOSE NUMBER (ruling 2026-10-25). This case
             # read "The parapet is 9 inches." and passed on the sheet list's
             # index number 9; nothing here prints 9", so it now refuses under

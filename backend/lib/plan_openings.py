@@ -49,6 +49,14 @@ MEASURED ON 588 BOYLAND, 2026-10-26 (bv-worktrees/L2_doors_measure.md):
   a tag is a SET-HEALTH FLAG (removal_layer_health), never a binding: the
   rows are what they were.
 
+  REMOVAL-LAYER FOLLOW-UPS (rulings 37-40, 2026-10-28). A removal layer is
+  TO REMOVE or a CAD -DEMO layer, never an EXISTING one - one predicate,
+  plan_space_layers.is_removal_layer. Ink on it that no tag names is a
+  SHEET-level item (removal_layer_ink_health): on the owner's set, A-104.00
+  80 objects, A-101.00 and A-102.00 12 each, A-100.00 13 beside the three
+  tagged openings. Both items are written for the plans read under a set
+  question too. Neither refuses an answer.
+
   A SYMBOL NO TAG NAMES makes its floor incomplete. The owner's mezzanine
   draws four bath doors with no tag; a door of unknown type there may be any
   door type. Each is one UNREAD row of every door family (a window, of every
@@ -67,6 +75,7 @@ from lib import plan_emit as emit
 from lib import plan_symbols as psym
 from lib import plan_tally as ptal
 from lib.plan_records import tier_rank
+from lib.plan_space_layers import REMOVAL_LAYER as _REMOVAL_LAYER, is_removal_layer
 
 log = logging.getLogger(__name__)
 
@@ -85,11 +94,10 @@ IDEN_LAYER = re.compile(r"(?i)(?:^|\|)A-(DOOR|WINDOW|GLAZ)-IDEN$")
 #: the opening-symbol layers: A-Door, A-Glaz (and A-GLAZ-SILL ...), never a
 #: text/annotation layer (plan_symbols.is_text_layer)
 SYMBOL_LAYER = re.compile(r"(?i)(?:^|\|)A-(DOOR|GLAZ)(?:-[A-Z0-9]+)*$")
-#: a layer whose name says its ink is to be removed (queue item 25). Only
-#: TO REMOVE until the operator rules on more: A-DEMO, A-STEP-DEMO and
-#: P-Pipe-Existing occur in the Boyland set but on no architectural plan
-#: (plumbing notes legends, a site-safety section).
-REMOVAL_LAYER = re.compile(r"(?i)(?:^|\|)TO REMOVE$")
+#: a layer whose name says its ink is to be removed: TO REMOVE, or the CAD
+#: status suffix -DEMO; never an EXISTING layer (ruling 38). ONE predicate,
+#: lib.plan_space_layers.is_removal_layer, shared with every other reading.
+REMOVAL_LAYER = _REMOVAL_LAYER
 #: a tag as these schedules print it: A, F, D1, W3
 TAG_SHAPE = re.compile(r"^[A-Z]{1,2}\d{0,2}$")
 _PANEL_HEAD = re.compile(r"^(?:NUMBER\s+([A-Z]{1,2}\d{0,2})|([A-Z]{1,2}\d{0,2})\s+NUMBER)$")
@@ -333,10 +341,13 @@ def removal_layer_tags(page, fams: Dict[str, Dict[str, Any]]) -> List[Dict[str, 
 
     family_of = {t for f in fams.values() for t in f.get("tags") or []}
     objs = symbol_objects(page)
-    rm = [o for o in objs if o.get("points") and REMOVAL_LAYER.search(o.get("layer") or "")]
+    rm = [o for o in objs if o.get("points") and is_removal_layer(o.get("layer"))]
     if not rm:
         return []
-    sym = [o for o in objs if o.get("points") and _symbol_kind(o.get("layer"))]
+    # A-DOOR-DEMO is a door layer by name and a removal layer by status: its
+    # ink is offered as removal ink, never as an opening's own symbol
+    sym = [o for o in objs if o.get("points") and _symbol_kind(o.get("layer"))
+           and not is_removal_layer(o.get("layer"))]
     rm_boxes = {tuple(psym._bbox(o["points"])): o["layer"] for o in rm}
     sym_boxes = {tuple(psym._bbox(o["points"])) for o in sym}
     out = []
@@ -351,14 +362,54 @@ def removal_layer_tags(page, fams: Dict[str, Dict[str, Any]]) -> List[Dict[str, 
         if pos is None or seed not in rm_boxes or seed in sym_boxes:
             continue
         out.append({"text": t["text"], "at": (t["x"], t["y"]), "box": t["box"],
-                    "layer": rm_boxes[seed], "drawn_at": tuple(pos)})
+                    "layer": rm_boxes[seed], "drawn_at": tuple(pos),
+                    "drawn_box": tuple(rep["bbox"]) if rep.get("bbox") else None})
+    return out
+
+
+#: a removal path wholly inside a named tag's drawn opening (its box, this
+#: much slack for the stroke) is that tag's ink
+DRAWN_BOX_SLACK_PT = 1.0
+
+
+def removal_layer_ink(page, hits: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """{layer: {"objects", "tagged", "untagged", "box"}} - every path drawn on a
+    removal layer of one page (an object is one path as the PDF draws it,
+    plan_page's drawings), split by whether it is a NAMED TAG'S INK: wholly
+    inside the drawn opening (`drawn_box`) of a removal_layer_tags hit on the
+    same layer. "box" is the untagged paths' extent. Reads only."""
+    out: Dict[str, Dict[str, Any]] = {}
+    boxes: Dict[str, List[Tuple[float, ...]]] = {}
+    for h in hits or ():
+        if h.get("drawn_box"):
+            b = h["drawn_box"]
+            boxes.setdefault(h["layer"], []).append(
+                (b[0] - DRAWN_BOX_SLACK_PT, b[1] - DRAWN_BOX_SLACK_PT,
+                 b[2] + DRAWN_BOX_SLACK_PT, b[3] + DRAWN_BOX_SLACK_PT))
+    for d in page.drawings:
+        layer = d.get("layer") or ""
+        if not is_removal_layer(layer):
+            continue
+        r = d.get("rect") or (0.0, 0.0, 0.0, 0.0)
+        mine = any(b[0] <= r[0] and b[1] <= r[1] and r[2] <= b[2] and r[3] <= b[3]
+                   for b in boxes.get(layer, ()))
+        e = out.setdefault(layer, {"objects": 0, "tagged": 0, "untagged": 0, "box": None})
+        e["objects"] += 1
+        if mine:
+            e["tagged"] += 1
+            continue
+        e["untagged"] += 1
+        bx = e["box"]
+        e["box"] = tuple(r) if bx is None else (min(bx[0], r[0]), min(bx[1], r[1]),
+                                                 max(bx[2], r[2]), max(bx[3], r[3]))
     return out
 
 
 def removal_layer_health(page, sheet: str, fams: Dict[str, Dict[str, Any]], *,
                          track: str, label: Optional[str] = None, units=None,
-                         records: Optional[Dict[str, List[Dict[str, Any]]]] = None
-                         ) -> List[Dict[str, Any]]:
+                         records: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+                         hits: Optional[List[Dict[str, Any]]] = None,
+                         question: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """One set-health item (lib.plan_set_health.DRAWN_ON_REMOVAL_LAYER) per
     removal layer of one plan whose ink is the drawn opening of a tag:
 
@@ -373,7 +424,7 @@ def removal_layer_health(page, sheet: str, fams: Dict[str, Dict[str, Any]], *,
     to the track's set health, and no row is read or written by it."""
     from lib.plan_set_health import DRAWN_ON_REMOVAL_LAYER
 
-    hits = removal_layer_tags(page, fams)
+    hits = [dict(h) for h in (removal_layer_tags(page, fams) if hits is None else hits)]
     if not hits:
         return []
     for h in hits:
@@ -390,7 +441,7 @@ def removal_layer_health(page, sheet: str, fams: Dict[str, Dict[str, Any]], *,
                     at and (round(at[0], 1), round(at[1], 1)) in hit_at):
                 continue
             placed[(r["unit"], r["tag"])] = placed.get((r["unit"], r["tag"]), 0) + 1
-    where = f"{sheet} ({label or (track + ' set')})"
+    where = _where(sheet, track, label, question)
     out = []
     for layer in sorted({h["layer"] for h in hits}):
         mine = sorted((h for h in hits if h["layer"] == layer),
@@ -418,7 +469,78 @@ def removal_layer_health(page, sheet: str, fams: Dict[str, Dict[str, Any]], *,
                     "detail": f"{where}: {'; '.join(groups)} {'is' if one else 'are'} drawn on "
                               f"layer {leaf}; {'its symbol is' if one else 'their symbols are'} "
                               f"not on the door/window layers"})
+        _mark(out[-1], question)
     return out
+
+
+def _where(sheet: str, track: str, label: Optional[str],
+           question: Optional[Dict[str, Any]]) -> str:
+    """'A-100.00 (the owner's post-CO set, 6/9/26)'; a plan read under an open
+    set question says so: 'A.1.3 (filed set; the A.1.x plans, an open set
+    question)'."""
+    q = f"; {question['short']}, an open set question" if question else ""
+    return f"{sheet} ({label or (track + ' set')}{q})"
+
+
+def _mark(item: Dict[str, Any], question: Optional[Dict[str, Any]]) -> None:
+    """An item of a plan read under an open set question carries the
+    question, as that plan's rows do (lib.plan_set_questions.ROW_KEY)."""
+    if question:
+        from lib import plan_set_questions as psq
+        item.update({psq.ROW_KEY: question["id"], psq.ROW_LABEL: question["short"]})
+
+
+def removal_layer_ink_health(page, sheet: str, *, track: str, label: Optional[str] = None,
+                             hits: Sequence[Dict[str, Any]] = (),
+                             question: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """One SHEET-level set-health item (lib.plan_set_health.REMOVAL_LAYER_INK,
+    ruling 37) per removal layer of one plan that draws ink no door/window
+    tag names - every path on the layer that is not a named tag's drawn
+    opening (removal_layer_ink, over `hits`, removal_layer_tags' for the
+    same page):
+
+      "A-104.00 (the owner's post-CO set, 6/9/26): 80 objects are drawn on
+       layer TO REMOVE and no door or window tag names them"
+
+    "more objects" when the same layer also draws a named tag's opening
+    (that tag is drawn_on_removal_layer's item). `question` is the open set
+    question the plan is read under (lib.plan_set_questions), named in the
+    item. A flag only: it refuses nothing (ruling 40)."""
+    from lib.plan_set_health import REMOVAL_LAYER_INK
+
+    where = _where(sheet, track, label, question)
+    out = []
+    for layer, e in sorted(removal_layer_ink(page, hits).items()):
+        n = e["untagged"]
+        if not n:
+            continue
+        leaf = layer.split("|")[-1]
+        more = "more " if e["tagged"] else ""
+        what = (f"1 {more}object is drawn on layer {leaf} and no door or window tag names it"
+                if n == 1 else
+                f"{n} {more}objects are drawn on layer {leaf} and no door or window tag "
+                f"names them")
+        item = {"kind": REMOVAL_LAYER_INK, "sheet": sheet, "subject": leaf, "track": track,
+                "layer": layer, "objects": n, "tagged_objects": e["tagged"],
+                "box": [round(v, 1) for v in e["box"]], "detail": f"{where}: {what}"}
+        _mark(item, question)
+        out.append(item)
+    return out
+
+
+def removal_layer_items(page, sheet: str, fams: Dict[str, Dict[str, Any]], *, track: str,
+                        label: Optional[str] = None, units=None,
+                        records: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+                        question: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Every removal-layer item of one plan: the tags drawn on a removal layer
+    (removal_layer_health) and the ink no tag names (removal_layer_ink_health),
+    the page's removal ink read once. Called for every floor of the pass AND
+    every plan read under a set question (ruling 39). Flags only."""
+    hits = removal_layer_tags(page, fams)
+    out = removal_layer_health(page, sheet, fams, track=track, label=label, units=units,
+                               records=records, hits=hits, question=question)
+    return out + removal_layer_ink_health(page, sheet, track=track, label=label, hits=hits,
+                                          question=question)
 
 
 def _refused_tags(space: Optional[Dict[str, Any]]) -> List[str]:
@@ -504,7 +626,8 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
             sheet = page.get("sheet_number") or f"{page.get('file_name')} p{page.get('page_number')}"
             out: List[Dict[str, Any]] = []
             try:
-                got = floor_records(open_page(page), run, None,
+                pg = open_page(page)
+                got = floor_records(pg, run, None,
                                     f"refused: {sheet}: {why}: counted at sheet scope, not placed")
             except Exception as e:                  # one page never sinks the pass
                 log.exception("openings %s failed: %r", sheet, e)
@@ -518,6 +641,14 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
                           f"outline(s) with no readable tag", pass_key=f"openings|{sheet}",
                     role=KIND)]
             elif got is not None:
+                # DRAWN ON A REMOVAL LAYER, on a plan under a set question
+                # too (ruling 39): flags, marked with the question when open
+                try:
+                    health += removal_layer_items(
+                        pg, sheet, run, track=track, label=page.get("drawing_track_label"),
+                        records=got["records"], question=None if mark == {} else q)
+                except Exception as e:
+                    log.exception("openings %s removal layer not read: %r", sheet, e)
                 for t in got["orphans"]:
                     health.append({"kind": "plan_tag_not_in_schedule", "sheet": sheet,
                                    "subject": t["text"], "track": track,
@@ -583,7 +714,7 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
         # DRAWN ON A REMOVAL LAYER (queue item 25): a flag, after the rows
         # are read - it never changes one, and never sinks the floor.
         try:
-            health += removal_layer_health(
+            health += removal_layer_items(
                 pg, a_sheet, run, track=track, label=arch_p.get("drawing_track_label"),
                 units=member, records=got["records"])
         except Exception as e:
