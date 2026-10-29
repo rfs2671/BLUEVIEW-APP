@@ -86,7 +86,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from lib.plan_space_layers import role_of
+from lib.plan_space_layers import is_removal_layer, role_of
 
 # ── constants (inches are REAL inches, converted by the viewport's scale) ──
 
@@ -164,7 +164,9 @@ def wall_lines(page) -> Dict[str, List[Tuple[float, float, float]]]:
     segments on every wall-role layer (plan_space_layers.role_of)."""
     out: Dict[str, List[Tuple[float, float, float]]] = {"h": [], "v": []}
     for d in page.drawings:
-        if role_of(d.get("layer")) != "wall":
+        # ink TO BE REMOVED is no wall (lib.plan_space_layers.is_removal_layer,
+        # #918): an A-WALL-DEMO wall is demolition, never wall LF
+        if role_of(d.get("layer")) != "wall" or is_removal_layer(d.get("layer")):
             continue
         for it in d["items"]:
             if it[0] != "l":
@@ -229,7 +231,8 @@ def opening_boxes(page) -> List[Tuple[float, float, float, float]]:
     from lib.plan_sheet import symbol_objects
     out = []
     for o in symbol_objects(page):
-        if role_of(o.get("layer")) in ("door", "glaz") and o.get("points"):
+        # a door or window drawn to be removed opens no wall (#918)
+        if role_of(o.get("layer")) in ("door", "glaz") and not is_removal_layer(o.get("layer"))                 and o.get("points"):
             xs = [p[0] for p in o["points"]]
             ys = [p[1] for p in o["points"]]
             out.append((min(xs), min(ys), max(xs), max(ys)))
