@@ -58,9 +58,15 @@ def _takeoff():
     sheets = {"arch": arch, "mech": mech}
     a_pg, m_pg = _Page(), _Page()
     a_pg.name, m_pg.name = "arch", "mech"
+    # a placement that registers goes on to read the apartments: stubbed, so
+    # the only thing that decides the result is the registration
+    space = {"units": {}, "lo": (0.0, 0.0), "cell_pt": 3.0, "refused": [], "tags": {},
+             "incomplete": {}, "ratio": {}, "method": "stub", "fallback_reason": None}
     with patch.object(TK.plan_ocr, "probe", lambda: (True, "")), \
             patch.object(TK, "load_sheet", lambda pg: sheets[pg.name]), \
-            patch.object(TK, "symbol_objects", lambda pg: []):
+            patch.object(TK, "symbol_objects", lambda pg: []), \
+            patch.object(TK, "build_space", lambda *a, **k: space), \
+            patch.object(TK, "Units", lambda *a, **k: None):
         return TK.run_takeoff(a_pg, m_pg, ["EF-1"], {}, [], 56.0, reads=[])
 
 
