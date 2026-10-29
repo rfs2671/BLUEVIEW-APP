@@ -74,7 +74,8 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
              plan_only: Optional[Dict[str, Dict[str, Any]]] = None,
              opening_schedules: Sequence[Dict[str, Any]] = (),
              set_answers: Optional[Dict[str, str]] = None,
-             progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None) -> Dict[str, Any]:
+             progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+             scale_sheets: Optional[Dict[Any, Any]] = None) -> Dict[str, Any]:
     """Every glyph row for the project's `track`, and what was done and
     refused.
 
@@ -104,7 +105,13 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     plan_pass_progress, whose tracker the server hands in). It is called
     from this function's thread; one that raises is logged and ignored
     (plan_pass_progress.tell). It reads nothing the pass computes with, so
-    the rows are the same with it or without it."""
+    the rows are the same with it or without it.
+
+    MECHANICAL SCALES (ruling 5, 2026-10-28): every pair's mechanical plan's
+    scale - its own, or borrowed from its architectural partner (mech_scale)
+    - is in the summary's "mech_scales". No row reads it. `scale_sheets`
+    (page id -> plan_scale.Sheet) lets a caller share the mechanical reads
+    across tracks, as `sweeps` does."""
     from lib import plan_openings as popen
     from lib.plan_pass_progress import tell
     from lib.plan_sheet import load_sheet
@@ -116,6 +123,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                                "families": {}, "skipped_families": [], "door": None,
                                "floors": [], "mech_counts": {}}
     sweeps = {} if sweeps is None else sweeps
+    scale_sheets = {} if scale_sheets is None else scale_sheets
 
     def reads_of(mech_p, mech_pg, segs):
         k = mech_p.get("page_id") or (mech_p.get("file_id"), mech_p.get("page_number"))
@@ -238,6 +246,16 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     tell(progress, "stage", stage="areas")
     areas, summary["areas"] = floor_area_rows(floors_in if run_fams else [], open_page,
                                               track=track)
+    # WALLS (lib.plan_walls, ruling 62, 2026-10-28): every architectural plan
+    # of this track - each paired floor, and each plan the pairing refused for
+    # want of a mechanical partner - its walls by type, refused where the scale
+    # does not verify. Like areas, read BEFORE a void joins a unit, and on
+    # every floor whether or not the set has an equipment schedule: a wall
+    # needs none. A floor with no membership map gets no apartments.
+    tell(progress, "stage", stage="walls")
+    walls, summary["walls"] = floor_wall_rows(
+        floors_in, open_page, track=track, widest_door_in=door["inches"],
+        others=[p for p, _why, role in paired["refused"] if role == derive.ROLE_ARCHITECTURAL])
     tell(progress, "stage", stage="voids")
     summary["voids"] = assign_voids(floors_in)
     opening = popen.run_openings(
@@ -247,10 +265,13 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         answers=set_answers, progress=progress)
     summary["openings"] = opening["summary"]
 
+    summary["mech_scales"] = []
     for i, f in enumerate(floors_in, 1):
         arch_p, mech_p, a_sheet, m_sheet = f["arch_p"], f["mech_p"], f["a_sheet"], f["m_sheet"]
         tell(progress, "sheet", stage="takeoff", sheet=f"{a_sheet}|{m_sheet}", i=i,
              n=len(floors_in), sweep=_sweep_state(mech_p, sweeps) if run_fams else None)
+        if run_fams and "data" in f:
+            summary["mech_scales"].append(mech_scale(f, open_page, scale_sheets))
         if not run_fams:
             rows.append(emit.sheet_refusal(
                 mech_p, "no equipment schedule with an identifier column",
@@ -308,7 +329,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         r.setdefault("payload", {})["track"] = track
     summary["rows"] = len(rows)
     tell(progress, "done")
-    return {"rows": rows, "summary": summary, "areas": areas,
+    return {"rows": rows, "summary": summary, "areas": areas, "walls": walls,
             "opening_rows": opening["rows"], "opening_health": opening["health"],
             "set_questions": opening.get("questions") or []}
 
@@ -378,6 +399,44 @@ def floor_area_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str,
         notes.append(f"{f.get('a_sheet')}: " + ", ".join(f"{k} {v}" for k, v in sorted(tally.items())))
     for n in notes:
         log.info("glyph pass areas: %s", n)
+    return rows, notes
+
+
+def floor_wall_rows(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any], *,
+                    track: str = "filed", widest_door_in: Optional[float] = None,
+                    others: Sequence[Dict[str, Any]] = ()) -> "tuple[List[Dict[str, Any]], List[str]]":
+    """(wall rows, a line per plan) - lib.plan_walls on every floor's
+    architectural plan (its membership map, when the pass built one, gives
+    the apartments) and on each of `others` (plans the pairing refused: no
+    apartments). Each plan once. One plan that fails never sinks the pass: it
+    is said, and writes no row."""
+    from lib import plan_walls
+
+    rows: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    seen = set()
+    todo = [(f["arch_p"], f.get("space")) for f in floors] + [(p, None) for p in others]
+    for page, space in todo:
+        key = page.get("page_id") or (page.get("file_id"), page.get("page_number"))
+        if key in seen:
+            continue
+        seen.add(key)
+        sheet = page.get("sheet_number")
+        try:
+            res = plan_walls.floor_walls(open_page(page), space=space, widest_door_in=widest_door_in)
+        except Exception as e:                      # one plan never sinks the pass
+            log.exception("walls %s failed: %r", sheet, e)
+            notes.append(f"{sheet}: walls failed ({type(e).__name__}) - no wall rows")
+            continue
+        got = plan_walls.wall_rows(res, page, track=track)
+        rows += got
+        kinds: Dict[str, int] = {}
+        for r in got:
+            k = r["payload"]["kind"] + ("" if r["payload"]["kind"] != plan_walls.WALL else f":{r['status']}")
+            kinds[k] = kinds.get(k, 0) + 1
+        notes.append(f"{sheet}: " + (", ".join(f"{k} {v}" for k, v in sorted(kinds.items())) or "no rows"))
+    for n in notes:
+        log.info("glyph pass walls (%s): %s", track, n)
     return rows, notes
 
 
@@ -659,6 +718,45 @@ def _level_words(f: Dict[str, Any], u: str) -> List[str]:
             if w in ("LOWER", "UPPER"):
                 out.append(w)
     return out
+
+
+def mech_scale(f: Dict[str, Any], open_page, scale_sheets: Dict[Any, Any]) -> Dict[str, Any]:
+    """The floor's mechanical plan's scale: its own where its drawing
+    verifies, else BORROWED from the floor's architectural plan - only when
+    their registration is usable by the one offset rule
+    (plan_sheet.register_offset, ruling 63; its margin is recorded) and the
+    architectural viewport verified on its own dimensions (plan_scale.borrow,
+    ruling 5). The placement's own registration (register()) is untouched.
+    The result names the lender and the registration's evidence, or why
+    there is no scale. Recorded in the pass summary ("mech_scales"); a read
+    that fails is said there and never sinks the pass."""
+    from lib import plan_scale as ps
+    from lib.plan_sheet import load_sheet, matched_anchors, register_offset
+    a_sheet, m_sheet = f.get("a_sheet"), f.get("m_sheet")
+    try:
+        mech = f.get("mech_data") or load_sheet(open_page(f["mech_p"]))
+        reg_ = register_offset(f["data"], mech)
+        if not reg_.get("usable"):          # refused before any sheet is read
+            _v, res = ps.borrow(m_sheet, None, a_sheet, None, reg_, (), ())
+        else:
+            if "scale_sheet" not in f:
+                f["scale_sheet"] = ps.read_sheet(open_page(f["arch_p"]))
+            mech_p = f["mech_p"]
+            k = mech_p.get("page_id") or (mech_p.get("file_id"), mech_p.get("page_number"))
+            if k not in scale_sheets:
+                scale_sheets[k] = ps.read_sheet(open_page(mech_p))
+            a_pts, m_pts = matched_anchors(f["data"], mech, reg_)
+            _v, res = ps.borrow(m_sheet, scale_sheets[k], a_sheet, f["scale_sheet"], reg_,
+                                a_pts, m_pts)
+    except Exception as e:                          # one floor never sinks the pass
+        log.exception("mechanical scale %s / %s failed: %r", m_sheet, a_sheet, e)
+        res = {"sheet": m_sheet, "status": "refused", "pt_per_in": None,
+               "from": {"sheet": a_sheet, "viewport": None},
+               "why": f"scale read failed: {type(e).__name__}"}
+    log.info("glyph pass mechanical scale: %s %s%s", m_sheet, res["status"],
+             f" from {a_sheet}" if res["status"] == "borrowed" else
+             (f" - {res.get('why')}" if res.get("why") else ""))
+    return res
 
 
 def _partner_registration(f: Dict[str, Any], open_page) -> Dict[str, Any]:
