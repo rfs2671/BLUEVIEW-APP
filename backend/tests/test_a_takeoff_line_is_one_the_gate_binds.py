@@ -227,7 +227,7 @@ class _Db:
 PROJECT = {"_id": "proj1", "company_id": "co_a", "name": "588 Boyland"}
 
 
-def _get(role, company="co_a"):
+def _get(role, company="co_a", lights=()):
     async def _user():
         return {"_id": "u1", "id": "u1", "role": role, "company_id": company,
                 "account_status": "approved", "full_name": "Test", "assigned_projects": []}
@@ -248,12 +248,18 @@ def _get(role, company="co_a"):
     async def _sources(pid, fids):
         return SOURCES
 
+    async def _lights(pid):
+        # stored light fixture tag counts (lib.plan_light_fixtures): none
+        # until a pass runs (ruling 78)
+        return list(lights)
+
     server.app.dependency_overrides[server.get_current_user] = _user
     try:
         with patch.object(server, "db", _Db(PROJECT)), \
                 patch.object(server, "_glyph_evidence", _glyphs), \
                 patch.object(server, "_area_evidence", _areas), \
                 patch.object(server, "_plan_file_sources", _sources), \
+                patch.object(server, "_light_fixture_evidence", _lights), \
                 patch.object(server, "_review_queue_takeoff", _queue):
             return TestClient(server.app).get("/api/projects/proj1/takeoff.xlsx"), queued
     finally:
