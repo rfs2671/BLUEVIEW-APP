@@ -57,6 +57,11 @@ MEASURED ON 588 BOYLAND, 2026-10-26 (bv-worktrees/L2_doors_measure.md):
   tagged openings. Both items are written for the plans read under a set
   question too. Neither refuses an answer.
 
+  A DOOR ON A REMOVAL LAYER IS NOT A DOOR (ruling 109, 2026-10-29). Ink on
+  A-DOOR-DEMO / A-GLAZ-DEMO (plan_space_layers.is_removal_layer) is never
+  offered to floor_records as a door or window symbol. No Boyland plan
+  carries such a layer: 0 rows change there.
+
   A SYMBOL NO TAG NAMES makes its floor incomplete. The owner's mezzanine
   draws four bath doors with no tag; a door of unknown type there may be any
   door type. Each is one UNREAD row of every door family (a window, of every
@@ -245,7 +250,12 @@ def floor_records(page, fams: Dict[str, Dict[str, Any]], units=None,
     objs = []
     for o in symbol_objects(page):
         k = _symbol_kind(o.get("layer"))
-        if k and o.get("points"):
+        # A DOOR ON A REMOVAL LAYER IS NOT A DOOR (ruling 109, 2026-10-29):
+        # A-DOOR-DEMO / A-GLAZ-DEMO ink is work to be removed. Offered as a
+        # symbol, a demolished door with no tag was an UNREAD row that
+        # refused its family's floor figures, and one beside a tag could be
+        # that tag's door. It is removal ink (removal_layer_tags) only.
+        if k and o.get("points") and not is_removal_layer(o.get("layer")):
             objs.append(dict(o, kind=k))
     tags = read_tags(page)
     legend = [t for t in tags if t["legend"]]
