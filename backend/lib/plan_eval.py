@@ -57,6 +57,7 @@ import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from lib import plan_dimensions
+from lib import plan_floor_to_floor
 from lib import plan_refusal
 from lib import plan_search as ps
 from lib.plan_extract import TIER_SCHEDULE_CELL
@@ -233,6 +234,10 @@ def validate_suite(suite: Dict[str, Any]) -> None:
                 isinstance(x, str) and x.strip() for x in lr)):
             raise SuiteError(f"{cid}: located_render is a non-empty list of the "
                              f"phrases the located-symbol render must state, or absent")
+        rnd = exp.get("render")
+        if rnd is not None and (not isinstance(rnd, str) or not rnd.strip()):
+            raise SuiteError(f"{cid}: render is the sentence the fallback render must "
+                             f"state, or absent")
         nsv = exp.get("no_stated_value")
         if nsv is not None and (nsv is not True or c.get("intent") != "attribute"):
             raise SuiteError(f"{cid}: no_stated_value is true on an attribute case, or absent")
@@ -554,6 +559,11 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]],
     # is recorded: with none printed, the check holds vacuously and says so.
     if exp.get("no_stated_value"):
         texts = plan_dimensions.record_texts(list(returned), ps._vouches_for_nothing)
+        # A DERIVED FLOOR-TO-FLOOR (lib.plan_floor_to_floor) is a value a returned
+        # record carries, though no record_text prints it: it is put to the
+        # gate as the subject's value too (ruling 2026-10-27: "floor-to-floor
+        # must never bind as a ceiling height").
+        texts = list(texts) + plan_floor_to_floor.figure_texts(list(returned))
         printed = sorted({f.text.strip() for t in texts
                           for f in plan_dimensions.find(plan_dimensions.unreverse(t)) if f.dims})
         bound = [d for d in printed
@@ -681,6 +691,17 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]],
         if scope not in scopes:
             reasons.append(f"no returned glyph count is {scope}-scoped")
 
+    # ── THE SENTENCE THE OPERATOR RULED ────────────────────────────────────
+    #
+    # A case whose answer is a ruled sentence (ceiling height, 2026-10-27:
+    # "ceiling height not shown; floor-to-floor 10'-0" (A-300.00)") names it,
+    # and the render - what the crew receives when the gate refuses a
+    # composed answer - must state it.
+    if exp.get("render"):
+        said = _norm(exp["render"]) in _norm(body)
+        checks["render_states_the_ruled_answer"] = said
+        if not said:
+            reasons.append(f"the render does not state {exp['render']!r}")
     checks["render_carries_the_answer"] = all(
         _norm(v) in _norm(body) for v in values + list(exp.get("text") or []))
     # ── WHAT THE MODEL IS TOLD OF THE LOCATED SYMBOLS ─────────────────────

@@ -3877,6 +3877,7 @@ from lib import plan_search  # noqa: E402
 from lib import plan_areas  # noqa: E402
 from lib import plan_levels  # noqa: E402
 from lib import plan_term_senses  # noqa: E402
+from lib import plan_floor_to_floor  # noqa: E402
 from lib import plan_crop  # noqa: E402
 from lib import plan_sources  # noqa: E402
 
@@ -60193,6 +60194,7 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
                                     path=log[3] if log else "headcount")
         reply = _dm_no_negative_claims(reply, log[4] if log and len(log) > 4 else None,
                                        ident=log[0] if log else None)
+        reply = await _dm_set_answer_claims(reply, log[0] if log else None)
     repeated = None
     if reply:
         asked = question if question is not None else (log[2] if log else "")
@@ -61473,6 +61475,7 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
     if out.get("reply"):
         out["reply"] = dm_brain.redact_phones(out["reply"])
         out["reply"] = _dm_no_negative_claims(out["reply"], out.get("trace"), ident)
+        out["reply"] = await _dm_set_answer_claims(out["reply"], ident)
     # Where on the sheets the answer came from: sent after the words
     # (_dm_brain_reply); the eval only records it.
     out["plan_shots"] = _dm_plan_shots(ctx, out)
@@ -65418,6 +65421,7 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         opening_health: List[dict] = []
         set_questions: List[dict] = []
         areas: List[dict] = []
+        walls: List[dict] = []
         summary: Dict[str, Any] = {"tracks": {}}
         for track, pages in by_track:
             # (passed only when there is one: a set with no door or window
@@ -65432,6 +65436,7 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
                                           plan_only=plan_only, **extra)
             rows += out["rows"]
             areas += out.get("areas") or []
+            walls += out.get("walls") or []
             opening_rows += out.get("opening_rows") or []
             opening_health += out.get("opening_health") or []
             set_questions += out.get("set_questions") or []
@@ -65472,6 +65477,26 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         except Exception as e:
             logger.exception("plan stacks %s failed: %r", pid, e)
             stacks = [_stacks.unavailable(e, datetime.now(timezone.utc))]
+        # STRUCTURE (lane T3, lib.plan_structural; ruling 106, 2026-10-29),
+        # while the PDFs are still here: every S-1xx framing plan's shear
+        # walls, frames, posts, beams, joists and hold-down zones, paired to
+        # each track's architectural plan BY TITLE LEVEL and registered by
+        # the one offset rule (plan_sheet.register_offset) plus the S wall
+        # check. A track with no S sheets (the owner's post-CO set) reads the
+        # filed set's, every row labelled (ruling 68). Own collection: search
+        # and the count gate never read it. A failure writes one marker row,
+        # never sinks the pass.
+        from lib import plan_structural as _structural
+        if progress is not None:
+            progress.server_stage("structure")
+        try:
+            cid = next((p.get("company_id") for _t, ps in by_track for p in ps
+                        if p.get("company_id")), None)
+            structure = (await asyncio.to_thread(_structural.pass_rows, by_track, open_page,
+                                                 project_id=pid, company_id=cid))["rows"]
+        except Exception as e:
+            logger.exception("plan structure %s failed: %r", pid, e)
+            structure = [_structural.unavailable(e, datetime.now(timezone.utc), project_id=pid)]
     # one numbering across the tracks: a row is (page_id, ordinal), and every
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
@@ -65492,6 +65517,8 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
     summary["set_health"] = await _write_set_health(pid, health)
     summary["stacks_written"] = await _write_stack_rows(pid, stacks)
     summary["areas_written"] = await _write_area_records(pid, areas)
+    summary["walls_written"] = await _write_wall_records(pid, walls)
+    summary["structure_written"] = await _write_structural_rows(pid, structure)
     try:
         summary["set_questions"] = await _store_set_questions(
             pid, set_questions, opening_rows, actor or "system:glyph_pass")
@@ -65706,6 +65733,105 @@ async def _handle_set_question_reply(chat_id: str, code: str, answer: str) -> bo
     return True
 
 
+async def _handle_set_question_message(chat_id: str, body: Any) -> bool:
+    """Every drawing-set answer in one WhatsApp message, read line by line
+    (psq.split_reply), BEFORE the assistant (10-29: "Gas change govern since
+    it was latest.\\nQ1 no" and "Q2 it's the final roof plan ..." both went
+    to the assistant, which said "Q1 logged" without reading the store).
+    - "Qn YES" / "Qn NO": recorded as _handle_set_question_reply records it;
+      a question already answered gets its stored state (psq.status_text).
+    - "Qn <words>": kept as a note on the question and answered with how to
+      record it (psq.confirm_text) - nothing is recorded from free words.
+    - lines with no code ride along as a note on the questions the message
+      named.
+    Only questions asked of THIS person, who is still a PM on record. True
+    when any line named one: the message is handled here."""
+    from lib import plan_set_questions as psq
+    answers, free, rest = psq.split_reply(body)
+    if not answers and not free:
+        return False
+    optin = await _active_optin_for_phone(wa_dm.phone_digits(chat_id))
+    if not optin or not optin.get("user_id"):
+        return False
+    uid = str(optin["user_id"])
+    codes = sorted({c for c, _a in answers} | {c for c, _t in free})
+    found: Dict[str, List[dict]] = {}
+    for q in await db[psq.COLLECTION].find({"code": {"$in": codes},
+                                             "asked_user_ids": uid}).to_list(20):
+        found.setdefault(str(q.get("code")), []).append(q)
+    mine = {c: qs[0] for c, qs in found.items() if len(qs) == 1}
+    now = datetime.now(timezone.utc)
+    named: Dict[str, dict] = {}
+    for code, answer in answers:
+        q = mine.get(code)
+        if q is None:
+            continue
+        named[str(q["_id"])] = q
+        if q.get("status") == psq.OPEN and await _handle_set_question_reply(chat_id, code, answer):
+            continue
+        q = await db[psq.COLLECTION].find_one({"_id": q["_id"]}) or q
+        await send_whatsapp_message(chat_id, psq.status_text(q))
+    for code, text in free:
+        q = mine.get(code)
+        if q is None:
+            continue
+        named[str(q["_id"])] = q
+        if q.get("status") != psq.OPEN:
+            await send_whatsapp_message(chat_id, psq.status_text(q))
+            continue
+        await send_whatsapp_message(chat_id, psq.confirm_text(q))
+    if not named:
+        return False
+    # The words themselves are kept for the office, on each question named,
+    # from a PM still on record for its project.
+    words = "\n".join([t for _c, t in free] + ([rest] if rest else []))
+    for qid, q in named.items():
+        if not words:
+            break
+        _proj, pms = await _set_question_people(str(q.get("project_id")))
+        if not any(str(u.get("_id")) == uid for u in pms):
+            _security_event("plan_set_note_refused", user_id=uid,
+                            project_id=str(q.get("project_id")), reason="not_pm_on_record")
+            continue
+        await db[psq.COLLECTION].update_one(
+            {"_id": qid}, {"$push": {"notes": {"text": words[:2000], "at": now,
+                                                "user_id": uid, "via": "whatsapp"}}})
+        await audit_log("plan_set_question_note", uid, "plan_set_question", qid,
+                        {"project_id": str(q.get("project_id")), "code": q.get("code")})
+    return True
+
+
+async def _dm_set_answer_claims(reply: Any, ident: Optional[dict] = None) -> Any:
+    """NEVER "RECORDED" UNLESS THE STORE SAYS SO (10-29, 21:23: "Q1 logged as
+    no" - said without reading the store): each outgoing sentence saying a
+    drawing-set answer was logged / recorded / saved becomes the store's own
+    words for that question (psq.rewrite_recorded_claims), read for this
+    sender's projects. A store that cannot be read confirms nothing."""
+    from lib import plan_set_questions as psq
+    if not isinstance(reply, str):
+        return reply
+    claims = psq.recorded_claims(reply)
+    if not claims:
+        return reply
+    stored: Dict[str, dict] = {}
+    try:
+        projects = [str((p.get("_id") or p.get("id")) if isinstance(p, dict) else p)
+                    for p in ((ident or {}).get("projects") or [])]
+        if projects:
+            for q in await db[psq.COLLECTION].find(
+                    {"code": {"$in": sorted({c for _s, c in claims})},
+                     "project_id": {"$in": projects}}).to_list(20):
+                stored.setdefault(str(q.get("code")), q)
+    except Exception as e:
+        logger.warning(f"[dm-gate] set questions unreadable: {type(e).__name__}")
+        stored = {}
+    out, n = psq.rewrite_recorded_claims(reply, stored)
+    if n:
+        logger.info(f"[dm-gate] set-answer claim rewritten "
+                    f"company={(ident or {}).get('company_id') or '?'} n={n}")
+    return out
+
+
 def _glyph_set_health(tracks: List[Tuple[str, List[dict]]], rows: List[dict],
                       schedules: List[dict], sweeps: Dict[Any, Any],
                       open_page=None) -> List[dict]:
@@ -65754,6 +65880,44 @@ async def _write_area_records(project_id: str, rows: List[dict]) -> int:
     return len(rows)
 
 
+async def _write_wall_records(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's wall rows with one pass's (lib.plan_walls, the
+    glyph pass's `walls` step). IDEMPOTENT PER PROJECT AND TRACK: every row
+    of the project goes and this pass's rows - each track's, each saying its
+    track - come in, so a second run of the same pass leaves the same rows,
+    and a track the set no longer has keeps none. Own collection, as areas:
+    nothing reads it yet (the gate's binding and T5's Walls trade come
+    later); it is written only by the operator-started pass."""
+    from lib.plan_walls import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    docs = []
+    for i, r in enumerate(rows):
+        docs.append(dict(r, project_id=pid, ordinal=i, created_at=now))
+    await db[COLLECTION].insert_many(docs)
+    return len(docs)
+
+
+async def _write_structural_rows(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's structure rows with one pass's
+    (lib.plan_structural.COLLECTION). WHOLE-PROJECT REPLACE, because the
+    pass is: the pairing, the series offset and the shear wall schedule are
+    read across the set. Own collection, like areas and set health: no plan
+    record, so search never returns them and the eval baseline does not move."""
+    from lib.plan_structural import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    await db[COLLECTION].insert_many([dict(r, project_id=pid, ordinal=i, created_at=now)
+                                      for i, r in enumerate(rows)])
+    return len(rows)
+
+
 async def _area_evidence(project_id: str) -> List[dict]:
     """Every area row of the project's last glyph pass (lib.plan_areas):
     whole project, every track, like the located symbols - a floor filter on
@@ -65761,6 +65925,25 @@ async def _area_evidence(project_id: str) -> List[dict]:
     from lib.plan_areas import COLLECTION
     return await db[COLLECTION].find({"project_id": str(project_id)},
                                      {"_id": 0, "created_at": 0}).to_list(2000)
+
+
+async def _legend_count_evidence(project_id: str) -> List[dict]:
+    """Every stored legend symbol count of the project (lib.plan_legend_symbols,
+    its own collection). None is stored until a pass runs (ruling 78: not
+    before the sub-bid benchmark), and then the export is what it was."""
+    from lib.plan_legend_symbols import COLLECTION
+    return await db[COLLECTION].find({"project_id": str(project_id)},
+                                     {"_id": 0, "created_at": 0}).to_list(5000)
+
+
+async def _light_fixture_evidence(project_id: str) -> List[dict]:
+    """Every stored light fixture tag count of the project
+    (lib.plan_light_fixtures, its own collection). None is stored until a
+    pass runs (ruling 78, as for T2: not before the sub-bid benchmark), and
+    then the export is what it was."""
+    from lib.plan_light_fixtures import COLLECTION
+    return await db[COLLECTION].find({"project_id": str(project_id)},
+                                     {"_id": 0, "created_at": 0}).to_list(5000)
 
 
 async def _write_set_health(project_id: str, items: List[dict]) -> int:
@@ -69216,7 +69399,7 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
         {"project_id": pid, "record_type": "schedule",
          "page_id": {"$in": page_ids}, "sheet_number": {"$regex": "^M-"}},
         {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
-         "payload.rows": 1},
+         "payload.rows": 1, "payload.contested_cells": 1},
     ).to_list(2000)
     fams = _families([{"name": (s.get("payload") or {}).get("name"),
                        "columns": (s.get("payload") or {}).get("columns"),
@@ -69270,8 +69453,10 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
     if owant:
         try:
             from lib import plan_set_questions as _psq
+            # ANSWERED ones too: an answer recorded after the pass is stated as
+            # recorded-not-yet-applied, never as "not decided" (10-29).
             health += [dict(q, record_type="set_question") for q in await db[_psq.COLLECTION].find(
-                {"project_id": pid, "status": _psq.OPEN}).to_list(200)]
+                {"project_id": pid, "status": {"$in": [_psq.OPEN, _psq.ANSWERED]}}).to_list(200)]
         except Exception as e:
             logger.warning("plan set questions unreadable for %s: %r", pid, e)
     if not want and not owant:
@@ -69346,6 +69531,10 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
         src = best if scope is None else obest
         qty = (plan_search.schedule_quantities((src.get(name) or {}).get("payload"), tags)
                if kind == "family" else None)
+        # what the two readings of a contested QTY cell said - for the
+        # takeoff's cross-check column only (ruling 73), never a figure
+        qty_readings = (plan_search.schedule_quantity_readings(
+            (src.get(name) or {}).get("payload"), tags) if kind == "family" else None)
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
                                                family=name, tags=tags, qty=qty,
                                                track=track,
@@ -69353,7 +69542,8 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
                                                           if scope is None else None),
                                                scope=scope,
                                                reads=(reads.get(track) if kind == "family"
-                                                      and scope is None else None)))
+                                                      and scope is None else None),
+                                               qty_readings=qty_readings))
     return rows + census + health
 
 
@@ -69647,6 +69837,72 @@ def _with_scoped(extra: List[dict], out: List[dict], asked: str, interp: dict) -
     return out
 
 
+#: Level-mark records read per project, and ceiling records counted for the
+#: "not shown" warrant. NOT a silent cap: a read that fills it derives nothing
+#: (levels) or counts nothing (the warrant), and says so.
+LEVEL_EVIDENCE_MAX = 5000
+
+
+async def _level_evidence(project_id: str, ceiling_asked: bool,
+                          asked_levels: Tuple[str, ...] = ()) -> List[dict]:
+    """The floor-to-floor row (lib.plan_floor_to_floor, ruling 2026-10-27),
+    derived at question time from the level marks a SECTION prints, checked
+    against every current page that prints a mark of the same name - or []
+    when no section prints two marks. READ-ONLY; whole project, like the
+    areas: a floor or discipline filter on the question must not hide the
+    section. `asked_levels`: the levels the question named, as #891 read them
+    against the set (`interp["levels"]`), so the answer names that storey.
+
+    With `ceiling_asked`, also the warrant for "ceiling height not shown":
+    how many parts of the project's current records name a ceiling and a
+    height where they print a dimension (plan_floor_to_floor.names_a_ceiling_height
+    over plan_search.value_parts). None when that count could not be made."""
+    pid = str(project_id)
+    page_ids = await _current_record_page_ids(pid)
+    if not page_ids:
+        return []
+    scope = {"project_id": pid, "page_id": {"$in": page_ids}}
+    rows = await db[PLAN_RECORDS].find(
+        {**scope, "quote": {"$regex": plan_floor_to_floor.LEVEL_MARK_QUERY}},
+        {"_id": 0, "embedding": 0}).to_list(LEVEL_EVIDENCE_MAX)
+    if len(rows) >= LEVEL_EVIDENCE_MAX:
+        logger.warning(f"level evidence cap {LEVEL_EVIDENCE_MAX} reached for {pid}; "
+                       f"no floor-to-floor derived")
+        return []
+    pages: Dict[str, dict] = {}
+    for r in sorted(rows, key=lambda r: (str(r.get("page_id")), r.get("ordinal") or 0)):
+        ms = plan_floor_to_floor.marks(r.get("quote") or "")
+        if ms:
+            pages.setdefault(str(r.get("page_id")), dict(r, marks=[]))["marks"].extend(ms)
+    section = plan_floor_to_floor.choose_section(list(pages.values()))
+    if not section:
+        return []
+    derived = plan_floor_to_floor.derive(section["marks"])
+    where = lambda p: str(p.get("sheet_number") or p.get("file_name") or "?")  # noqa: E731
+    conflicting, agreeing = [], set()
+    for k, p in pages.items():
+        if k == str(section.get("page_id")):
+            continue
+        bad = plan_floor_to_floor.conflicts(derived, [(where(p), m) for m in p["marks"]])
+        conflicting += bad
+        if not bad:
+            agreeing.add(where(p))
+    printed: Optional[int] = None
+    if ceiling_asked:
+        rx = {"$regex": r"CEIL|\bCLG", "$options": "i"}
+        named = await db[PLAN_RECORDS].find(
+            {**scope, "$or": [{"quote": rx}, {"subject_terms": rx}, {"payload.name": rx}]},
+            {"_id": 0, "embedding": 0}).to_list(LEVEL_EVIDENCE_MAX)
+        if len(named) < LEVEL_EVIDENCE_MAX:
+            printed = sum(1 for r in named if not plan_search._vouches_for_nothing(r)
+                          for texts, naming in plan_search.value_parts(r)
+                          if plan_floor_to_floor.names_a_ceiling_height(naming, texts))
+        else:
+            logger.warning(f"ceiling-height warrant cap reached for {pid}; not counted")
+    return [plan_floor_to_floor.level_record(section, derived, conflicting, sorted(agreeing),
+                                             ceiling_asked, printed, asked_levels)]
+
+
 async def search_plans(project_id: str, subject: str, *, intent: str = "",
                        discipline: str = "", floor: str = "",
                        sheet_number: str = "", limit: int = 8,
@@ -69695,14 +69951,31 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     names = [subject] + [a for a in (also or []) if (a or "").strip() and a != subject]
     page_ids = await _current_record_page_ids(
         project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
+    # A CEILING HEIGHT OR A FLOOR-TO-FLOOR (lib.plan_floor_to_floor, ruling
+    # 2026-10-27): the section's level marks print neither CEILING nor HEIGHT,
+    # so no word of the question finds them. The floor-to-floor row derived
+    # from them LEADS - for a ceiling height the set does not print, it is the
+    # answer ("ceiling height not shown; floor-to-floor 10'-0" (A-300.00)") -
+    # and the gate never binds its figures as a ceiling height. A level the
+    # question named (#891, `interp["levels"]`) picks that storey.
+    levels: List[dict] = []
+    said = " ".join([asked] + names[1:])
+    if plan_floor_to_floor.is_level_subject(said):
+        try:
+            levels = await _level_evidence(project_id, plan_floor_to_floor.names_ceiling(said),
+                                           interp.get("levels") or ())
+        except Exception as e:
+            logger.warning(f"search_plans level evidence failed for {subject!r}: {e}")
     # Nothing found still says what the question meant (_with_scoped fills
     # `term_senses`; the level mapping is already in `interp`).
     if not page_ids:
-        return _with_scoped(extra, [], asked, interp)
+        return levels + _with_scoped(extra, [], asked, interp)
     found = [x for x in [await _ranked_for_subject(project_id, page_ids, n, intent)
                          for n in names] if x is not None]
     if not found and (extra or plan_term_senses.terms_in(asked)):
-        return _with_scoped(extra, [], asked, interp)
+        return levels + _with_scoped(extra, [], asked, interp)
+    if not found and levels:
+        return levels
     if not found:
         return []
     ranked = (found[0][0] if len(found) == 1
@@ -69749,7 +70022,7 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
             out += await _area_evidence(project_id)
         except Exception as e:
             logger.warning(f"search_plans area evidence failed for {subject!r}: {e}")
-    return _with_scoped(extra, out, asked, interp)
+    return levels + _with_scoped(extra, out, asked, interp)
 
 
 def _interp_lines(interp: Optional[dict]) -> List[str]:
@@ -69844,6 +70117,9 @@ def _render_records_for_model(records: List[dict], subject: str,
         # printed figure the check may withhold.
         if plan_areas.is_area_record(r):
             continue
+        # The floor-to-floor row is shown through its derivation, below.
+        if plan_floor_to_floor.is_level_record(r):
+            continue
         # The same citation the crew is shown, for the same reason: a model
         # given '?' or 'pNone' will write one into the answer. A record that
         # cannot say where it is is not offered as evidence at all.
@@ -69893,6 +70169,9 @@ def _render_records_for_model(records: List[dict], subject: str,
     health = plan_search.render_set_health(records)
     if health:
         lines.append(health)
+    levels = plan_floor_to_floor.render_level_evidence(records)
+    if levels:
+        lines.append(levels)
     return "\n".join(lines)
 
 
@@ -78345,11 +78624,11 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
             if answer and await _handle_gc_confirm_reply(dm_chat, answer):
                 return
             # "Q1 YES" / "Q1 NO" to a drawing-set question Levelog asked this
-            # person (ruling 21). The code is required: a bare "yes" is the
+            # person (ruling 21), on any line of the message, and "Q2 <words>"
+            # as an answer to confirm - read BEFORE the assistant, which never
+            # sees them (10-29). The code is required: a bare "yes" is the
             # assistant's, which confirms its own pending change.
-            from lib import plan_set_questions as _psq
-            set_reply = _psq.parse_reply(parsed.get("body"))
-            if set_reply and await _handle_set_question_reply(dm_chat, *set_reply):
+            if await _handle_set_question_message(dm_chat, parsed.get("body")):
                 return
 
         # ── LEVELOG ASSISTANT IN A DM ─────────────────────────────────────
@@ -82941,7 +83220,8 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
         await _record_glyph_pass_result(pid, tracker)
         try:
             summary = await _plan_glyph_pass(pid, actor=who or None, progress=tracker)
-            counts = {k: summary[k] for k in ("written", "set_health", "areas_written")
+            counts = {k: summary[k] for k in ("written", "set_health", "areas_written",
+                                              "walls_written", "structure_written")
                       if k in summary}
             if summary.get("aborted"):
                 tracker.finish(ABORTED, summary=dict(counts, reindex=summary.get("reindex")))
@@ -83062,14 +83342,17 @@ async def get_project_takeoff_xlsx(project_id: str, current_user=Depends(get_adm
     pid = str(project_id)
     records = await _glyph_evidence(pid, "", everything=True)
     areas = await _area_evidence(pid)
+    legend = await _legend_count_evidence(pid)
+    lights = await _light_fixture_evidence(pid)
     fids = set()
-    for r in list(records) + list(areas):
+    for r in list(records) + list(areas) + list(legend) + list(lights):
         fids.add(r.get("file_id"))
         a = (r.get("payload") or {}).get("arch") if isinstance(r.get("payload"), dict) else None
         if isinstance(a, dict):
             fids.add(a.get("file_id"))
     sources = await _plan_file_sources(pid, fids)
-    takeoff = await asyncio.to_thread(_tx.build, records, areas, sources)
+    takeoff = await asyncio.to_thread(_tx.build, records, areas, sources, legend,
+                                      light_rows=lights)
     project = await db.projects.find_one({"_id": to_query_id(pid)}, {"name": 1, "company_id": 1})
     company_id = (project or {}).get("company_id") or get_user_company_id(current_user)
     for ln in takeoff.refused:
