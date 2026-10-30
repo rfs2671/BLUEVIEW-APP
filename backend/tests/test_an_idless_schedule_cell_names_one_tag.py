@@ -89,6 +89,7 @@ class AnIdlessCellNamesOneTag(unittest.TestCase):
         self.assertTrue(_ok("WBP-1 hp: 2.", rec))
 
     def test_a_ul_design_number_is_not_a_tag(self):
+        assert hasattr(S, "_header_tags"), "not built: plan_search._header_tags"
         self.assertEqual(S._header_tags("WALL TYPE 1 W1 EXTERIOR STUD WALL UL DESIGN NO. U42"), ["W1"])
 
     def test_the_helpers(self):
