@@ -241,6 +241,102 @@ def parse_reply(body: Optional[str]) -> Optional[Tuple[str, str]]:
     return m.group(1).upper(), (INCLUDE if m.group(2).upper() in ("YES", "Y", "IN") else EXCLUDE)
 
 
+#: "Q2 it's the final roof plan": a question's code, then words that are not
+#: a YES / NO answer - an answer that needs confirming, never a chat message.
+_FREE = re.compile(r"^\s*(Q\d{1,3})\b\s*[:.\-]?\s*(\S.*?)\s*$", re.I)
+
+
+def split_reply(body: Optional[str]) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]], str]:
+    """A WhatsApp message read line by line (10-29: "Gas change govern since
+    it was latest.\\nQ1 no" went to the assistant because parse_reply wanted
+    the whole message): ([(code, INCLUDE | EXCLUDE)] for every line that is
+    an answer, [(code, text)] for every line that starts with a code and is
+    not one, the rest of the text)."""
+    answers: List[Tuple[str, str]] = []
+    free: List[Tuple[str, str]] = []
+    rest: List[str] = []
+    for line in str(body or "").splitlines():
+        a = parse_reply(line)
+        m = None if a else _FREE.match(line)
+        if a:
+            answers.append(a)
+        elif m:
+            free.append((m.group(1).upper(), m.group(2)))
+        elif line.strip():
+            rest.append(line.strip())
+    return answers, free, "\n".join(rest)
+
+
+def _track_name(q: Dict[str, Any]) -> str:
+    return "the filed set" if q.get("track") in (None, "filed") else f"the {q.get('track')} set"
+
+
+def confirm_text(q: Dict[str, Any]) -> str:
+    """What a PM is told when their words about a question are not a YES or
+    NO: nothing is recorded, and how to record it."""
+    code, short = q.get("code"), q.get("short") or q.get("label") or "those plans"
+    return (f"Nothing is recorded for {code} yet - I keep your words as a note for the "
+            f"office. To record it, reply \"{code} YES\" if {short} are part of "
+            f"{_track_name(q)}, or \"{code} NO\" if they are not.")
+
+
+def status_text(q: Dict[str, Any]) -> str:
+    """A question's state AS STORED - the only thing the assistant may say
+    about whether an answer was recorded (10-29: "Q1 logged as no" was said
+    without reading the store, and two minutes later "not decided" while it
+    was stored)."""
+    code = q.get("code") or "That question"
+    if q.get("status") == ANSWERED:
+        said = "part of" if q.get("answer") == INCLUDE else "not part of"
+        who = q.get("answered_by_name") or "the PM"
+        when = str(q.get("answered_at") or "")[:10]
+        return (f"{code} is recorded: {q.get('short') or q.get('label')} are {said} "
+                f"{_track_name(q)} ({who}, {q.get('answered_via') or 'WhatsApp'}, {when}). "
+                f"Levelog uses it from the next drawing check.")
+    if q.get("status") == OPEN:
+        return (f"{code} is not recorded yet: reply \"{code} YES\" or \"{code} NO\" "
+                f"to record it.")
+    return f"{code} is no longer open ({q.get('status')})."
+
+
+#: An outgoing sentence that says a question's answer was recorded.
+_RECORDED_CLAIM = re.compile(
+    r"\b(Q\d{1,3})\b[^.!?\n]{0,80}?\b(?:logged|recorded|saved|stored|registered|captured|"
+    r"noted\s+as|marked\s+as|set\s+(?:to|as))\b"
+    r"|\b(?:logged|recorded|saved|stored|registered|captured)\b[^.!?\n]{0,40}?\b(Q\d{1,3})\b",
+    re.I)
+#: A sentence ends at . ! ? followed by a space or the end ("A.1.1" is not two).
+_SENTENCE = re.compile(r"(?:[^.!?\n]|[.!?](?!\s|$))*(?:[.!?]+(?=\s|$)|\n|$)")
+
+
+def recorded_claims(text: Optional[str]) -> List[Tuple[str, str]]:
+    """[(sentence, code)] for every sentence of `text` that says a
+    question's answer was recorded."""
+    out = []
+    for m in _SENTENCE.finditer(str(text or "")):
+        s = m.group(0)
+        c = _RECORDED_CLAIM.search(s) if s.strip() else None
+        if c:
+            out.append((s, (c.group(1) or c.group(2)).upper()))
+    return out
+
+
+def rewrite_recorded_claims(text: str, stored: Dict[str, Dict[str, Any]]) -> Tuple[str, int]:
+    """Each sentence saying an answer was recorded becomes the store's own
+    words for that question (`stored`: code -> its stored question, as read
+    for this sender); a code the store has no question for becomes "can't
+    confirm". Returns (text, n rewritten)."""
+    n = 0
+    for sentence, code in recorded_claims(text):
+        q = stored.get(code)
+        line = status_text(q) if q else (f"I can't confirm {code} was recorded: reply "
+                                          f"\"{code} YES\" or \"{code} NO\" to record it.")
+        tail = "\n" if sentence.endswith("\n") else ""
+        text = text.replace(sentence, line + tail, 1)
+        n += 1
+    return text.strip(), n
+
+
 def answer_text(q: Dict[str, Any], answer: str) -> str:
     track = "the filed set" if q.get("track") in (None, "filed") else f"the {q.get('track')} set"
     said = "part of" if answer == INCLUDE else "not part of"
