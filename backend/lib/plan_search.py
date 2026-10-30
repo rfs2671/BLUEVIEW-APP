@@ -3028,8 +3028,12 @@ def glyph_values(clause: str, book) -> set:
       a floor or building figure  from the totals: each symbol once;
       a per-apartment figure      per track - the tracks must AGREE; if they
                                   differ nothing binds; if one track alone
-                                  has a figure, it binds (label, don't
-                                  refuse - the render names its set)."""
+                                  has a figure it binds ONLY when the other
+                                  has nothing at that scope (a floor or unit
+                                  it does not draw) - a track that located
+                                  the symbols there and states no figure
+                                  differs (ruling 150, _located_but_silent;
+                                  the render names each set's figure)."""
     named, bare = _track_claim(clause)
     if isinstance(book, GlyphBook):
         return set() if named else _book_values(clause, book)
@@ -3050,7 +3054,19 @@ def glyph_values(clause: str, book) -> set:
     vals = [v for v in (_book_values(bare, b, zero=True) for b in books.tracks.values()) if v]
     if not vals:
         return set()
-    return set(vals[0]) - {"0"} if all(v == vals[0] for v in vals) else set()
+    if not all(v == vals[0] for v in vals):
+        return set()
+    # A FIGURE THAT NAMES NO SET MUST NOT BIND WHILE THE OTHER SET DIFFERS
+    # (ruling 150, Roy's two-track rule). A track that gives NO figure was
+    # left out above - and that is right only when it has nothing there (a
+    # floor one set alone draws, a unit one set alone numbers). Where it
+    # located the symbols in scope and still states no uniform figure, the
+    # sets differ: "PTAC units in each unit on the first floor: 1." is the
+    # filed set's figure, and the owner's 1A holds 2. The set's own figure
+    # binds when the claim names the set (above).
+    if _located_but_silent(bare, books, vals[0], _SILENT_TRACK_STOPS_COUNT):
+        return set()
+    return set(vals[0]) - {"0"}
 
 
 def _book_values(clause: str, book: GlyphBook, zero: bool = False) -> set:
@@ -4425,33 +4441,87 @@ def states_a_family_count(clause: str, fams: Dict[str, List[str]]) -> bool:
     return False
 
 
+def _located_in_scope(bare: str, b: GlyphBook) -> bool:
+    """Did this track locate (resolve) the clause's symbols at the scope the
+    clause names - the floors it names, the units it names (a unit the track
+    does not number is no scope of its), else the building?"""
+    keys, unknown = _clause_floors(bare, b)
+    units, _uu = _clause_units(bare, b)
+    if unknown and not keys:
+        return False        # a floor this track does not draw is no scope of its
+    for fam, tags in _clause_subjects(bare, b) or []:
+        for r in _resolved(fam, tags):
+            if units:
+                if r.get("unit") in units and (not keys or _row_floor(r) in keys
+                                               or any(keys & set(_apartment_floors(b, u) or ())
+                                                      for u in units)):
+                    return True
+            elif not keys or _row_floor(r) in keys:
+                return True
+    return False
+
+
+def _known_counts_differ(bare: str, b: GlyphBook, figure: set) -> bool:
+    """Does this track state per-apartment counts at the clause's scope that
+    are not `figure`? A count it cannot state (a symbol unplaced, a sheet
+    refused, a duplex unlinked) is no count: that is a track saying nothing,
+    not a track saying something else."""
+    keys, _unknown = _clause_floors(bare, b)
+    units, _uu = _clause_units(bare, b)
+    floors = keys or {k for k, us in b.units.items() if us}
+    for fam, tags in _clause_subjects(bare, b) or []:
+        for k in floors:
+            counts = _unit_counts(b, fam, tags, k)
+            if not counts:
+                continue
+            # a clause naming units is read at those units only
+            vals = [n for u, n in counts.items() if not units or u in units]
+            if any(str(n) not in figure for n in vals):
+                return True
+    return False
+
+
+# Whether a track that located the symbols and withholds its count (an
+# unplaced symbol, a refused sheet: it says NOTHING, not something else)
+# also stops a figure naming no set. Ruling 150 asks for a track that "states
+# a different figure"; False keeps ruling 2026-10-24's "one track alone has a
+# figure, it binds" for the count rule.
+_SILENT_TRACK_STOPS_COUNT = False
+
+
+def _located_but_silent(bare: str, books: GlyphBooks, figure: Optional[set] = None,
+                        silent_stops: bool = True) -> bool:
+    """Some OTHER drawing track located the clause's symbols at its scope and
+    does not state the figure - so a figure naming no set cannot be called
+    both sets'. Only a per-apartment clause naming no set can be silent:
+    glyph_values leaves a figureless track out (ruling 2026-10-24), which is
+    right only for a track with nothing at that scope.
+
+    `silent_stops`: a track that located the symbols and withheld its count
+    stops the figure too (the attribute path, ruling 2026-10-30, #933);
+    False: only a track whose own counts differ from `figure` does."""
+    if len(books.tracks) <= 1 or not _apartment_clause(bare, books):
+        return False
+    for b in books.tracks.values():
+        if _book_values(bare, b, zero=True) or not _located_in_scope(bare, b):
+            continue
+        if silent_stops or _known_counts_differ(bare, b, figure or set()):
+            return True
+    return False
+
+
 def _every_track_states_it(clause: str, records: Sequence[Dict[str, Any]]) -> bool:
     """Does every drawing track that located the clause's symbols in its scope
     state the figure? (Only a per-apartment clause naming no set can fail.)
 
-    glyph_values binds a per-apartment figure two tracks do not contradict:
-    a track that gives NO figure is left out ("if one track alone has a
-    figure, it binds - label, don't refuse", ruling 2026-10-24). That is the
-    count rule's own, and under intent=count it stands. But a located count
-    bound through the attribute intent must be confirmed by a counting source
-    wherever the clause is read (ruling 2026-10-30): "PTAC units in each unit
-    on the first floor: 1." is the filed set's figure alone - the owner's set
-    has symbols there and no uniform per-apartment figure (1A holds two) -
-    so it is true of one set and not confirmed by the other."""
+    The count rule says so itself since ruling 150 (glyph_values ->
+    _located_but_silent); #933 asked it of a located count bound through the
+    attribute intent (ruling 2026-10-30), and still does, through the same
+    guard."""
     named, bare = _track_claim(clause)
     if named:
         return True
-    books = glyph_books(records)
-    if len(books.tracks) <= 1 or not _apartment_clause(bare, books):
-        return True
-    for b in books.tracks.values():
-        if _book_values(bare, b, zero=True):
-            continue
-        keys, _unknown = _clause_floors(bare, b)
-        for fam, tags in _clause_subjects(bare, b) or []:
-            if any(not keys or _row_floor(r) in keys for r in _resolved(fam, tags)):
-                return False
-    return True
+    return not _located_but_silent(bare, glyph_books(records))
 
 
 def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
