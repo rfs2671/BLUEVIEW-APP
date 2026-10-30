@@ -4445,8 +4445,10 @@ def _located_in_scope(bare: str, b: GlyphBook) -> bool:
     """Did this track locate (resolve) the clause's symbols at the scope the
     clause names - the floors it names, the units it names (a unit the track
     does not number is no scope of its), else the building?"""
-    keys, _unknown = _clause_floors(bare, b)
+    keys, unknown = _clause_floors(bare, b)
     units, _uu = _clause_units(bare, b)
+    if unknown and not keys:
+        return False        # a floor this track does not draw is no scope of its
     for fam, tags in _clause_subjects(bare, b) or []:
         for r in _resolved(fam, tags):
             if units:
@@ -4465,11 +4467,16 @@ def _known_counts_differ(bare: str, b: GlyphBook, figure: set) -> bool:
     refused, a duplex unlinked) is no count: that is a track saying nothing,
     not a track saying something else."""
     keys, _unknown = _clause_floors(bare, b)
+    units, _uu = _clause_units(bare, b)
     floors = keys or {k for k, us in b.units.items() if us}
     for fam, tags in _clause_subjects(bare, b) or []:
         for k in floors:
             counts = _unit_counts(b, fam, tags, k)
-            if counts and any(str(n) not in figure for n in counts.values()):
+            if not counts:
+                continue
+            # a clause naming units is read at those units only
+            vals = [n for u, n in counts.items() if not units or u in units]
+            if any(str(n) not in figure for n in vals):
                 return True
     return False
 

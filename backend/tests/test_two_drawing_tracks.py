@@ -486,6 +486,13 @@ class PerApartment(unittest.TestCase):
         recs = _world()
         self.assertTrue(_ok("Each unit on the second floor has 1 PTAC unit.", recs))
 
+    def test_a_unit_clause_is_read_at_its_own_units_only(self):
+        """The filed set cannot state 2A's count (2C unplaced); the owner's
+        first floor has 1A = 2. A clause about 2A is not stopped by 1A."""
+        _present()
+        recs = _world()
+        self.assertTrue(_ok("PTAC-1 units in 2A: 1.", recs))
+
     def test_a_set_the_project_does_not_have_names_nothing(self):
         _present()
         recs = _world(owner=False)
