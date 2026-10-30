@@ -4230,15 +4230,27 @@ def _plural_integer_phrases(clause: str) -> List[Tuple[str, List[str]]]:
         noun - a singular tag ("PTAC-1: 9000", "EF-1: 50") or a thing
         ("occupancy load: 10") is a value's;
       - a magnitude word (ASKING_WORDS: "heights: 9") is a measurement's."""
+    got = _bare_integer_subject(clause)
+    if got is None or not _plural_noun(got[1][-1]):
+        return []
+    return [got]
+
+
+def _bare_integer_subject(clause: str) -> Optional[Tuple[str, List[str]]]:
+    """(the bare integer, the first run of words before it up to the first stop
+    word) for a clause that puts ONE bare integer last and says nothing more,
+    or None: the shape _plural_integer_phrases and _mark_integer_phrases share.
+    A decimal, a value with a unit of measure (_UNIT_VALUE), a word after the
+    integer, or a magnitude word (ASKING_WORDS) in the run is none of it."""
     c = clause or ""
     vals = list(_VALUE_RE.finditer(c))
     if not vals or any("." in m.group(0).rstrip(".") for m in vals):
-        return []
+        return None
     if any(_UNIT_VALUE.match(c, m.start()) for m in vals):
-        return []
+        return None
     last = vals[-1]
     if re.search(r"[A-Za-z0-9]", c[last.end():]):
-        return []
+        return None
     lead = c[vals[-2].end():last.start()] if len(vals) > 1 else c[:last.start()]
     run: List[str] = []
     for w in _PHRASE_WORD.findall(lead):
@@ -4247,11 +4259,54 @@ def _plural_integer_phrases(clause: str) -> List[Tuple[str, List[str]]]:
                 break
             continue
         run.append(w)
-    if not run or not _plural_noun(run[-1]):
-        return []
+    if not run:
+        return None
     if any(w.lower() in ASKING_WORDS or _stem(w) in ASKING_WORDS for w in run):
+        return None
+    return last.group(0).rstrip("."), run
+
+
+def _located_tags(records: Sequence[Dict[str, Any]]) -> set:
+    """The tags of every family the count rule COUNTS from located symbols or
+    a door / window book (the glyph and opening books), upper-cased: the marks
+    a bare integer after them can be a count of. A pump or a fan schedule's
+    mark (HWRP-1) is not in it: an integer after one is a value's (13 GPM)."""
+    out: set = set()
+    books = glyph_books(records)
+    obooks = opening_books(records)
+    for b in [books.totals, *books.tracks.values(), *obooks.tracks.values()]:
+        if b is None:
+            continue
+        for fam in b.families.values():
+            out.update(str(t).upper() for t in fam.tags or [])
+    return out
+
+
+def _mark_integer_phrases(clause: str) -> List[Tuple[str, List[str]]]:
+    """(number, the words it numbers) for a clause that puts a bare integer
+    AFTER a singular MARK and says nothing more: "D1: 3.", "W2 in the filed
+    set: 5", "D1 on the first floor 3." - the mirror of _plural_integer_phrases
+    for a tag, which is what a count of the tag reads like (ruling 151).
+    The subject run ends in a mark (a word with a letter and a digit); a value
+    with a unit or a dimension ("PTAC-1: 9000 BTUH", "EF-1: 50 CFM", "W1:
+    5'-0"") is not a bare integer (_bare_integer_subject)."""
+    got = _bare_integer_subject(clause)
+    if got is None:
         return []
-    return [(last.group(0).rstrip("."), run)]
+    run = list(got[1])
+    # "W2 per the owner's set: 6.": a set phrase's linking word ("per") is
+    # not a stop word, so it closes the run after the mark - it is dropped,
+    # never counted as the subject.
+    while run and run[-1].lower() in _MARK_LINK_WORDS:
+        run.pop()
+    if not run or not _is_mark(run[-1]):
+        return []
+    return [(got[0], run)]
+
+
+#: Words that link a mark to the set or scope it is stated of ("W2 per the
+#: owner's set: 6.") and may follow the mark in _bare_integer_subject's run.
+_MARK_LINK_WORDS = frozenset({"per", "for", "across"})
 
 
 def states_a_count(clause: str) -> bool:
@@ -4264,6 +4319,12 @@ def states_a_plural_integer(clause: str) -> bool:
     """Ruling 123: does the clause put a bare integer after a plural noun
     phrase and say nothing more (_plural_integer_phrases)?"""
     return bool(_plural_integer_phrases(clause))
+
+
+def states_a_mark_integer(clause: str) -> bool:
+    """Ruling 151: does the clause put a bare integer after a singular mark
+    and say nothing more (_mark_integer_phrases)?"""
+    return bool(_mark_integer_phrases(clause))
 
 
 # ── A FAMILY'S COUNT IS THE COUNT RULE'S, UNDER EVERY INTENT ──────────────
@@ -4447,6 +4508,24 @@ def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
                 if ok:
                     route, decided = True, (ok, refused)
                 else:
+                    bad += refused
+            # RULING 151 (Roy, 2026-10-30, on the 156 wrong or unconfirmed of
+            # the 168 "D1: 3." / "W2: 5." claims that bound): "<singular mark>
+            # [scope] [set]: <bare integer>" under attribute is a count's
+            # shape too, and a REFUSAL ONLY. The identifier-less door and
+            # window schedules make every cell its own part named by the
+            # header ("W1 NUMBER | W2 NUMBER"), so a stray digit in an OCR'd
+            # dimension fragment "named" W1 and the value path bound it. The
+            # count rule's refusal is added to `bad`; the clause is never
+            # blanked and never bound on the count rule alone - when the count
+            # rule says ok (and every track states it) the value path decides
+            # exactly as before.
+            elif (not route and every and states_a_mark_integer(clause)
+                  and _mark_integer_phrases(clause)[0][1][-1].upper() in _located_tags(records)):
+                ok, refused = _count_answer_is_bound(source[c0:c1], records)
+                if ok and not _every_track_states_it(source[c0:c1], records):
+                    ok, refused = False, [n for n, _w in _mark_integer_phrases(clause)]
+                if not ok:
                     bad += refused
         if route:
             bad += (decided or _count_answer_is_bound(source[c0:c1], records))[1]
