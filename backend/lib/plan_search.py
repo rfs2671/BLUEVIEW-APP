@@ -49,6 +49,7 @@ from typing import (Any, Collection, Dict, Iterable, List, NamedTuple,
 from lib import plan_areas as _areas
 from lib import plan_dimensions as _dims
 from lib import plan_floor_to_floor as _f2f
+from lib import plan_sources as _PS
 from lib.plan_records import TIER_ORDER, column_role, tier_rank
 from lib.plan_text import SHEET_ID_RE
 
@@ -2245,6 +2246,10 @@ def strip_source_citations(text: str, records: Sequence[Dict[str, Any]],
                            sources: Iterable[Dict[str, Any]] = ()) -> str:
     """`text` with every set label said as its set's phrase and every file
     name removed: what the gate reads figures from."""
+    # A SHEET THAT BORROWED ITS NUMBER IS TAGGED where it is cited (ruling
+    # 136): 'A-105.01 (gas-change set, unnumbered) "Roof Plan"'. The tag and
+    # the printed title are where the sheet comes from, never a figure.
+    text = _PS.without_tags(text)
     names, labels = source_citations(records, sources)
     for lab, tr in labels:
         text = re.sub(_ALNUM_BEFORE + re.escape(lab) + _ALNUM_AFTER, " " + _SET_PLAIN[tr] + " ",
@@ -4863,8 +4868,15 @@ def not_found_text(closest_sheet: str = "") -> str:
             else NOT_FOUND)
 
 
+def _sources_by_file(sources: Any) -> Dict[str, Dict[str, Any]]:
+    """{file_id: plan_sources.source_of row} from a dict of them or a list."""
+    if isinstance(sources, dict):
+        return {str(k): v for k, v in sources.items() if isinstance(v, dict)}
+    return {str(s.get("file_id")): s for s in sources or [] if isinstance(s, dict) and s.get("file_id")}
+
+
 def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
-                   limit: int = 3) -> str:
+                   limit: int = 3, sources: Any = None) -> str:
     """What the records say, and nothing else. The fallback when the gate
     refuses a composed answer, and the only renderer that exists.
 
@@ -4907,7 +4919,7 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
                     for r in everything if _f2f.is_level_record(r))
         if alone:
             return "\n".join(said)
-        rest = render_records(records, subject, limit) if records else ""
+        rest = render_records(records, subject, limit, sources) if records else ""
         return "\n".join(said + ([rest] if rest and rest != NOT_FOUND else []))
     if terms:
         records = [r for r in records if not matched_only_through_label(r, terms)]
@@ -4922,6 +4934,7 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
         # the sheets.
         return NOT_FOUND
     lines: List[str] = []
+    by_file = _sources_by_file(sources)
     for r in records[:limit]:
         where = cite(r)
         if not where:
@@ -4929,6 +4942,9 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
         quote = re.sub(r"\s+", " ", r.get("quote") or "").strip()
         if not quote:
             continue
+        # A sheet number a replacing page borrowed is said so (ruling 136).
+        if (r.get("sheet_number") or "").strip():
+            where = _PS.tag_sheet(where, by_file.get(str(r.get("file_id") or "")), r.get("page_number"))
         # A note collapsed across sheets says so. The crew asked what the
         # drawings say; "on six sheets" is part of the answer, and hiding the
         # merge would make one stamping look like the only one.
