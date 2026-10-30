@@ -4089,6 +4089,19 @@ def _scalars(v: Any) -> List[str]:
     return out
 
 
+_HEADER_TAG = re.compile(r"(?<![A-Za-z0-9])(?<!NO\. )(?<!NO )(?:[A-Za-z]{1,5}-?\d{1,2}|(?<=NUMBER )[A-G]|(?<=TYPE )[A-G])(?![A-Za-z0-9])")
+
+
+def _header_tags(header: str) -> List[str]:
+    """The tags a column header prints: marks (W1, D2, EF-1) and a lettered
+    type after NUMBER / TYPE (door type A)."""
+    return sorted({m.group(0).upper() for m in _HEADER_TAG.finditer(str(header or ""))})
+
+
+def _strip_header_tags(header: str) -> str:
+    return re.sub(r"\s+", " ", _HEADER_TAG.sub(" ", str(header or ""))).strip()
+
+
 def value_parts(record: Dict[str, Any]) -> List[Tuple[List[str], str]]:
     """(the texts a value may be read from, the text that names what they
     are), part by part. The value texts are what `_supported_values` and
@@ -4113,12 +4126,32 @@ def value_parts(record: Dict[str, Any]) -> List[Tuple[List[str], str]]:
         if k not in ("rows", "columns"):
             whole += _scalars(v)
     parts: List[Tuple[List[str], str]] = [(whole, grid)]
+    # RULING 154 (interim): a schedule with NO identifier column and TWO OR MORE
+    # TAGS in its headers (A-400.00's W1/W2/W3, D1/D2, door types A-G) names every
+    # cell by every tag (a grid that prints one tag - a pump's SYMBOL WBP-1 over
+    # its GPM and HP - is about that one thing, and is left as it was), so a stray digit under W3 bound as "W1: 3". A cell is named by
+    # the tag of its OWN column only; the grid as a whole, and a cell whose
+    # column carries no tag (or several), is named by none. Refusals only: a
+    # naming loses words, it gains none.
+    any_tag, own, neutral = False, [], grid
+    if not ident:
+        col_tags = [_header_tags(h) for h in headers]
+        any_tag = len({t for ts in col_tags for t in ts}) >= 2
+        if any_tag:
+            strip = lambda t: _strip_header_tags(t)
+            neutral = " | ".join([str(payload.get("name") or "")] + [strip(h) for h in headers]
+                                 + [str(t) for t in (record.get("subject_terms") or [])])
+            own = [(" ".join(t) if len(t) == 1 else "") for t in col_tags]
+            parts = [(whole, neutral)]
     for row in rows:
         if not isinstance(row, list) or not row:
             continue
         cells = [str(c if c is not None else "") for c in row]
         if ident:
             parts.append((cells, grid + " | " + " | ".join(cells)))
+        elif any_tag:
+            parts.extend(([c], neutral + (" | " + own[j] if own[j] else "") + " | " + c)
+                         for j, c in enumerate(cells))
         else:
             parts.extend(([c], grid + " | " + c) for c in cells)
     return parts

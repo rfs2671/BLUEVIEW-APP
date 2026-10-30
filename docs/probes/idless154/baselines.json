@@ -1,0 +1,7 @@
+{"recorded": "2026-10-30", "ruling": 154, "pr": 936,
+ "value_grid": {"claims": 186, "main_bound": 156, "branch_bound": 130, "bound_to_refused": 26, "refused_to_bound": 0},
+ "census": {"schedules": 147, "idless": 118, "idless_tagged": 12, "idless_two_plus_tags": 6,
+   "count_shaped_bound_main_to_branch": {"A-400 WINDOW": [4, 4], "A-400 INTERIOR DOOR": [56, 34], "A-400 EXTERIOR DOOR": [0, 0], "A-500 wall types": [104, 76], "A-500 partition types": [196, 106]}},
+ "census_flips_via_count_rule": {"flipped": 140, "routed_to_count_rule": 0, "bound_by_count_rule": 0},
+ "untagged_through_multi_tag_grids": {"bound": 90, "all_tagged_candidates_agree": 67, "tags_print_different_values": 23, "exactly_one_printing_cell": 50},
+ "attribute_grid_79821": {"main": 1326, "branch": 1326, "flips": 0}}
