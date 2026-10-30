@@ -4,3 +4,6 @@ Step-3 rule for the record (NOT built): an untagged claim through a multi-tag ID
 No blank-header-column adjacency attribution (Roy): geometry span only, step 3.
 
 Step 3 (branch fix/idless-untagged-claim-all-agree): an untagged claim in a multi-tag ID-less grid binds only if every candidate cell of the family (every tag column and every blank-header column; no adjacency attribution) prints the figure, or the family is one cell. Baselines in baselines.json under "step3"; the 32 refused untagged claims are in step3_untagged_diff.json.
+
+KNOWN LIMITATION (step 3, Roy 2026-10-30): a one-letter type ("type A door ...", door types A-E) is not recognised as naming a tag, because the claim's subject terms drop single letters. Such a claim is treated as untagged (a family claim) and so is held to "every cell agrees". Stricter than intended, refusals only; kept in this PR, to be fixed later. Measured effect: 5 value-grid claims ("type A door INTERIOR STANDARD ...", figures printed under D) flip bound->refused.
+The 68 UL-number refusals on A-500.00 are listed with source cells in step3_ul_refusals.md / .json (none counting-source-confirmed, none a whole printed dimension).
