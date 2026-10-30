@@ -175,6 +175,12 @@ class TheEvidenceSaysAnsweredNotNotDecided(unittest.TestCase):
         self.assertIn("answered not part of the filed set by Roey Fishman", lines[0])
         self.assertIn("applied at the next drawing check", lines[0])
 
+    def test_the_evidence_reads_answered_questions_too(self):
+        import inspect
+        src = inspect.getsource(server._glyph_evidence)
+        self.assertRegex(src, r'"status":\s*\{"\$in":\s*\[_psq\.OPEN,\s*_psq\.ANSWERED\]\}',
+                         "an answer stored after the pass must reach the render")
+
 
 class TheDmPathReadsSetAnswersFirst(unittest.TestCase):
 
