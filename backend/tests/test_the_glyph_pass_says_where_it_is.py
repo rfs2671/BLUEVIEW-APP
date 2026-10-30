@@ -315,9 +315,10 @@ class _Route(unittest.TestCase):
         st.enter_context(patch.object(server, "_r2_client", _R2()))
         st.enter_context(patch("lib.plan_page.PlanPage", lambda path, n: _Page()))
         for n, fn in (("rows", "_write_glyph_records"), ("health", "_write_set_health"),
-                      ("areas", "_write_area_records"), ("walls", "_write_wall_records")):
-            # create=True: on a tree without the walls writer the patch still
-            # applies, and the test fails by its assertion, not at patch time
+                      ("areas", "_write_area_records"), ("walls", "_write_wall_records"),
+                      ("structure", "_write_structural_rows")):
+            # create=True: on a tree without the walls or structure writer the
+            # patch still applies, and the test fails by its assertion
             st.enter_context(patch.object(server, fn, writer(n), create=True))
         return written
 
@@ -391,7 +392,8 @@ class TheStatusSaysWhereARunningPassIs(_Route):
         self.assertIn("walls", written, "the wall rows were never handed to their writer")
         self.assertEqual(after["last_result"]["summary"],
                          {"written": written["rows"], "set_health": written["health"],
-                          "areas_written": written["areas"], "walls_written": written["walls"]})
+                          "areas_written": written["areas"], "walls_written": written["walls"],
+                          "structure_written": written.get("structure")})
         self.assertTrue(after["last_result"]["ended_at"])
         self.assertIsNotNone(after["last_result"]["duration_s"])
         self.assertEqual((after["progress"]["sheets_done"], after["progress"]["sheets_total"]), (11, 11))
@@ -525,7 +527,7 @@ class ABrokenTrackerDoesNotFailTheServerPass(_Route):
             st.enter_context(patch.object(P.log, "info", side_effect=OSError("disk full")))
             asyncio.run(go())
         self.assertEqual(server._GLYPH_PASS_PROGRESS[PID].last_result()["result"], "ok")
-        self.assertEqual(set(written), {"rows", "health", "areas", "walls"})
+        self.assertEqual(set(written), {"rows", "health", "areas", "walls", "structure"})
         self.assertGreater(written["rows"], 0)
 
 
