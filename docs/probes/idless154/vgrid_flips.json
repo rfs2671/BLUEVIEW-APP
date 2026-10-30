@@ -1,0 +1,314 @@
+[
+ {
+  "claim": "W1 APPLY EXPANDABLE: 4'-0\".",
+  "sheet": "A-400.00",
+  "name": "WINDOW SCHEDULE",
+  "cell": [
+   0,
+   2
+  ],
+  "cell_column_header": "W2 NUMBER",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "W1 APPLY EXPANDABLE: 4.",
+  "sheet": "A-400.00",
+  "name": "WINDOW SCHEDULE",
+  "cell": [
+   0,
+   2
+  ],
+  "cell_column_header": "W2 NUMBER",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "W1 APPLY EXPANDABLE: 3'-0\".",
+  "sheet": "A-400.00",
+  "name": "WINDOW SCHEDULE",
+  "cell": [
+   0,
+   4
+  ],
+  "cell_column_header": "W3 NUMBER",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "W1 APPLY EXPANDABLE: 3.",
+  "sheet": "A-400.00",
+  "name": "WINDOW SCHEDULE",
+  "cell": [
+   0,
+   4
+  ],
+  "cell_column_header": "W3 NUMBER",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "W2 APPLY EXPANDABLE: 3'-0\".",
+  "sheet": "A-400.00",
+  "name": "WINDOW SCHEDULE",
+  "cell": [
+   0,
+   4
+  ],
+  "cell_column_header": "W3 NUMBER",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "W2 APPLY EXPANDABLE: 3.",
+  "sheet": "A-400.00",
+  "name": "WINDOW SCHEDULE",
+  "cell": [
+   0,
+   4
+  ],
+  "cell_column_header": "W3 NUMBER",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "W3 APPLY EXPANDABLE: 4'-0\".",
+  "sheet": "A-400.00",
+  "name": "WINDOW SCHEDULE",
+  "cell": [
+   0,
+   2
+  ],
+  "cell_column_header": "W2 NUMBER",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "W3 APPLY EXPANDABLE: 4.",
+  "sheet": "A-400.00",
+  "name": "WINDOW SCHEDULE",
+  "cell": [
+   0,
+   2
+  ],
+  "cell_column_header": "W2 NUMBER",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type B door INTERIOR STANDARD: 2'-10\" X 6'-8\".",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type B door INTERIOR STANDARD: 2.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type B door INTERIOR STANDARD: 10.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type B door INTERIOR STANDARD: 6.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type B door INTERIOR STANDARD: 8.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type C door INTERIOR STANDARD: 2'-10\" X 6'-8\".",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type C door INTERIOR STANDARD: 2.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type C door INTERIOR STANDARD: 10.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type C door INTERIOR STANDARD: 6.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type C door INTERIOR STANDARD: 8.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type E door INTERIOR STANDARD: 2'-10\" X 6'-8\".",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type E door INTERIOR STANDARD: 2.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type E door INTERIOR STANDARD: 10.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type E door INTERIOR STANDARD: 6.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "type E door INTERIOR STANDARD: 8.",
+  "sheet": "A-400.00",
+  "name": "INTERIOR DOOR SCHEDULE",
+  "cell": [
+   8,
+   6
+  ],
+  "cell_column_header": "NUMBER D",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "D2 APPLY EXPANDABLE: 4'-8\".",
+  "sheet": "A-400.00",
+  "name": "EXTERIOR DOOR SCHEDULE",
+  "cell": [
+   0,
+   0
+  ],
+  "cell_column_header": "D1 NUMBER",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "D2 APPLY EXPANDABLE: 1'-4\".",
+  "sheet": "A-400.00",
+  "name": "EXTERIOR DOOR SCHEDULE",
+  "cell": [
+   0,
+   0
+  ],
+  "cell_column_header": "D1 NUMBER",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ },
+ {
+  "claim": "D2 APPLY EXPANDABLE: 1.",
+  "sheet": "A-400.00",
+  "name": "EXTERIOR DOOR SCHEDULE",
+  "cell": [
+   0,
+   0
+  ],
+  "cell_column_header": "D1 NUMBER",
+  "direction": "bound->refused",
+  "reason": "figure printed only under another tag column"
+ }
+]

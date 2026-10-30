@@ -1,0 +1,2485 @@
+{
+ "untagged": [
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 0.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 2.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 2 \".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 2'-6\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 3.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 3'-0\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 4.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W2"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 4'-0\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W2"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 5.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 5 \".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 5'-0\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows APPLY EXPANDABLE: 6.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows INFILTRATION RATE: 0.20.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows INFILTRATION RATE: 0.25.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "windows INFILTRATION RATE: 0.31.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 0.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 2.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 2 \".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 2'-6\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 3.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 3'-0\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 4.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W2"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 4'-0\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W2"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 5.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 5 \".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 5'-0\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window APPLY EXPANDABLE: 6.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window INFILTRATION RATE: 0.20.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window INFILTRATION RATE: 0.25.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "WINDOW SCHEDULE",
+   "claim": "window INFILTRATION RATE: 0.31.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "tags_with_these_words": [
+    "W1",
+    "W2",
+    "W3"
+   ],
+   "n_cells": 3,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "interior doors APPLY EXPANDABLE: 0.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "interior doors APPLY EXPANDABLE: 3.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "interior doors APPLY EXPANDABLE: 3'-0\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "interior doors APPLY EXPANDABLE: 7.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "interior doors INTERIOR STANDARD: 10.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "interior doors INTERIOR STANDARD: 2.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "interior doors INTERIOR STANDARD: 2'-10\" X 6'-8\".",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "interior doors INTERIOR STANDARD: 6.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "interior doors INTERIOR STANDARD: 8.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 0.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 3.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 3'-0\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 7.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "doors INTERIOR STANDARD: 10.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "doors INTERIOR STANDARD: 2.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "doors INTERIOR STANDARD: 2'-10\" X 6'-8\".",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "doors INTERIOR STANDARD: 6.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "doors INTERIOR STANDARD: 8.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 0.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 3.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 3'-0\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 7.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "door INTERIOR STANDARD: 10.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "door INTERIOR STANDARD: 2.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "door INTERIOR STANDARD: 2'-10\" X 6'-8\".",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "door INTERIOR STANDARD: 6.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "INTERIOR DOOR SCHEDULE",
+   "claim": "door INTERIOR STANDARD: 8.",
+   "key": "INTERIOR STANDARD",
+   "tags_printing": [
+    "D"
+   ],
+   "tags_with_these_words": [
+    "D"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "exterior doors APPLY EXPANDABLE: 0.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "exterior doors APPLY EXPANDABLE: 1.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "exterior doors APPLY EXPANDABLE: 1'-4\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "exterior doors APPLY EXPANDABLE: 3.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "exterior doors APPLY EXPANDABLE: 3'-4\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "exterior doors APPLY EXPANDABLE: 4.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "exterior doors APPLY EXPANDABLE: 4'-8\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "exterior doors APPLY EXPANDABLE: 8.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "exterior doors INFILTRATION RATE: 0.20.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "exterior doors INFILTRATION RATE: 0.36.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "exterior doors INFILTRATION RATE: 0.65.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 0.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 1.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 1'-4\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 3.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 3'-4\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 4.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 4'-8\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "doors APPLY EXPANDABLE: 8.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "doors INFILTRATION RATE: 0.20.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "doors INFILTRATION RATE: 0.36.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "doors INFILTRATION RATE: 0.65.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 0.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 1.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 1'-4\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 3.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 3'-4\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 4.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 4'-8\".",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 1,
+   "all_candidates_agree": false,
+   "exactly_one_candidate": true
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "door APPLY EXPANDABLE: 8.",
+   "key": "APPLY EXPANDABLE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "door INFILTRATION RATE: 0.20.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "door INFILTRATION RATE: 0.36.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  },
+  {
+   "sheet": "A-400.00",
+   "name": "EXTERIOR DOOR SCHEDULE",
+   "claim": "door INFILTRATION RATE: 0.65.",
+   "key": "INFILTRATION RATE",
+   "tags_printing": [
+    "D1",
+    "D2"
+   ],
+   "tags_with_these_words": [
+    "D1",
+    "D2"
+   ],
+   "n_cells": 2,
+   "all_candidates_agree": true,
+   "exactly_one_candidate": false
+  }
+ ],
+ "countrule": [
+  {
+   "sheet": "A-400.00",
+   "claim": "B 10.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "B 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "B 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "B 8.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "B: 10.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "B: 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "B: 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "B: 8.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "C 10.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "C 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "C 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "C 8.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "C: 10.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "C: 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "C: 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "C: 8.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "E 10.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "E 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "E 7.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "E: 10.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "E: 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-400.00",
+   "claim": "E: 7.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W3 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W3: 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W4 12.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W4 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W4 3.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W4 4.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W4 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W4: 12.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W4: 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W4: 3.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W4: 4.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W4: 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W5 12.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W5 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W5 3.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W5 4.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W5 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W5: 12.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W5: 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W5: 3.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W5: 4.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W5: 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W6 4.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W6 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W6 7.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W6: 4.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W6: 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "W6: 7.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 1.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 16.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 20.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 21.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 3.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 31.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 34.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 4.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 5.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1 8.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 1.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 16.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 2.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 20.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 21.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 3.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 31.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 34.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 4.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 5.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P1: 8.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P2 20.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P2 21.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P2 34.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P2 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P2 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P2: 20.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P2: 21.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P2: 34.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P2: 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P2: 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P3 20.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P3 31.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P3 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P3 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P3 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P3: 20.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P3: 31.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P3: 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P3: 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P3: 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4 20.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4 21.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4 3.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4 31.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4 34.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4: 20.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4: 21.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4: 3.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4: 31.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4: 34.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4: 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4: 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P4: 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5 21.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5 3.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5 31.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5 34.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5: 21.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5: 3.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5: 31.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5: 34.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5: 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5: 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P5: 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6 20.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6 21.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6 34.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6: 20.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6: 21.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6: 34.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6: 50.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6: 56.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  },
+  {
+   "sheet": "A-500.00",
+   "claim": "P6: 6.",
+   "routed_to_count_rule": false,
+   "count_rule_refusals": [],
+   "bound_by_count_rule": false
+  }
+ ]
+}
