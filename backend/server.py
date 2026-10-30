@@ -60194,6 +60194,7 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
                                     path=log[3] if log else "headcount")
         reply = _dm_no_negative_claims(reply, log[4] if log and len(log) > 4 else None,
                                        ident=log[0] if log else None)
+        reply = await _dm_set_answer_claims(reply, log[0] if log else None)
     repeated = None
     if reply:
         asked = question if question is not None else (log[2] if log else "")
@@ -61474,6 +61475,7 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
     if out.get("reply"):
         out["reply"] = dm_brain.redact_phones(out["reply"])
         out["reply"] = _dm_no_negative_claims(out["reply"], out.get("trace"), ident)
+        out["reply"] = await _dm_set_answer_claims(out["reply"], ident)
     # Where on the sheets the answer came from: sent after the words
     # (_dm_brain_reply); the eval only records it.
     out["plan_shots"] = _dm_plan_shots(ctx, out)
@@ -65710,6 +65712,105 @@ async def _handle_set_question_reply(chat_id: str, code: str, answer: str) -> bo
     return True
 
 
+async def _handle_set_question_message(chat_id: str, body: Any) -> bool:
+    """Every drawing-set answer in one WhatsApp message, read line by line
+    (psq.split_reply), BEFORE the assistant (10-29: "Gas change govern since
+    it was latest.\\nQ1 no" and "Q2 it's the final roof plan ..." both went
+    to the assistant, which said "Q1 logged" without reading the store).
+    - "Qn YES" / "Qn NO": recorded as _handle_set_question_reply records it;
+      a question already answered gets its stored state (psq.status_text).
+    - "Qn <words>": kept as a note on the question and answered with how to
+      record it (psq.confirm_text) - nothing is recorded from free words.
+    - lines with no code ride along as a note on the questions the message
+      named.
+    Only questions asked of THIS person, who is still a PM on record. True
+    when any line named one: the message is handled here."""
+    from lib import plan_set_questions as psq
+    answers, free, rest = psq.split_reply(body)
+    if not answers and not free:
+        return False
+    optin = await _active_optin_for_phone(wa_dm.phone_digits(chat_id))
+    if not optin or not optin.get("user_id"):
+        return False
+    uid = str(optin["user_id"])
+    codes = sorted({c for c, _a in answers} | {c for c, _t in free})
+    found: Dict[str, List[dict]] = {}
+    for q in await db[psq.COLLECTION].find({"code": {"$in": codes},
+                                             "asked_user_ids": uid}).to_list(20):
+        found.setdefault(str(q.get("code")), []).append(q)
+    mine = {c: qs[0] for c, qs in found.items() if len(qs) == 1}
+    now = datetime.now(timezone.utc)
+    named: Dict[str, dict] = {}
+    for code, answer in answers:
+        q = mine.get(code)
+        if q is None:
+            continue
+        named[str(q["_id"])] = q
+        if q.get("status") == psq.OPEN and await _handle_set_question_reply(chat_id, code, answer):
+            continue
+        q = await db[psq.COLLECTION].find_one({"_id": q["_id"]}) or q
+        await send_whatsapp_message(chat_id, psq.status_text(q))
+    for code, text in free:
+        q = mine.get(code)
+        if q is None:
+            continue
+        named[str(q["_id"])] = q
+        if q.get("status") != psq.OPEN:
+            await send_whatsapp_message(chat_id, psq.status_text(q))
+            continue
+        await send_whatsapp_message(chat_id, psq.confirm_text(q))
+    if not named:
+        return False
+    # The words themselves are kept for the office, on each question named,
+    # from a PM still on record for its project.
+    words = "\n".join([t for _c, t in free] + ([rest] if rest else []))
+    for qid, q in named.items():
+        if not words:
+            break
+        _proj, pms = await _set_question_people(str(q.get("project_id")))
+        if not any(str(u.get("_id")) == uid for u in pms):
+            _security_event("plan_set_note_refused", user_id=uid,
+                            project_id=str(q.get("project_id")), reason="not_pm_on_record")
+            continue
+        await db[psq.COLLECTION].update_one(
+            {"_id": qid}, {"$push": {"notes": {"text": words[:2000], "at": now,
+                                                "user_id": uid, "via": "whatsapp"}}})
+        await audit_log("plan_set_question_note", uid, "plan_set_question", qid,
+                        {"project_id": str(q.get("project_id")), "code": q.get("code")})
+    return True
+
+
+async def _dm_set_answer_claims(reply: Any, ident: Optional[dict] = None) -> Any:
+    """NEVER "RECORDED" UNLESS THE STORE SAYS SO (10-29, 21:23: "Q1 logged as
+    no" - said without reading the store): each outgoing sentence saying a
+    drawing-set answer was logged / recorded / saved becomes the store's own
+    words for that question (psq.rewrite_recorded_claims), read for this
+    sender's projects. A store that cannot be read confirms nothing."""
+    from lib import plan_set_questions as psq
+    if not isinstance(reply, str):
+        return reply
+    claims = psq.recorded_claims(reply)
+    if not claims:
+        return reply
+    stored: Dict[str, dict] = {}
+    try:
+        projects = [str((p.get("_id") or p.get("id")) if isinstance(p, dict) else p)
+                    for p in ((ident or {}).get("projects") or [])]
+        if projects:
+            for q in await db[psq.COLLECTION].find(
+                    {"code": {"$in": sorted({c for _s, c in claims})},
+                     "project_id": {"$in": projects}}).to_list(20):
+                stored.setdefault(str(q.get("code")), q)
+    except Exception as e:
+        logger.warning(f"[dm-gate] set questions unreadable: {type(e).__name__}")
+        stored = {}
+    out, n = psq.rewrite_recorded_claims(reply, stored)
+    if n:
+        logger.info(f"[dm-gate] set-answer claim rewritten "
+                    f"company={(ident or {}).get('company_id') or '?'} n={n}")
+    return out
+
+
 def _glyph_set_health(tracks: List[Tuple[str, List[dict]]], rows: List[dict],
                       schedules: List[dict], sweeps: Dict[Any, Any],
                       open_page=None) -> List[dict]:
@@ -69314,8 +69415,10 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
     if owant:
         try:
             from lib import plan_set_questions as _psq
+            # ANSWERED ones too: an answer recorded after the pass is stated as
+            # recorded-not-yet-applied, never as "not decided" (10-29).
             health += [dict(q, record_type="set_question") for q in await db[_psq.COLLECTION].find(
-                {"project_id": pid, "status": _psq.OPEN}).to_list(200)]
+                {"project_id": pid, "status": {"$in": [_psq.OPEN, _psq.ANSWERED]}}).to_list(200)]
         except Exception as e:
             logger.warning("plan set questions unreadable for %s: %r", pid, e)
     if not want and not owant:
@@ -78483,11 +78586,11 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
             if answer and await _handle_gc_confirm_reply(dm_chat, answer):
                 return
             # "Q1 YES" / "Q1 NO" to a drawing-set question Levelog asked this
-            # person (ruling 21). The code is required: a bare "yes" is the
+            # person (ruling 21), on any line of the message, and "Q2 <words>"
+            # as an answer to confirm - read BEFORE the assistant, which never
+            # sees them (10-29). The code is required: a bare "yes" is the
             # assistant's, which confirms its own pending change.
-            from lib import plan_set_questions as _psq
-            set_reply = _psq.parse_reply(parsed.get("body"))
-            if set_reply and await _handle_set_question_reply(dm_chat, *set_reply):
+            if await _handle_set_question_message(dm_chat, parsed.get("body")):
                 return
 
         # ── LEVELOG ASSISTANT IN A DM ─────────────────────────────────────

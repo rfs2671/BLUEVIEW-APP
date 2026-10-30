@@ -3640,6 +3640,20 @@ def render_set_questions(records: Sequence[Dict[str, Any]], books: GlyphBooks) -
         for q, short in sorted((b.questions or {}).items()):
             s = stored.get(q) or {}
             asked = [a for a in s.get("asked") or [] if a.get("sent")]
+            if s.get("status") == "answered":
+                # Recorded after this pass: the rows still read it as open,
+                # so the figures stay two readings until the next pass (10-29:
+                # "not decided" was said of Q1 while its answer was stored).
+                said = "part of" if s.get("answer") == "include" else "not part of"
+                out.append(f"- {s.get('code') + ': ' if s.get('code') else ''}"
+                           f"{s.get('label') or short} - answered {said} "
+                           f"{books.labels.get(t) or 'the set'} by "
+                           f"{s.get('answered_by_name') or 'the PM'} "
+                           f"({s.get('answered_via') or 'WhatsApp'}, "
+                           f"{str(s.get('answered_at') or '')[:10]}); it is applied at the next "
+                           f"drawing check, so until then every figure that depends on it is "
+                           f"still stated with its reading and never alone.")
+                continue
             if asked:
                 who = ", ".join(f"{a.get('name') or 'the PM'} ({a.get('channel') or 'WhatsApp'}, "
                                 f"{str(a.get('at') or '')[:10]})" for a in asked)
