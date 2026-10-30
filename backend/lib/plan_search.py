@@ -4251,11 +4251,14 @@ def _count_families(records: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
     return {n: sorted(t) for n, t in fams.items() if n}
 
 
-def _names_a_family(words: Sequence[str], fams: Dict[str, List[str]]) -> bool:
+def _names_a_family(words: Sequence[str], fams: Optional[Dict[str, List[str]]]) -> bool:
     """Is the phrase's plural head one of a family's words, or is a tag of
-    the family named beside a plural head?"""
+    the family named beside a plural head? `fams` None: the families are not
+    known (their read failed), so every plural head may name one."""
     if not words or not _is_plural(words[-1]):
         return False
+    if fams is None:
+        return True
     head = _stem(words[-1])
     # A generic head ("PTAC units", "door types") is named by the words before it.
     heads = {head} | ({_stem(w) for w in words[:-1]} if head in _GENERIC_FAMILY_WORDS else set())
@@ -4266,13 +4269,18 @@ def _names_a_family(words: Sequence[str], fams: Dict[str, List[str]]) -> bool:
     return False
 
 
+#: The reason a count is refused when the project's families could not be
+#: read (ruling 83): it is carried on every figure so refused.
+FAMILIES_UNREAD = "the project's families could not be read"
+
 _PHRASE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*")
 
 
-def states_a_family_count(clause: str, fams: Dict[str, List[str]]) -> bool:
+def states_a_family_count(clause: str, fams: Optional[Dict[str, List[str]]]) -> bool:
     """Ruling 51: does the clause (dimensions and set names blanked) state a
     bare integer of a family the records know - its plural before the
-    integer, or after it - or a bare integer of a mark?"""
+    integer, or after it - or a bare integer of a mark? `fams` None: any
+    plural (the families' read failed - see FAMILIES_UNREAD)."""
     c = clause or ""
     vals = list(_VALUE_RE.finditer(c))
     if not vals or any("." in m.group(0).rstrip(".") for m in vals):
@@ -4289,12 +4297,16 @@ def states_a_family_count(clause: str, fams: Dict[str, List[str]]) -> bool:
 
 
 def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
-                  families: Optional[Dict[str, Sequence[str]]] = None
+                  families: Optional[Dict[str, Sequence[str]]] = None,
+                  families_unread: Optional[str] = None
                   ) -> Tuple[str, List[str]]:
     """(the text with every count clause blanked, what the count rule refuses
     in them). `every`: route every count-shaped clause (intent=attribute,
     ruling 50); else only a family's or a mark's (ruling 51). A clause with a
-    dimension, or an area clause with area rows in hand, is left as before."""
+    dimension, or an area clause with area rows in hand, is left as before.
+    `families_unread` (why the project's families could not be read): every
+    clause that any family could make a count is refused, with that reason -
+    never decided on the families in hand (ruling 83)."""
     source = _areas.join_thousands(text or "")
     masked = _dims.mask_quotation_marks(source)
     hold = list(masked)
@@ -4313,6 +4325,18 @@ def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
         if has_areas and _areas.is_area_clause(bare):
             continue
         clause = _strip_citations(bare, citations)
+        # A FAILED FAMILY READ REFUSES THE COUNT (ruling 83, Roy 2026-10-29:
+        # "a failed family read refuses the count"). Without the project's
+        # families no one can say which plurals name one, so every clause
+        # that ANY family could make a count is refused - with the reason -
+        # and the families of the records in hand are not consulted: falling
+        # back to them is the gap ruling 51 closed.
+        if families_unread is not None:
+            if states_a_count(clause) or states_a_family_count(clause, None):
+                bad += [f"{v} ({FAMILIES_UNREAD}: {families_unread})"
+                        for v in _values(_strip_citations(bare, citations))]
+                out[c0:c1] = " " * (c1 - c0)
+            continue
         route = every and states_a_count(clause)
         if not route:
             if fams is None:
@@ -4562,7 +4586,8 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
                        intent: str = "",
                        aliases: Optional[Dict[str, Dict[str, List[str]]]] = None,
                        sources: Iterable[Dict[str, Any]] = (),
-                       families: Optional[Dict[str, Sequence[str]]] = None
+                       families: Optional[Dict[str, Sequence[str]]] = None,
+                       families_unread: Optional[str] = None
                        ) -> Tuple[bool, List[str]]:
     """(ok, the numbers nothing returned can vouch for).
 
@@ -4633,7 +4658,11 @@ def _answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
 
     `families` (server.plan_count_families): the project's countable families,
     name -> tags, so a plural names its family whatever the search returned
-    (ruling 51); the records' own families count without it."""
+    (ruling 51); the records' own families count without it.
+
+    `families_unread` (why that read failed): every clause any family could
+    make a count is refused with the reason, under every intent but count -
+    never decided on the families in hand (ruling 83)."""
     text = strip_source_citations(text or "", records, sources)
     it = (intent or "").strip().lower()
     # A COUNT CLAUSE IS DECIDED BY THE COUNT RULE, from its counting sources,
@@ -4642,7 +4671,7 @@ def _answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
     routed: List[str] = []
     if it != "count":
         text, routed = _route_counts(text, records, every=(it == "attribute"),
-                                     families=families)
+                                     families=families, families_unread=families_unread)
     # AN ATTRIBUTE BINDS TO THE SUBJECT ITS RECORD NAMES (ruling 2026-10-27,
     # _attribute_answer_is_bound). `aliases`: file_id -> that file's own
     # abbreviations table (abbreviation_table), the alternative names.
