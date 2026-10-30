@@ -14,7 +14,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict, EmailStr
+from pydantic import BaseModel, Field, ConfigDict, EmailStr, model_validator
 from typing import List, Literal, NamedTuple, Optional, Dict, Any, Tuple
 from enum import Enum
 import itertools
@@ -65219,7 +65219,8 @@ async def _opening_schedules(pid: str, page_ids: List[str]) -> List[dict]:
 
 
 def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
-                       live: set) -> List[Tuple[str, List[dict]]]:
+                       live: set, decisions: Optional[List[dict]] = None,
+                       notes: Optional[List[dict]] = None) -> List[Tuple[str, List[dict]]]:
     """[(drawing track, its current index rows)], the filed track first.
 
     NEWEST PAGE PER TRACK; SUPERSESSION ONLY WITHIN A TRACK (ruling
@@ -65234,8 +65235,17 @@ def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
     non-filed track is its own architectural plans and the filed track's
     mechanical plans they pair with (plan_derive.PLAN_SHEET, by number), so
     each mechanical symbol is placed once per track that has a plan for its
-    floor, and a floor the track does not redraw is not run twice."""
+    floor, and a floor the track does not redraw is not run twice.
+
+    THE OFFICE'S ANSWERS TO THE DRAWING-SET QUESTIONS (ruling 21,
+    lib.plan_set_questions.apply_decisions) shape each track's pages HERE,
+    before anything reads them, so the rows, areas, walls, stacks, set health
+    and the questions all follow: an excluded page is left out; a replaced
+    page leaves and its replacing page - which may be a page the supersession
+    above dropped - takes its place. `decisions` are the answered questions;
+    `notes`, when given, is filled with what became of each."""
     from lib import plan_derive as _derive
+    from lib import plan_set_questions as _psq
 
     track_of = {fid: (f.get("drawing_track") or "filed") for fid, f in files.items()}
     by_track: Dict[str, List[dict]] = {}
@@ -65249,6 +65259,16 @@ def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
         losers = _supersession_winners(
             rows, [dict(files[f], _id=f) for f in fids if f in files])
         current[t] = [r for r in rows if r["_id"] not in losers]
+    decisions = [d for d in decisions or () if d.get("answer") in (_psq.EXCLUDE, _psq.REPLACES)]
+    if decisions:
+        current, got = _psq.apply_decisions(
+            current, [p for p in raw if str(p.get("file_id")) in live], decisions)
+        for n in got:
+            if not n["applied"]:
+                logger.warning("drawing-set answer %s (%s) NOT applied: %s",
+                               n.get("code") or n["id"], n["answer"], "; ".join(n["detail"]))
+        if notes is not None:
+            notes += got
 
     def plan(p, letter):
         m = _derive.PLAN_SHEET.match(str(p.get("sheet_number") or "").strip().upper())
@@ -65262,8 +65282,9 @@ def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
     return out
 
 
-async def _glyph_pages(pid: str) -> Tuple[List[Tuple[str, List[dict]]], Dict[str, dict]]:
-    """Each track's current index rows (_glyph_track_pages), and the files."""
+async def _glyph_inputs(pid: str) -> Tuple[List[dict], Dict[str, dict], set]:
+    """(the project's index rows, its files, the live file ids) - what
+    _glyph_track_pages splits into tracks."""
     live = set(await _live_plan_file_ids(pid) or [])
     raw = await db.document_page_index.find(
         {"project_id": pid},
@@ -65276,7 +65297,30 @@ async def _glyph_pages(pid: str) -> Tuple[List[Tuple[str, List[dict]]], Dict[str
         {"project_id": pid, "is_deleted": {"$ne": True}},
         {"r2_key": 1, "name": 1, "created_at": 1, "drawing_track": 1,
          "drawing_track_label": 1}).to_list(2000)}
-    return _glyph_track_pages(raw, files, live), files
+    return raw, files, live
+
+
+async def _set_decisions(pid: str) -> List[dict]:
+    """The answered drawing-set questions that shape a track's pages: the
+    excluded and the replaced (an include changes no page list). Unreadable:
+    none are applied, and it is logged - every question reads as open."""
+    from lib import plan_set_questions as psq
+    try:
+        return await db[psq.COLLECTION].find(
+            {"project_id": str(pid), "status": psq.ANSWERED,
+             "answer": {"$in": [psq.EXCLUDE, psq.REPLACES]}}).to_list(500)
+    except Exception as e:
+        logger.warning("plan set decisions unreadable for %s: %r", pid, e)
+        return []
+
+
+async def _glyph_pages(pid: str) -> Tuple[List[Tuple[str, List[dict]]], Dict[str, dict]]:
+    """Each track's current index rows (_glyph_track_pages), with the office's
+    answers to the drawing-set questions applied (_set_decisions), and the
+    files. The pass, the census scope and the per-track reads all come
+    through here, so they read the same pages."""
+    raw, files, live = await _glyph_inputs(pid)
+    return _glyph_track_pages(raw, files, live, await _set_decisions(pid)), files
 
 
 async def _glyph_page_ids(pid: str) -> List[str]:
@@ -65350,6 +65394,10 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         logger.warning("plan set questions unreadable for %s: %r", pid, e)
         set_answers = {}
     tracks, files = await _glyph_pages(pid)
+    # what the stored answers did to the track pages (_glyph_pages applied them):
+    # kept in the result, so a replacement that could not be applied is read
+    # there, not guessed from a count
+    answers_applied = _set_answers_applied(await _set_decisions(pid), tracks)
     by_track: List[Tuple[str, List[dict]]] = []
     door_pages, seen_doors, current_ids = [], set(), set()
     for track, rows_ in tracks:
@@ -65422,7 +65470,7 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         set_questions: List[dict] = []
         areas: List[dict] = []
         walls: List[dict] = []
-        summary: Dict[str, Any] = {"tracks": {}}
+        summary: Dict[str, Any] = {"tracks": {}, "set_answers": answers_applied}
         for track, pages in by_track:
             # (passed only when there is one: a set with no door or window
             # schedule runs exactly the equipment pass it ran before)
@@ -65535,6 +65583,34 @@ async def _set_question_answers(pid: str) -> Dict[str, str]:
     docs = await db[psq.COLLECTION].find(
         {"project_id": str(pid), "status": psq.ANSWERED}).to_list(500)
     return {str(d["_id"]): d["answer"] for d in docs if d.get("answer") in psq.ANSWERS}
+
+
+def _set_answers_applied(decisions: List[dict], tracks: List[Tuple[str, List[dict]]]) -> List[dict]:
+    """One line per stored exclude / replaces answer: whether the pages the
+    pass reads show it applied (a replacing page in its track, the replaced
+    one out; an excluded one out), and what each replacement stands for."""
+    from lib import plan_set_questions as psq
+    by = {t: ps for t, ps in tracks}
+    out = []
+    for d in decisions:
+        pages = by.get(d.get("track") or "filed", [])
+        have = {(str(p.get("file_id")), int(p.get("page_number") or 0)) for p in pages}
+        if d.get("answer") == psq.REPLACES:
+            ok = bool(d.get("replacements")) and all(
+                (str(r.get("file_id")), int(r.get("page_number") or 0)) in have
+                and (str((r.get("replaces") or {}).get("file_id")),
+                     int((r.get("replaces") or {}).get("page_number") or 0)) not in have
+                for r in d.get("replacements") or [])
+            what = [f"{psq.sheet_name(r)} replaces {(r.get('replaces') or {}).get('sheet_number')}"
+                    for r in d.get("replacements") or []]
+        else:
+            ok = not any((str(d.get("file_id")), int(qp.get("page_number") or 0)) in have
+                         for qp in d.get("pages") or []) and bool(d.get("pages"))
+            what = [f"{qp.get('sheet_number') or 'unnumbered'} p{qp.get('page_number')} left out"
+                    for qp in d.get("pages") or []]
+        out.append({"id": str(d.get("_id")), "code": d.get("code"), "answer": d.get("answer"),
+                    "applied": ok, "what": what})
+    return out
 
 
 async def _store_set_questions(pid: str, detected: List[dict], opening_rows: List[dict],
@@ -65659,26 +65735,58 @@ async def _ask_set_questions(pid: str, actor: str) -> dict:
 
 
 async def _record_set_answer(pid: str, qid: str, answer: str, actor: str, *, via: str,
-                             name: Optional[str] = None) -> Optional[dict]:
+                             name: Optional[str] = None,
+                             replacements: Optional[List[dict]] = None) -> Optional[dict]:
     """Record one answer - only to an OPEN question of THIS project, once -
     and audit it. None when there was no such question (answered already,
-    withdrawn, another project's). Applied on the next glyph pass."""
+    withdrawn, another project's). Applied on the next glyph pass.
+
+    REPLACES (Roy, 10-30) is recorded by the office only (via "admin"), with
+    the explicit list [{page_id, replaces: {file_id, page_number,
+    sheet_number}}]: every page is validated against the project's current
+    pages (lib.plan_set_questions.validate_replacements) and anything
+    ambiguous raises ValueError - nothing is inferred, nothing is stored. The
+    stored replacements are the resolved pages (files, titles, the number each
+    is paired as), and are in the audit details."""
     from lib import plan_set_questions as psq
     if answer not in psq.ANSWERS:
         raise ValueError(f"answer must be one of {psq.ANSWERS}")
     pid, qid = str(pid), str(qid)
     coll = db[psq.COLLECTION]
+    fields: Dict[str, Any] = {}
+    if answer == psq.REPLACES:
+        if via != "admin":
+            raise ValueError("a replacement is recorded by the office (the admin route), "
+                             "not by a reply")
+        q = await coll.find_one({"_id": qid, "project_id": pid, "status": psq.OPEN})
+        if not q:
+            return None
+        raw, files, live = await _glyph_inputs(pid)
+        # the question's track as the pass will read it: the OTHER answers applied,
+        # this one not yet
+        tracks = dict(_glyph_track_pages(raw, files, live, await _set_decisions(pid)))
+        resolved, errs = psq.validate_replacements(
+            q, replacements, tracks.get(q.get("track") or "filed", []),
+            [p for p in raw if str(p.get("file_id")) in live])
+        if errs:
+            raise ValueError("; ".join(errs))
+        fields["replacements"] = resolved
+    elif replacements:
+        raise ValueError("replacements belong to the answer 'replaces' only")
     now = datetime.now(timezone.utc)
     res = await coll.update_one(
         {"_id": qid, "project_id": pid, "status": psq.OPEN},
-        {"$set": {"status": psq.ANSWERED, "answer": answer, "answered_by": str(actor),
-                  "answered_by_name": name, "answered_at": now, "answered_via": via}})
+        {"$set": dict({"status": psq.ANSWERED, "answer": answer, "answered_by": str(actor),
+                       "answered_by_name": name, "answered_at": now, "answered_via": via},
+                      **fields)})
     if not getattr(res, "matched_count", 0):
         return None
     doc = await coll.find_one({"_id": qid})
-    await audit_log("plan_set_question_answered", str(actor), "plan_set_question", qid,
-                    {"project_id": pid, "code": (doc or {}).get("code"), "answer": answer,
-                     "via": via, "label": (doc or {}).get("label")})
+    details = {"project_id": pid, "code": (doc or {}).get("code"), "answer": answer,
+               "via": via, "label": (doc or {}).get("label")}
+    if fields:
+        details["replacements"] = fields["replacements"]
+    await audit_log("plan_set_question_answered", str(actor), "plan_set_question", qid, details)
     return doc
 
 
@@ -83214,8 +83322,31 @@ async def _record_glyph_pass_result(pid: str, tracker) -> None:
         logger.warning("plan glyph pass %s: result not recorded: %r", pid, e)
 
 
+class PlanSetReplaced(BaseModel):
+    """The sheet a page stands in for: all three must match ONE current page."""
+    file_id: str
+    page_number: int
+    sheet_number: str
+
+
+class PlanSetReplacement(BaseModel):
+    page_id: str                    # the replacing page (a page of the question's file)
+    replaces: PlanSetReplaced
+
+
 class PlanSetAnswer(BaseModel):
-    answer: Literal["include", "exclude"]
+    answer: Literal["include", "exclude", "replaces"]
+    #: "replaces" only: which page stands in for which sheet - explicit, never inferred
+    replacements: Optional[List[PlanSetReplacement]] = None
+
+    @model_validator(mode="after")
+    def _replacements_only_with_replaces(self):
+        if self.answer == "replaces" and not self.replacements:
+            raise ValueError("answer 'replaces' needs replacements: "
+                             "[{page_id, replaces: {file_id, page_number, sheet_number}}]")
+        if self.answer != "replaces" and self.replacements:
+            raise ValueError("replacements belong to the answer 'replaces' only")
+        return self
 
 
 @api_router.get("/projects/{project_id}/plan-set-questions",
@@ -83247,7 +83378,7 @@ async def list_plan_set_questions(project_id: str, current_user=Depends(get_admi
             "unasked_reason": d.get("unasked_reason"),
             "answer": d.get("answer"), "answered_by": d.get("answered_by"),
             "answered_by_name": d.get("answered_by_name"), "answered_at": d.get("answered_at"),
-            "answered_via": d.get("answered_via"),
+            "answered_via": d.get("answered_via"), "replacements": d.get("replacements"),
             "created_at": d.get("created_at"), "last_seen_at": d.get("last_seen_at")})
     return {"questions": out}
 
@@ -83267,7 +83398,9 @@ async def ask_plan_set_questions(project_id: str, current_user=Depends(get_admin
 async def answer_plan_set_question(project_id: str, question_id: str, body: PlanSetAnswer,
                                    current_user=Depends(get_admin_user)):
     """Record the answer to an open drawing-set question (ruling 21), as the
-    PM gave it: "include" (the pages are part of the set) or "exclude".
+    PM gave it: "include" (the pages are part of the set), "exclude", or
+    "replaces" - the pages stand in place of other sheets of the set, named
+    explicitly in `replacements` (422 if any page does not check out).
     Audit-logged; applied on the next glyph pass.
 
     THE COMPANY ANSWERS, NEVER THE OPERATOR (ruling 33): the company's own
@@ -83279,14 +83412,18 @@ async def answer_plan_set_question(project_id: str, question_id: str, body: Plan
                             detail="the platform operator does not answer a project's "
                                    "drawing-set questions; its PM or company admin does")
     who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
-    doc = await _record_set_answer(str(project_id), question_id, body.answer, who, via="admin",
-                                   name=(current_user or {}).get("full_name")
-                                   or (current_user or {}).get("name"))
+    try:
+        doc = await _record_set_answer(
+            str(project_id), question_id, body.answer, who, via="admin",
+            name=(current_user or {}).get("full_name") or (current_user or {}).get("name"),
+            replacements=[r.model_dump() for r in body.replacements] if body.replacements else None)
+    except ValueError as e:                 # a replacement the pages do not support
+        raise HTTPException(status_code=422, detail=str(e))
     if doc is None:
         raise HTTPException(status_code=409,
                             detail="no open drawing-set question with that id on this project")
     return {"id": str(doc.get("_id")), "status": doc.get("status"), "answer": doc.get("answer"),
-            "applies": "on the next glyph pass"}
+            "replacements": doc.get("replacements"), "applies": "on the next glyph pass"}
 
 
 @api_router.get("/projects/{project_id}/takeoff.xlsx",
