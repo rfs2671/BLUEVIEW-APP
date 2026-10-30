@@ -17,6 +17,10 @@ Roy 2026-10-28; lib.plan_stacks).
     (operator rule 2026-10-26). Same single level in both titles, and the
     series' majority number offset; a sheet that breaks it, or whose title
     names no level or two, refuses.
+  * BELOW SLAB (Roy 2026-10-30, as-built answer 117): a plumbing plan titled
+    UNDERGROUND / BELOW SLAB / UNDER SLAB is no storey. It pairs to the
+    first-floor architectural plan for the registration offset only, and its
+    rows carry level BELOW_SLAB and no apartment.
   * REGISTER: the offset of a decided pair, used only when register()
     accepts it AND no second offset holds half the best peak's anchors.
   * PLACE: a stack in a wall names BOTH sides; the footprint is a circle in
@@ -342,9 +346,9 @@ class PairByTitleLevel(unittest.TestCase):
         two = [p if p["sheet_number"] != "P-202.00"
                else _pg("P-202.00", "FIRST & SECOND FLOOR SANITARY & STORM PLAN") for p in P2]
         got = PS.pair_by_title_level(
-            [_pg("P-200.00", "FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN")] + two, ARCH)
+            [_pg("P-209.00", "SANITARY & STORM PLAN")] + two, ARCH)
         refused = dict((p["sheet_number"], w) for p, w in got["refused"])
-        self.assertIn("names no level", refused["P-200.00"])
+        self.assertIn("names no level", refused["P-209.00"])
         self.assertIn("does not name one floor", refused["P-202.00"])
         self.assertEqual(len(got["pairs"]), 4)
 
@@ -490,7 +494,7 @@ class ThePassKeepsWhatItCannotPlace(unittest.TestCase):
     def test_a_sheet_whose_title_names_no_level_keeps_its_stacks_with_the_reason(self):
         PS = _ps("run_stacks")
         page, _pc = _sheet_with_one_stack()
-        p = {"sheet_number": "P-200.00", "sheet_title": "FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN",
+        p = {"sheet_number": "P-209.00", "sheet_title": "SANITARY & STORM PLAN",
              "page_id": "p200", "file_name": "PL.pdf", "page_number": 8}
         a = {"sheet_number": "A-100.01", "sheet_title": "FIRST FLOOR PLAN", "page_id": "a100"}
         w = _width
@@ -560,8 +564,8 @@ class ThePipeRunsGoToC1Too(unittest.TestCase):
         PS = _ps("run_stacks")
         page, _pc = _sheet_with_one_stack()
         page.drawings.append(_line((470.0, 352.25), (470.0, 420.0), "P-Pipe-Sswr-Vent"))
-        p = {"sheet_number": "P-200.00", "sheet_title": "FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN",
-             "page_id": "p200"}
+        p = {"sheet_number": "P-209.00", "sheet_title": "SANITARY & STORM PLAN",
+             "page_id": "p209"}
         got = PS.run_stacks([("filed", [p])], lambda pg: page,
                             reader=lambda png: [], place=False)
         (row,) = [r for r in got["rows"] if r.get("record_type") == "pipe_segments"]
@@ -681,6 +685,124 @@ class TheGlyphPassWritesThem(unittest.TestCase):
         self.assertIn("stack pass unavailable: RuntimeError", docs[0]["reason"])
 
 
+# ── a below-slab plan is not a storey (Roy, as-built answer 117) ──────────
+
+P200 = _pg("P-200.00", "FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN")
+
+
+class ABelowSlabPlanIsNotAStorey(unittest.TestCase):
+    """"There is no cellar. P-200 is the under-slab plumbing plan below the
+    first-floor slab, not a storey." It pairs to the first-floor A plan for
+    the registration offset, carries level BELOW_SLAB, and is in no
+    apartment. Every assertion goes through .get(), so a tree without the
+    change fails by AssertionError."""
+
+    def test_the_words_that_make_a_title_below_slab(self):
+        PS = _ps("below_slab_title")
+        for t in ("FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN", "UNDER-SLAB PLUMBING PLAN",
+                  "Under Slab Drainage Plan", "BELOW SLAB SANITARY PLAN", "BELOW-SLAB PLAN",
+                  "UNDERSLAB PLAN", "SUB-SLAB SANITARY PLAN", "UNDERGROUND PLUMBING PLAN"):
+            self.assertTrue(PS.below_slab_title(t), t)
+
+    def test_a_title_naming_a_storey_is_not_below_slab(self):
+        PS = _ps("below_slab_title")
+        for t in ("FIRST FLOOR SANITARY & STORM PLAN", "CELLAR SANITARY PLAN",
+                  "BASEMENT PLUMBING PLAN", "BELOW GRADE PLAN", "SANITARY & STORM PLAN", None):
+            self.assertIsNone(PS.below_slab_title(t), t)
+        # a cellar is a storey: it refuses as "names no level", it does not become below-slab
+        got = PS.pair_by_title_level([_pg("P-209.00", "CELLAR SANITARY PLAN")], ARCH)
+        self.assertEqual(got.get("below_slab"), [])
+        self.assertEqual(len(got["refused"]), 1)
+
+    def test_it_pairs_to_the_first_floor_plan_and_no_other(self):
+        PS = _ps("pair_by_title_level")
+        got = PS.pair_by_title_level([P200] + P2, ARCH)
+        self.assertEqual([(p["sheet_number"], a["sheet_number"]) for p, a in got.get("below_slab", [])],
+                         [("P-200.00", "A-100.01")])
+        self.assertEqual(got["refused"], [])
+
+    def test_it_is_in_no_series_offset_and_moves_no_majority(self):
+        PS = _ps("pair_by_title_level")
+        got = PS.pair_by_title_level([P200] + P2, ARCH)
+        # P-200 vs A-100 is +0, the series runs +1: it is neither held nor broken
+        self.assertEqual(got["series"]["P-2"], {"offset": 1, "held_by": 5, "of": 5})
+        self.assertNotIn("P-200.00", [p["sheet_number"] for p, _a, _o in got["pairs"]])
+        self.assertEqual(len(got["pairs"]), 5)
+
+    def test_no_single_first_floor_plan_refuses_and_says_so(self):
+        PS = _ps("pair_by_title_level")
+        got = PS.pair_by_title_level([P200], [a for a in ARCH if a["sheet_number"] != "A-100.01"])
+        self.assertEqual(got.get("below_slab"), [])
+        (_p, why), = got["refused"]
+        self.assertIn("below-slab", why)
+        self.assertIn("0 architectural plans", why)
+        twin = ARCH + [_pg("A-100.02", "FIRST FLOOR PLAN")]
+        got = PS.pair_by_title_level([P200], twin)
+        self.assertEqual(got.get("below_slab"), [])
+        self.assertIn("2 architectural plans", got["refused"][0][1])
+
+    def test_rows_carry_the_level_and_never_a_space(self):
+        PS = _ps("stack_rows", "locate", "BELOW_SLAB")
+        t, _pc = _located_tag(PS)
+        reg = {"dx": -25.5, "dy": -66.0, "anchors": 1500, "best_peak_anchors": 1500,
+               "second_peak_anchors": 400, "margin": 3.7}
+        (row,) = PS.stack_rows("filed", P200, _pg("A-100.01", "FIRST FLOOR PLAN"), [t], reg, True, [],
+                               placed=lambda x, y: ("1C", "in a unit"), level="BELOW_SLAB")
+        self.assertEqual(row.get("level"), "BELOW_SLAB")
+        self.assertIsNotNone(row["footprint_arch"])
+        self.assertIsNone(row["placement_refused"])
+        self.assertNotIn("space", row)
+        # a storey's row has no level key and keeps its space
+        (st,) = PS.stack_rows("filed", _pg("P-201.00", "x"), _pg("A-100.01", "y"), [t], reg, True, [],
+                              placed=lambda x, y: ("1C", "in a unit"))
+        self.assertNotIn("level", st)
+        self.assertEqual(st["space"], "1C")
+
+    def _run(self, patch_register=True, arch=True):
+        from unittest.mock import patch
+        PS = _ps("run_stacks")
+        page, _pc = _sheet_with_one_stack()
+        page.drawings.append(_line((470.0, 352.25), (470.0, 420.0), "P-Pipe-Sswr-Vent"))
+        p = dict(P200, file_name="PL.pdf", page_number=8, page_id="p200")
+        a = dict(_pg("A-100.01", "FIRST FLOOR PLAN"), page_id="a100")
+        w = _width
+
+        def reader(png):
+            return [(0.2 * w(png), 10, "S", 0.9), (0.55 * w(png), 10, "3", 0.9)]
+        reg = {"dx": -25.5, "dy": -66.0, "anchors": 1500, "best_peak_anchors": 1500,
+               "second_peak_anchors": 400, "margin": 3.7}
+        called = []
+        import lib.plan_sheet as sheet_mod
+        with patch.object(PS, "register_pair", lambda A, O: (reg, True, [])),                 patch.object(sheet_mod, "load_sheet", lambda pg: object()),                 patch.object(PS, "_membership", lambda *a_, **k: called.append(1) or (lambda x, y: ("1C", "x"))):
+            got = PS.run_stacks([("filed", [p, a] if arch else [p])], lambda pg: page,
+                                reader=reader, place=True)
+        return got, called
+
+    def test_the_pass_places_it_on_the_first_floor_with_level_and_no_apartment(self):
+        got, called = self._run()
+        (row,) = [r for r in got["rows"] if r.get("record_type") == "stack"]
+        self.assertEqual(row.get("level"), "BELOW_SLAB")
+        self.assertEqual(row["arch_sheet"], "A-100.01")
+        self.assertIsNotNone(row["footprint_arch"])
+        self.assertNotIn("space", row)
+        (seg,) = [r for r in got["rows"] if r.get("record_type") == "pipe_segments"]
+        self.assertEqual(seg.get("level"), "BELOW_SLAB")
+        self.assertIsNotNone(seg["segments"])
+        self.assertEqual(called, [], "no membership map is built for a below-slab plan")
+        pairing = got["pairing"]["filed"]
+        self.assertEqual(pairing.get("below_slab"), [("P-200.00", "A-100.01")])
+        self.assertEqual(pairing["refused"], [])
+
+    def test_unpaired_it_keeps_its_level_and_its_reason(self):
+        got, _c = self._run(arch=False)
+        (row,) = [r for r in got["rows"] if r.get("record_type") == "stack"]
+        self.assertEqual(row.get("level"), "BELOW_SLAB")
+        self.assertIsNone(row["footprint_arch"])
+        self.assertIn("below-slab", row["placement_refused"])
+        (seg,) = [r for r in got["rows"] if r.get("record_type") == "pipe_segments"]
+        self.assertEqual(seg.get("level"), "BELOW_SLAB")
+
+
 # ── on the 588 Boyland set (fixture PDFs; skipped, with where it looked, without them) ──
 
 #: the production index's titles (find()-only probe 2026-10-28)
@@ -743,7 +865,11 @@ class OnTheBoylandSet(unittest.TestCase):
                                  "P-203.00": "A-102.00", "P-204.00": "A-103.00",
                                  "P-205.00": "A-104.00", "P-206.00": "A-105.01"})
         refused = {p["sheet_number"] for p, _w in got["refused"]}
-        self.assertEqual(refused, {"P-200.00", "P-207.00"})
+        self.assertEqual(refused, {"P-207.00"})
+        # P-200 is the below-slab plan (ruling 117): the first-floor plan's
+        # footprint, no storey, and not one of the series' six
+        self.assertEqual([(p["sheet_number"], a["sheet_number"]) for p, a in got["below_slab"]],
+                         [("P-200.00", "A-100.01")])
         self.assertEqual(got["series"]["P-2"], {"offset": 1, "held_by": 6, "of": 6})
 
     def test_p204_registers_to_a103_by_the_one_rule(self):

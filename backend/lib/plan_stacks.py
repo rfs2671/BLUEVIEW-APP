@@ -40,6 +40,18 @@ parse to the same single level, and the series' number offset (P-2xx = A+1,
 P-1xx = A+0) must be the one a strict majority of the series' level-matched
 sheets hold; a sheet that breaks it, or whose title does not parse, REFUSES.
 
+A BELOW-SLAB PLAN IS NOT A STOREY (Roy, as-built answer 117, 2026-10-30): "There
+is no cellar. P-200 ("FIRST UNDERGROUND FLOOR") is the under-slab plumbing plan
+below the first-floor slab, not a storey." A plumbing plan whose title says
+UNDERGROUND / BELOW SLAB / UNDER SLAB (`below_slab_title`) has level BELOW_SLAB:
+no storey, no apartments, no area or floor counts. It pairs to the FIRST-FLOOR
+architectural plan's footprint, for the registration offset only (the series'
+number offset does not apply: P-200 is the sheet below the series' first
+floor). Its rows carry `level: "BELOW_SLAB"` and no `space`, so nothing reads a
+stack drawn under the slab as standing in a first-floor apartment. This
+reading lives HERE, not in plan_search._title_level, the count gate's own
+title reader: teaching that one a new level would move the gate.
+
 Registration is used ONLY for the offset of a pair already decided, through
 ONE function every discipline pair shares (operator ruling 63, 2026-10-28):
 plan_sheet.register_offset - a single best peak agreeing with the exact 1pt
@@ -967,6 +979,25 @@ def tag_system_check(tag: dict) -> List[str]:
 _SHEET = re.compile(r"^([A-Z]{1,2})-(\d)(\d\d)(?:\.(\d\d))?$")
 
 
+#: the level of a below-slab plan (ruling 117): not a storey, not a FLOOR_n
+BELOW_SLAB = "BELOW_SLAB"
+#: the level token of the first-floor architectural plan (title_level)
+FIRST_FLOOR = "FLOOR_1"
+#: what a plumbing plan's title says when it is drawn below the first-floor
+#: slab. NOT here: cellar, basement, below grade, sub-cellar - those name a
+#: storey, and a title naming one is not read as below-slab.
+_BELOW_SLAB_WORDS = re.compile(
+    r"\b(under[\s-]?ground|below[\s-]+(?:the[\s-]+)?slab|under[\s-]?slab|sub[\s-]?slab)\b", re.I)
+
+
+def below_slab_title(title: Optional[str]) -> Optional[str]:
+    """The words of a title that make it a below-slab plan ("UNDERGROUND",
+    "BELOW SLAB", "UNDER-SLAB", "UNDERSLAB", "SUB-SLAB"), lower-cased, or
+    None. Read from the P plan's own title and nothing else."""
+    m = _BELOW_SLAB_WORDS.search(str(title or ""))
+    return re.sub(r"[\s-]+", " ", m.group(1).lower()) if m else None
+
+
 def title_level(title: Optional[str]) -> Tuple[Optional[str], str]:
     """(level token, why) - ONE level the title names, or None with why.
 
@@ -1003,7 +1034,8 @@ def is_riser_diagram(page: dict) -> bool:
 
 def pair_by_title_level(others: Iterable[dict], arch: Iterable[dict]) -> Dict[str, Any]:
     """{"pairs": [(other, arch, offset)], "refused": [(other, why)],
-    "series": {"P-2": {"offset", "held_by", "of"}}}.
+    "series": {"P-2": {"offset", "held_by", "of"}},
+    "below_slab": [(other, first-floor arch)]}.
 
     `others` are the discipline's plan pages (P or S), `arch` the track's
     architectural plan pages, each with sheet_number and sheet_title.
@@ -1014,7 +1046,12 @@ def pair_by_title_level(others: Iterable[dict], arch: Iterable[dict]) -> Dict[st
     series' level-matched sheets hold. Refused, each with why: a number out
     of the plan series, a title naming no level or several, no
     architectural plan at that level or two of them, an offset that breaks
-    the series', and every sheet of a series with no majority offset."""
+    the series', and every sheet of a series with no majority offset.
+
+    A BELOW-SLAB PLAN (`below_slab_title`) is none of those: it has no
+    level to match and no offset to hold. It pairs, in "below_slab", with the
+    ONE architectural plan titled at the first floor (FLOOR_1), or is refused
+    when there is not exactly one. It never enters a series' majority."""
     arch_by_level: Dict[str, List[dict]] = defaultdict(list)
     for a in arch:
         s = _series(a.get("sheet_number"))
@@ -1024,12 +1061,24 @@ def pair_by_title_level(others: Iterable[dict], arch: Iterable[dict]) -> Dict[st
         if lvl:
             arch_by_level[lvl].append(a)
     refused: List[Tuple[dict, str]] = []
+    below: List[Tuple[dict, dict]] = []
     cand: Dict[str, List[Tuple[dict, dict, int]]] = defaultdict(list)
     for p in others:
         num = p.get("sheet_number")
         s = _series(num)
         if not s:
             refused.append((p, f"{num}: not an NCS sheet number"))
+            continue
+        word = below_slab_title(p.get("sheet_title"))
+        if word:
+            first = arch_by_level.get(FIRST_FLOOR) or []
+            if len(first) != 1:
+                refused.append((p, f"{num}: a below-slab plan ('{word}'), but "
+                                   f"{len(first)} architectural plans are titled at the first floor"
+                                   + (f" ({', '.join(a['sheet_number'] for a in first)})"
+                                      if first else "")))
+            else:
+                below.append((p, first[0]))
             continue
         lvl, why = title_level(p.get("sheet_title"))
         if not lvl:
@@ -1063,7 +1112,7 @@ def pair_by_title_level(others: Iterable[dict], arch: Iterable[dict]) -> Dict[st
                 refused.append((p, f"{p['sheet_number']}: titled at the level of "
                                    f"{a['sheet_number']}, but that is offset {o:+d} and "
                                    f"series {key}xx runs {off:+d}; not paired"))
-    return {"pairs": pairs, "refused": refused, "series": series}
+    return {"pairs": pairs, "refused": refused, "series": series, "below_slab": below}
 
 
 # ── registration used only for the offset ─────────────────────────────────
@@ -1217,7 +1266,8 @@ def _id_key(i: str):
 def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[dict],
                reg: Optional[dict], usable: bool, why_not: Sequence[str],
                placed: Optional[Callable[[float, float], Tuple[Optional[str], str]]] = None,
-               refused: Optional[str] = None) -> List[Dict[str, Any]]:
+               refused: Optional[str] = None, level: Optional[str] = None
+               ) -> List[Dict[str, Any]]:
     """One row per stack (a leader end at a pipe circle), plus one per tag
     or leader that found none - never a silent miss.
 
@@ -1225,7 +1275,11 @@ def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[
     was decided by title level AND the registration is usable; otherwise
     `at_arch` is None and `placement_refused` says why. C1 tests
     `footprint_arch` (centre + radius, a circle) against a polygon in the
-    same architectural sheet's frame."""
+    same architectural sheet's frame.
+
+    `level` is set ONLY for a below-slab plan (BELOW_SLAB, ruling 117): the
+    row then carries `level` and never a `space` - a stack under the slab is
+    in no first-floor apartment. A storey's rows have no `level` key."""
     rows = []
     base = {"record_type": "stack", "row_version": ROW_VERSION, "track": track,
             "plumbing_sheet": p_page.get("sheet_number"), "plumbing_page_id": p_page.get("page_id"),
@@ -1241,6 +1295,8 @@ def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[
                 "page_id", "file_id", "file_name", "page_number", "sheet_number",
                 "sheet_title", "file_hash")},
             "registration": _reg_view(reg, usable, why_not)}
+    if level:
+        base["level"] = level
     for t in tags:
         tbase = dict(base, tag_id=t.get("id"), tag_letter=t.get("letter"),
                      tag_number=t.get("number"), tag_read=t.get("read_why"),
@@ -1279,7 +1335,7 @@ def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[
                            footprint_arch={"type": "circle", "x": round(ax, 2), "y": round(ay, 2),
                                            "r": round(st["r"], 2), "frame": "arch_page_pt"},
                            placement_refused=None)
-                if placed is not None:
+                if placed is not None and not level:
                     where, how = placed(ax, ay)
                     row.update(space=where, space_how=how)
             rows.append(row)
@@ -1288,7 +1344,8 @@ def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[
 
 def pipe_segment_row(track: str, p_page: dict, a_page: Optional[dict], segs: Sequence,
                      reg: Optional[dict], usable: bool, why_not: Sequence[str],
-                     refused: Optional[str] = None, curves: Sequence = ()) -> Dict[str, Any]:
+                     refused: Optional[str] = None, curves: Sequence = (),
+                     level: Optional[str] = None) -> Dict[str, Any]:
     """ONE row per plumbing sheet and track: every straight pipe piece the
     sheet draws, with its system, in architectural page points when the pair
     is decided and the registration usable - C1's input for a pipe passing
@@ -1308,7 +1365,8 @@ def pipe_segment_row(track: str, p_page: dict, a_page: Optional[dict], segs: Seq
         return [[round(a[0] - dx, 2), round(a[1] - dy, 2), round(b[0] - dx, 2),
                  round(b[1] - dy, 2), layer_system(layer)] for a, b, layer in segs]
     placed = refused is None and usable and reg is not None
-    return {"record_type": "pipe_segments", "row_version": ROW_VERSION, "track": track,
+    lvl = {"level": level} if level else {}
+    return {**lvl, "record_type": "pipe_segments", "row_version": ROW_VERSION, "track": track,
             "plumbing_sheet": p_page.get("sheet_number"), "plumbing_page_id": p_page.get("page_id"),
             "arch_sheet": (a_page or {}).get("sheet_number"),
             "arch_page_id": (a_page or {}).get("page_id"),
@@ -1353,7 +1411,7 @@ __all__ = [
     "COLLECTION", "ROW_VERSION", "Sheet", "fit_circle", "arcs_of", "pipe_rounds", "circle_of", "split_circle_tags", "trace_leaders",
     "arrowhead_at", "pipe_circles", "stack_at", "signature", "compose", "vote",
     "read_tags", "locate", "tag_system_check", "title_level",
-    "pair_by_title_level", "register_pair", "pipe_segment_row",
+    "pair_by_title_level", "below_slab_title", "BELOW_SLAB", "register_pair", "pipe_segment_row",
     "to_arch", "expand_id", "crosscheck", "stack_rows", "continuity",
     "is_plan", "is_riser_diagram", "where", "printed_size", "read_note", "note_strokes",
 ]
@@ -1418,19 +1476,23 @@ def run_stacks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable,
         pr = pair_by_title_level(plans, arch)
         pairing[track] = {"series": pr["series"],
                           "pairs": [(p["sheet_number"], a["sheet_number"], o) for p, a, o in pr["pairs"]],
+                          "below_slab": [(p["sheet_number"], a["sheet_number"])
+                                         for p, a in pr["below_slab"]],
                           "refused": [(p["sheet_number"], w) for p, w in pr["refused"]]}
         for p, why in pr["refused"]:
             got_p = located[str(p["page_id"])]
             tags = got_p["tags"]
-            rows += (stack_rows(track, p, None, tags, None, False, [], refused=why) if tags
+            lv = BELOW_SLAB if below_slab_title(p.get("sheet_title")) else None
+            rows += (stack_rows(track, p, None, tags, None, False, [], refused=why, level=lv) if tags
                      else [sheet_row(track, p, "no_tags", "the sheet prints no split-circle tag")])
             rows.append(pipe_segment_row(track, p, None, got_p.get("pipe_segments") or [], None,
                                          False, [], refused=why,
-                                         curves=got_p.get("pipe_curves") or []))
-        for p, a, _off in pr["pairs"]:
+                                         curves=got_p.get("pipe_curves") or [], level=lv))
+        for p, a, off in list(pr["pairs"]) + [(p, a, None) for p, a in pr["below_slab"]]:
             got_p = located[str(p["page_id"])]
             tags, segs = got_p["tags"], got_p.get("pipe_segments") or []
             curves = got_p.get("pipe_curves") or []
+            lv = BELOW_SLAB if off is None else None
             if not tags:
                 rows.append(sheet_row(track, p, "no_tags", "the sheet prints no split-circle tag"))
             try:
@@ -1438,15 +1500,17 @@ def run_stacks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable,
                 A, O = load_sheet(arch_pg), load_sheet(open_page(p))
                 reg, ok, why = register_pair(A, O)
                 placed = None
-                if ok and place and tags:
+                # a below-slab plan is in no apartment: no membership map
+                if ok and place and tags and not lv:
                     placed = _membership(arch_pg, A, door_inches)
-                rows += stack_rows(track, p, a, tags, reg, ok, why, placed)
-                rows.append(pipe_segment_row(track, p, a, segs, reg, ok, why, curves=curves))
+                rows += stack_rows(track, p, a, tags, reg, ok, why, placed, level=lv)
+                rows.append(pipe_segment_row(track, p, a, segs, reg, ok, why, curves=curves,
+                                             level=lv))
             except Exception as e:
                 why_f = f"placement failed: {type(e).__name__}: {e}"
-                rows += stack_rows(track, p, a, tags, None, False, [], refused=why_f)
+                rows += stack_rows(track, p, a, tags, None, False, [], refused=why_f, level=lv)
                 rows.append(pipe_segment_row(track, p, a, segs, None, False, [], refused=why_f,
-                                             curves=curves))
+                                             curves=curves, level=lv))
     cc = crosscheck({p["sheet_number"]: [t.get("id") for t in located[str(p["page_id"])]["tags"]]
                      for p in plans},
                     {p["sheet_number"]: [t.get("id") for t in located[str(p["page_id"])]["tags"]]

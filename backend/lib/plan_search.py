@@ -3644,10 +3644,10 @@ def render_set_questions(records: Sequence[Dict[str, Any]], books: GlyphBooks) -
                 # Recorded after this pass: the rows still read it as open,
                 # so the figures stay two readings until the next pass (10-29:
                 # "not decided" was said of Q1 while its answer was stored).
-                said = "part of" if s.get("answer") == "include" else "not part of"
+                from lib import plan_set_questions as _psq
+                said = _psq.answered_phrase(s, books.labels.get(t) or "the set")
                 out.append(f"- {s.get('code') + ': ' if s.get('code') else ''}"
-                           f"{s.get('label') or short} - answered {said} "
-                           f"{books.labels.get(t) or 'the set'} by "
+                           f"{s.get('label') or short} - answered {said} by "
                            f"{s.get('answered_by_name') or 'the PM'} "
                            f"({s.get('answered_via') or 'WhatsApp'}, "
                            f"{str(s.get('answered_at') or '')[:10]}); it is applied at the next "

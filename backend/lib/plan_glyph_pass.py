@@ -98,7 +98,10 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
 
     `set_answers` are the stored answers to the project's drawing-set
     questions (lib.plan_set_questions, ruling 21): {question id: include |
-    exclude}. The questions this track raises come back in "set_questions".
+    exclude | replaces}. Exclude and replaces already shaped `pages` (server.
+    _glyph_pages applies them before this runs); a replaces still here means
+    the replacement could not be applied, and the question's pages stay open.
+    The questions this track raises come back in "set_questions".
 
     PROGRESS (2026-10-27): `progress`, when given, is called at every step -
     progress(kind, info), kind "plan" / "stage" / "sheet" / "done" (lib.
