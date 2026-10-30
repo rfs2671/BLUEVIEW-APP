@@ -68690,7 +68690,53 @@ async def _plan_file_sources(project_id: str, file_ids: Any) -> Dict[str, dict]:
         src = plan_sources.source_of(r)
         if src:
             out[str(r["_id"])] = src
+    # A replacing page that prints no sheet number is cited as the number it
+    # was given, and says so (ruling 136; plan_sources.UNNUMBERED_KEY).
+    marks = await _unnumbered_marks(project_id, rows)
+    for fid, by_page in marks.items():
+        if fid in out:
+            out[fid][plan_sources.UNNUMBERED_KEY] = by_page
     return out
+
+
+def _record_file_ids(records: Any) -> List[str]:
+    """The files a set of records cites: each record's own and, for a
+    mechanical symbol, the architectural page it is placed on (payload.arch) -
+    a sheet that page borrowed is tagged where it is cited (ruling 136)."""
+    ids = []
+    for r in records or []:
+        ids.append(r.get("file_id"))
+        a = (r.get("payload") or {}).get("arch") if isinstance(r.get("payload"), dict) else None
+        if isinstance(a, dict):
+            ids.append(a.get("file_id"))
+    return [i for i in dict.fromkeys(ids) if i]
+
+
+async def _unnumbered_marks(project_id: str, file_rows: Any) -> Dict[str, Dict[int, dict]]:
+    """{file_id: {page_number: mark}} for the replacing pages of these files
+    that print no sheet number (plan_sources.unnumbered_marks), derived from
+    the answered `replaces` questions and each replacing page's own index
+    record. Read-only; nothing stored. {} when there are none or it could not
+    look: a citation then goes out as it did before."""
+    from lib import plan_set_questions as psq
+    try:
+        decisions = await db[psq.COLLECTION].find(
+            {"project_id": str(project_id), "status": psq.ANSWERED,
+             "answer": psq.REPLACES}).to_list(100)
+        if not decisions:
+            return {}
+        files = {str(f["_id"]): f for f in file_rows or []}
+        want = {str(r.get("page_id")): r for d in decisions for r in d.get("replacements") or []
+                if r.get("page_id") and str(r.get("file_id")) in files}
+        if not want:
+            return {}
+        pages = {str(p["_id"]): p async for p in db.document_page_index.find(
+            {"_id": {"$in": [to_query_id(i) for i in want]}},
+            {"file_id": 1, "file_name": 1, "page_number": 1, "sheet_number": 1, "sheet_title": 1})}
+        return plan_sources.unnumbered_marks(decisions, pages, files)
+    except Exception as e:
+        logger.warning(f"unnumbered replacing pages lookup failed for {project_id}: {type(e).__name__}")
+        return {}
 
 
 async def _drawing_list_and_sheets(project_id: str) -> Tuple[Dict[str, dict], List[str]]:
@@ -68978,7 +69024,9 @@ def _dm_plan_shots(ctx: dict, out: dict) -> list:
     srcs = ctx.get("plan_sources") or {}
     return [{"page": pages[pid], "marks": marks, "total": total,
              "label": plan_sources.cite_with_set(
-                 pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+                 plan_sources.tag_sheet(
+                     pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+                     srcs.get(str(pages[pid].get("file_id") or "")), pages[pid].get("page_number")),
                  srcs.get(str(pages[pid].get("file_id") or ""))),
              "ambiguous": choice["ambiguous"], "unverified": choice["unverified"],
              "pictures": len(groups)}
@@ -70265,21 +70313,30 @@ def _render_records_for_model(records: List[dict], subject: str,
             # member. Saying 'two W1 windows' here would be the 41 again.
             line += " (a count of the symbol, not of any one marked type)"
         lines.append(line)
+    # A SHEET A REPLACING PAGE BORROWED IS SAID TO BE (ruling 136): the blocks
+    # below name a sheet with no file or page beside it, so the tagged
+    # citation goes where the bare number was - only for a number every
+    # record of which comes from the marked page (plan_sources.borrowed_labels).
+    borrowed = plan_sources.borrowed_labels(records, sources)
+
+    def named(block: str) -> str:
+        return plan_sources.label_borrowed(block, borrowed) if borrowed else block
+
     located = plan_search.render_glyph_evidence(records)
     if located:
-        lines.append(located)
+        lines.append(named(located))
     openings = plan_search.render_opening_evidence(records)
     if openings:
-        lines.append(openings)
+        lines.append(named(openings))
     areas = plan_areas.render_area_evidence(records)
     if areas:
-        lines.append(areas)
+        lines.append(named(areas))
     health = plan_search.render_set_health(records)
     if health:
-        lines.append(health)
+        lines.append(named(health))
     levels = plan_floor_to_floor.render_level_evidence(records)
     if levels:
-        lines.append(levels)
+        lines.append(named(levels))
     return "\n".join(lines)
 
 
@@ -70641,7 +70698,7 @@ def gate_plan_answer(text: str, records: List[dict], subject: str = "",
     logger.warning(
         "plan answer failed the gate: unsupported=%s labels=%s subject=%r text=%r",
         unsupported[:6], leaked[:3], subject[:40], (text or "")[:200])
-    return plan_search.render_records(records, subject), (
+    return plan_search.render_records(records, subject, sources=sources), (
         "ungrounded" if not grounded else "label_leak")
 
 
@@ -73117,7 +73174,7 @@ async def _dispatch_agent_tool(
                 f"search_plans subject={subject[:40]!r} intent={args.get('intent')!r} "
                 f"hits={len(found)} top={[r.get('tier') for r in found[:3]]} "
                 f"levels={interp.get('level_mapping') or []}")
-            sources = await _plan_file_sources(project_id, [r.get("file_id") for r in found])
+            sources = await _plan_file_sources(project_id, _record_file_ids(found))
             return _render_records_for_model(found, subject, sources, interp=interp)
         if name == "who_on_site":
             return await _handle_who_on_site(
@@ -73209,7 +73266,7 @@ async def _dispatch_agent_tool(
             logger.info(
                 f"query_plan answered from records subject={question[:40]!r} "
                 f"hits={len(found)} (sheet image sent separately)")
-            sources = await _plan_file_sources(project_id, [r.get("file_id") for r in found])
+            sources = await _plan_file_sources(project_id, _record_file_ids(found))
             return ("(The sheet image is on its way to the group.)\n"
                     + _render_records_for_model(found, question, sources))
         if name == "start_permit_renewal":
@@ -83497,7 +83554,7 @@ async def get_project_takeoff_xlsx(project_id: str, current_user=Depends(get_adm
                                     item_name=f"{ln.item} {ln.tag}".strip(),
                                     scope=" ".join(x for x in (ln.scope, ln.level) if x),
                                     track=ln.set_label, reason=ln.reason,
-                                    sheets=[s for s in ln.sheets.split(", ") if s])
+                                    sheets=_tx.sheet_numbers(ln.sheets))
     now = datetime.now(timezone.utc)
     name = str((project or {}).get("name") or "project")
     content = await asyncio.to_thread(_tx.write, takeoff, project_name=name,

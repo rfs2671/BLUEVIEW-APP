@@ -16,6 +16,11 @@ to what the model is shown:
     other set field: a "design plans" set is not something the system
     records, so none is named here.
   * A NON-FILED SHEET NAMES ITS SET where it is cited: "A-302 (owner's set)".
+  * A SHEET THAT BORROWS ITS NUMBER SAYS SO (ruling 136): a page the office
+    recorded as REPLACING another (lib.plan_set_questions, answer "replaces")
+    whose own title block prints no sheet number is read as the replaced
+    sheet's number, and is cited as it is: 'A-105.01 (gas-change set,
+    unnumbered) "Roof Plan"'.
   * THE DRAWING LIST against the sheets: a sheet's own title block wins over
     the list's title for it (the list's title may be mentioned), and sheets
     the list names that were never uploaded are said to be just that.
@@ -78,7 +83,7 @@ def evidence_where(where: str, src: Optional[Dict[str, Any]], *, sheet_number: s
     "filed set" for the filed one. Without a source, the citation as is."""
     if not src:
         return where
-    out = cite_with_set(where, src)
+    out = cite_with_set(tag_sheet(where, src, page_number) if (sheet_number or "").strip() else where, src)
     if (sheet_number or "").strip() and src.get("file_name"):
         out += f" · {src['file_name']}" + (f" p{page_number}" if page_number is not None else "")
     if src.get("filed"):
@@ -92,6 +97,166 @@ def sheet_source_text(sheet: str, src: Optional[Dict[str, Any]], page_number: An
         return ""
     page = f"page {page_number} of " if page_number is not None else ""
     return f"{sheet} is {page}{src['file_name']} ({src['set_name']})."
+
+
+# ── A SHEET THAT BORROWS ITS NUMBER (ruling 136) ─────────────────────────────
+#
+# Q2 on 588 Boyland: the gas-change file's page 2 prints no sheet number (its
+# title block reads "Roof Plan"); the office recorded that it REPLACES A-105.01,
+# so the glyph pass writes its rows as sheet A-105.01. A row carries no marker
+# that the number was lent, and a citation "A-105.01 · AR - 6.9.26 (Gas
+# change).pdf p2" reads as if the sheet printed it. Nothing is stored for this:
+# it is derived, at render or query time, from the answered replaces questions
+# and the replacing page's own index record (server._unnumbered_marks), and
+# rides on the file's source row under UNNUMBERED_KEY -- {page_number: mark} --
+# so every renderer that already holds the source can say it. DATA AND
+# RENDERING ONLY: no row, count or binding changes (the gate removes the tag
+# with the other citations: plan_search.strip_source_citations).
+
+#: the key on a source_of row: {page number: {"sheet", "title", "set"}}
+UNNUMBERED_KEY = "unnumbered"
+#: a numbered replacing page (gas A-100.00) keeps its own number and gets no
+#: tag: its number is printed on it, and the file name beside it says the file.
+_DATE = re.compile(r"\b\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}\b")
+_PARENS = re.compile(r"\(([^()]*)\)")
+_TAG = re.compile(r'\s*\([^()]*,\s*unnumbered\)(?:\s*"[^"\n]*")?')
+
+
+def set_name(file_name: Any, label: Any = "") -> str:
+    """How a drawing set is named in a tag: "gas-change set". THE RULE: the
+    set's own label when an admin gave it one; otherwise the file's name with
+    its extension and its dates removed -- the last parenthesised phrase when
+    the name has one ("AR - 6.9.26 (Gas change).pdf" -> "Gas change"), else
+    what is left -- lower-cased, its words joined by hyphens, and " set"
+    after it. "" when nothing is left (the tag then says only "unnumbered")."""
+    lab = re.sub(r"\s+", " ", str(label or "")).strip()
+    if lab:
+        return lab
+    stem = re.sub(r"\.pdf\s*$", "", str(file_name or "").strip(), flags=re.I)
+    stem = _DATE.sub(" ", stem)
+    inner = _PARENS.findall(stem)
+    core = inner[-1] if inner else stem
+    core = re.sub(r"[^\w\s'-]+|_", " ", core)
+    words = [w.strip("-'") for w in core.split()]
+    words = [w for w in words if w]
+    if not words:
+        return ""
+    name = "-".join(words).lower()
+    return name if name.endswith("set") else f"{name} set"
+
+
+def unnumbered_tag(sheet: str, mark: Optional[Dict[str, Any]]) -> str:
+    """'A-105.01 (gas-change set, unnumbered) "Roof Plan"' -- the borrowed
+    number, what the page is, and its printed title."""
+    if not mark:
+        return sheet
+    out = f"{sheet} ({mark['set']}, unnumbered)" if mark.get("set") else f"{sheet} (unnumbered)"
+    if mark.get("title"):
+        out += f' "{mark["title"]}"'
+    return out
+
+
+def unnumbered_mark(src: Optional[Dict[str, Any]], sheet: Any, page_number: Any) -> Optional[Dict[str, Any]]:
+    """The mark for a record on (source file, page) whose sheet number is
+    `sheet`: only when the page is a replacing page that prints no number AND
+    the record carries the number it was given -- a pass that could not apply
+    the answer wrote no such number, and nothing is claimed then."""
+    marks = (src or {}).get(UNNUMBERED_KEY)
+    if not marks or page_number is None:
+        return None
+    try:
+        mark = marks.get(int(page_number))
+    except (TypeError, ValueError):
+        return None
+    if mark and sheet_key(sheet) and sheet_key(sheet) == sheet_key(mark.get("sheet")):
+        return mark
+    return None
+
+
+def tag_sheet(sheet: str, src: Optional[Dict[str, Any]], page_number: Any) -> str:
+    """`sheet` as a citation names it: with the unnumbered tag when it is the
+    number a replacing page borrowed, else as given."""
+    mark = unnumbered_mark(src, sheet, page_number)
+    return unnumbered_tag(sheet, mark) if mark else sheet
+
+
+def _places(r: Dict[str, Any]) -> Iterable[Tuple[str, str, Any]]:
+    """(sheet, file_id, page_number) of a record and, for a mechanical symbol,
+    of the architectural page it is placed on (payload.arch)."""
+    yield str(r.get("sheet_number") or "").strip(), str(r.get("file_id") or ""), r.get("page_number")
+    a = (r.get("payload") or {}).get("arch") if isinstance(r.get("payload"), dict) else None
+    if isinstance(a, dict) and a.get("sheet_number"):
+        yield str(a.get("sheet_number")).strip(), str(a.get("file_id") or ""), a.get("page_number")
+
+
+def borrowed_labels(records: Iterable[Dict[str, Any]], sources: Optional[Dict[str, Dict[str, Any]]]
+                    ) -> Dict[str, str]:
+    """{sheet: its tagged citation} for the sheet numbers the records name
+    that a replacing page borrowed -- for the evidence blocks that name a
+    SHEET with no file or page beside it (the located-symbol, opening, area
+    and set-health text). Only when EVERY place the records give for that
+    sheet number is the marked page: the same number on another page (the
+    page it replaced, still indexed) leaves the bare number, since the text
+    cannot say which page it means."""
+    if not sources or not any((s or {}).get(UNNUMBERED_KEY) for s in sources.values()):
+        return {}
+    places: Dict[str, List[Optional[Dict[str, Any]]]] = {}
+    for r in records or []:
+        for sheet, fid, page in _places(r):
+            if sheet:
+                places.setdefault(sheet, []).append(unnumbered_mark(sources.get(fid), sheet, page))
+    return {sheet: unnumbered_tag(sheet, marks[0]) for sheet, marks in places.items()
+            if marks and all(m is not None for m in marks)}
+
+
+def label_borrowed(text: str, labels: Dict[str, str]) -> str:
+    """`text` with each standalone sheet number in `labels` replaced by its
+    tagged citation."""
+    for sheet, tagged in labels.items():
+        text = re.sub(r"(?<![\w.-])" + re.escape(sheet) + r"(?![\w-]|\.\d)",
+                      lambda _m, t=tagged: t, text)
+    return text
+
+
+def without_tags(text: Any) -> str:
+    """`text` with every unnumbered tag removed ("A-105.01 (gas-change set,
+    unnumbered) "Roof Plan"" -> "A-105.01"): what the gate reads figures from."""
+    return _TAG.sub("", str(text or ""))
+
+
+def unnumbered_marks(decisions: Iterable[Dict[str, Any]], pages: Dict[str, Dict[str, Any]],
+                     files: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[int, Dict[str, Any]]]:
+    """{file_id: {page_number: mark}} from the ANSWERED replaces questions
+    (`decisions`), the replacing pages' own index records (`pages`, by page id)
+    and the project's files (`files`, by id: name, drawing_track_label).
+    UNNUMBERED means the page's own index record has no sheet number; the
+    number it is read as is the one the office gave it (takes_sheet_number,
+    else the replaced sheet's). A numbered page, or a record that is missing,
+    is not marked."""
+    out: Dict[str, Dict[int, Dict[str, Any]]] = {}
+    for d in decisions or []:
+        if d.get("answer") != "replaces" or d.get("status", "answered") != "answered":
+            continue
+        for r in d.get("replacements") or []:
+            page = pages.get(str(r.get("page_id"))) or {}
+            if not page or str(page.get("sheet_number") or "").strip():
+                continue
+            sheet = str(r.get("takes_sheet_number") or (r.get("replaces") or {}).get("sheet_number")
+                        or "").strip()
+            try:
+                number = int(page.get("page_number") if page.get("page_number") is not None
+                             else r.get("page_number"))
+            except (TypeError, ValueError):
+                continue
+            fid = str(page.get("file_id") or r.get("file_id") or "")
+            if not sheet or not fid:
+                continue
+            f = files.get(fid) or {}
+            out.setdefault(fid, {})[number] = {
+                "sheet": sheet,
+                "title": re.sub(r"\s+", " ", str(page.get("sheet_title") or "")).strip(),
+                "set": set_name(page.get("file_name") or f.get("name"), f.get("drawing_track_label"))}
+    return out
 
 
 # ── THE DRAWING LIST ─────────────────────────────────────────────────────────
