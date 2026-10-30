@@ -4143,6 +4143,12 @@ def _claim_subject(clause: str, spans: Sequence[Tuple[int, int]]) -> List[str]:
 # at all after a 1 ("1 exhaust fan"). A magnitude word (ASKING_WORDS: "42
 # high") is a measurement's, not a count's. "PTAC-1: 21." states its value
 # after the subject and is an attribute's shape; it keeps the value path.
+#
+# RULING 123 (2026-10-30) adds the mirror shape (_plural_integer_phrases): a
+# PLURAL noun phrase followed by a bare integer ("floor drains on the roof:
+# 2.") states a count too, whatever the noun - a singular tag still does not.
+# REFUSALS ONLY: under attribute it must satisfy the count rule AND the value
+# path (_route_counts); it never binds what the value path refused.
 _COUNT_WORD = r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*"
 _COUNTED = re.compile(
     r"(?<![A-Za-z0-9.\-/])(\d[\d,]*(?:\.\d+)?)[ \t]+(" + _COUNT_WORD
@@ -4184,10 +4190,69 @@ def _is_plural(word: str) -> bool:
     return w.isalpha() and any(len(f) < len(w) for f in term_forms(w))
 
 
+def _plural_noun(word: str) -> bool:
+    """A plural NOUN: the gate's own plural (_is_plural), not an -ss / -us /
+    -is word ("glass", "status", "basis" are no plurals of anything)."""
+    w = (word or "").lower()
+    return _is_plural(w) and not w.endswith(("ss", "us", "is"))
+
+
+def _plural_integer_phrases(clause: str) -> List[Tuple[str, List[str]]]:
+    """(number, the words it numbers) for a clause that puts a bare integer
+    AFTER a plural noun phrase and says nothing more: "floor drains on the
+    roof: 2.", "Floor drains 2", "The doors are 3.".
+
+    RULING 123 (Roy, 2026-10-30): "yes: small separate PR, refusals only".
+    Under the attribute intent, any "plural noun phrase: bare integer" clause
+    is a count, even when the noun names no family the records know - so the
+    count rule must bear it out too (_route_counts), and it binds no more
+    than the value path bound it. Measured
+    before: "floor drains on the roof: 2." bound in 12 forms because P-400's
+    FLOOR DRAIN row prints a 2, which is a PIPE SIZE (it refused under
+    count). Same grammar as the shapes above, mirrored:
+      - the integer is bare: not a decimal, no unit of measure (_UNIT_VALUE),
+        and NOTHING follows it but punctuation - "studs: 20 gauge", "pipes:
+        2 in", "walls: 2 hr" keep the value path, and "N <noun>" is
+        _counted_phrases' own shape;
+      - the subject is the first run of words, up to the first stop word
+        ("floor drains" in "floor drains on the roof"), and ends in a plural
+        noun - a singular tag ("PTAC-1: 9000", "EF-1: 50") or a thing
+        ("occupancy load: 10") is a value's;
+      - a magnitude word (ASKING_WORDS: "heights: 9") is a measurement's."""
+    c = clause or ""
+    vals = list(_VALUE_RE.finditer(c))
+    if not vals or any("." in m.group(0).rstrip(".") for m in vals):
+        return []
+    if any(_UNIT_VALUE.match(c, m.start()) for m in vals):
+        return []
+    last = vals[-1]
+    if re.search(r"[A-Za-z0-9]", c[last.end():]):
+        return []
+    lead = c[vals[-2].end():last.start()] if len(vals) > 1 else c[:last.start()]
+    run: List[str] = []
+    for w in _PHRASE_WORD.findall(lead):
+        if w.lower() in _STOP:
+            if run:
+                break
+            continue
+        run.append(w)
+    if not run or not _plural_noun(run[-1]):
+        return []
+    if any(w.lower() in ASKING_WORDS or _stem(w) in ASKING_WORDS for w in run):
+        return []
+    return [(last.group(0).rstrip("."), run)]
+
+
 def states_a_count(clause: str) -> bool:
     """Does this clause (its dimensions and set names already blanked) state
     a number OF things - a count - rather than a value of something?"""
     return bool(_counted_phrases(clause))
+
+
+def states_a_plural_integer(clause: str) -> bool:
+    """Ruling 123: does the clause put a bare integer after a plural noun
+    phrase and say nothing more (_plural_integer_phrases)?"""
+    return bool(_plural_integer_phrases(clause))
 
 
 # ── A FAMILY'S COUNT IS THE COUNT RULE'S, UNDER EVERY INTENT ──────────────
@@ -4321,6 +4386,13 @@ def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
                     fams[str(name).upper()] = sorted(set(fams.get(str(name).upper(), []))
                                                      | {str(t).upper() for t in tags or []})
             route = states_a_family_count(clause, fams)
+            # RULING 123, REFUSALS ONLY: "<plural noun phrase>: <bare integer>"
+            # under attribute must ALSO satisfy the count rule - and keeps the
+            # value path as it was, so nothing newly binds. (Routed whole, the
+            # count rule would bind 867 true located counts the value path
+            # refuses: "EF-1 exhaust fans in 1B: 1." - not this change's.)
+            if not route and every and states_a_plural_integer(clause):
+                bad += _count_answer_is_bound(source[c0:c1], records)[1]
         if route:
             bad += _count_answer_is_bound(source[c0:c1], records)[1]
             out[c0:c1] = " " * (c1 - c0)
