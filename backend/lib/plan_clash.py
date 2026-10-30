@@ -128,7 +128,9 @@ TOUCH_IN = reg.TOL_CLEARANCE_IN
 #: one stack's pieces differ by <= 0.1 pt between floors, the measured fixture matches at 0.35)
 MATCH_PT = 0.35
 
-#: ruling 117: a refusal that names the below-slab plan
+#: lib.plan_stacks.BELOW_SLAB, the level its below-slab rows carry
+BELOW_SLAB_LEVEL = "BELOW_SLAB"
+#: ruling 117: a refusal that names the below-slab plan (rows of an older pass)
 _BELOW_SLAB = re.compile(r"underground|below[- ]slab|cellar", re.I)
 BELOW_SLAB_NOTE = ("below-slab plumbing plan (ruling 117: there is no cellar; the first underground "
                    "floor is not a storey), not checked against a storey's lateral system")
@@ -506,6 +508,25 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
     """
     tol = pts(tol_in)
     plumbing = list(plumbing)
+    slab: Dict[Tuple, dict] = {}
+
+    def below_slab(r, what):
+        d = slab.setdefault((r.get("track"), r.get("plumbing_sheet")), {"pipes": 0, "stacks": 0})
+        d[what] += 1
+
+    # A ROW THAT SAYS IT IS BELOW THE SLAB IS SKIPPED, PLACED OR NOT (ruling
+    # 117; lib.plan_stacks writes level "BELOW_SLAB" on a below-slab plan's
+    # stack and pipe_segments rows, which ARE placed on the first-floor A
+    # plan for their offset). Taken out first, so neither the frame test nor
+    # ruling 116's cross-floor comparison ever sees them. Rows of an older
+    # pass carry no level and go by their refusal text below.
+    kept = []
+    for r in plumbing:
+        if r.get("level") == BELOW_SLAB_LEVEL and r.get("record_type") in ("pipe_segments", "stack"):
+            below_slab(r, "pipes" if r.get("record_type") == "pipe_segments" else "stacks")
+        else:
+            kept.append(r)
+    plumbing = kept
     fb = frames_by_page(structure)
     frames = fb["frames"]
     not_checked = list(fb["not_checked"])
@@ -515,12 +536,6 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
     off_stacks = stack_inconsistencies(plumbing)
     prow_pages: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
     stacks_pages: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
-    slab: Dict[Tuple, dict] = {}
-
-    def below_slab(r, what):
-        d = slab.setdefault((r.get("track"), r.get("plumbing_sheet")), {"pipes": 0, "stacks": 0})
-        d[what] += 1
-
     for r in plumbing:
         rt = r.get("record_type")
         if rt == "pipe_segments":

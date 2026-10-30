@@ -485,6 +485,29 @@ class RulingOneHundredSeventeen(unittest.TestCase):
         self.assertEqual((sk["pipe_rows"], sk["stack_rows"]), (1, 1))
         self.assertEqual(sk["level"], "below slab")
 
+    def test_a_placed_below_slab_row_inside_a_frame_is_skipped_not_flagged(self):
+        """lib.plan_stacks now PLACES P-200's rows on the first-floor A plan
+        (for the registration offset) and writes level BELOW_SLAB on them. A
+        stack and a pipe through the first-floor frame, on those rows, are
+        under the slab: skipped by the level, never flagged, never a ruling
+        116 comparison."""
+        _present()
+        slab_stack = dict(stack(1630.30, 736.39, tag="S-1", sheet="P-200.00"), level="BELOW_SLAB")
+        slab_pipe = dict(pipes([(1600.0, 790.0, 1660.0, 790.0, "sanitary")], sheet="P-200.00"),
+                         level="BELOW_SLAB")
+        res = C.check(structure(), [pipes([SPARE_PIPE]), slab_stack, slab_pipe])
+        self.assertEqual([f for f in res["flags"] if f["plumbing"]["sheet_number"] == "P-200.00"], [])
+        self.assertEqual([f for f in res["flags"] if f["kind"] == C.KIND_STACK], [])
+        self.assertEqual(res["inconsistencies"], [])
+        self.assertEqual([n for n in res["not_checked"] if "P-200" in str(n.get("label"))], [])
+        sk = one([k for k in res["skipped"] if "P-200.00" in k["what"]])
+        self.assertEqual((sk["pipe_rows"], sk["stack_rows"]), (1, 1))
+        self.assertEqual(sk["level"], "below slab")
+        self.assertIn("no cellar", sk["why"])
+        # the same row WITHOUT the level is a storey's row and IS flagged
+        res2 = C.check(structure(), [pipes([SPARE_PIPE]), dict(slab_stack, level=None)])
+        self.assertEqual(len(flags(res2, C.KIND_STACK)), 1)
+
     def test_a_sheet_refused_for_another_reason_stays_not_checked(self):
         _present()
         res = C.check(structure(), [pipes([SPARE_PIPE]),
