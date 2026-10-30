@@ -175,6 +175,29 @@ class TheEvidenceSaysAnsweredNotNotDecided(unittest.TestCase):
         self.assertIn("answered not part of the filed set by Roey Fishman", lines[0])
         self.assertIn("applied at the next drawing check", lines[0])
 
+    def test_a_replacement_recorded_after_the_pass_reads_as_a_replacement(self):
+        """Roy, 10-30: Q2 is REPLACES, not part of / not part of. The render
+        says which sheets it replaces, never "not part of the filed set"."""
+        _need("REPLACES", "replaces_phrase")
+        books = SimpleNamespace(tracks={"filed": SimpleNamespace(questions={"q2": "the unnumbered Roof Plan"})},
+                                labels={"filed": "the filed set"})
+        stored = {"record_type": "set_question", "_id": "q2", "code": "Q2", "status": psq.ANSWERED,
+                  "answer": psq.REPLACES, "label": "the unnumbered Roof Plan",
+                  "answered_by_name": "Roy", "answered_via": "admin", "answered_at": "2026-10-30T10:00:00",
+                  "replacements": [
+                      {"file_name": "AR - 6.9.26 (Gas change).pdf", "page_number": 2, "sheet_number": None,
+                       "sheet_title": "Roof Plan", "replaces": {"sheet_number": "A-105.01"}},
+                      {"file_name": "AR - 6.9.26 (Gas change).pdf", "page_number": 1,
+                       "sheet_number": "A-100.00", "sheet_title": "FIRST FLOOR PLAN",
+                       "replaces": {"sheet_number": "A-100.01"}}]}
+        lines = S.render_set_questions([stored], books)
+        self.assertEqual(len(lines), 1)
+        self.assertNotIn("Not decided", lines[0])
+        self.assertNotIn("not part of", lines[0])
+        self.assertIn("replaces A-105.01", lines[0])
+        self.assertIn("A-100.00 (AR - 6.9.26 (Gas change).pdf, page 1) replaces A-100.01", lines[0])
+        self.assertIn("applied at the next drawing check", lines[0])
+
     def test_the_evidence_reads_answered_questions_too(self):
         import inspect
         src = inspect.getsource(server._glyph_evidence)
