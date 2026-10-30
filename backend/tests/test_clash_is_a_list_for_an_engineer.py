@@ -82,8 +82,8 @@ def pipes(segments=(), curves=(), *, track="filed", a=A, sheet="P-204.00", refus
             "placement_refused": refused}
 
 
-def stack(x, y, r=2.25, tag="V-3", track="filed", a=A, footprint=True, why=None):
-    return {"record_type": "stack", "track": track, "plumbing_sheet": "P-204.00",
+def stack(x, y, r=2.25, tag="V-3", track="filed", a=A, footprint=True, why=None, sheet="P-204.00"):
+    return {"record_type": "stack", "track": track, "plumbing_sheet": sheet,
             "plumbing_page_id": "p204", "tag_id": tag, "a_sheet": dict(A_REF, page_id=a),
             "arch_page_id": a, "status": "located" if footprint else "no_stack",
             "footprint_arch": ({"type": "circle", "x": x, "y": y, "r": r, "frame": "arch_page_pt"}
@@ -315,6 +315,186 @@ class NeverSilentNeverAVerdict(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 3b. RULING 116: a stack one floor draws off the line the others agree on is
+#     a DRAWING INCONSISTENCY, not a clash; RULING 117: P-200 is below the slab
+# ══════════════════════════════════════════════════════════════════════════
+
+V4_AGREED = (1631.7, 846.0)
+V4_DRAWN = (1633.4, 810.3)               # 35.7 pt = 23.8 in up the wall
+OFFSET_ARM = (1635.7, 810.3, 1638.0, 810.3, "vent")       # touches V-4's rim as drawn
+SPARE_PIPE = (1631.0, 750.0, 1631.0, 790.0, "vent")       # a pipe in the wall, nowhere near V-4
+VOTERS = ("P-201.00", "P-202.00", "P-203.00")
+
+
+def _floors(*sheets, at=V4_AGREED, tag="V-4", track="filed"):
+    """V-4 as the other floors draw it, on A pages with no frame (they only vote)."""
+    return [stack(at[0], at[1], tag=tag, sheet=sh, track=track, a=f"a-{sh}") for sh in sheets]
+
+
+class RulingOneHundredSixteen(unittest.TestCase):
+
+    def _res(self, floors=VOTERS, extra=()):
+        return C.check(structure(), [pipes([OFFSET_ARM, SPARE_PIPE]), stack(*V4_DRAWN, tag="V-4")]
+                       + _floors(*floors) + list(extra))
+
+    def test_a_stack_one_floor_draws_off_the_line_is_an_inconsistency_not_a_clash(self):
+        _present()
+        res = self._res()
+        self.assertEqual(flags(res, C.KIND_STACK), [])
+        it = one(res["inconsistencies"])
+        self.assertEqual(it["message"], "V-4 drawn 23.8 in off its stack position on P-204.00; "
+                                        "other floors agree")
+        self.assertEqual(it["kind"], C.KIND_INCONSISTENCY)
+        self.assertEqual(it["label"], C.FLAG_LABEL)
+        self.assertEqual(it["agreed"]["sheets"], list(VOTERS))
+        self.assertEqual(res["summary"]["inconsistencies"], 1)
+
+    def test_the_pipes_drawn_on_the_offset_stack_move_with_it_and_none_are_lost(self):
+        _present()
+        res = self._res()
+        f = one(flags(res, C.KIND_PIPE))
+        self.assertEqual([p["index"] for p in f["pieces"]], [1])          # the spare pipe stays flagged
+        it = one(res["inconsistencies"])
+        self.assertEqual([p["index"] for p in it["reclassified_pieces"]], [0])
+        self.assertEqual(it["counts"]["reclassified_pieces"], 1)
+        self.assertEqual(res["summary"]["reclassified_pieces"], 1)
+        # as drawn the wall holds both pieces; flagged + reclassified is that total
+        plain = C.check(structure(), [pipes([OFFSET_ARM, SPARE_PIPE])])
+        self.assertEqual(one(flags(plain, C.KIND_PIPE))["counts"]["pieces"],
+                         f["counts"]["pieces"] + it["counts"]["reclassified_pieces"])
+
+    def test_pipes_that_exist_only_because_of_the_offset_move_with_it(self):
+        """A piece that does not touch the stack, but is the agreeing floor's piece moved by the
+        offset, exists only because the stack was drawn there. A piece the agreeing floor draws
+        in the same place is the same pipe on every floor and stays flagged."""
+        _present()
+        ox, oy = V4_DRAWN[0] - V4_AGREED[0], V4_DRAWN[1] - V4_AGREED[1]
+        beside = (1631.0, 860.0, 1631.0, 870.0, "sanitary")                  # on P-203
+        moved = (beside[0] + ox, beside[1] + oy, beside[2] + ox, beside[3] + oy, "sanitary")  # on P-204
+        repeat = (1630.0, 770.0, 1630.0, 780.0, "vent")        # on both floors, where P-203 also has
+        back = (repeat[0] - ox, repeat[1] - oy, repeat[2] - ox, repeat[3] - oy, "vent")      # its offset twin
+        res = C.check(structure(), [pipes([OFFSET_ARM, SPARE_PIPE, moved, repeat]),
+                                    stack(*V4_DRAWN, tag="V-4"),
+                                    pipes([beside, SPARE_PIPE, repeat, back], a="a-P-203.00",
+                                          sheet="P-203.00")] + _floors(*VOTERS))
+        it = one(res["inconsistencies"])
+        self.assertEqual(sorted(p["index"] for p in it["reclassified_pieces"]), [0, 2])
+        f = one(flags(res, C.KIND_PIPE))
+        self.assertEqual([p["index"] for p in f["pieces"]], [1, 3])
+
+    def test_the_agreed_position_is_stated_on_the_item(self):
+        _present()
+        it = one(self._res()["inconsistencies"])
+        self.assertEqual(it["agreed"]["relation"], "inside")
+        self.assertIn("inside", it["detail"])
+        self.assertIn("ruling 116", it["detail"])
+
+    def test_floors_that_disagree_with_each_other_reclassify_nothing(self):
+        """No agreed line, no inconsistency: the stack stays a flag where it is drawn."""
+        _present()
+        res = C.check(structure(), [stack(*V4_DRAWN, tag="V-4")]
+                      + _floors("P-201.00", at=(1631.7, 846.0)) + _floors("P-202.00", at=(1631.7, 780.0)))
+        self.assertEqual(res["inconsistencies"], [])
+        self.assertEqual(len(one(flags(res, C.KIND_STACK))["stacks"]), 1)
+
+    def test_one_other_floor_is_not_enough_to_agree(self):
+        _present()
+        res = C.check(structure(), [stack(*V4_DRAWN, tag="V-4")] + _floors("P-201.00"))
+        self.assertEqual(res["inconsistencies"], [])
+        self.assertEqual(len(one(flags(res, C.KIND_STACK))["stacks"]), 1)
+
+    def test_the_agreeing_floors_must_outnumber_the_ones_that_repeat_the_offset(self):
+        """Two floors on each line is a tie, not an agreement."""
+        _present()
+        res = C.check(structure(), [stack(*V4_DRAWN, tag="V-4")] + _floors("P-201.00", "P-202.00")
+                      + _floors("P-205.00", at=V4_DRAWN))
+        self.assertEqual(res["inconsistencies"], [])
+
+    def test_other_floors_split_evenly_agree_on_nothing(self):
+        _present()
+        res = C.check(structure(), [stack(*V4_DRAWN, tag="V-4")]
+                      + _floors("P-201.00", "P-202.00") + _floors("P-203.00", "P-206.00", at=(1631.7, 780.0)))
+        self.assertEqual(res["inconsistencies"], [])
+        self.assertEqual(len(one(flags(res, C.KIND_STACK))["stacks"]), 1)
+
+    def test_a_sheet_that_repeats_the_offset_is_named_and_may_be_outvoted(self):
+        _present()
+        res = self._res(extra=_floors("P-205.00", at=V4_DRAWN))
+        it = one(res["inconsistencies"])
+        self.assertEqual(it["same_position_on"], ["P-205.00"])
+        self.assertIn("P-205.00", it["detail"])
+
+    def test_within_two_inches_is_the_same_position(self):
+        _present()
+        near = (V4_AGREED[0], V4_AGREED[1] + 1.5 * PT_IN)
+        res = C.check(structure(), [stack(*near, tag="V-4")] + _floors(*VOTERS))
+        self.assertEqual(res["inconsistencies"], [])
+
+    def test_another_track_does_not_vote(self):
+        _present()
+        res = C.check(structure(), [stack(*V4_DRAWN, tag="V-4")] + _floors(*VOTERS, track="post_co"))
+        self.assertEqual(res["inconsistencies"], [])
+
+    def test_another_tag_does_not_vote(self):
+        _present()
+        res = C.check(structure(), [stack(*V4_DRAWN, tag="V-4")] + _floors(*VOTERS, tag="V-5"))
+        self.assertEqual(res["inconsistencies"], [])
+
+    def test_a_stack_away_from_every_frame_has_no_item(self):
+        """The rule reclassifies a CLASH; a stack nowhere near a frame never was one."""
+        _present()
+        res = C.check(structure(), [stack(1200.0, 810.3, tag="V-4")] + _floors(*VOTERS))
+        self.assertEqual(res["inconsistencies"], [])
+
+    def test_a_consistent_stack_is_still_a_clash_flag(self):
+        _present()
+        res = C.check(structure(), [stack(*V4_AGREED, tag="V-4")] + _floors(*VOTERS))
+        self.assertEqual(res["inconsistencies"], [])
+        self.assertEqual(one(flags(res, C.KIND_STACK))["stacks"][0]["tag_id"], "V-4")
+
+    def test_v3_beside_it_stays_a_flag(self):
+        _present()
+        res = self._res(extra=[stack(1630.30, 736.39, tag="V-3")])
+        f = one(flags(res, C.KIND_STACK))
+        self.assertEqual([s["tag_id"] for s in f["stacks"]], ["V-3"])
+
+    def test_the_inconsistency_is_stored_and_carries_no_verdict(self):
+        _present()
+        res = self._res()
+        rows = C.rows_for_store(res, project_id="proj", company_id="co")
+        self.assertIn("clash_inconsistency", [r["record_type"] for r in rows])
+        for s in _strings(res["inconsistencies"]):
+            self.assertIsNone(VERDICT.search(s), s)
+
+
+class RulingOneHundredSeventeen(unittest.TestCase):
+
+    P200 = "P-200.00: title 'FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN' names no level"
+
+    def test_p200_is_below_slab_skipped_never_a_storey_clash_never_silent(self):
+        _present()
+        res = C.check(structure(), [pipes([SPARE_PIPE]),
+                                    pipes(refused=self.P200, sheet="P-200.00"),
+                                    dict(stack(0, 0, footprint=False, tag="S-3", sheet="P-200.00"),
+                                         placement_refused=self.P200)])
+        self.assertEqual({f["plumbing"]["sheet_number"] for f in res["flags"]}, {"P-204.00"})
+        self.assertEqual([n for n in res["not_checked"] if "P-200" in str(n.get("label"))], [])
+        sk = one([k for k in res["skipped"] if "P-200.00" in k["what"]])
+        self.assertIn("below-slab", sk["why"])
+        self.assertIn("no cellar", sk["why"])
+        self.assertEqual((sk["pipe_rows"], sk["stack_rows"]), (1, 1))
+        self.assertEqual(sk["level"], "below slab")
+
+    def test_a_sheet_refused_for_another_reason_stays_not_checked(self):
+        _present()
+        res = C.check(structure(), [pipes([SPARE_PIPE]),
+                                    pipes(refused="P-207.00: 0 architectural plans titled at level BULKHEAD",
+                                          sheet="P-207.00")])
+        self.assertIn(("pipes", "P-207.00 pipes"), [(n["what"], n["label"]) for n in res["not_checked"]])
+        self.assertEqual([k for k in res["skipped"] if "P-207" in k["what"]], [])
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 4. the review queue items and the stored rows (designed, not written)
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -364,13 +544,39 @@ BENCH_PAGES = [
 ]
 
 
+#: the other floors' sheets, read only so that V-4's position on each can vote (ruling 116)
+FLOOR_PAGES = [
+    {"sheet_number": "A-100.01", "sheet_title": "FIRST FLOOR PLAN", "file_name": "AR - 8.18.26.pdf",
+     "page_number": 6, "page_id": "6ab05f0a8cb050f05e535ba9"},
+    {"sheet_number": "A-101.00", "sheet_title": "SECOND FLOOR PLAN", "file_name": "AR - 3.28.25.pdf",
+     "page_number": 12, "page_id": "6adf9c37bbd592e9bb0e524a"},
+    {"sheet_number": "A-102.00", "sheet_title": "THIRD FLOOR PLAN", "file_name": "AR - 3.28.25.pdf",
+     "page_number": 13, "page_id": "6adf9c50bbd592e9bb0e524f"},
+    {"sheet_number": "A-104.00", "sheet_title": "MEZZANINE PLAN", "file_name": "AR - 3.28.25.pdf",
+     "page_number": 15, "page_id": "6adf9c68bbd592e9bb0e525e"},
+    {"sheet_number": "P-201.00", "sheet_title": "FIRST FLOOR SANITARY & STORM PLAN",
+     "file_name": "PL - 6.29.26.pdf", "page_number": 9, "page_id": "6ab063d38cb050f05e535ef8"},
+    {"sheet_number": "P-202.00", "sheet_title": "SECOND FLOOR SANITARY & STORM PLAN",
+     "file_name": "PL - 6.29.26.pdf", "page_number": 10, "page_id": "6ab0640e8cb050f05e535f26"},
+    {"sheet_number": "P-203.00", "sheet_title": "THIRD FLOOR SANITARY & STORM PLAN",
+     "file_name": "PL - 6.29.26.pdf", "page_number": 11, "page_id": "6ab0640d8cb050f05e535f25"},
+    {"sheet_number": "P-205.00", "sheet_title": "MEZZANINE FLOOR SANITARY & STORM PLAN",
+     "file_name": "PL - 6.29.26.pdf", "page_number": 13, "page_id": "6ab0644a8cb050f05e535f30"},
+]
+
+
 class TheBenchmark(unittest.TestCase):
-    """Measured 2026-10-29 (bv-worktrees/C1_clash_measure.md): 70 sanitary/vent
-    pieces in SW 1 (34 straight + 36 curved); 15 touch its end posts as drawn
-    (7 + 8; 8 at the top, 7 at the bottom) - T3's and T4's numbers - and 29
-    are within the end post + 2 in. V-3 inside the frame, V-4 inside on its
-    east face (rim 0.07 in off). Ruling 116 pending: V-4 is flagged where
-    P-204 draws it."""
+    """Measured 2026-10-29 (bv-worktrees/C1_clash_measure.md): AS DRAWN, 70
+    sanitary/vent pieces in SW 1 (34 straight + 36 curved); 15 touch its end
+    posts (7 + 8; 8 at the top, 7 at the bottom) - T3's and T4's numbers - and
+    29 are within the end post + 2 in. V-3 inside the frame.
+
+    Ruling 116: P-204 draws V-4 23.8 in off the line P-201..P-203 agree on, so
+    V-4 and the 15 pieces that exist only because it was drawn there (the run
+    of pipework around the riser: P-203's pieces moved by the offset - V-4's
+    vent circle and arm, the sanitary and vent circles beside it, and their
+    arms) are an inconsistency item, not flags: 55 flagged + 15 reclassified =
+    the 70 as drawn. None of the 15 is in a hold-down zone."""
 
     res = None
 
@@ -383,7 +589,8 @@ class TheBenchmark(unittest.TestCase):
             def open_page(p):
                 return PlanPage(str(require_pdf(p["file_name"])), int(p["page_number"]))
             st = plan_structural.run_track(BENCH_PAGES, open_page, track="filed")
-            pl = plan_stacks.run_stacks([("filed", BENCH_PAGES)], open_page, None, 56.0, place=False)
+            pl = plan_stacks.run_stacks([("filed", BENCH_PAGES + FLOOR_PAGES)], open_page, None, 56.0,
+                                        place=False)
             cls.res = C.check(st["rows"], pl["rows"])
         return cls.res
 
@@ -391,14 +598,30 @@ class TheBenchmark(unittest.TestCase):
         return [f for f in self._run()["flags"] if f["kind"] == kind and f["frame"]["tag"] == "SW 1"
                 and f["plumbing"]["sheet_number"].startswith("P-204")]
 
-    def test_seventy_pieces_in_sw1(self):
+    def _v4(self):
+        return one([i for i in self._run()["inconsistencies"] if i["stack"]["tag_id"] == "V-4"
+                    and i["stack"]["plumbing_sheet"].startswith("P-204")])
+
+    def test_seventy_pieces_in_sw1_as_drawn_fifty_five_flagged_and_fifteen_reclassified(self):
         _present()
         require_pdf("PL - 6.29.26.pdf")
-        got = self._sw1(C.KIND_PIPE)
-        sv = [f for f in got if f["system"] in ("sanitary", "vent")]
-        self.assertEqual(sum(f["counts"]["pieces"] for f in sv), 70)
-        self.assertEqual(sum(f["counts"]["straight"] for f in sv), 34)
-        self.assertEqual(sum(f["counts"]["curved"] for f in sv), 36)
+        sv = [f for f in self._sw1(C.KIND_PIPE) if f["system"] in ("sanitary", "vent")]
+        v4 = self._v4()
+        flagged = sum(f["counts"]["pieces"] for f in sv)
+        self.assertEqual(flagged, 55)
+        self.assertEqual(v4["counts"]["reclassified_pieces"], 15)
+        self.assertEqual(flagged + v4["counts"]["reclassified_pieces"], 70)
+        self.assertEqual(sum(f["counts"]["straight"] for f in sv) + v4["counts"]["straight"], 34)
+        self.assertEqual(sum(f["counts"]["curved"] for f in sv) + v4["counts"]["curved"], 36)
+
+    def test_the_fifteen_reclassified_pieces_are_the_run_around_v4(self):
+        _present()
+        require_pdf("PL - 6.29.26.pdf")
+        got = sorted((p["system"], p["piece"], p["index"]) for p in self._v4()["reclassified_pieces"])
+        self.assertEqual(got, sorted(
+            [("sanitary", "curved", i) for i in (26, 27, 28, 29)] + [("sanitary", "straight", 21)]
+            + [("vent", "curved", i) for i in (30, 31, 32, 33, 42, 43, 44)]
+            + [("vent", "straight", i) for i in (23, 34, 35)]))
 
     def test_fifteen_touch_the_end_posts_and_twenty_nine_are_within_two_inches(self):
         _present()
@@ -410,21 +633,25 @@ class TheBenchmark(unittest.TestCase):
         self.assertEqual(sum(1 for p in touching if p["hold_down_end"] == "top"), 8)
         self.assertEqual(len(pieces), 29)
         self.assertTrue(all(0 <= p["hold_down_in"] <= 2.0 for p in pieces))
+        self.assertEqual(self._v4()["counts"]["in_hold_down_zone"], 0)
 
-    def test_v3_inside_and_v4_on_the_east_face(self):
-        """By WHERE the stacks are (T4's measured A points), not by the tag
-        text: this run reads P-204 alone, and T4 votes SHX digits across the
-        whole set (a lone "3" is the digit it pools to read)."""
+    def test_v3_is_a_flag_inside_the_frame_and_v4_is_an_inconsistency(self):
+        """By WHERE the stacks are (T4's measured A points) for V-3, not the tag
+        text; V-4 by its tag, which the rule needs (it compares a tag across floors)."""
         _present()
         require_pdf("PL - 6.29.26.pdf")
         f = one(self._sw1(C.KIND_STACK))
-        at = lambda x, y: [s for s in f["stacks"] if abs(s["x"] - x) < 1 and abs(s["y"] - y) < 1]  # noqa: E731
-        v3, v4 = one(at(1630.30, 736.39)), one(at(1633.42, 810.25))
-        self.assertEqual(len(f["stacks"]), 2, [(s["tag_id"], s["x"], s["y"]) for s in f["stacks"]])
+        self.assertEqual(len(f["stacks"]), 1, [(s["tag_id"], s["x"], s["y"]) for s in f["stacks"]])
+        v3 = f["stacks"][0]
+        self.assertLess(abs(v3["x"] - 1630.30), 1)
+        self.assertLess(abs(v3["y"] - 736.39), 1)
         self.assertEqual(v3["relation"], "inside", v3)
-        self.assertEqual(v4["relation"], "inside", v4)
-        self.assertLess(v4["edge_clearance_in"], 0.25, v4)
         self.assertEqual(f["label"], C.FLAG_LABEL)
+        v4 = self._v4()
+        self.assertEqual(v4["message"], "V-4 drawn 23.8 in off its stack position on P-204.00; "
+                                        "other floors agree")
+        self.assertEqual(v4["agreed"]["sheets"], ["P-201.00", "P-202.00", "P-203.00"])
+        self.assertEqual(v4["agreed"]["relation"], "inside")
 
 
 if __name__ == "__main__":

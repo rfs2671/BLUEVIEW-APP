@@ -63,8 +63,23 @@ and shows both pairs' registration margins on every flag.
   * every flag on the owner's set (post_co) carries the structure rows'
     `structure_note` ("structure per filed set S-10x.00; the owner's set has
     no structural sheets")
-  * ruling 116 is pending: P-204's V-4 jogs 23.8 in onto SW 1's line between
-    the 3rd and 4th floors. It is flagged at the position drawn.
+  * RULING 116 (as-built): V-4 runs straight up; P-204's 23.8 in offset is a
+    DRAFTING ERROR. When one sheet draws a stack away from where the other
+    floors agree it is (more than TOL_IN from a position at least two other
+    floors share, and held by fewer floors than the agreeing position), the
+    stack is not a clash: it is a DRAWING INCONSISTENCY -
+    "V-4 drawn 23.8 in off its stack position on P-204; other floors agree".
+    The stack leaves the stack flag, and the pipe pieces that exist only
+    because it was drawn off its line leave the pipe flags: those touching its
+    footprint (within TOL_CLEARANCE_IN of the rim) and those that are an
+    agreeing floor's piece moved by the stack's offset and not where that
+    floor draws it (MATCH_PT). Both are listed on the inconsistency item,
+    never dropped. The agreed
+    position's relation to the frame is stated on the item. A stack whose
+    floors do not agree with each other is not reclassified
+  * RULING 117: there is no cellar. P-200 ("FIRST UNDERGROUND FLOOR") is the
+    below-slab plumbing plan, not a storey: it is listed under "skipped" as
+    a below-slab plan, never flagged and never read as a storey's clash
 
 Pure: no database, no network, no rendering. The overlay crops are drawn by
 scripts/clash_report.py from these flags.
@@ -73,6 +88,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -92,6 +108,8 @@ KIND_PIPE = "pipe_through_frame"
 KIND_HOLD_DOWN = "pipe_in_hold_down_zone"
 KIND_STACK = "stack_at_frame"
 KINDS = (KIND_PIPE, KIND_HOLD_DOWN, KIND_STACK)
+#: ruling 116: NOT a clash - a stack drawn off where the other floors agree
+KIND_INCONSISTENCY = "drawing_inconsistency"
 
 #: the structural elements a pipe is checked against (Roy: "a shear wall or
 #: braced frame"); a bearing wall is not one
@@ -100,6 +118,20 @@ FRAME_ELEMENTS = ("shear_wall", "braced_frame")
 #: the side-of-wall tolerance (plan_registration: "WHICH SIDE OF THE WALL /
 #: DOES THIS PENETRATE IT"), applied to the hold-down zone and to stacks
 TOL_IN = reg.TOL_WALL_SIDE_IN
+
+#: ruling 116: two readings of one stack agree within this; a drawn pipe piece
+#: "touches" a stack's footprint within this of its rim
+AGREE_IN = reg.TOL_WALL_SIDE_IN
+TOUCH_IN = reg.TOL_CLEARANCE_IN
+
+#: ruling 116: a drawn piece is "the same piece" on another floor within this (display pt;
+#: one stack's pieces differ by <= 0.1 pt between floors, the measured fixture matches at 0.35)
+MATCH_PT = 0.35
+
+#: ruling 117: a refusal that names the below-slab plan
+_BELOW_SLAB = re.compile(r"underground|below[- ]slab|cellar", re.I)
+BELOW_SLAB_NOTE = ("below-slab plumbing plan (ruling 117: there is no cellar; the first underground "
+                   "floor is not a storey), not checked against a storey's lateral system")
 
 #: a point on a boundary is ON it within this (display pt; rounding of the
 #: rows is 0.01pt)
@@ -338,32 +370,164 @@ def _base(kind: str, frame: dict, prow: dict, tol_in: float) -> dict:
             "structure_note": frame.get("structure_note"), "tolerance_in": tol_in}
 
 
+def _series(sheet: Any) -> str:
+    m = re.search(r"-\s*(\d)", str(sheet or ""))
+    return m.group(1) if m else ""
+
+
+def stack_inconsistencies(plumbing: Iterable[dict], *, agree_in: float = AGREE_IN) -> Dict[Tuple, dict]:
+    """RULING 116: {(track, plumbing_sheet, tag_id): info} for every stack one
+    sheet draws away from where the other floors agree it is.
+
+    The readings of a tag are its `footprint_arch` centres on the sheets of
+    ONE series of ONE track (all in the A frame, which the floors share). A
+    sheet is inconsistent when the OTHER sheets' largest group of readings
+    that agree with each other (within agree_in) has no rival group of equal
+    size, this sheet's reading is more than agree_in from it, and the group
+    has more sheets than draw the tag where this one does (so at least two:
+    one other floor is not "the floors agree"). This sheet's own position may
+    be repeated on other sheets (P-205 repeats P-204's V-4) and is still
+    outvoted. A tie, or floors that do not agree with each other, reclassify
+    nothing. A sheet that draws the tag twice is ambiguous and is not compared."""
+    tol = pts(agree_in)
+    readings: Dict[Tuple, Dict[str, List[dict]]] = defaultdict(lambda: defaultdict(list))
+    for r in plumbing:
+        fp = r.get("footprint_arch")
+        if r.get("record_type") == "stack" and fp and r.get("tag_id"):
+            readings[(r.get("track"), _series(r.get("plumbing_sheet")), r["tag_id"])][
+                str(r.get("plumbing_sheet"))].append(r)
+    out: Dict[Tuple, dict] = {}
+    for (track, _ser, tag), by_sheet in readings.items():
+        single = {sh: rs[0]["footprint_arch"] for sh, rs in by_sheet.items() if len(rs) == 1}
+        for sheet, fp in single.items():
+            others = sorted((sh, f) for sh, f in single.items() if sh != sheet)
+            groups: List[List[Tuple[str, dict]]] = []
+            for sh, f in others:
+                for g in groups:
+                    if math.dist((f["x"], f["y"]), (g[0][1]["x"], g[0][1]["y"])) <= tol:
+                        g.append((sh, f))
+                        break
+                else:
+                    groups.append([(sh, f)])
+            if not groups:
+                continue
+            groups.sort(key=len, reverse=True)
+            best = groups[0]
+            if len(groups) > 1 and len(groups[1]) == len(best):
+                continue       # the other floors split evenly: they agree on nothing
+            ax = sum(f["x"] for _, f in best) / len(best)
+            ay = sum(f["y"] for _, f in best) / len(best)
+            off = math.dist((fp["x"], fp["y"]), (ax, ay))
+            if off <= tol:
+                continue
+            same = sorted(sh for sh, f in others
+                          if math.dist((f["x"], f["y"]), (fp["x"], fp["y"])) <= tol)
+            if len(best) <= 1 + len(same):
+                continue
+            out[(track, sheet, tag)] = {
+                "tag_id": tag, "plumbing_sheet": sheet, "track": track,
+                "drawn": {"x": fp["x"], "y": fp["y"], "r": fp["r"]},
+                "agreed": {"x": round(ax, 2), "y": round(ay, 2), "r": fp["r"]},
+                "offset_in": round(inches(off), 1), "agree_sheets": sorted(sh for sh, _ in best),
+                "repeated_on": same}
+    return out
+
+
+def inconsistency_message(info: dict) -> str:
+    """Roy's wording (ruling 116), generalised."""
+    return (f"{info['tag_id']} drawn {info['offset_in']:g} in off its stack position on "
+            f"{info['plumbing_sheet']}; other floors agree")
+
+
+def _touches_circle(points: Sequence[Sequence[float]], c: dict, touch_pt: float) -> bool:
+    """A drawn piece lies on the stack's footprint: within touch_pt of its rim."""
+    pts_ = [p for p in points if p is not None]
+    if len(pts_) == 1:
+        d = math.dist((pts_[0][0], pts_[0][1]), (c["x"], c["y"]))
+    else:
+        d = min(point_seg_dist((c["x"], c["y"]), a, b) for a, b in zip(pts_, pts_[1:]))
+    return d - c["r"] <= touch_pt
+
+
+def _same_piece(a: Sequence[Sequence[float]], b: Sequence[Sequence[float]], dx: float = 0.0,
+                dy: float = 0.0, tol: float = MATCH_PT) -> bool:
+    """Piece a, moved by (dx, dy), is piece b (in either direction of drawing)."""
+    if len(a) != len(b):
+        return False
+    for bb in (b, b[::-1]):
+        if all(abs(p[0] + dx - q[0]) <= tol and abs(p[1] + dy - q[1]) <= tol for p, q in zip(a, bb)):
+            return True
+    return False
+
+
+def moves_with_stack(points: Sequence[Sequence[float]], system: Any, info: dict,
+                     floors: Dict[Tuple, List[Tuple[Any, list]]]) -> bool:
+    """RULING 116: this piece EXISTS ONLY BECAUSE the stack was drawn off its line - it is
+    one of the agreeing floors' pieces moved by the stack's offset (the whole run of
+    pipework drawn around the riser), and it is not where those floors draw it. A piece
+    that sits where an agreeing floor draws it is the same pipe on every floor."""
+    ox = info["drawn"]["x"] - info["agreed"]["x"]
+    oy = info["drawn"]["y"] - info["agreed"]["y"]
+    moved = False
+    for sh in info["agree_sheets"]:
+        for sysm, q in floors.get((info["track"], sh), ()):
+            if sysm != system:
+                continue
+            if _same_piece(points, q):
+                return False
+            if _same_piece(points, q, -ox, -oy):
+                moved = True
+    return moved
+
+
+def _below_slab_text(*texts: Any) -> bool:
+    return any(_BELOW_SLAB.search(str(t)) for t in texts if t)
+
+
 def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
           tol_in: float = TOL_IN) -> Dict[str, Any]:
-    """{"flags", "not_checked", "skipped", "summary"} - the whole of clash v1.
+    """{"flags", "inconsistencies", "not_checked", "skipped", "summary"} - the
+    whole of clash v1.
 
-    flags        one per (track, level, frame, plumbing sheet, pipe system) for
-                 pipe pieces through a frame (KIND_PIPE), the same group's
-                 pieces within tol_in of an end post (KIND_HOLD_DOWN), and
-                 one per (track, level, frame) for stacks inside / crossing /
-                 within tol_in of it (KIND_STACK). Each says FLAG_LABEL.
-    not_checked  every refused placement, with its reason: a frame or a
-                 hold-down zone without a polygon, a plumbing sheet's pipes
-                 without an A placement, a stack without a footprint, and a
-                 frame on an A plan no plumbing sheet was placed on.
-    skipped      frames drawn below (not this level's structure).
+    flags          one per (track, level, frame, plumbing sheet, pipe system) for
+                   pipe pieces through a frame (KIND_PIPE), the same group's
+                   pieces within tol_in of an end post (KIND_HOLD_DOWN), and
+                   one per (track, level, frame) for stacks inside / crossing /
+                   within tol_in of it (KIND_STACK). Each says FLAG_LABEL.
+    inconsistencies ruling 116: a stack one sheet draws off where the other
+                   floors agree it is, with the pipe pieces drawn on its
+                   footprint - instead of a clash flag. One per (frame, stack).
+    not_checked    every refused placement, with its reason: a frame or a
+                   hold-down zone without a polygon, a plumbing sheet's pipes
+                   without an A placement, a stack without a footprint, and a
+                   frame on an A plan no plumbing sheet was placed on.
+    skipped        frames drawn below (not this level's structure) and the
+                   below-slab plan (ruling 117: not a storey).
     """
     tol = pts(tol_in)
+    plumbing = list(plumbing)
     fb = frames_by_page(structure)
     frames = fb["frames"]
     not_checked = list(fb["not_checked"])
+    skipped = list(fb["skipped"])
     flags: List[dict] = []
+    incons: List[dict] = []
+    off_stacks = stack_inconsistencies(plumbing)
     prow_pages: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
     stacks_pages: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
+    slab: Dict[Tuple, dict] = {}
+
+    def below_slab(r, what):
+        d = slab.setdefault((r.get("track"), r.get("plumbing_sheet")), {"pipes": 0, "stacks": 0})
+        d[what] += 1
+
     for r in plumbing:
         rt = r.get("record_type")
         if rt == "pipe_segments":
             if r.get("segments") is None and r.get("curves") is None:
+                if _below_slab_text(r.get("placement_refused")):
+                    below_slab(r, "pipes")
+                    continue
                 not_checked.append(_not_checked(
                     "pipes", f"{r.get('plumbing_sheet')} pipes", r.get("track"), None,
                     _sheet(r.get("a_sheet")), "the plumbing sheet's pipes are not placed on an "
@@ -374,6 +538,9 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
         elif rt == "stack":
             fp = r.get("footprint_arch")
             if not fp:
+                if _below_slab_text(r.get("placement_refused"), r.get("reason")):
+                    below_slab(r, "stacks")
+                    continue
                 not_checked.append(_not_checked(
                     "stack", f"{r.get('plumbing_sheet')} {r.get('tag_id') or 'tag unread'}",
                     r.get("track"), None, _sheet(r.get("a_sheet")),
@@ -383,10 +550,18 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
                 continue
             stacks_pages[(r.get("track"), _a_page_id(r))].append(r)
         elif rt == "stack_sheet" and r.get("status") == "failed":
+            if _below_slab_text(r.get("reason")):
+                below_slab(r, "stacks")
+                continue
             not_checked.append(_not_checked(
                 "plumbing sheet", r.get("plumbing_sheet"), r.get("track"), None, None,
                 "the stack pass failed on this sheet: " + str(r.get("reason")),
                 plumbing_sheet=r.get("plumbing_sheet")))
+    for (track, sheet), d in sorted(slab.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
+        skipped.append({"what": f"{sheet} " + " and ".join(
+            k for k in ("pipes", "stacks") if d[k]), "track": track, "level": "below slab",
+            "plumbing_sheet": sheet, "pipe_rows": d["pipes"], "stack_rows": d["stacks"],
+            "why": BELOW_SLAB_NOTE})
     # every frame on a plan no plumbing sheet reached: not checked, by name
     for key, fs in frames.items():
         if key not in prow_pages and key not in stacks_pages:
@@ -404,22 +579,67 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
                     "no shear wall or braced frame is placed on this architectural plan "
                     "(no structural sheet paired, every frame refused, or every frame drawn below)",
                     plumbing_sheet=prow.get("plumbing_sheet")))
+    touch = pts(TOUCH_IN)
+    floors: Dict[Tuple, List[Tuple[Any, list]]] = defaultdict(list)
+    if off_stacks:
+        for r in plumbing:
+            if r.get("record_type") == "pipe_segments" and not (
+                    r.get("segments") is None and r.get("curves") is None):
+                for _k, _i, q, sysm in _pieces(r):
+                    floors[(r.get("track"), str(r.get("plumbing_sheet")))].append((sysm, q))
     for key, fs in frames.items():
         for f in fs:
             poly = f["polygon_a"]
+            # stacks near this frame; ruling 116 sets aside those their sheet draws off the agreed line
+            near, off_here = [], []
+            for s in stacks_pages.get(key, []):
+                fp = s["footprint_arch"]
+                rel, gap = circle_relation(fp["x"], fp["y"], fp["r"], poly)
+                if rel == "outside" and gap > tol:
+                    continue
+                hd = [(circle_relation(fp["x"], fp["y"], fp["r"], z["polygon_a"])[1], z.get("end"))
+                      for z in f["hold_down_zones"]]
+                hdd, hend = min(hd, key=lambda t: t[0]) if hd else (None, None)
+                entry = {"tag_id": s.get("tag_id"), "plumbing_sheet": s.get("plumbing_sheet"),
+                         "plumbing_page_id": s.get("plumbing_page_id"),
+                         "x": fp["x"], "y": fp["y"], "r": fp["r"],
+                         "pipe_systems": s.get("pipe_systems"), "relation": rel,
+                         "distance_in": round(inches(gap), 2),
+                         # inside: how far the rim stands from the nearest face
+                         "edge_clearance_in": (round(inches(boundary_dist((fp["x"], fp["y"]), poly)
+                                                              - fp["r"]), 2)
+                                               if rel == "inside" else None),
+                         "hold_down_in": None if hdd is None else round(inches(hdd), 2),
+                         "hold_down_end": hend if hdd is not None and hdd <= tol else None,
+                         "p_to_a": _margin_view(s.get("registration"))}
+                info = off_stacks.get((s.get("track"), str(s.get("plumbing_sheet")), s.get("tag_id")))
+                if info:
+                    off_here.append((entry, info))
+                else:
+                    near.append(entry)
+            seen_off = set()
             for prow in prow_pages.get(key, []):
                 groups: Dict[Any, List[dict]] = defaultdict(list)
+                reclass: List[Tuple[dict, dict]] = []
                 for kind, i, ptsl, system in _pieces(prow):
                     if path_poly_dist(ptsl, poly) > 0:
                         continue
                     hd = [(path_poly_dist(ptsl, z["polygon_a"]), z.get("end"))
                           for z in f["hold_down_zones"]]
                     d, end = min(hd, key=lambda t: t[0]) if hd else (None, None)
-                    groups[system or "unknown"].append({
+                    piece = {
                         "piece": kind, "index": i,
                         "points": [[round(p[0], 2), round(p[1], 2)] for p in ptsl],
                         "hold_down_in": None if d is None else round(inches(d), 2),
-                        "hold_down_end": end if d is not None and d <= tol else None})
+                        "hold_down_end": end if d is not None and d <= tol else None}
+                    owner = next((inf for e, inf in off_here
+                                  if e["plumbing_sheet"] == prow.get("plumbing_sheet")
+                                  and (_touches_circle(ptsl, e, touch)
+                                       or moves_with_stack(ptsl, system, inf, floors))), None)
+                    if owner:
+                        reclass.append((dict(piece, system=system or "unknown"), owner))
+                        continue
+                    groups[system or "unknown"].append(piece)
                 for system, pieces in sorted(groups.items()):
                     base = _base(KIND_PIPE, f, prow, tol_in)
                     base["system"] = system
@@ -432,27 +652,18 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
                         hb["system"] = system
                         flags.append(dict(hb, flag_id=_flag_id(KIND_HOLD_DOWN, *gid),
                                           pieces=hd_pieces, counts=_counts(hd_pieces, tol_in)))
-            near = []
-            for s in stacks_pages.get(key, []):
-                fp = s["footprint_arch"]
-                rel, gap = circle_relation(fp["x"], fp["y"], fp["r"], poly)
-                if rel == "outside" and gap > tol:
-                    continue
-                hd = [(circle_relation(fp["x"], fp["y"], fp["r"], z["polygon_a"])[1], z.get("end"))
-                      for z in f["hold_down_zones"]]
-                hdd, hend = min(hd, key=lambda t: t[0]) if hd else (None, None)
-                near.append({"tag_id": s.get("tag_id"), "plumbing_sheet": s.get("plumbing_sheet"),
-                             "plumbing_page_id": s.get("plumbing_page_id"),
-                             "x": fp["x"], "y": fp["y"], "r": fp["r"],
-                             "pipe_systems": s.get("pipe_systems"), "relation": rel,
-                             "distance_in": round(inches(gap), 2),
-                             # inside: how far the rim stands from the nearest face
-                             "edge_clearance_in": (round(inches(boundary_dist((fp["x"], fp["y"]), poly)
-                                                                  - fp["r"]), 2)
-                                                   if rel == "inside" else None),
-                             "hold_down_in": None if hdd is None else round(inches(hdd), 2),
-                             "hold_down_end": hend if hdd is not None and hdd <= tol else None,
-                             "p_to_a": _margin_view(s.get("registration"))})
+                for e, info in off_here:
+                    if e["plumbing_sheet"] == prow.get("plumbing_sheet") and id(info) not in seen_off:
+                        seen_off.add(id(info))
+                        incons.append(_inconsistency(
+                            f, prow, e, info, [p for p, owner in reclass if owner is info], tol_in))
+            # an off-line stack whose sheet drew no pipes here: still an inconsistency item
+            for e, info in off_here:
+                if id(info) not in seen_off:
+                    seen_off.add(id(info))
+                    incons.append(_inconsistency(
+                        f, {"plumbing_sheet": e["plumbing_sheet"],
+                            "plumbing_page_id": e["plumbing_page_id"]}, e, info, [], tol_in))
             if near:
                 near.sort(key=lambda s: (str(s["plumbing_sheet"]), str(s["tag_id"]), s["y"], s["x"]))
                 prs = {s["plumbing_sheet"] for s in near}
@@ -471,8 +682,40 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
                 flags.append(dict(base, flag_id=_flag_id(KIND_STACK, f["track"], key[1], f["label"]),
                                   stacks=near, counts={"stacks": len(near)}))
     flags.sort(key=_flag_order)
-    return {"flags": flags, "not_checked": not_checked, "skipped": fb["skipped"],
-            "summary": summarize(flags, not_checked, fb["skipped"])}
+    incons.sort(key=_flag_order)
+    return {"flags": flags, "inconsistencies": incons, "not_checked": not_checked, "skipped": skipped,
+            "summary": summarize(flags, not_checked, skipped, incons)}
+
+
+def _inconsistency(f: dict, prow: dict, e: dict, info: dict, mine: Sequence[dict],
+                   tol_in: float) -> dict:
+    """Ruling 116's item: a drawing inconsistency, in place of a clash flag."""
+    base = _base(KIND_INCONSISTENCY, f, prow, tol_in)
+    base["record_type"] = "clash_inconsistency"
+    rel, gap = circle_relation(info["agreed"]["x"], info["agreed"]["y"], info["agreed"]["r"],
+                               f["polygon_a"])
+    pieces = sorted(mine, key=lambda p: (p["system"], p["piece"], p["index"]))
+    return dict(
+        base, flag_id=_flag_id(KIND_INCONSISTENCY, f["track"], (f["a_sheet"] or {}).get("page_id"),
+                               f["label"], e["plumbing_sheet"], e["tag_id"]),
+        message=inconsistency_message(info),
+        detail=(f"{info['tag_id']} sits {info['offset_in']:g} in from the position "
+                f"{', '.join(info['agree_sheets'])} agree on"
+                + (f"; also drawn at this position on {', '.join(info['repeated_on'])}"
+                   if info["repeated_on"] else "")
+                + ". Not reported as a clash: the drawn position is the drafting error (ruling 116). "
+                f"At the agreed position the stack is "
+                + (f"{round(inches(gap), 2)} in outside" if rel == "outside" else rel)
+                + f" {f['label']}"),
+        stack=e,
+        agreed=dict(info["agreed"], relation=rel, distance_in=round(inches(gap), 2),
+                    sheets=info["agree_sheets"]),
+        offset_in=info["offset_in"], same_position_on=info["repeated_on"],
+        reclassified_pieces=pieces,
+        counts={"reclassified_pieces": len(pieces),
+                "straight": sum(1 for p in pieces if p["piece"] == "straight"),
+                "curved": sum(1 for p in pieces if p["piece"] == "curved"),
+                "in_hold_down_zone": sum(1 for p in pieces if p["hold_down_end"])})
 
 
 def _counts(pieces: Sequence[dict], tol_in: float) -> dict:
@@ -489,11 +732,12 @@ _LEVEL_ORDER = ("FLOOR_1", "FLOOR_2", "FLOOR_3", "FLOOR_4", "MEZZANINE", "ROOF",
 def _flag_order(f: dict):
     lv = f.get("level")
     return (str(f.get("track")), _LEVEL_ORDER.index(lv) if lv in _LEVEL_ORDER else 99,
-            str((f.get("frame") or {}).get("label")), KINDS.index(f["kind"]),
+            str((f.get("frame") or {}).get("label")), (KINDS + (KIND_INCONSISTENCY,)).index(f["kind"]),
             str((f.get("plumbing") or {}).get("sheet_number")), str(f.get("system")))
 
 
-def summarize(flags: Sequence[dict], not_checked: Sequence[dict], skipped: Sequence[dict]) -> dict:
+def summarize(flags: Sequence[dict], not_checked: Sequence[dict], skipped: Sequence[dict],
+              inconsistencies: Sequence[dict] = ()) -> dict:
     """Counts per (track, level, kind), and how many flags are the SAME
     PLACE on another floor (one frame tag and system, repeated per level)
     against how many distinct places there are. Never a verdict."""
@@ -509,6 +753,9 @@ def summarize(flags: Sequence[dict], not_checked: Sequence[dict], skipped: Seque
     return {"flags": len(flags), "by_track_level_kind": dict(sorted(per.items())),
             "by_track_kind": dict(sorted(by_kind.items())),
             "distinct_places": {f"{t}|{k}": len(v) for (t, k), v in sorted(places.items())},
+            "inconsistencies": len(inconsistencies),
+            "reclassified_stacks": len(inconsistencies),
+            "reclassified_pieces": sum(len(i.get("reclassified_pieces") or []) for i in inconsistencies),
             "not_checked": len(not_checked), "skipped": len(skipped), "label": FLAG_LABEL}
 
 
@@ -575,11 +822,13 @@ def rows_for_store(result: Dict[str, Any], *, project_id: str,
     WRITTEN - nothing calls it; a pass that stores these waits for the
     operator's review of the flag images (his pattern for T3's rows)."""
     return [dict(r, project_id=str(project_id), company_id=company_id)
-            for r in list(result.get("flags") or []) + list(result.get("not_checked") or [])]
+            for r in (list(result.get("flags") or []) + list(result.get("inconsistencies") or [])
+                  + list(result.get("not_checked") or []))]
 
 
 __all__ = [
     "EMIT_VERSION", "COLLECTION", "FLAG_LABEL", "KIND_PIPE", "KIND_HOLD_DOWN", "KIND_STACK",
+    "KIND_INCONSISTENCY", "AGREE_IN", "TOUCH_IN", "MATCH_PT", "moves_with_stack", "stack_inconsistencies", "inconsistency_message",
     "KINDS", "FRAME_ELEMENTS", "TOL_IN", "check", "frames_by_page", "summarize", "describe", "margins_text",
     "review_items", "rows_for_store", "point_in_poly", "seg_poly_dist", "path_poly_dist",
     "circle_relation", "segs_intersect", "bbox", "inches", "pts",

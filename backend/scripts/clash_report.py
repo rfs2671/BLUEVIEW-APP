@@ -28,6 +28,7 @@ import json
 import math
 import re
 import sys
+import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,6 +71,11 @@ def _flag_geometry(f):
         out += [tuple(q) for q in p["points"]]
     for s in f.get("stacks") or []:
         out += [(s["x"] - s["r"], s["y"] - s["r"]), (s["x"] + s["r"], s["y"] + s["r"])]
+    if f["kind"] == C.KIND_INCONSISTENCY:
+        for s in (f["stack"], f["agreed"]):
+            out += [(s["x"] - s["r"], s["y"] - s["r"]), (s["x"] + s["r"], s["y"] + s["r"])]
+        for p in f.get("reclassified_pieces") or []:
+            out += [tuple(q) for q in p["points"]]
     return out
 
 
@@ -130,13 +136,30 @@ def render_flag(f, pdfs: Path, plumbing_rows, out_png: Path):
         d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], outline=(230, 0, 160, 255), width=4)
         if f["kind"] == C.KIND_STACK:
             _dashed_circle(d, cx, cy, (st["r"] + tol) * s, (230, 0, 160, 255))
+    if f["kind"] == C.KIND_INCONSISTENCY:
+        for p in f.get("reclassified_pieces") or []:
+            d.line([T(*q) for q in p["points"]], fill=(150, 150, 150, 255), width=5)
+        st, ag = f["stack"], f["agreed"]
+        (cx, cy), (ax, ay) = T(st["x"], st["y"]), T(ag["x"], ag["y"])
+        rr = max(st["r"] * s, 6)
+        d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], outline=(230, 0, 160, 255), width=4)
+        _dashed_circle(d, ax, ay, rr, (0, 150, 90, 255))
+        d.line([(ax, ay), (cx, cy)], fill=(0, 150, 90, 255), width=2)
     img = Image.alpha_composite(g, ov)
     dr = ImageDraw.Draw(img)
+    if f["kind"] == C.KIND_INCONSISTENCY:
+        st, ag = f["stack"], f["agreed"]
+        cx, cy = T(st["x"], st["y"])
+        dr.text((cx + 14, cy - 10), f"{st['tag_id']} as drawn ({st['plumbing_sheet']})",
+                fill=(180, 0, 120, 255), font=_font(18))
+        ax, ay = T(ag["x"], ag["y"])
+        dr.text((ax + 14, ay - 10), f"{st['tag_id']} where {', '.join(ag['sheets'])} agree",
+                fill=(0, 110, 60, 255), font=_font(18))
     for st in f.get("stacks") or []:
         cx, cy = T(st["x"], st["y"])
         dr.text((cx + 14, cy - 10), f"{st['tag_id']} ({st['plumbing_sheet']})", fill=(180, 0, 120, 255),
                 font=_font(18))
-    head = _header(f)
+    head = [w for line in _header(f) for w in (textwrap.wrap(line, 150) or [line])]
     F = _font(17)
     hh = 24 * len(head) + 12
     canvas = Image.new("RGB", (max(img.width, 1300), img.height + hh), (255, 255, 255))
@@ -166,7 +189,26 @@ def _dashed_circle(d, cx, cy, r, col):
         d.arc([cx - r, cy - r, cx + r, cy + r], i * 10, i * 10 + 10, fill=col, width=2)
 
 
+def _header_inconsistency(f):
+    fr, a = f["frame"], f["a_sheet"]
+    c = f["counts"]
+    lines = [f"{C.FLAG_LABEL.upper()}  -  drawing inconsistency (not a clash): {f['message']}",
+             f"track {f['track']}  |  level {f['level']}  |  frame {fr['label']}  |  "
+             f"A {a['sheet_number']} ({a['file_name']} p{a['page_number']})  |  "
+             f"S {fr['s_sheet']['sheet_number']}  |  P {f['plumbing']['sheet_number']}",
+             f"registration margins (best / second peak): {C.margins_text(f)}",
+             f["detail"],
+             f"{c['reclassified_pieces']} drawn pipe pieces on the offset stack are listed here instead of "
+             f"as pipe flags ({c['straight']} straight, {c['curved']} curved; grey)"]
+    if f.get("structure_note"):
+        lines.append(f["structure_note"])
+    lines.append("magenta: stack as drawn  |  green dashed: where the other floors agree  |  red: frame polygon")
+    return lines
+
+
 def _header(f):
+    if f["kind"] == C.KIND_INCONSISTENCY:
+        return _header_inconsistency(f)
     fr, a = f["frame"], f["a_sheet"]
     kind = {C.KIND_PIPE: "pipe pieces inside a shear wall / braced frame",
             C.KIND_HOLD_DOWN: f"pipe pieces within {f['tolerance_in']:g} in of a hold-down end post",
@@ -192,6 +234,21 @@ def _header(f):
     return lines
 
 
+def one_per_group(items):
+    """The crops the rulings need: one per distinct place (frame tag, kind, system) - the filed
+    track's FLOOR_4 when it has the place, else the first - and every inconsistency item of the
+    filed track. The other floors and the owner's set repeat the same wall."""
+    prefer = {"FLOOR_4": 0, "MEZZANINE": 1}
+    best = {}
+    for k, f in enumerate(items):
+        place = (f["frame"].get("tag") or f["frame"]["label"], f["kind"], f.get("system"),
+                 f["stack"]["tag_id"] if f["kind"] == C.KIND_INCONSISTENCY else None)
+        rank = (f["track"] != "filed", prefer.get(f["level"], 9), k)
+        if place not in best or rank < best[place][0]:
+            best[place] = (rank, f)
+    return [f for _r, f in sorted(best.values(), key=lambda t: t[0][2])]
+
+
 def contact_sheet(pngs, out_png: Path, cols=4, w=480):
     from PIL import Image, ImageDraw
     thumbs = []
@@ -205,7 +262,7 @@ def contact_sheet(pngs, out_png: Path, cols=4, w=480):
     hmax = max(im.height for _p, im in thumbs) + 22
     sheet = Image.new("RGB", (cols * (w + 8), rows * hmax + 40), (255, 255, 255))
     d = ImageDraw.Draw(sheet)
-    d.text((8, 8), f"{C.FLAG_LABEL.upper()} - {len(thumbs)} flags", fill=(0, 0, 0), font=_font(22))
+    d.text((8, 8), f"{C.FLAG_LABEL.upper()} - {len(thumbs)} crops (flags and drawing inconsistencies)", fill=(0, 0, 0), font=_font(22))
     for k, (p, im) in enumerate(thumbs):
         x, y = (k % cols) * (w + 8), 40 + (k // cols) * hmax
         sheet.paste(im, (x, y + 20))
@@ -229,6 +286,8 @@ def main(argv=None):
     ap.add_argument("--company-id", default="(company)")
     ap.add_argument("--project-id", default="(project)")
     ap.add_argument("--no-crops", action="store_true")
+    ap.add_argument("--all-crops", action="store_true",
+                    help="a crop for every flag and inconsistency (default: one per distinct place)")
     args = ap.parse_args(argv)
     pdfs, out = Path(args.pdfs), Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -260,10 +319,13 @@ def main(argv=None):
     json.dump(items, open(out / "review_items.json", "w", encoding="utf-8"), indent=1, default=str)
     pngs = []
     if not args.no_crops:
-        for k, f in enumerate(res["flags"], 1):
+        items = res["flags"] + res["inconsistencies"]
+        for k, f in enumerate(items if args.all_crops else one_per_group(items), 1):
             name = re.sub(r"[^A-Za-z0-9_.-]+", "_", "_".join(str(x) for x in (
                 f"{k:02d}", f["track"], f["level"], f["frame"]["label"].split(" (")[0],
-                f["plumbing"]["sheet_number"], f.get("system") or "stacks", f["kind"])))
+                f["plumbing"]["sheet_number"],
+                f.get("system") or ("stacks" if f["kind"] == C.KIND_STACK else f["stack"]["tag_id"]),
+                f["kind"])))
             png = out / f"{name}.png"
             render_flag(f, pdfs, plumbing, png)
             f["crop"] = str(png)
@@ -271,7 +333,9 @@ def main(argv=None):
         contact_sheet(pngs, out / "index.png")
         json.dump(res, open(out / "flags.json", "w", encoding="utf-8"), indent=1, default=str)
     s = res["summary"]
-    print(f"{s['flags']} flags ({C.FLAG_LABEL}), {s['not_checked']} not checked, {s['skipped']} skipped")
+    print(f"{s['flags']} flags ({C.FLAG_LABEL}), {s['inconsistencies']} drawing inconsistencies "
+          f"({s['reclassified_pieces']} pipe pieces reclassified), {s['not_checked']} not checked, "
+          f"{s['skipped']} skipped")
     for k, v in s["by_track_kind"].items():
         print(f"  {k}: {v}")
     return res
