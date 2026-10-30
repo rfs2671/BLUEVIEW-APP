@@ -12,8 +12,10 @@ SIZE. It refused under intent=count. #894's states_a_count did not read
 family the records know - ruling 51), so the clause took the value path.
 
 Now a clause shaped "<plural noun phrase>: <bare integer>" (also with no
-colon, in brackets, or "are 2") is decided by the count rule under attribute,
-never by the value path. A value with a unit, a decimal, a dimension, a word
+colon, in brackets, or "are 2") is decided by the count rule under attribute:
+it binds exactly when the count rule binds it from a counting source, and the
+count rule's refusal stands otherwise (the ruling of 2026-10-30 on #931's 867
+located counts - see ALocatedCountBindsFromItsCountingSource). A value with a unit, a decimal, a dimension, a word
 after the integer, a singular tag or a measurement's name keeps the value path.
 """
 
@@ -115,29 +117,117 @@ class APluralNounIntegerIsACount(unittest.TestCase):
                                               every=False)[1], [], it)
 
 
-class RefusalsOnly(unittest.TestCase):
-    """Ruling 123 closes a leak and opens nothing: the clause must satisfy the
-    count rule AND the value path. A true located count the value path refuses
-    ("wall electric unit heaters on the first floor: 3.") stays refused under
-    attribute, though the count rule alone would bind it."""
+class ALocatedCountBindsFromItsCountingSource(unittest.TestCase):
+    """The ruling of 2026-10-30 on #931's 867 located counts (Roy): "verify each
+    against its source rows, bind only counting-source-confirmed ones". Under
+    attribute a "<plural noun phrase>: <bare integer>" clause is the count
+    rule's, and binds exactly when the count rule binds it - from a counting
+    source: a located tally whose census matched, at the scope the clause
+    names, with nothing unread or refused in it; a schedule's QTY at building
+    scope; a door or window book's figure. A count that is true but rests on
+    no counting source (a census short of a row, a sheet whose located rows do
+    not equal its own sweep) and a wrong figure still refuse. #931's refusals
+    stand."""
 
-    def test_the_count_rule_is_asked_and_the_value_path_stays(self):
+    # (clause, true) over WH-1 as a question about it returns it: 3 on the
+    # first floor, census QTY 3.
+    HEATERS = [("wall electric unit heaters on the first floor: 3.", True),
+               ("wall electric unit heaters: 3.", True),
+               ("WH-1 wall heaters: 3.", True),
+               ("The wall electric unit heaters are 3.", True),
+               ("wall electric unit heaters on the first floor: 2.", False),
+               ("wall electric unit heaters on the first floor: 4.", False),
+               ("wall electric unit heaters: 9.", False),
+               ("water heaters on the first floor: 3.", False),
+               ("WH-1 water heaters: 3.", False)]
+
+    def test_a_true_located_count_binds_under_attribute(self):
+        from tests import test_a_count_names_its_own_family as F
+        recs = F._heaters()
+        for clause, true in self.HEATERS:
+            self.assertEqual(gate(clause, recs), true, clause)
+
+    def test_it_binds_exactly_where_the_count_rule_binds_it(self):
+        from tests import test_a_count_names_its_own_family as F
+        recs = F._heaters()
+        for clause, _true in self.HEATERS:
+            self.assertEqual(gate(clause, recs), gate(clause, recs, intent="count"), clause)
+
+    def test_per_floor_per_unit_and_per_set_figures(self):
+        from tests import test_two_drawing_tracks as T
+        recs = T._world()
+        for clause in ("PTAC units on the first floor: 5.", "PTAC units on the second floor: 4.",
+                       "PTAC-1 units in 2A: 1.", "PTAC units in 1B: 1.",
+                       "PTAC units on the second floor per the owner's set: 4."):
+            self.assertTrue(gate(clause, recs), clause)
+        for clause in ("PTAC units on the first floor: 4.", "PTAC units on the second floor: 5.",
+                       "PTAC-1 units in 2A: 2."):
+            self.assertFalse(gate(clause, recs), clause)
+
+    def test_a_window_by_its_tag(self):
+        from tests import test_a_door_is_counted_by_its_tag as D
+        recs = D._world(D._second_floor("filed"), tracks=("filed",))
+        self.assertTrue(gate("W1 windows on the second floor: 8.", recs))
+        self.assertFalse(gate("W1 windows on the second floor: 7.", recs))
+        self.assertFalse(gate("W1 doors on the second floor: 8.", recs))
+
+    def test_a_count_no_counting_source_confirms_stays_refused(self):
+        # The census holds one row more than the rows in hand: the count may be
+        # true, but nothing checked it. The count rule refuses it under count;
+        # under attribute the value path must not bind it instead.
+        from tests import test_two_drawing_tracks as T
+        recs = T._world(short={"filed": 1, "post_co": 1})
+        for clause in ("PTAC units on the first floor: 5.", "PTAC units on the second floor: 4.",
+                       "PTAC units: 9."):
+            self.assertFalse(gate(clause, recs, intent="count"), clause)
+            self.assertFalse(gate(clause, recs), clause)
+
+    def test_a_sheet_whose_rows_disagree_with_its_own_sweep_stays_refused(self):
+        from tests import test_two_drawing_tracks as T
+        recs = T._world(owner_mech=7)       # the owner's M-100 sweep locates 7; 5 rows
+        clause = "PTAC units on the first floor: 5."
+        self.assertFalse(gate(clause, recs, intent="count"))
+        self.assertFalse(gate(clause, recs))
+
+    def test_a_figure_one_drawing_set_states_and_the_other_set_does_not_is_not_confirmed(self):
+        # T._world(): the filed first floor holds one PTAC in each of its four
+        # units; the owner's set has two in 1A (PTAC-1 and PTAC-3), so no
+        # uniform per-apartment figure. glyph_values binds the filed figure
+        # alone (ruling 2026-10-24 "label, don't refuse") - and does under
+        # intent=count. Through attribute a located count must be confirmed
+        # by every set that located the symbols there.
+        from tests import test_two_drawing_tracks as T
+        recs = T._world()
+        for clause in ("PTAC units in each unit on the first floor: 1.",
+                       "PTACs in each unit on the first floor 1."):
+            self.assertTrue(gate(clause, recs, intent="count"), clause)   # the control
+            self.assertFalse(gate(clause, recs), clause)
+        # where both sets state one figure it binds
+        self.assertTrue(gate("PTAC units in each unit on the second floor: 1.",
+                             T._world(filed_101=T.OWNER_101)))
+
+    def test_floor_drains_and_piles_stay_refused(self):
+        for t in FLOOR_DRAIN_FORMS:
+            self.assertFalse(gate(t, [PLUMBING]), t)
+        self.assertFalse(gate("piles: 7.", [PLUMBING]))
+
+    def test_the_clause_is_left_to_the_value_path_only_when_the_count_rule_refuses_it(self):
+        from tests import test_a_count_names_its_own_family as F
+        recs = F._heaters()
+        text, bad = ps._route_counts("wall electric unit heaters on the first floor: 3.", recs, every=True)
+        self.assertNotIn("heaters", text)                         # the count rule's: blanked,
+        self.assertEqual(bad, [])                                 # and nothing refused
+        text, bad = ps._route_counts("wall electric unit heaters on the first floor: 4.", recs, every=True)
+        self.assertIn("heaters", text)                            # refused: kept, with its refusal
+        self.assertTrue(bad)
         text, bad = ps._route_counts("floor drains on the roof: 2.", [PLUMBING], every=True)
-        self.assertIn("floor drains", text)    # left for the value path
-        self.assertTrue(bad)                   # nothing counts them
+        self.assertIn("floor drains", text)
+        self.assertTrue(bad)
 
     def test_off_every_nothing_is_asked(self):
         text, bad = ps._route_counts("floor drains on the roof: 2.", [PLUMBING], every=False)
         self.assertIn("floor drains", text)
         self.assertEqual(bad, [])
-
-    def test_a_true_count_the_value_path_refuses_is_not_newly_bound(self):
-        from tests import test_a_count_names_its_own_family as F
-        recs = F._heaters()
-        claim = "wall electric unit heaters on the first floor: 3."
-        # the control that makes this a test: the count rule alone binds it
-        self.assertTrue(gate(claim, recs, intent="count"))
-        self.assertFalse(gate(claim, recs))
 
 
 if __name__ == "__main__":

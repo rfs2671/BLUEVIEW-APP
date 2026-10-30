@@ -4152,8 +4152,12 @@ def _claim_subject(clause: str, spans: Sequence[Tuple[int, int]]) -> List[str]:
 # RULING 123 (2026-10-30) adds the mirror shape (_plural_integer_phrases): a
 # PLURAL noun phrase followed by a bare integer ("floor drains on the roof:
 # 2.") states a count too, whatever the noun - a singular tag still does not.
-# REFUSALS ONLY: under attribute it must satisfy the count rule AND the value
-# path (_route_counts); it never binds what the value path refused.
+# Under attribute it is the count rule's like the others (_route_counts): it
+# binds when the count rule binds it from a counting source, and the count
+# rule's refusal stands when it does not. (#931 first asked the count rule AND
+# the value path, refusals only; the ruling of 2026-10-30 on the 867 located
+# counts that left refused took the value path out for the ones the count rule
+# binds.)
 _COUNT_WORD = r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*"
 _COUNTED = re.compile(
     r"(?<![A-Za-z0-9.\-/])(\d[\d,]*(?:\.\d+)?)[ \t]+(" + _COUNT_WORD
@@ -4210,8 +4214,10 @@ def _plural_integer_phrases(clause: str) -> List[Tuple[str, List[str]]]:
     RULING 123 (Roy, 2026-10-30): "yes: small separate PR, refusals only".
     Under the attribute intent, any "plural noun phrase: bare integer" clause
     is a count, even when the noun names no family the records know - so the
-    count rule must bear it out too (_route_counts), and it binds no more
-    than the value path bound it. Measured
+    count rule decides it (_route_counts: it binds where the count rule binds
+    it from a counting source, and only there; #931 first asked the count rule
+    AND the value path, and the ruling on its 867 located counts took the
+    value path out). Measured
     before: "floor drains on the roof: 2." bound in 12 forms because P-400's
     FLOOR DRAIN row prints a 2, which is a PIPE SIZE (it refused under
     count). Same grammar as the shapes above, mirrored:
@@ -4358,6 +4364,35 @@ def states_a_family_count(clause: str, fams: Dict[str, List[str]]) -> bool:
     return False
 
 
+def _every_track_states_it(clause: str, records: Sequence[Dict[str, Any]]) -> bool:
+    """Does every drawing track that located the clause's symbols in its scope
+    state the figure? (Only a per-apartment clause naming no set can fail.)
+
+    glyph_values binds a per-apartment figure two tracks do not contradict:
+    a track that gives NO figure is left out ("if one track alone has a
+    figure, it binds - label, don't refuse", ruling 2026-10-24). That is the
+    count rule's own, and under intent=count it stands. But a located count
+    bound through the attribute intent must be confirmed by a counting source
+    wherever the clause is read (ruling 2026-10-30): "PTAC units in each unit
+    on the first floor: 1." is the filed set's figure alone - the owner's set
+    has symbols there and no uniform per-apartment figure (1A holds two) -
+    so it is true of one set and not confirmed by the other."""
+    named, bare = _track_claim(clause)
+    if named:
+        return True
+    books = glyph_books(records)
+    if len(books.tracks) <= 1 or not _apartment_clause(bare, books):
+        return True
+    for b in books.tracks.values():
+        if _book_values(bare, b, zero=True):
+            continue
+        keys, _unknown = _clause_floors(bare, b)
+        for fam, tags in _clause_subjects(bare, b) or []:
+            if any(not keys or _row_floor(r) in keys for r in _resolved(fam, tags)):
+                return False
+    return True
+
+
 def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
                   families: Optional[Dict[str, Sequence[str]]] = None
                   ) -> Tuple[str, List[str]]:
@@ -4383,6 +4418,7 @@ def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
         if has_areas and _areas.is_area_clause(bare):
             continue
         clause = _strip_citations(bare, citations)
+        decided = None
         route = every and states_a_count(clause)
         if not route:
             if fams is None:
@@ -4391,15 +4427,29 @@ def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
                     fams[str(name).upper()] = sorted(set(fams.get(str(name).upper(), []))
                                                      | {str(t).upper() for t in tags or []})
             route = states_a_family_count(clause, fams)
-            # RULING 123, REFUSALS ONLY: "<plural noun phrase>: <bare integer>"
-            # under attribute must ALSO satisfy the count rule - and keeps the
-            # value path as it was, so nothing newly binds. (Routed whole, the
-            # count rule would bind 867 true located counts the value path
-            # refuses: "EF-1 exhaust fans in 1B: 1." - not this change's.)
+            # RULING 123 (#931) and the ruling of 2026-10-30 on its 867:
+            # "<plural noun phrase>: <bare integer>" under attribute is the
+            # COUNT RULE'S. It binds when _count_answer_is_bound binds it -
+            # which is only ever from a counting source: a located tally the
+            # census checked, at the scope the clause names, with nothing
+            # unread or refused in it; a schedule's QTY at building scope; a
+            # door or window book's figure - and then it is blanked from the
+            # value path, which would refuse "EF-1 exhaust fans in 1B: 1."
+            # because no record prints a 1 beside that subject. When the count
+            # rule refuses it (no counting source: "floor drains on the roof:
+            # 2." rests on a pipe size; an unread or refused row in scope; a
+            # wrong figure) the clause is NOT blanked: its refusal is kept and
+            # the value path still has its say (#931's refusals stand).
             if not route and every and states_a_plural_integer(clause):
-                bad += _count_answer_is_bound(source[c0:c1], records)[1]
+                ok, refused = _count_answer_is_bound(source[c0:c1], records)
+                if ok and not _every_track_states_it(source[c0:c1], records):
+                    ok, refused = False, [n for n, _w in _plural_integer_phrases(clause)]
+                if ok:
+                    route, decided = True, (ok, refused)
+                else:
+                    bad += refused
         if route:
-            bad += _count_answer_is_bound(source[c0:c1], records)[1]
+            bad += (decided or _count_answer_is_bound(source[c0:c1], records))[1]
             out[c0:c1] = " " * (c1 - c0)
     return "".join(out), bad
 
