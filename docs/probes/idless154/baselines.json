@@ -1,7 +1,113 @@
-{"recorded": "2026-10-30", "ruling": 154, "pr": 936,
- "value_grid": {"claims": 186, "main_bound": 156, "branch_bound": 130, "bound_to_refused": 26, "refused_to_bound": 0},
- "census": {"schedules": 147, "idless": 118, "idless_tagged": 12, "idless_two_plus_tags": 6,
-   "count_shaped_bound_main_to_branch": {"A-400 WINDOW": [4, 4], "A-400 INTERIOR DOOR": [56, 34], "A-400 EXTERIOR DOOR": [0, 0], "A-500 wall types": [104, 76], "A-500 partition types": [196, 106]}},
- "census_flips_via_count_rule": {"flipped": 140, "routed_to_count_rule": 0, "bound_by_count_rule": 0},
- "untagged_through_multi_tag_grids": {"bound": 90, "all_tagged_candidates_agree": 67, "tags_print_different_values": 23, "exactly_one_printing_cell": 50},
- "attribute_grid_79821": {"main": 1326, "branch": 1326, "flips": 0}}
+{
+ "recorded": "2026-10-30",
+ "ruling": 154,
+ "pr": 936,
+ "value_grid": {
+  "claims": 186,
+  "main_bound": 156,
+  "branch_bound": 130,
+  "bound_to_refused": 26,
+  "refused_to_bound": 0
+ },
+ "census": {
+  "schedules": 147,
+  "idless": 118,
+  "idless_tagged": 12,
+  "idless_two_plus_tags": 6,
+  "count_shaped_bound_main_to_branch": {
+   "A-400 WINDOW": [
+    4,
+    4
+   ],
+   "A-400 INTERIOR DOOR": [
+    56,
+    34
+   ],
+   "A-400 EXTERIOR DOOR": [
+    0,
+    0
+   ],
+   "A-500 wall types": [
+    104,
+    76
+   ],
+   "A-500 partition types": [
+    196,
+    106
+   ]
+  }
+ },
+ "census_flips_via_count_rule": {
+  "flipped": 140,
+  "routed_to_count_rule": 0,
+  "bound_by_count_rule": 0
+ },
+ "untagged_through_multi_tag_grids": {
+  "bound": 90,
+  "all_tagged_candidates_agree": 67,
+  "tags_print_different_values": 23,
+  "exactly_one_printing_cell": 50
+ },
+ "attribute_grid_79821": {
+  "main": 1326,
+  "branch": 1326,
+  "flips": 0
+ },
+ "step3": {
+  "pr": "fix/idless-untagged-claim-all-agree",
+  "base": "5de77e88",
+  "value_grid": {
+   "claims": 186,
+   "bound": 125,
+   "vs_936_tip": 130,
+   "bound_to_refused": 5,
+   "refused_to_bound": 0,
+   "flips": "type A door INTERIOR STANDARD (A is a one-letter tag the subject drops; the figure is printed under D) x5"
+  },
+  "census": {
+   "A-400 WINDOW": [
+    4,
+    4
+   ],
+   "A-400 INTERIOR DOOR": [
+    34,
+    34
+   ],
+   "A-400 EXTERIOR DOOR": [
+    0,
+    0
+   ],
+   "A-500 wall types": [
+    76,
+    36
+   ],
+   "A-500 partition types": [
+    106,
+    78
+   ],
+   "note": "A-500 flips are the UL numbers U4/U42/U41 (68 claims), which are not tags and now need every cell to agree"
+  },
+  "untagged_through_multi_tag_grids": {
+   "bound_before": 86,
+   "bound_after": 54,
+   "refused": 32,
+   "gained": 0
+  },
+  "attribute_grid_79821": {
+   "main": 1326,
+   "branch": 1326,
+   "flips": 0
+  },
+  "prod_probe": [
+   1170,
+   1170
+  ],
+  "probes": {
+   "health": "14,690/640",
+   "doors": "23,744/533",
+   "l3": "891/42",
+   "areas": "722/201"
+  },
+  "eval": "30/32"
+ }
+}

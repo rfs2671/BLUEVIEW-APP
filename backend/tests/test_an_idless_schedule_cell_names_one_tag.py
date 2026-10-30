@@ -55,8 +55,10 @@ class AnIdlessCellNamesOneTag(unittest.TestCase):
         self.assertFalse(_ok("W1 number 33.", IDLESS))
         self.assertFalse(_ok("W2 number 11.", IDLESS))
 
-    def test_a_claim_naming_no_tag_is_unchanged(self):
-        self.assertTrue(_ok("The window schedule bracket 22.", IDLESS))
+    def test_a_claim_naming_no_tag_is_step_threes(self):
+        # step 2 left it bound on any cell; step 3 (tests/test_an_untagged_claim_needs_every_cell_of_its_family.py)
+        # binds it only when every cell of the family prints the figure - here the four differ
+        self.assertFalse(_ok("The window schedule bracket 22.", IDLESS))
 
     def test_the_real_a400_shape(self):
         rec = _sched([("W1 NUMBER", None), ("", None), ("W2 NUMBER", None), ("", None)],
