@@ -577,8 +577,8 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
     THE SYSTEM NEVER DECIDES WHICH DRAWINGS BELONG TO A SET (ruling 21,
     lib.plan_set_questions). A refused plan whose number is not in the plan
     series (A.1.1 ... A.1.7, an unnumbered roof plan) is a question, one per
-    file, and `answers` ({question id: include | exclude}, the stored
-    answers) decides it on this pass:
+    file, and `answers` ({question id: include | exclude | replaces}, the
+    stored answers) decides it on this pass:
       exclude   its pages are left out: no row;
       include   they are read at sheet scope, ordinary rows of the track;
       open      they are read at sheet scope, every row (and the refusal of
@@ -625,8 +625,15 @@ def run_openings(floors: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str
         tell(progress, "stage", stage="set_questions")
     for q in questions:
         ans = answers.get(q["id"])
+        # A REPLACEMENT is applied to the track's pages before this runs
+        # (server._glyph_pages): a question still RAISED here has its pages
+        # unreplaced - the answer could not be applied - so they stay open.
+        unapplied = ans == psq.REPLACES
+        if ans not in (psq.INCLUDE, psq.EXCLUDE):
+            ans = None
         summary["set_questions"].append({"id": q["id"], "label": q["label"],
-                                         "applied": ans or "open"})
+                                         "applied": ans or ("open (the replacement was not "
+                                                            "applied)" if unapplied else "open")})
         if ans == psq.EXCLUDE:
             continue
         mark = {} if ans == psq.INCLUDE else {psq.ROW_KEY: q["id"], psq.ROW_LABEL: q["short"]}
