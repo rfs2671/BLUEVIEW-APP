@@ -200,11 +200,41 @@ class ALocatedCountBindsFromItsCountingSource(unittest.TestCase):
         recs = T._world()
         for clause in ("PTAC units in each unit on the first floor: 1.",
                        "PTACs in each unit on the first floor 1."):
-            self.assertTrue(gate(clause, recs, intent="count"), clause)   # the control
+            # ruling 150: the count rule refuses it too (it names no set and the
+            # owner's 1A holds two); it binds naming the filed set
+            self.assertFalse(gate(clause, recs, intent="count"), clause)
             self.assertFalse(gate(clause, recs), clause)
+        self.assertTrue(gate("PTAC units in each unit on the first floor in the filed set: 1.", recs))
         # where both sets state one figure it binds
         self.assertTrue(gate("PTAC units in each unit on the second floor: 1.",
                              T._world(filed_101=T.OWNER_101)))
+
+    def test_a_set_that_located_the_symbols_and_withholds_its_count_stops_the_attribute_figure(self):
+        # The owner's first floor has a fifth symbol it cannot place: it says
+        # NOTHING (no count). Under count the filed figure binds (ruling
+        # 2026-10-24, one track alone); a located count bound through
+        # attribute must be confirmed by every set that located it (#933).
+        from tests import test_two_drawing_tracks as T
+        own = [("PTAC-1", "1A"), ("PTAC-2", "1B"), ("PTAC-3", "1C"), ("PTAC-3", "1D"),
+               ("PTAC-3", None)]
+        recs = T._world(owner_100=own)
+        clause = "PTAC units in each unit on the first floor: 1."
+        self.assertTrue(gate(clause, recs, intent="count"))
+        self.assertFalse(gate(clause, recs))
+
+    def test_a_set_with_nothing_at_the_scope_is_not_silent_there(self):
+        # The owner's set draws no first floor: it located nothing there, so
+        # it is no track "saying nothing" (the guard needs LOCATED symbols).
+        import lib.plan_search as S
+        from tests import test_two_drawing_tracks as T
+        clause = "PTAC units in each unit on the first floor: 1."
+        rows = T._numbered(T._rows("filed", "100", T.FILED_100) + T._rows("filed", "101", T.FILED_101)
+                           + T._rows("post_co", "101", T.OWNER_101))
+        recs = list(rows) + T._census(rows, "filed") + T._census(rows, "post_co")
+        self.assertFalse(S._located_but_silent(clause, S.glyph_books(recs), {"1"}, True))
+        withheld = T._world(owner_100=[("PTAC-1", "1A"), ("PTAC-2", "1B"), ("PTAC-3", "1C"),
+                                       ("PTAC-3", "1D"), ("PTAC-3", None)])
+        self.assertTrue(S._located_but_silent(clause, S.glyph_books(withheld), {"1"}, True))
 
     def test_floor_drains_and_piles_stay_refused(self):
         for t in FLOOR_DRAIN_FORMS:
