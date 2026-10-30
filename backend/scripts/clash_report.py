@@ -13,9 +13,11 @@ them, their saved output is read ({"result": ...} as this script saves them, or 
 result).
 
 Writes, in --out:
-  flags.json          lib.plan_clash.check: flags, not_checked, skipped, summary
+  flags.json          lib.plan_clash.check: flags, within_tolerance, not_checked, skipped, summary
   review_items.json   one review_queue.from_clash item per flag (BUILT, NOT ENQUEUED)
-  <nn>_<kind>_....png one overlay crop per flag, labelled "flag for engineer review"
+  <nn>_<kind>_....png one overlay crop per flag, labelled "flag for engineer review" - or, for an
+                      entry whose overlap is smaller than the sheets' registration residual,
+                      "within drawing tolerance, verify on site" - with the overlap and the residual
   index.png           a contact sheet of every crop
 
 Nothing is written anywhere else: no database, no network. Every flag says
@@ -63,6 +65,26 @@ def _font(size):
         except Exception:
             pass
     return ImageFont.load_default()
+
+
+def _of(f):
+    """The clash kind an item is about: a within-tolerance item says which flag it left."""
+    return f.get("of_kind") or f["kind"]
+
+
+def _n(v):
+    return "n/a" if v is None else f"{v:.2f}"
+
+
+def _numbers(f):
+    """The two numbers Roy's rule reads, on one line: the overlap and the residual (with its parts)."""
+    r = f.get("residual")
+    if r is None:
+        return (f"overlap {f['overlap_in']:g} in  |  registration residual: not on the rows "
+                f"(no max_in), the tolerance rule is not applied")
+    return (f"overlap {f['overlap_in']:g} in  |  registration residual {r['residual_in']:g} in = "
+            f"{C.RESIDUAL_RULE} = {_n(r['p_to_a_max_in'])} + {_n(r['s_to_a_max_in'])}  "
+            f"(rms {_n(r['p_to_a_rms_in'])} / {_n(r['s_to_a_rms_in'])})")
 
 
 def _flag_geometry(f):
@@ -134,7 +156,7 @@ def render_flag(f, pdfs: Path, plumbing_rows, out_png: Path):
         cx, cy = T(st["x"], st["y"])
         rr = max(st["r"] * s, 6)
         d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], outline=(230, 0, 160, 255), width=4)
-        if f["kind"] == C.KIND_STACK:
+        if _of(f) == C.KIND_STACK:
             _dashed_circle(d, cx, cy, (st["r"] + tol) * s, (230, 0, 160, 255))
     if f["kind"] == C.KIND_INCONSISTENCY:
         for p in f.get("reclassified_pieces") or []:
@@ -192,12 +214,15 @@ def _dashed_circle(d, cx, cy, r, col):
 def _header_inconsistency(f):
     fr, a = f["frame"], f["a_sheet"]
     c = f["counts"]
+    ag = f["agreed"]
     lines = [f"{C.FLAG_LABEL.upper()}  -  drawing inconsistency (not a clash): {f['message']}",
              f"track {f['track']}  |  level {f['level']}  |  frame {fr['label']}  |  "
              f"A {a['sheet_number']} ({a['file_name']} p{a['page_number']})  |  "
              f"S {fr['s_sheet']['sheet_number']}  |  P {f['plumbing']['sheet_number']}",
              f"registration margins (best / second peak): {C.margins_text(f)}",
              f["detail"],
+             f"at the agreed position the stack's overlap with the frame is {ag['overlap_in']:g} in "
+             f"(registration residual {ag['residual_in'] if ag['residual_in'] is not None else 'n/a'} in)",
              f"{c['reclassified_pieces']} drawn pipe pieces on the offset stack are listed here instead of "
              f"as pipe flags ({c['straight']} straight, {c['curved']} curved; grey)"]
     if f.get("structure_note"):
@@ -212,17 +237,22 @@ def _header(f):
     fr, a = f["frame"], f["a_sheet"]
     kind = {C.KIND_PIPE: "pipe pieces inside a shear wall / braced frame",
             C.KIND_HOLD_DOWN: f"pipe pieces within {f['tolerance_in']:g} in of a hold-down end post",
-            C.KIND_STACK: f"stacks inside or within {f['tolerance_in']:g} in of a frame"}[f["kind"]]
+            C.KIND_STACK: f"stacks inside or within {f['tolerance_in']:g} in of a frame"}[_of(f)]
     c = f.get("counts") or {}
-    lines = [f"{C.FLAG_LABEL.upper()}  -  {kind}",
+    tol = f["kind"] == C.KIND_TOLERANCE
+    lines = [(f"{C.TOLERANCE_LABEL.upper()}  -  not a clash flag: {kind}" if tol
+              else f"{C.FLAG_LABEL.upper()}  -  {kind}"),
              f"track {f['track']}  |  level {f['level']}  |  frame {fr['label']}  |  "
              f"A {a['sheet_number']} ({a['file_name']} p{a['page_number']})  |  S {fr['s_sheet']['sheet_number']}"
              f"  |  P {f['plumbing']['sheet_number']}" + (f"  |  system {f['system']}" if f.get("system") else ""),
+             _numbers(f) + ("  -  every entry here is smaller than its residual" if tol else ""),
              f"registration margins (best / second peak): {C.margins_text(f)}"]
-    if f["kind"] == C.KIND_STACK:
+    if _of(f) == C.KIND_STACK:
         lines.append("stacks: " + "; ".join(
-            f"{s['tag_id']} {s['relation']}" + (f", rim {s['edge_clearance_in']} in from the face"
-                                                if s.get("edge_clearance_in") is not None else "")
+            f"{s['tag_id']} {s['relation']}, overlap {s['overlap_in']:g} in vs residual "
+            f"{s['residual_in'] if s.get('residual_in') is not None else 'n/a'}"
+            + (f" (rim {s['edge_clearance_in']} in from the face)"
+               if s.get("edge_clearance_in") is not None else "")
             + f", gap {s['distance_in']} in" for s in f["stacks"]))
     else:
         lines.append(f"pieces {c.get('pieces')} ({c.get('straight')} straight, {c.get('curved')} curved)  |  "
@@ -230,6 +260,12 @@ def _header(f):
                      f"touching an end post as drawn: {c.get('touching_end_post')}  (orange = in the zone)")
     if f.get("structure_note"):
         lines.append(f["structure_note"])
+    if _of(f) != C.KIND_STACK:
+        ov = sorted(p["overlap_in"] for p in f.get("pieces") or [])
+        if ov:
+            lines.append(f"each piece's overlap against "
+                         f"{'the end post' if _of(f) == C.KIND_HOLD_DOWN else 'the frame'}: "
+                         f"min {ov[0]:g} / max {ov[-1]:g} in")
     lines.append("red: frame polygon  |  purple: hold-down zone (end post), dashed: +2 in  |  pale: the sheet's other pipes")
     return lines
 
@@ -241,7 +277,7 @@ def one_per_group(items):
     prefer = {"FLOOR_4": 0, "MEZZANINE": 1}
     best = {}
     for k, f in enumerate(items):
-        place = (f["frame"].get("tag") or f["frame"]["label"], f["kind"], f.get("system"),
+        place = (f["frame"].get("tag") or f["frame"]["label"], f["kind"], f.get("of_kind"), f.get("system"),
                  f["stack"]["tag_id"] if f["kind"] == C.KIND_INCONSISTENCY else None)
         rank = (f["track"] != "filed", prefer.get(f["level"], 9), k)
         if place not in best or rank < best[place][0]:
@@ -262,7 +298,8 @@ def contact_sheet(pngs, out_png: Path, cols=4, w=480):
     hmax = max(im.height for _p, im in thumbs) + 22
     sheet = Image.new("RGB", (cols * (w + 8), rows * hmax + 40), (255, 255, 255))
     d = ImageDraw.Draw(sheet)
-    d.text((8, 8), f"{C.FLAG_LABEL.upper()} - {len(thumbs)} crops (flags and drawing inconsistencies)", fill=(0, 0, 0), font=_font(22))
+    d.text((8, 8), f"{C.FLAG_LABEL.upper()} / {C.TOLERANCE_LABEL.upper()} - {len(thumbs)} crops "
+                   f"(flags, within-tolerance items, drawing inconsistencies)", fill=(0, 0, 0), font=_font(22))
     for k, (p, im) in enumerate(thumbs):
         x, y = (k % cols) * (w + 8), 40 + (k // cols) * hmax
         sheet.paste(im, (x, y + 20))
@@ -305,8 +342,11 @@ def main(argv=None):
     else:
         from lib import plan_structural
         st = plan_structural.run_tracks(tracks, open_page)
-    structure = [r for t in st.values() for r in t["rows"]] if isinstance(st, dict) and "rows" not in st \
-        else st["rows"]
+    # a row's registration carries no rms_in / max_in (T3's rows): the S->A residual is read from the
+    # track summary's pairs, which keep the whole registration
+    groups = [st] if "rows" in st else list(st.values())
+    structure = [r for t in groups
+                 for r in C.with_s_residuals(t["rows"], (t.get("summary") or {}).get("pairs") or [])]
     if args.stacks:
         plumbing = _result(args.stacks)["rows"]
     else:
@@ -319,13 +359,13 @@ def main(argv=None):
     json.dump(items, open(out / "review_items.json", "w", encoding="utf-8"), indent=1, default=str)
     pngs = []
     if not args.no_crops:
-        items = res["flags"] + res["inconsistencies"]
+        items = res["flags"] + res["inconsistencies"] + res["within_tolerance"]
         for k, f in enumerate(items if args.all_crops else one_per_group(items), 1):
             name = re.sub(r"[^A-Za-z0-9_.-]+", "_", "_".join(str(x) for x in (
                 f"{k:02d}", f["track"], f["level"], f["frame"]["label"].split(" (")[0],
                 f["plumbing"]["sheet_number"],
-                f.get("system") or ("stacks" if f["kind"] == C.KIND_STACK else f["stack"]["tag_id"]),
-                f["kind"])))
+                f.get("system") or ("stacks" if _of(f) == C.KIND_STACK else f["stack"]["tag_id"]),
+                f["kind"] if f["kind"] != C.KIND_TOLERANCE else f"{f['kind']}_{f['of_kind']}")))
             png = out / f"{name}.png"
             render_flag(f, pdfs, plumbing, png)
             f["crop"] = str(png)
@@ -333,7 +373,8 @@ def main(argv=None):
         contact_sheet(pngs, out / "index.png")
         json.dump(res, open(out / "flags.json", "w", encoding="utf-8"), indent=1, default=str)
     s = res["summary"]
-    print(f"{s['flags']} flags ({C.FLAG_LABEL}), {s['inconsistencies']} drawing inconsistencies "
+    print(f"{s['flags']} flags ({C.FLAG_LABEL}), {s['within_tolerance']} items ({C.TOLERANCE_LABEL}), "
+          f"{s['inconsistencies']} drawing inconsistencies "
           f"({s['reclassified_pieces']} pipe pieces reclassified), {s['not_checked']} not checked, "
           f"{s['skipped']} skipped")
     for k, v in s["by_track_kind"].items():

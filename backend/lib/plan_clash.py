@@ -81,6 +81,38 @@ and shows both pairs' registration margins on every flag.
     below-slab plumbing plan, not a storey: it is listed under "skipped" as
     a below-slab plan, never flagged and never read as a storey's clash
 
+  * ROY'S RULING (2026-10-30, drawing tolerance): "a flag whose overlap is smaller
+    than the sheet's registration residual must read "within drawing tolerance,
+    verify on site", not a clash." Every flag carries its OVERLAP in inches
+    and the REGISTRATION RESIDUAL of the pairs that place it, and an entry
+    (a pipe piece, a stack) whose overlap is smaller than that residual is
+    moved out of the flag into a separate kind, KIND_TOLERANCE, labelled
+    TOLERANCE_LABEL, listing both numbers. It is never a clash flag and never
+    dropped.
+
+      OVERLAP   how far the thing reaches into the polygon its flag is about,
+                in inches: the PENETRATION DEPTH, the shortest sideways move
+                that takes it wholly clear of that polygon (0 when it only
+                lies near it). A stack's footprint (a circle) against the
+                frame: its radius plus the distance from its centre to the
+                nearest face when the centre is inside, its radius less
+                that distance when the centre is outside and the rim crosses
+                the face. A pipe piece (a straight run, or a curved piece as
+                drawn) against the frame: the least move that takes the
+                piece off the frame, across the wall or out of its end. A
+                hold-down entry is measured against the END POST, not the
+                frame (the 2 in beside the post is the zone's own buffer, 0
+                overlap). NOT the rim's clearance inside the face: a
+                stack standing 1.3 in inside a face reaches 1.3 + its
+                diameter in.
+      RESIDUAL  how far a drawing's own registration can have moved the
+                thing, in inches: the sum of the worst anchor residual
+                (`max_in`) of the two registrations that place it, P->A (the
+                plumbing sheet on its plan) and S->A (the frame on that
+                plan). The two errors can add; a sum of the maxima is the
+                bound. A row without `max_in` has no residual and the rule
+                does not apply to it: it stays a flag.
+
 Pure: no database, no network, no rendering. The overlay crops are drawn by
 scripts/clash_report.py from these flags.
 """
@@ -108,6 +140,11 @@ KIND_PIPE = "pipe_through_frame"
 KIND_HOLD_DOWN = "pipe_in_hold_down_zone"
 KIND_STACK = "stack_at_frame"
 KINDS = (KIND_PIPE, KIND_HOLD_DOWN, KIND_STACK)
+#: Roy 2026-10-30: NOT a clash - an entry whose overlap is smaller than the registration residual
+KIND_TOLERANCE = "within_drawing_tolerance"
+TOLERANCE_LABEL = "within drawing tolerance, verify on site"
+#: how the residual is made, stated on every item
+RESIDUAL_RULE = "max_in(P->A) + max_in(S->A)"
 #: ruling 116: NOT a clash - a stack drawn off where the other floors agree
 KIND_INCONSISTENCY = "drawing_inconsistency"
 
@@ -229,6 +266,66 @@ def circle_relation(cx: float, cy: float, r: float, poly) -> Tuple[str, float]:
     return "outside", d - r
 
 
+def _hull(points) -> List[Tuple[float, float]]:
+    """Convex hull (monotone chain); a point or a segment comes back as itself."""
+    pts_ = sorted({(float(p[0]), float(p[1])) for p in points if p is not None})
+    if len(pts_) <= 2:
+        return pts_
+
+    def half(seq):
+        out: List[Tuple[float, float]] = []
+        for q in seq:
+            while len(out) >= 2 and _orient(out[-2], out[-1], q) <= 0:
+                out.pop()
+            out.append(q)
+        return out
+    lo, up = half(pts_), half(reversed(pts_))
+    return lo[:-1] + up[:-1]
+
+
+def penetration_depth(points: Sequence[Sequence[float]], poly) -> float:
+    """OVERLAP of a drawn piece with a polygon, in display pt: the shortest
+    move that takes the piece wholly clear of it (the minimum translation
+    distance, separating-axis form), 0 when they do not overlap or only touch.
+
+    Both shapes are taken as their convex hulls: a curved piece's hull and a
+    non-convex polygon's hull only ever contain more, so the depth is never
+    understated (a frame is a rectangle in every row measured)."""
+    a = _hull(poly)
+    b = _hull(points)
+    if len(a) < 3 or not b:
+        return 0.0
+    axes = []
+    for shape in (a, b):
+        n = len(shape)
+        for i in range(n if n > 2 else 1):
+            p, q = shape[i], shape[(i + 1) % n]
+            dx, dy = q[0] - p[0], q[1] - p[1]
+            L = math.hypot(dx, dy)
+            if L > 0:
+                axes.append((-dy / L, dx / L))
+    best = math.inf
+    for ax, ay in axes:
+        pa = [ax * p[0] + ay * p[1] for p in a]
+        pb = [ax * p[0] + ay * p[1] for p in b]
+        a0, a1, b0, b1 = min(pa), max(pa), min(pb), max(pb)
+        if b1 < a0 - _EPS or b0 > a1 + _EPS:
+            return 0.0                       # apart on this axis
+        best = min(best, a1 - b0, b1 - a0)
+    return 0.0 if best is math.inf else max(0.0, best)
+
+
+def circle_penetration(cx: float, cy: float, r: float, poly) -> float:
+    """OVERLAP of a stack's footprint with a polygon, in display pt: its
+    radius plus the distance of its centre inside the nearest face (a stack
+    wholly inside reaches that far past the face), its radius less the
+    distance when the centre is outside and the rim crosses the face, else 0."""
+    d = boundary_dist((cx, cy), poly)
+    if point_in_poly((cx, cy), poly):
+        return r + d
+    return max(0.0, r - d)
+
+
 def bbox(poly) -> Tuple[float, float, float, float]:
     xs, ys = [p[0] for p in poly], [p[1] for p in poly]
     return min(xs), min(ys), max(xs), max(ys)
@@ -263,7 +360,7 @@ def _margin_view(rg: Optional[dict]) -> Optional[dict]:
     if not rg:
         return None
     return {k: rg.get(k) for k in ("dx", "dy", "anchors", "best_peak_anchors",
-                                   "second_peak_anchors", "margin", "usable")}
+                                   "second_peak_anchors", "margin", "rms_in", "max_in", "usable")}
 
 
 def _is_below(row: dict) -> bool:
@@ -338,6 +435,44 @@ def _not_checked(what: str, label: Any, track: Any, level: Any, a_sheet: Optiona
     return out
 
 
+def with_s_residuals(structure: Iterable[dict], pairs: Iterable[dict]) -> List[dict]:
+    """Structure rows with their S->A registration's `rms_in` / `max_in` filled in
+    from the track summary's pairs (`run_track(...)["summary"]["pairs"]`), which
+    keep the whole registration while each ROW's `registration` carries only
+    dx, dy, anchors, margin and the wall check. Matched on (track, S sheet,
+    A sheet); a row that already carries them, or has no pair, is returned as it
+    was. Nothing else about a row changes."""
+    by = {(p.get("s"), p.get("a")): p.get("registration") or {} for p in pairs}
+    out = []
+    for r in structure:
+        rg = r.get("registration") or {}
+        pair = by.get(((r.get("s_sheet") or {}).get("sheet_number"),
+                       (r.get("a_sheet") or {}).get("sheet_number")))
+        if pair and r.get("registration") is not None and rg.get("max_in") is None                 and pair.get("max_in") is not None:
+            r = dict(r, registration=dict(rg, rms_in=pair.get("rms_in"), max_in=pair.get("max_in")))
+        out.append(r)
+    return out
+
+
+def residual_for(p_to_a: Optional[dict], s_to_a: Optional[dict]) -> Optional[dict]:
+    """The REGISTRATION RESIDUAL of an entry, in inches: RESIDUAL_RULE, the sum of
+    the worst anchor residual of the two registrations that place it (the
+    plumbing sheet on its plan, the frame on that plan), each kept beside it with
+    its rms. None when either `max_in` is missing: the rule then does not apply."""
+    pm = (p_to_a or {}).get("max_in")
+    sm = (s_to_a or {}).get("max_in")
+    if pm is None or sm is None:
+        return None
+    return {"rule": RESIDUAL_RULE, "residual_in": round(float(pm) + float(sm), 3),
+            "p_to_a_max_in": round(float(pm), 3), "s_to_a_max_in": round(float(sm), 3),
+            "p_to_a_rms_in": (p_to_a or {}).get("rms_in"), "s_to_a_rms_in": (s_to_a or {}).get("rms_in")}
+
+
+def within_tolerance(overlap_in: float, residual: Optional[dict]) -> bool:
+    """Roy's rule: the overlap is smaller than the registration residual."""
+    return residual is not None and overlap_in < residual["residual_in"]
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 3. The check
 # ══════════════════════════════════════════════════════════════════════════
@@ -359,8 +494,30 @@ def _plumbing_ref(prow: dict) -> dict:
             "registration": _margin_view(prow.get("registration"))}
 
 
+def _numbered(item: dict, entries: Sequence[dict], residual: Optional[dict]) -> dict:
+    """The two numbers Roy's rule reads, on the item itself: `overlap_in`, the
+    deepest of its entries, and the `residual` (RESIDUAL_RULE, with both
+    registrations' numbers) with `residual_in`. A stack item's entries come from
+    sheets with their own P->A: each entry carries its own residual and the item
+    shows the smallest, None when any has none."""
+    item["overlap_in"] = max((e["overlap_in"] for e in entries), default=0.0)
+    if residual is None and entries and "residual" in entries[0]:
+        rs = [e["residual"] for e in entries]
+        residual = None if any(r is None for r in rs) else min(rs, key=lambda r: r["residual_in"])
+    item["residual"] = residual
+    item["residual_in"] = None if residual is None else residual["residual_in"]
+    for e in entries:           # both numbers on every entry, not only on the item
+        r = e.get("residual", residual)
+        e["residual_in"] = None if r is None else r["residual_in"]
+    item["residual_rule"] = RESIDUAL_RULE if residual is not None else (
+        "not applied: the frame's or the sheet's registration carries no max_in")
+    return item
+
+
 def _base(kind: str, frame: dict, prow: dict, tol_in: float) -> dict:
-    return {"record_type": "clash_flag", "emit_version": EMIT_VERSION, "label": FLAG_LABEL,
+    tolerance = kind == KIND_TOLERANCE
+    return {"record_type": "clash_within_tolerance" if tolerance else "clash_flag",
+            "emit_version": EMIT_VERSION, "label": TOLERANCE_LABEL if tolerance else FLAG_LABEL,
             "kind": kind, "track": frame["track"], "level": frame["level"],
             "a_sheet": frame["a_sheet"], "frame": {k: frame[k] for k in (
                 "label", "element", "tag", "polygon_a", "s_sheet", "registration", "schedule",
@@ -505,6 +662,12 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
                    frame on an A plan no plumbing sheet was placed on.
     skipped        frames drawn below (not this level's structure) and the
                    below-slab plan (ruling 117: not a storey).
+    within_tolerance  Roy 2026-10-30: the entries (pipe pieces, stacks) of a flag
+                   whose OVERLAP is smaller than the REGISTRATION RESIDUAL
+                   (module docstring), in items of their own - same grouping as
+                   the flag they left, `of_kind` naming it, label
+                   TOLERANCE_LABEL, both numbers on the item and on each entry.
+                   Never a clash flag, never dropped.
     """
     tol = pts(tol_in)
     plumbing = list(plumbing)
@@ -533,6 +696,7 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
     skipped = list(fb["skipped"])
     flags: List[dict] = []
     incons: List[dict] = []
+    tol_items: List[dict] = []
     off_stacks = stack_inconsistencies(plumbing)
     prow_pages: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
     stacks_pages: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
@@ -561,7 +725,7 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
                     r.get("track"), None, _sheet(r.get("a_sheet")),
                     "the stack has no footprint on an architectural plan: "
                     + str(r.get("placement_refused") or r.get("reason") or r.get("status")),
-                    plumbing_sheet=r.get("plumbing_sheet"), status=r.get("status")))
+                    plumbing_sheet=r.get("plumbing_sheet"), stack_status=r.get("status")))
                 continue
             stacks_pages[(r.get("track"), _a_page_id(r))].append(r)
         elif rt == "stack_sheet" and r.get("status") == "failed":
@@ -626,7 +790,9 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
                                                if rel == "inside" else None),
                          "hold_down_in": None if hdd is None else round(inches(hdd), 2),
                          "hold_down_end": hend if hdd is not None and hdd <= tol else None,
+                         "overlap_in": round(inches(circle_penetration(fp["x"], fp["y"], fp["r"], poly)), 2),
                          "p_to_a": _margin_view(s.get("registration"))}
+                entry["residual"] = residual_for(entry["p_to_a"], f.get("registration"))
                 info = off_stacks.get((s.get("track"), str(s.get("plumbing_sheet")), s.get("tag_id")))
                 if info:
                     off_here.append((entry, info))
@@ -642,11 +808,18 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
                     hd = [(path_poly_dist(ptsl, z["polygon_a"]), z.get("end"))
                           for z in f["hold_down_zones"]]
                     d, end = min(hd, key=lambda t: t[0]) if hd else (None, None)
+                    in_zone = d is not None and d <= tol
+                    post = next((z["polygon_a"] for z in f["hold_down_zones"] if z.get("end") == end),
+                                None) if in_zone else None
                     piece = {
                         "piece": kind, "index": i,
                         "points": [[round(p[0], 2), round(p[1], 2)] for p in ptsl],
                         "hold_down_in": None if d is None else round(inches(d), 2),
-                        "hold_down_end": end if d is not None and d <= tol else None}
+                        "hold_down_end": end if in_zone else None,
+                        "overlap_in": round(inches(penetration_depth(ptsl, poly)), 2),
+                        # against the end post itself (0: only within the zone's 2 in)
+                        "post_overlap_in": (round(inches(penetration_depth(ptsl, post)), 2)
+                                            if post else None)}
                     owner = next((inf for e, inf in off_here
                                   if e["plumbing_sheet"] == prow.get("plumbing_sheet")
                                   and (_touches_circle(ptsl, e, touch)
@@ -655,18 +828,28 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
                         reclass.append((dict(piece, system=system or "unknown"), owner))
                         continue
                     groups[system or "unknown"].append(piece)
+                resid = residual_for(_margin_view(prow.get("registration")), f.get("registration"))
                 for system, pieces in sorted(groups.items()):
-                    base = _base(KIND_PIPE, f, prow, tol_in)
-                    base["system"] = system
                     gid = (f["track"], key[1], f["label"], prow.get("plumbing_sheet"), system)
-                    flags.append(dict(base, flag_id=_flag_id(KIND_PIPE, *gid), pieces=pieces,
-                                      counts=_counts(pieces, tol_in)))
-                    hd_pieces = [p for p in pieces if p["hold_down_end"]]
-                    if hd_pieces:
-                        hb = _base(KIND_HOLD_DOWN, f, prow, tol_in)
-                        hb["system"] = system
-                        flags.append(dict(hb, flag_id=_flag_id(KIND_HOLD_DOWN, *gid),
-                                          pieces=hd_pieces, counts=_counts(hd_pieces, tol_in)))
+                    # the frame: each piece against the frame polygon; the hold-down
+                    # zone: each piece in it against the END POST (0: only within the 2 in)
+                    by_kind = ((KIND_PIPE, list(pieces)),
+                               (KIND_HOLD_DOWN, [dict(p, overlap_in=p["post_overlap_in"])
+                                                 for p in pieces if p["hold_down_end"]]))
+                    for kind_, ps in by_kind:
+                        keep = [p for p in ps if not within_tolerance(p["overlap_in"], resid)]
+                        tolr = [p for p in ps if within_tolerance(p["overlap_in"], resid)]
+                        for part, out_list, kd in ((keep, flags, kind_), (tolr, tol_items, KIND_TOLERANCE)):
+                            if not part:
+                                continue
+                            base = _base(kd, f, prow, tol_in)
+                            base["system"] = system
+                            base["of_kind"] = kind_ if kd == KIND_TOLERANCE else None
+                            fid = (_flag_id(KIND_TOLERANCE, kind_, *gid) if kd == KIND_TOLERANCE
+                                   else _flag_id(kind_, *gid))
+                            out_list.append(_numbered(
+                                dict(base, flag_id=fid, pieces=part, counts=_counts(part, tol_in)),
+                                part, resid))
                 for e, info in off_here:
                     if e["plumbing_sheet"] == prow.get("plumbing_sheet") and id(info) not in seen_off:
                         seen_off.add(id(info))
@@ -679,12 +862,19 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
                     incons.append(_inconsistency(
                         f, {"plumbing_sheet": e["plumbing_sheet"],
                             "plumbing_page_id": e["plumbing_page_id"]}, e, info, [], tol_in))
-            if near:
-                near.sort(key=lambda s: (str(s["plumbing_sheet"]), str(s["tag_id"]), s["y"], s["x"]))
-                prs = {s["plumbing_sheet"] for s in near}
-                base = {"record_type": "clash_flag", "emit_version": EMIT_VERSION,
-                        "label": FLAG_LABEL, "kind": KIND_STACK, "track": f["track"],
-                        "level": f["level"], "a_sheet": f["a_sheet"],
+            near.sort(key=lambda s: (str(s["plumbing_sheet"]), str(s["tag_id"]), s["y"], s["x"]))
+            keep = [s for s in near if not within_tolerance(s["overlap_in"], s["residual"])]
+            tolr = [s for s in near if within_tolerance(s["overlap_in"], s["residual"])]
+            for part, out_list, kd in ((keep, flags, KIND_STACK), (tolr, tol_items, KIND_TOLERANCE)):
+                if not part:
+                    continue
+                prs = {s["plumbing_sheet"] for s in part}
+                tolerance = kd == KIND_TOLERANCE
+                base = {"record_type": "clash_within_tolerance" if tolerance else "clash_flag",
+                        "emit_version": EMIT_VERSION,
+                        "label": TOLERANCE_LABEL if tolerance else FLAG_LABEL,
+                        "kind": kd, "of_kind": KIND_STACK if tolerance else None,
+                        "track": f["track"], "level": f["level"], "a_sheet": f["a_sheet"],
                         "frame": {k: f[k] for k in ("label", "element", "tag", "polygon_a", "s_sheet",
                                                     "registration", "schedule", "hold_down_zones",
                                                     "hold_down_note")},
@@ -692,14 +882,18 @@ def check(structure: Iterable[dict], plumbing: Iterable[dict], *,
                         "registration_margins": {
                             "s_to_a": (f.get("registration") or {}).get("margin"),
                             "p_to_a": {s["plumbing_sheet"]: (s["p_to_a"] or {}).get("margin")
-                                       for s in sorted(near, key=lambda s: str(s["plumbing_sheet"]))}},
+                                       for s in sorted(part, key=lambda s: str(s["plumbing_sheet"]))}},
                         "structure_note": f.get("structure_note"), "tolerance_in": tol_in}
-                flags.append(dict(base, flag_id=_flag_id(KIND_STACK, f["track"], key[1], f["label"]),
-                                  stacks=near, counts={"stacks": len(near)}))
+                fid = _flag_id(KIND_STACK, f["track"], key[1], f["label"])
+                out_list.append(_numbered(
+                    dict(base, flag_id=_flag_id(KIND_TOLERANCE, fid) if tolerance else fid,
+                         stacks=part, counts={"stacks": len(part)}), part, None))
     flags.sort(key=_flag_order)
     incons.sort(key=_flag_order)
-    return {"flags": flags, "inconsistencies": incons, "not_checked": not_checked, "skipped": skipped,
-            "summary": summarize(flags, not_checked, skipped, incons)}
+    tol_items.sort(key=_flag_order)
+    return {"flags": flags, "inconsistencies": incons, "within_tolerance": tol_items,
+            "not_checked": not_checked, "skipped": skipped,
+            "summary": summarize(flags, not_checked, skipped, incons, tol_items)}
 
 
 def _inconsistency(f: dict, prow: dict, e: dict, info: dict, mine: Sequence[dict],
@@ -710,6 +904,11 @@ def _inconsistency(f: dict, prow: dict, e: dict, info: dict, mine: Sequence[dict
     rel, gap = circle_relation(info["agreed"]["x"], info["agreed"]["y"], info["agreed"]["r"],
                                f["polygon_a"])
     pieces = sorted(mine, key=lambda p: (p["system"], p["piece"], p["index"]))
+    ag_overlap = round(inches(circle_penetration(info["agreed"]["x"], info["agreed"]["y"],
+                                                 info["agreed"]["r"], f["polygon_a"])), 2)
+    # the agreed position is what the other floors' sheets say; this sheet's own P->A is the best
+    # stand-in for the residual of that reading, shown for information, never a verdict
+    ag_resid = residual_for(_margin_view(e.get("p_to_a")), f.get("registration"))
     return dict(
         base, flag_id=_flag_id(KIND_INCONSISTENCY, f["track"], (f["a_sheet"] or {}).get("page_id"),
                                f["label"], e["plumbing_sheet"], e["tag_id"]),
@@ -724,7 +923,8 @@ def _inconsistency(f: dict, prow: dict, e: dict, info: dict, mine: Sequence[dict
                 + f" {f['label']}"),
         stack=e,
         agreed=dict(info["agreed"], relation=rel, distance_in=round(inches(gap), 2),
-                    sheets=info["agree_sheets"]),
+                    sheets=info["agree_sheets"], overlap_in=ag_overlap,
+                    residual_in=None if ag_resid is None else ag_resid["residual_in"]),
         offset_in=info["offset_in"], same_position_on=info["repeated_on"],
         reclassified_pieces=pieces,
         counts={"reclassified_pieces": len(pieces),
@@ -747,12 +947,20 @@ _LEVEL_ORDER = ("FLOOR_1", "FLOOR_2", "FLOOR_3", "FLOOR_4", "MEZZANINE", "ROOF",
 def _flag_order(f: dict):
     lv = f.get("level")
     return (str(f.get("track")), _LEVEL_ORDER.index(lv) if lv in _LEVEL_ORDER else 99,
-            str((f.get("frame") or {}).get("label")), (KINDS + (KIND_INCONSISTENCY,)).index(f["kind"]),
+            str((f.get("frame") or {}).get("label")),
+            (KINDS + (KIND_INCONSISTENCY,)).index(f.get("of_kind") or f["kind"]),
             str((f.get("plumbing") or {}).get("sheet_number")), str(f.get("system")))
 
 
+def _count_by(keys) -> Dict[str, int]:
+    out: Dict[str, int] = defaultdict(int)
+    for k in keys:
+        out[k] += 1
+    return dict(out)
+
+
 def summarize(flags: Sequence[dict], not_checked: Sequence[dict], skipped: Sequence[dict],
-              inconsistencies: Sequence[dict] = ()) -> dict:
+              inconsistencies: Sequence[dict] = (), within_tol: Sequence[dict] = ()) -> dict:
     """Counts per (track, level, kind), and how many flags are the SAME
     PLACE on another floor (one frame tag and system, repeated per level)
     against how many distinct places there are. Never a verdict."""
@@ -768,6 +976,9 @@ def summarize(flags: Sequence[dict], not_checked: Sequence[dict], skipped: Seque
     return {"flags": len(flags), "by_track_level_kind": dict(sorted(per.items())),
             "by_track_kind": dict(sorted(by_kind.items())),
             "distinct_places": {f"{t}|{k}": len(v) for (t, k), v in sorted(places.items())},
+            "within_tolerance": len(within_tol),
+            "within_tolerance_by_track_kind": dict(sorted(_count_by(
+                (f"{t['track']}|{t['of_kind']}" for t in within_tol)).items())),
             "inconsistencies": len(inconsistencies),
             "reclassified_stacks": len(inconsistencies),
             "reclassified_pieces": sum(len(i.get("reclassified_pieces") or []) for i in inconsistencies),
@@ -838,12 +1049,14 @@ def rows_for_store(result: Dict[str, Any], *, project_id: str,
     operator's review of the flag images (his pattern for T3's rows)."""
     return [dict(r, project_id=str(project_id), company_id=company_id)
             for r in (list(result.get("flags") or []) + list(result.get("inconsistencies") or [])
+                  + list(result.get("within_tolerance") or [])
                   + list(result.get("not_checked") or []))]
 
 
 __all__ = [
     "EMIT_VERSION", "COLLECTION", "FLAG_LABEL", "KIND_PIPE", "KIND_HOLD_DOWN", "KIND_STACK",
-    "KIND_INCONSISTENCY", "AGREE_IN", "TOUCH_IN", "MATCH_PT", "moves_with_stack", "stack_inconsistencies", "inconsistency_message",
+    "KIND_INCONSISTENCY", "KIND_TOLERANCE", "TOLERANCE_LABEL", "RESIDUAL_RULE", "residual_for",
+    "within_tolerance", "with_s_residuals", "penetration_depth", "circle_penetration", "AGREE_IN", "TOUCH_IN", "MATCH_PT", "moves_with_stack", "stack_inconsistencies", "inconsistency_message",
     "KINDS", "FRAME_ELEMENTS", "TOL_IN", "check", "frames_by_page", "summarize", "describe", "margins_text",
     "review_items", "rows_for_store", "point_in_poly", "seg_poly_dist", "path_poly_dist",
     "circle_relation", "segs_intersect", "bbox", "inches", "pts",
