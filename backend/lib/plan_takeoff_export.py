@@ -39,6 +39,7 @@ from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tu
 
 from lib import plan_areas as _areas
 from lib import plan_search as S
+from lib import plan_sources as _PSRC
 
 DOORS_WINDOWS = "Doors & windows"
 EQUIPMENT = "Equipment"
@@ -162,11 +163,23 @@ def _source(rows: Sequence[Dict[str, Any]], sources: Dict[str, dict]) -> Tuple[s
         for sheet, fid, page, fname in _places(r):
             name = ((sources.get(fid) or {}).get("file_name") or fname or "").strip()
             where = " ".join(x for x in (name, f"p{page}" if page is not None else "") if x)
-            seen.setdefault((sheet, where), where)
+            # A replacing page that prints no number is cited as the number it
+            # was given, and says so (ruling 136): 'A-105.01 (gas-change set,
+            # unnumbered) "Roof Plan"'.
+            seen.setdefault((sheet, where), _PSRC.tag_sheet(sheet, sources.get(fid), page) if sheet else sheet)
     keys = sorted(seen, key=lambda k: (k[0] == "", k[0], k[1]))
-    sheets = ", ".join(dict.fromkeys(s for s, _ in keys if s))
-    src = "; ".join(f"{s}: {w}" if s and w else (s or w) for s, w in keys if s or w)
+    sheets = ", ".join(dict.fromkeys(seen[k] for k in keys if k[0]))
+    src = "; ".join(f"{seen[k]}: {k[1]}" if k[0] and k[1] else (seen[k] or k[1]) for k in keys if k[0] or k[1])
     return sheets, src
+
+
+def sheet_numbers(sheets: str) -> List[str]:
+    """The bare sheet numbers of a `sheets` cell: "A-100.00, A-105.01
+    (gas-change set, unnumbered) "Roof Plan"" -> ["A-100.00", "A-105.01"]. The
+    tag holds a comma, so the cell is not split on ", " (the review queue's
+    items name a sheet by its number)."""
+    plain = _PSRC.without_tags(sheets)
+    return [x.strip() for x in plain.split(",") if x.strip()]
 
 
 def _row_set(r: Dict[str, Any], sources: Dict[str, dict]) -> str:
