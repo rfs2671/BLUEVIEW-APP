@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -139,7 +140,7 @@ class TheChatEvidenceSaysIt(unittest.TestCase):
         row = _row(sheet="A-100.00", page=1, quote="FIRST FLOOR PLAN")
         text = server._render_records_for_model([row], "first floor", sources={"fg": _src()})
         self.assertIn(f"[A-100.00 · {GAS} p1 · filed set]", text)
-        self.assertNotIn("unnumbered", text)
+        self.assertIsNone(re.search("unnumbered", text))
 
     def test_a_non_filed_set_is_still_named_after_the_tag(self):
         src = _src(track="post_co", set_name="owner's set", filed=False)
@@ -159,7 +160,7 @@ class TheFallbackRenderSaysIt(unittest.TestCase):
     def test_a_numbered_page_is_plain(self):
         out = S.render_records([_row(sheet="A-100.00", page=1)], "roof drain", sources=[_src()])
         self.assertIn("[A-100.00]", out)
-        self.assertNotIn("unnumbered", out)
+        self.assertIsNone(re.search("unnumbered", out))
 
     def test_without_sources_it_is_what_it_was(self):
         self.assertIn("[A-105.01]", S.render_records([_row()], "roof drain"))
@@ -308,9 +309,7 @@ class TheTagAddsNoFigure(unittest.TestCase):
     def test_digits_in_a_set_name_or_a_title_are_not_figures(self):
         text = 'On A-105.01 (588-thomas-boyland-st set, unnumbered) "ROOF PLAN LEVEL 7" there are 4.'
         out = S.strip_source_citations(text, [], [])
-        self.assertNotIn("588", out)
-        self.assertNotIn("7", out)
-        self.assertIn("4", out)
+        self.assertEqual(out.split(), ["On", "A-105.01", "there", "are", "4."])
 
     def test_the_strip_only_takes_the_tag_shape(self):
         # an ordinary parenthesis, or a figure in quotes elsewhere, is not removed
