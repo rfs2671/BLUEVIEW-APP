@@ -14,4 +14,4 @@
  FAILED tests/test_a400_type_by_panel.py::APanelIsDerivedFromTheLayoutNotTheSheet::test_a_label_of_two_types_leaves_its_panel_unowned
  FAILED tests/test_a400_type_by_panel.py::APanelIsDerivedFromTheLayoutNotTheSheet::test_each_figure_binds_to_the_one_panel_that_holds_it
  FAILED tests/test_a400_type_by_panel.py::APanelIsDerivedFromTheLayoutNotTheSheet::test_panel_regions
- 8 failed, 7 passed in 0.48s
+ 8 failed, 7 passed in 0.78s

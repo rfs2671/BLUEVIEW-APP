@@ -4866,13 +4866,14 @@ def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
             # do not all print, so it needs a counting source and none is read
             # here.
             #
-            # WHOLE PRINTED VALUES ONLY (Roy, 2026-10-31, on #939): a bare integer
-            # in a panel's cell is a fragment of a dimension (the 5 of 5'-0", the
-            # 10 of 2'-10") - the reader splits what the drawing prints whole - so
-            # a clause stating one refuses on a panel sheet. A whole dimension and
-            # a whole decimal (0.25) bind.
+            # WHOLE PRINTED DIMENSIONS ONLY (Roy, 2026-10-31, on #939): a bare
+            # integer in a panel's cell is a fragment of a dimension (the 5 of
+            # 5'-0", the 10 of 2'-10") - the reader splits what the drawing prints
+            # whole - and a decimal (0.25: infiltration, U, SHGC) is no dimension;
+            # a clause stating either refuses on a panel sheet. Only a whole
+            # dimension (clause_found) binds.
             if gtags and _is_panel_sheet(r) and not _COUNT_CONFIRMED.get() and (
-                    family or any("." not in v for v, _sp in clause_nums)):
+                    family or bool(clause_nums)):
                 continue
             cands: List[List[str]] = []
             for k, (texts, naming) in enumerate(value_parts(r)):

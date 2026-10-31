@@ -99,7 +99,6 @@ class AnA400TypeBindsByItsPanel(unittest.TestCase):
         self.assertTrue(_ok("W3 APPLY EXPANDABLE: 3'-0\".", rec))
         self.assertFalse(_ok("W1 APPLY EXPANDABLE: 4'-0\".", rec))
         self.assertFalse(_ok("W3 APPLY EXPANDABLE: 4'-0\".", rec))
-        self.assertTrue(_ok("W2 AIR INFILTRATION: 0.25.", rec))
 
     def test_a_claim_that_names_no_type_still_needs_a_counting_source(self):
         # #938's refusal, kept: a family claim would have to hold in every panel
@@ -120,9 +119,11 @@ class AnA400TypeBindsByItsPanel(unittest.TestCase):
             self.assertFalse(_ok(f"W1 APPLY EXPANDABLE: {n}.", w), n)
         for n in ("2", "10", "6", "8"):
             self.assertFalse(_ok(f"type F door INTERIOR STANDARD: {n}.", d), n)
-        # the whole dimension and the whole decimal bind
+        # a decimal (infiltration, U, SHGC) is no dimension: refused (Roy 2026-10-31; restorable on his word)
+        self.assertFalse(_ok("W2 AIR INFILTRATION: 0.25.", w))
+        self.assertFalse(_ok("W2 AIR INFILTRATION: 0.20.", w))
+        # the whole dimension binds
         self.assertTrue(_ok("W1 APPLY EXPANDABLE: 5'-0\".", w))
-        self.assertTrue(_ok("W2 AIR INFILTRATION: 0.25.", w))
         self.assertTrue(_ok("type F door INTERIOR STANDARD: 2'-10\" X 6'-8\".", d))
 
     def test_a_confirmed_count_still_binds(self):

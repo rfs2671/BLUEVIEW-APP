@@ -1,22 +1,26 @@
 {
  "base": "5f7c2afb (#938)",
- "rule": "whole printed values only (Roy 2026-10-31): bare-integer fragments refuse",
+ "rule": "whole printed DIMENSIONS only (Roy 2026-10-31): fragments and decimals refuse",
  "bound_to_refused": 0,
- "refused_to_bound": 54,
+ "refused_to_bound": 15,
  "whole_dimensions": 15,
- "whole_decimals": 39,
  "fragments_bound": 0,
+ "decimals_bound": 0,
+ "refused_non_dimension_classes": {
+  "bare_integer_fragments": 71,
+  "decimals_infiltration_U_SHGC": 39,
+  "note": "the 39 decimals are whole printed values, not dimensions; restorable on Roy's word"
+ },
  "by_type": {
-  "W1": 11,
-  "W2": 12,
-  "W3": 12,
-  "D1": 10,
-  "D2": 8,
-  "F": 1
+  "W1": 2,
+  "W2": 3,
+  "W3": 3,
+  "F": 1,
+  "D1": 4,
+  "D2": 2
  },
  "all_verified_in_own_panel": true,
- "fragments_now_refused_of_the_previous_125": 71,
- "verified_against": "crop_a400 words.json inside the type's panel region (crop_a400/map.py boxes; U/SHGC line extended)",
+ "verified_against": "crop_a400 words.json inside the type's panel region",
  "claims": [
   {
    "claim": "W1 APPLY EXPANDABLE: 5'-0\".",
@@ -38,96 +42,6 @@
     "2'-6\"@(206,288,226,298)",
     "2'-6\"@(326,475,337,495)",
     "2'-6\"@(273,288,294,298)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W1 INFILTRATION RATE: 0.20.",
-   "type": "W1",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(245,627,264,637)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W1 INFILTRATION RATE: 0.25.",
-   "type": "W1",
-   "figure": "0.25",
-   "match": "fragment",
-   "boxes": [
-    "0.25,@(154,638,176,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W1 INFILTRATION RATE: 0.31.",
-   "type": "W1",
-   "figure": "0.31",
-   "match": "exact",
-   "boxes": [
-    "0.31@(215,638,233,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W1 INFILTRATION RATE: 0.20.",
-   "type": "W1",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(245,627,264,637)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W1 INFILTRATION RATE: 0.25.",
-   "type": "W1",
-   "figure": "0.25",
-   "match": "fragment",
-   "boxes": [
-    "0.25,@(154,638,176,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W1 INFILTRATION RATE: 0.31.",
-   "type": "W1",
-   "figure": "0.31",
-   "match": "exact",
-   "boxes": [
-    "0.31@(215,638,233,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W1 INFILTRATION RATE: 0.20.",
-   "type": "W1",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(245,627,264,637)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W1 INFILTRATION RATE: 0.25.",
-   "type": "W1",
-   "figure": "0.25",
-   "match": "fragment",
-   "boxes": [
-    "0.25,@(154,638,176,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W1 INFILTRATION RATE: 0.31.",
-   "type": "W1",
-   "figure": "0.31",
-   "match": "exact",
-   "boxes": [
-    "0.31@(215,638,233,649)"
    ],
    "ok": true
   },
@@ -158,96 +72,6 @@
    "match": "exact",
    "boxes": [
     "4'-0\"@(510,288,530,298)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W2 INFILTRATION RATE: 0.20.",
-   "type": "W2",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(515,627,534,637)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W2 INFILTRATION RATE: 0.25.",
-   "type": "W2",
-   "figure": "0.25",
-   "match": "fragment",
-   "boxes": [
-    "0.25,@(424,638,446,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W2 INFILTRATION RATE: 0.31.",
-   "type": "W2",
-   "figure": "0.31",
-   "match": "exact",
-   "boxes": [
-    "0.31@(485,638,503,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W2 INFILTRATION RATE: 0.20.",
-   "type": "W2",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(515,627,534,637)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W2 INFILTRATION RATE: 0.25.",
-   "type": "W2",
-   "figure": "0.25",
-   "match": "fragment",
-   "boxes": [
-    "0.25,@(424,638,446,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W2 INFILTRATION RATE: 0.31.",
-   "type": "W2",
-   "figure": "0.31",
-   "match": "exact",
-   "boxes": [
-    "0.31@(485,638,503,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W2 INFILTRATION RATE: 0.20.",
-   "type": "W2",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(515,627,534,637)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W2 INFILTRATION RATE: 0.25.",
-   "type": "W2",
-   "figure": "0.25",
-   "match": "fragment",
-   "boxes": [
-    "0.25,@(424,638,446,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W2 INFILTRATION RATE: 0.31.",
-   "type": "W2",
-   "figure": "0.31",
-   "match": "exact",
-   "boxes": [
-    "0.31@(485,638,503,649)"
    ],
    "ok": true
   },
@@ -284,92 +108,14 @@
    "ok": true
   },
   {
-   "claim": "W3 INFILTRATION RATE: 0.20.",
-   "type": "W3",
-   "figure": "0.20",
+   "claim": "type F door INTERIOR STANDARD: 2'-10\" X 6'-8\".",
+   "type": "F",
+   "figure": "2'-10\" X 6'-8\"",
    "match": "exact",
    "boxes": [
-    "0.20@(785,627,804,637)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W3 INFILTRATION RATE: 0.25.",
-   "type": "W3",
-   "figure": "0.25",
-   "match": "fragment",
-   "boxes": [
-    "0.25,@(694,638,716,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W3 INFILTRATION RATE: 0.31.",
-   "type": "W3",
-   "figure": "0.31",
-   "match": "exact",
-   "boxes": [
-    "0.31@(755,638,773,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W3 INFILTRATION RATE: 0.20.",
-   "type": "W3",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(785,627,804,637)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W3 INFILTRATION RATE: 0.25.",
-   "type": "W3",
-   "figure": "0.25",
-   "match": "fragment",
-   "boxes": [
-    "0.25,@(694,638,716,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W3 INFILTRATION RATE: 0.31.",
-   "type": "W3",
-   "figure": "0.31",
-   "match": "exact",
-   "boxes": [
-    "0.31@(755,638,773,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W3 INFILTRATION RATE: 0.20.",
-   "type": "W3",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(785,627,804,637)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W3 INFILTRATION RATE: 0.25.",
-   "type": "W3",
-   "figure": "0.25",
-   "match": "fragment",
-   "boxes": [
-    "0.25,@(694,638,716,649)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "W3 INFILTRATION RATE: 0.31.",
-   "type": "W3",
-   "figure": "0.31",
-   "match": "exact",
-   "boxes": [
-    "0.31@(755,638,773,649)"
+    "2'-10\"@(1831,1130,1857,1141)",
+    "6'-8\"@(1882,936,1893,957)",
+    "6'-8\"@(1867,1130,1888,1141)"
    ],
    "ok": true
   },
@@ -414,66 +160,6 @@
    "ok": true
   },
   {
-   "claim": "D1 INFILTRATION RATE: 0.20.",
-   "type": "D1",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(245,1256,264,1267)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "D1 INFILTRATION RATE: 0.65.",
-   "type": "D1",
-   "figure": "0.65",
-   "match": "fragment",
-   "boxes": [
-    "0.65,@(154,1268,176,1278)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "D1 INFILTRATION RATE: 0.36.",
-   "type": "D1",
-   "figure": "0.36",
-   "match": "exact",
-   "boxes": [
-    "0.36@(215,1268,233,1278)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "D1 INFILTRATION RATE: 0.20.",
-   "type": "D1",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(245,1256,264,1267)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "D1 INFILTRATION RATE: 0.65.",
-   "type": "D1",
-   "figure": "0.65",
-   "match": "fragment",
-   "boxes": [
-    "0.65,@(154,1268,176,1278)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "D1 INFILTRATION RATE: 0.36.",
-   "type": "D1",
-   "figure": "0.36",
-   "match": "exact",
-   "boxes": [
-    "0.36@(215,1268,233,1278)"
-   ],
-   "ok": true
-  },
-  {
    "claim": "D2 APPLY EXPANDABLE: 3'-4\".",
    "type": "D2",
    "figure": "3'-4\"",
@@ -490,78 +176,6 @@
    "match": "exact",
    "boxes": [
     "3'-4\"@(478,907,499,918)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "D2 INFILTRATION RATE: 0.20.",
-   "type": "D2",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(488,1256,507,1267)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "D2 INFILTRATION RATE: 0.65.",
-   "type": "D2",
-   "figure": "0.65",
-   "match": "fragment",
-   "boxes": [
-    "0.65,@(397,1268,419,1278)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "D2 INFILTRATION RATE: 0.36.",
-   "type": "D2",
-   "figure": "0.36",
-   "match": "exact",
-   "boxes": [
-    "0.36@(458,1268,476,1278)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "D2 INFILTRATION RATE: 0.20.",
-   "type": "D2",
-   "figure": "0.20",
-   "match": "exact",
-   "boxes": [
-    "0.20@(488,1256,507,1267)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "D2 INFILTRATION RATE: 0.65.",
-   "type": "D2",
-   "figure": "0.65",
-   "match": "fragment",
-   "boxes": [
-    "0.65,@(397,1268,419,1278)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "D2 INFILTRATION RATE: 0.36.",
-   "type": "D2",
-   "figure": "0.36",
-   "match": "exact",
-   "boxes": [
-    "0.36@(458,1268,476,1278)"
-   ],
-   "ok": true
-  },
-  {
-   "claim": "type F door INTERIOR STANDARD: 2'-10\" X 6'-8\".",
-   "type": "F",
-   "figure": "2'-10\" X 6'-8\"",
-   "match": "exact",
-   "boxes": [
-    "2'-10\"@(1831,1130,1857,1141)",
-    "6'-8\"@(1882,936,1893,957)",
-    "6'-8\"@(1867,1130,1888,1141)"
    ],
    "ok": true
   }
