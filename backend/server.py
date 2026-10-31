@@ -61085,7 +61085,9 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             pid = str(job["id"])
             if not await _bot_project_scope(ident["company_id"], pid):
                 return wa_security.BOT_SCOPE_REFUSAL
-            rows = await _find_named_sheet(pid, str(args.get("sheet") or ""))
+            rows = await _find_named_sheet(
+                pid, str(args.get("sheet") or ""),
+                owner_set=plan_sources.asks_owner_set(ctx.get("text"), args.get("sheet")))
             page = rows[0] if rows else None
             if not page:
                 return f"{str(args.get('sheet') or '').upper()} isn't in the indexed drawings for {job['label']}."
@@ -65291,12 +65293,11 @@ def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
     """[(drawing track, its current index rows)], the filed track first.
 
     NEWEST PAGE PER TRACK; SUPERSESSION ONLY WITHIN A TRACK (ruling
-    2026-10-24). The index supersedes across every set by date, so on 588
-    Boyland the Owner's set (6/9/26, the owner's post-CO additions) hid the
-    filed AR set's A-101 to A-104 - and the pass placed floors 2 to the
-    mezzanine against the post-CO set only. Here each track's pages are
-    superseded among themselves (_supersession_winners, the index's own
-    rule), so the filed track keeps its own plans.
+    2026-10-24). The index used to supersede across every set by date, so on
+    588 Boyland the Owner's set (6/9/26, the owner's post-CO additions) hid
+    the filed AR set's A-101 to A-104. Since 2026-10-31 the index is per
+    track too (_supersession_winners partitions by track); the pass still
+    applies the rule track by track so it does not depend on stored marks.
 
     A mechanical sheet belongs to no track - the filed track holds it. A
     non-filed track is its own architectural plans and the filed track's
@@ -68198,9 +68199,35 @@ def _supersession_winners(rows: List[dict], files: List[dict],
                           project_id: str = "") -> Dict[Any, str]:
     """{page row _id: the file id that supersedes it}, over `rows` and
     `files` alone - the rule _supersede_plan_pages writes (see there).
-    Pure, so the glyph pass can apply it WITHIN ONE DRAWING TRACK
-    (_glyph_track_pages): the index supersedes across tracks by date.
-    `files` are project_files rows (_id, created_at, name)."""
+    `files` are project_files rows (_id, created_at, name, drawing_track).
+
+    ── SUPERSESSION IS PER TRACK (Roy, 2026-10-31) ──────────────────────────
+    #
+    # The filed original and its filed amendments are ONE track; the post-CO
+    # set is its own. Revisions are compared only WITHIN a track, so a later
+    # post-CO sheet never hides a filed one and a filed sheet never hides a
+    # post-CO one (the hard rule of 10-30: after-CO sheets are separate
+    # records of changes, they replace nothing approved). Before this, the
+    # Owner's set (title-block 6/9/26) beat the gas change (6/8/26) and the
+    # 3.28.25 sheets in the index, and search offered only the owner's
+    # A-100.00 and A-105.00 once AR 8.18.26 was ignored. A file stated
+    # IGNORED takes no part in any track: it neither wins nor loses.
+    """
+    tracks = {str(f["_id"]): (f.get("drawing_track") or "filed") for f in files}
+    live_files = [f for f in files if tracks[str(f["_id"])] != IGNORED_TRACK]
+    out: Dict[Any, str] = {}
+    for t in sorted({tracks[str(f["_id"])] for f in live_files}):
+        mine = {str(f["_id"]) for f in live_files if tracks[str(f["_id"])] == t}
+        out.update(_supersession_winners_in_one_track(
+            [r for r in rows if str(r.get("file_id")) in mine],
+            [f for f in live_files if str(f["_id"]) in mine], project_id))
+    return out
+
+
+def _supersession_winners_in_one_track(rows: List[dict], files: List[dict],
+                                       project_id: str = "") -> Dict[Any, str]:
+    """The supersession rule over ONE track's rows and files (see
+    _supersession_winners, which partitions by track and calls this)."""
     from collections import Counter as _Counter
     from datetime import date as _date
 
@@ -68351,6 +68378,14 @@ async def _supersede_plan_pages(project_id: str) -> dict:
     # EN-001.00 by PL's. T-, EN- and GN- sheets are never superseded across
     # files at all.
     #
+    # ── AND WITHIN A DRAWING TRACK (Roy, 2026-10-31) ───────────────────────
+    #
+    # Filed original + filed amendments are one track, the post-CO set is its
+    # own, and an ignored file takes no part. A post-CO sheet never hides a
+    # filed one and vice versa: both stay searchable and labelled, and
+    # retrieval picks the filed one unless the question is about the owner's
+    # set (_current_record_page_ids, plan_sources.default_track_hidden).
+    #
     # NOTHING IS DELETED. Readers exclude a row only while the file that
     # superseded it is still live, so deleting the newer file brings the older
     # sheet straight back. A sheet that appears twice INSIDE one file is not a
@@ -68359,7 +68394,7 @@ async def _supersede_plan_pages(project_id: str) -> dict:
     files = await db.project_files.find(
         {"project_id": project_id, "is_deleted": {"$ne": True},
          "drawing_track": {"$ne": IGNORED_TRACK}},      # an ignored file supersedes nothing
-        {"_id": 1, "created_at": 1, "name": 1},
+        {"_id": 1, "created_at": 1, "name": 1, "drawing_track": 1},
     ).to_list(2000)
     if not files:
         return {"superseded": 0}
@@ -68700,13 +68735,19 @@ def _is_bare_show_request(body: Optional[str]) -> bool:
     return not [w for w in s[len(verb):].split() if w not in _SHOW_FILLER]
 
 
-async def _find_named_sheet(project_id: str, sheet_q: str) -> list:
+async def _find_named_sheet(project_id: str, sheet_q: str, *, owner_set: bool = False) -> list:
     """EXACTLY the sheet asked for, or nothing. Spec pages included.
 
     Live test 2026-09-15: "show me s-001" sent S-002 and M-001. The exact match
     skipped S-001.00 because it is a notes (spec) page, and the search then fell
     through to its closest neighbours. A sheet id is not a search: the named
-    sheet is sent, or the reply says it is not there."""
+    sheet is sent, or the reply says it is not there.
+
+    TWO TRACKS CAN PRINT ONE NUMBER (A-100.00 in the filed set and in the
+    owner's post-CO set; the index keeps both current). The FILED sheet is
+    the one returned, unless `owner_set` (the question is about the owner's
+    set, plan_sources.asks_owner_set), which returns the owner's. A number
+    only the other track prints is returned from that track."""
     q_upper = re.sub(r"\s+", "", (sheet_q or "")).upper()
     m = re.match(r"^([A-Z]{1,4})-?(\d{1,4}[A-Z]?)(\.\d+)?$", q_upper)
     if not m:
@@ -68724,8 +68765,62 @@ async def _find_named_sheet(project_id: str, sheet_q: str) -> list:
     except Exception as e:
         logger.warning(f"named sheet lookup failed for {sheet_q}: {e!r}")
         return []
+    rows = await _prefer_track(project_id, rows, owner_set)
     rows.sort(key=lambda r: (len(r.get("sheet_number") or ""), not r.get("page_jpeg_r2_key")))
     return rows[:1]
+
+
+async def _file_tracks(project_id: str, file_ids: Any) -> Dict[str, str]:
+    """{file id: drawing track} for the files that are NOT filed (a file
+    missing from the answer is filed). {} when there are none or it could
+    not look."""
+    ids = sorted({str(f) for f in file_ids or [] if f})
+    if not ids:
+        return {}
+    try:
+        rows = await db.project_files.find(
+            {"project_id": str(project_id), "is_deleted": {"$ne": True},
+             "drawing_track": {"$in": [t for t in DRAWING_TRACKS if t != "filed"]}},
+            {"_id": 1, "drawing_track": 1}).to_list(2000)
+    except Exception as e:
+        logger.warning(f"drawing tracks lookup failed for {project_id}: {type(e).__name__}")
+        return {}
+    return {str(r["_id"]): r.get("drawing_track") for r in rows if str(r["_id"]) in set(ids)}
+
+
+async def _prefer_track(project_id: str, rows: list, owner_set: bool) -> list:
+    """`rows` (pages of ONE requested sheet) narrowed to one track: the
+    filed track's, else the other's; the owner's first when `owner_set`."""
+    if len(rows) < 2:
+        return rows
+    tracks = await _file_tracks(project_id, [r.get("file_id") for r in rows])
+    if not tracks:
+        return rows
+    other = [r for r in rows if str(r.get("file_id")) in tracks]
+    filed = [r for r in rows if str(r.get("file_id")) not in tracks]
+    first, second = (other, filed) if owner_set else (filed, other)
+    return first or second
+
+
+async def _default_track_hidden_ids(project_id: str, live_ids: Optional[list],
+                                    owner_set: bool) -> set:
+    """The current pages default retrieval leaves out: the post-CO page of a
+    sheet number the filed set also prints (plan_sources.default_track_hidden).
+    Nothing when the question concerns the owner's set, when the project has
+    no post-CO file, or when it could not look."""
+    if owner_set or live_ids is None:
+        return set()
+    try:
+        tracks = await _file_tracks(project_id, live_ids)
+        if not tracks:
+            return set()
+        pages = await db.document_page_index.find(
+            {"project_id": str(project_id), **_current_page_filter(live_ids)},
+            {"_id": 1, "sheet_number": 1, "file_id": 1}).to_list(20000)
+    except Exception as e:
+        logger.warning(f"default track hiding failed for {project_id}: {type(e).__name__}")
+        return set()
+    return plan_sources.default_track_hidden(pages, tracks, owner_set)
 
 
 # ── "SHOW ME", IN A DM: THE SHEET ITSELF (Mon 10:21 AM, 588) ───────────────
@@ -68909,6 +69004,8 @@ async def _drawing_list_and_sheets(project_id: str) -> Tuple[Dict[str, dict], Li
     try:
         pages = await db.document_page_index.find(
             {"project_id": pid, **_current_page_filter(live)}, {"sheet_number": 1}).to_list(5000)
+        hidden = await _default_track_hidden_ids(pid, live, False)
+        pages = [p for p in pages if str(p["_id"]) not in hidden]
         recs = await db[PLAN_RECORDS].find(
             {"project_id": pid, "record_type": "schedule",
              "page_id": {"$in": [str(p["_id"]) for p in pages]}},
@@ -69307,7 +69404,7 @@ async def _dm_sheet_turn(ident: dict, dm_chat: str, text: str, history: list,
         await send_whatsapp_message(dm_chat, wa_security.BOT_SCOPE_REFUSAL)
         return True
     short = wa_style.short_job(job["label"])
-    rows = await _find_named_sheet(pid, named)
+    rows = await _find_named_sheet(pid, named, owner_set=plan_sources.asks_owner_set(text))
     page = rows[0] if rows else None
     label = (page or {}).get("sheet_number") or named.upper()
     if not page:
@@ -69674,8 +69771,15 @@ SEARCH_PLANS_CANDIDATES = 3000
 
 
 async def _current_record_page_ids(project_id: str, *, discipline: str = "",
-                                   floor: str = "", sheet_number: str = "") -> list:
-    """The page ids a search may read from: live file, not superseded."""
+                                   floor: str = "", sheet_number: str = "",
+                                   retrieval: bool = False, owner_set: bool = False) -> list:
+    """The page ids a search may read from: live file, not superseded.
+
+    `retrieval` is a SEARCH's read: where the filed set and the owner's
+    post-CO set both print a sheet number, the filed page is returned, and
+    the owner's too only when the question concerns the owner's set
+    (`owner_set`). Every other caller (the census scope, the read-back) gets
+    every current page of every track."""
     live_ids = await _live_plan_file_ids(str(project_id))
     q = {"project_id": str(project_id), **_current_page_filter(live_ids)}
     if sheet_number:
@@ -69686,7 +69790,9 @@ async def _current_record_page_ids(project_id: str, *, discipline: str = "",
     if floor:
         q["floors"] = {"$regex": re.escape(floor), "$options": "i"}
     pages = await db.document_page_index.find(q, {"_id": 1}).to_list(5000)
-    return [str(p["_id"]) for p in pages]
+    hidden = (await _default_track_hidden_ids(str(project_id), live_ids, owner_set)
+              if retrieval else set())
+    return [str(p["_id"]) for p in pages if str(p["_id"]) not in hidden]
 
 
 async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = False) -> List[dict]:
@@ -69993,10 +70099,14 @@ async def _level_rows(project_id: str) -> List[dict]:
     levels (lib.plan_levels). Read only when a question names a level or a
     meaning that lives on one."""
     live_ids = await _live_plan_file_ids(str(project_id))
-    return await db.document_page_index.find(
+    rows = await db.document_page_index.find(
         {"project_id": str(project_id), **_current_page_filter(live_ids)},
         {"_id": 1, "sheet_number": 1, "sheet_title": 1, "floor": 1, "floors": 1},
     ).to_list(5000)
+    # The filed set's levels; the owner's page of a sheet the filed set also
+    # prints is left out (plan_sources.default_track_hidden).
+    hidden = await _default_track_hidden_ids(str(project_id), live_ids, False)
+    return [r for r in rows if str(r["_id"]) not in hidden]
 
 
 async def _interpret_levels(project_id: str, subject: str, floor: str,
@@ -70108,7 +70218,8 @@ async def _interpret_query(project_id: str, subject: str, floor: str, attribute:
     if scoped and (sheet_number or discipline):
         try:
             allowed = set(await _current_record_page_ids(
-                project_id, discipline=discipline, sheet_number=sheet_number))
+                project_id, discipline=discipline, sheet_number=sheet_number,
+                retrieval=True, owner_set=bool(interp.get("owner_set"))))
         except Exception as e:
             logger.warning(f"search_plans scope filter failed for {subject!r}: {e!r}")
             allowed = set()
@@ -70161,7 +70272,8 @@ LEVEL_EVIDENCE_MAX = 5000
 
 
 async def _level_evidence(project_id: str, ceiling_asked: bool,
-                          asked_levels: Tuple[str, ...] = ()) -> List[dict]:
+                          asked_levels: Tuple[str, ...] = (),
+                          owner_set: bool = False) -> List[dict]:
     """The floor-to-floor row (lib.plan_floor_to_floor, ruling 2026-10-27),
     derived at question time from the level marks a SECTION prints, checked
     against every current page that prints a mark of the same name - or []
@@ -70175,7 +70287,7 @@ async def _level_evidence(project_id: str, ceiling_asked: bool,
     height where they print a dimension (plan_floor_to_floor.names_a_ceiling_height
     over plan_search.value_parts). None when that count could not be made."""
     pid = str(project_id)
-    page_ids = await _current_record_page_ids(pid)
+    page_ids = await _current_record_page_ids(pid, retrieval=True, owner_set=owner_set)
     if not page_ids:
         return []
     scope = {"project_id": pid, "page_id": {"$in": page_ids}}
@@ -70225,8 +70337,18 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
                        sheet_number: str = "", limit: int = 8,
                        also: Optional[List[str]] = None,
                        attribute: str = "",
-                       interp: Optional[dict] = None) -> List[dict]:
+                       interp: Optional[dict] = None,
+                       owner_set: Optional[bool] = None) -> List[dict]:
     """The records on this project's current sheets that speak to `subject`.
+
+    ── TWO DRAWING TRACKS (Roy, 2026-10-31) ─────────────────────────────────
+    #
+    # The filed set (original + amendments) and the owner's post-CO set are
+    # separate tracks and neither hides the other in the index. Where both
+    # print one sheet number the FILED page is searched; the owner's too only
+    # when the question concerns the owner's set (`owner_set`, else read from
+    # the question's own words, plan_sources.asks_owner_set). Both stay cited
+    # with their set, and an answer states them separately, never summed.
 
     Returns RECORDS, not prose. The agent composes; `answer_is_grounded` then
     decides whether what it composed may be sent.
@@ -70258,6 +70380,9 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
         return []
     interp = interp if interp is not None else {}
     asked = f"{subject} {attribute}"
+    owner_set = (plan_sources.asks_owner_set(asked, *(also or []))
+                 if owner_set is None else bool(owner_set))
+    interp["owner_set"] = owner_set
     interp["filters"] = {"sheet_number": sheet_number, "discipline": discipline}
     subject, floor, extra = await _interpret_query(
         project_id, subject, floor, attribute, intent, interp,
@@ -70267,7 +70392,8 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     subject, attribute, floor = plan_search.normalize_arguments(subject, attribute, intent, floor)
     names = [subject] + [a for a in (also or []) if (a or "").strip() and a != subject]
     page_ids = await _current_record_page_ids(
-        project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
+        project_id, discipline=discipline, floor=floor, sheet_number=sheet_number,
+        retrieval=True, owner_set=owner_set)
     # A CEILING HEIGHT OR A FLOOR-TO-FLOOR (lib.plan_floor_to_floor, ruling
     # 2026-10-27): the section's level marks print neither CEILING nor HEIGHT,
     # so no word of the question finds them. The floor-to-floor row derived
@@ -70280,7 +70406,7 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     if plan_floor_to_floor.is_level_subject(said):
         try:
             levels = await _level_evidence(project_id, plan_floor_to_floor.names_ceiling(said),
-                                           interp.get("levels") or ())
+                                           interp.get("levels") or (), owner_set=owner_set)
         except Exception as e:
             logger.warning(f"search_plans level evidence failed for {subject!r}: {e}")
     # Nothing found still says what the question meant (_with_scoped fills
@@ -70657,7 +70783,8 @@ async def _check_one_sheet(project_id: str, user_words: str,
     """
     try:
         page_ids = await _current_record_page_ids(str(project_id),
-                                                  sheet_number=sheet)
+                                                  sheet_number=sheet, retrieval=True,
+                                                  owner_set=plan_sources.asks_owner_set(user_words))
         if not page_ids:
             return None
         page_rec = await db.document_page_index.find_one(
@@ -71044,7 +71171,8 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
     candidates: list = []
     if named:
         _stage["named"] = named
-        candidates = await _find_named_sheet(project_id, named)
+        candidates = await _find_named_sheet(
+            project_id, named, owner_set=plan_sources.asks_owner_set(route_text))
         _stage["candidates"] = len(candidates)
         if not candidates:
             await send_whatsapp_message(
@@ -71075,6 +71203,7 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             [str(x) for x in (spec.get("keywords") or [])]
             + [spec.get("floor") or "", spec.get("sheet_type") or ""]).strip()
         found = await search_plans(project_id, subject or route_text,
+                                   owner_set=plan_sources.asks_owner_set(route_text),
                                    discipline=spec.get("discipline") or "",
                                    floor=spec.get("floor") or "")
         _stage["records"] = len(found)
@@ -72498,13 +72627,17 @@ async def _sheet_index_lines(project_id: str) -> list:
             {"project_id": str(project_id), "sheet_number": {"$ne": None},
              "is_document": {"$ne": True},
              **_current_page_filter(live_ids)},
-            {"sheet_number": 1, "sheet_title": 1},
+            {"_id": 1, "sheet_number": 1, "sheet_title": 1},
         ).limit(_SHEET_INDEX_CAP + 1).to_list(_SHEET_INDEX_CAP + 1)
     except Exception as e:
         logger.warning(f"sheet index failed for {project_id}: {e}")
         return []
+    # One title per number: the filed set's, not the owner's (default track).
+    hidden = await _default_track_hidden_ids(str(project_id), live_ids, False)
     seen, out = set(), []
     for r in rows:
+        if str(r.get("_id")) in hidden:
+            continue
         sn = (r.get("sheet_number") or "").strip()
         if not sn or sn in seen:
             continue
@@ -73319,6 +73452,7 @@ async def _dispatch_agent_tool(
             interp: dict = {}
             found = await search_plans(
                 project_id, subject, also=also, attribute=attribute,
+                owner_set=plan_sources.asks_owner_set(user_body, subject),
                 intent=args.get("intent") or "",
                 discipline=args.get("discipline") or "",
                 floor=args.get("floor") or "",
@@ -73415,6 +73549,7 @@ async def _dispatch_agent_tool(
                 return f"(Plan search initiated for '{synth[:60]}'. Sending the matching sheet image.)"
             found = await search_plans(
                 project_id, question,
+                owner_set=plan_sources.asks_owner_set(user_body, question),
                 discipline=args.get("discipline") or "",
                 floor=args.get("floor") or "",
                 sheet_number=sheet_number)

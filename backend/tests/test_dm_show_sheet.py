@@ -45,7 +45,7 @@ class _Sheets(_Site):
             kw["tool_trace"].append({"tool": "search_plans", "result": WINDOW})   # its records
             return WINDOW
 
-        async def find(project_id, sheet_q):
+        async def find(project_id, sheet_q, **_kw):
             self.looked_up.append((project_id, sheet_q))
             row = SHEETS.get(sheet_q.upper())
             return [row] if row else []
@@ -158,7 +158,7 @@ class MondayAt588(_Sheets, unittest.TestCase):
         async def none(chat, page):
             return None
         with _Ctx(db=self.db) as c, patch.object(server, "_plan_media_url", none):
-            async def find(project_id, sheet_q):
+            async def find(project_id, sheet_q, **_kw):
                 return [SHEETS["SSP-013"]]
             with patch.object(server, "_find_named_sheet", find):
                 reply = self._say(c, "show me SSP-013 for 588", None, False, None, None)

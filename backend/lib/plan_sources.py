@@ -47,6 +47,64 @@ MAX_SEND_BYTES = MAX_SEND_MB * 1024 * 1024
 MAX_RANGE_PAGES = 60
 
 
+# ── WHICH TRACK RETRIEVAL RETURNS (Roy, 2026-10-31) ──────────────────────────
+#
+# The index no longer lets one drawing track hide the other (server.
+# _supersession_winners compares revisions only WITHIN a track), so a sheet
+# number the filed set and the owner's post-CO set both print has two current
+# pages. Both stay searchable and each is cited with its set. Retrieval picks
+# between them here:
+#   * by default the FILED sheet is returned (the post-CO page of the same
+#     sheet number is left out);
+#   * when the question concerns the owner's set, nothing is left out: both
+#     are returned, each labelled, and an answer states them separately and
+#     never sums them.
+# A post-CO sheet whose number the filed set does not print is never left
+# out: nothing filed answers for it, and it is cited as "(owner's set)".
+
+_OWNER_SET_ASKED = re.compile(
+    r"\bowners?\b\W{0,2}s?\W*(?:post\W?co\W*)?"
+    r"(?:set|plans?|drawings?|sheets?|version|revisions?|additions?|changes?)\b"
+    r"|\bpost\W?co(?:\b|nstruction)"
+    r"|\bafter\W?(?:the\W+)?(?:c\W?o|certificate\s+of\s+occupancy)\b"
+    r"|\bco\s+sets?\b",
+    re.I)
+
+_SHEET_STEM = re.compile(r"\.\d{1,2}$")
+
+
+def asks_owner_set(*texts: Any) -> bool:
+    """True when any of `texts` (the user's own words, the agent's subject)
+    says the question is about the owner's / post-CO set: "owner's set",
+    "owners plans", "owner drawings", "owner set", "post-CO"/"post co", "after CO"/"after C/O", "CO set" (case-insensitive, word-bounded)."""
+    return any(_OWNER_SET_ASKED.search(str(t or "")) for t in texts)
+
+
+def track_sheet_key(sheet_number: Any) -> str:
+    """A sheet number as the two tracks compare it: upper case, no spaces,
+    a reissue suffix ('.00', '.01') dropped. '' when the page prints none."""
+    sn = re.sub(r"\s+", "", str(sheet_number or "")).upper()
+    return _SHEET_STEM.sub("", sn)
+
+
+def default_track_hidden(pages: Iterable[Dict[str, Any]], track_of: Dict[str, str],
+                         owner_set: bool = False) -> set:
+    """The ids of the CURRENT pages default retrieval leaves out: a page of a
+    non-filed track whose sheet number a filed current page also prints.
+    Nothing when the question concerns the owner's set. `track_of` maps a
+    file id to its drawing track (missing = filed); an ignored file's pages
+    are never passed in (they are not live)."""
+    if owner_set:
+        return set()
+    pages = list(pages)
+    filed = {track_sheet_key(p.get("sheet_number")) for p in pages
+             if (track_of.get(str(p.get("file_id"))) or FILED) == FILED}
+    filed.discard("")
+    return {str(p["_id"]) for p in pages
+            if (track_of.get(str(p.get("file_id"))) or FILED) != FILED
+            and track_sheet_key(p.get("sheet_number")) in filed}
+
+
 # ── THE FILE AND THE SET ─────────────────────────────────────────────────────
 
 def source_of(file_row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

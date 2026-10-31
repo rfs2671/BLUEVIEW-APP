@@ -162,7 +162,7 @@ class _Direct(_Levels):
                     and all(any(f in r["quote"].lower() for f in plan_search.term_forms(t))
                             for t in terms)]
             return (hits, terms) if hits else None
-        async def page_ids(project_id, *, discipline="", floor="", sheet_number=""):
+        async def page_ids(project_id, *, discipline="", floor="", sheet_number="", **_kw):
             # The fake Mongo has no $options; the same prefix / exact rule.
             return [str(p["_id"]) for p in self.db.document_page_index.rows
                     if str(p.get("sheet_number", "")).upper().startswith(sheet_number.upper())

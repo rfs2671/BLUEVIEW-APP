@@ -242,7 +242,7 @@ class SearchLeadsWithIt(unittest.TestCase):
                                    + list(extra)]
         every = sorted({r["page_id"] for r in db["plan_records"].docs})
 
-        async def ids(project_id, discipline="", floor="", sheet_number=""):
+        async def ids(project_id, discipline="", floor="", sheet_number="", **_kw):
             return list(narrow_to) if (narrow_to and (discipline or floor)) else every
 
         async def level_rows(project_id):  # what #891 reads the set's levels from
