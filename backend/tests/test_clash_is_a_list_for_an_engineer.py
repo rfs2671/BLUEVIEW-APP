@@ -50,8 +50,8 @@ def _present_tol():
 
 NOW = datetime(2026, 10, 29, tzinfo=timezone.utc)
 A, A2 = "a103", "a102"
-S_REF = {"page_id": "s104", "sheet_number": "S-104.00", "file_name": "ST.pdf", "page_number": 8}
-A_REF = {"page_id": A, "sheet_number": "A-103.00", "file_name": "AR.pdf", "page_number": 14,
+S_REF = {"page_id": "s104", "file_id": "f-st", "sheet_number": "S-104.00", "file_name": "ST.pdf", "page_number": 8}
+A_REF = {"page_id": A, "file_id": "f-ar", "sheet_number": "A-103.00", "file_name": "AR.pdf", "page_number": 14,
          "sheet_title": "FOURTH FLOOR PLAN"}
 # SW 1 as T3 places it on A-103.00: 9 x 177 pt (6 in x 9'-10"), end posts at each end
 FRAME = [[1626.78, 702.69], [1635.78, 702.69], [1635.78, 879.69], [1626.78, 879.69]]
@@ -74,6 +74,12 @@ def srow(element, polygon, *, tag="SW 1", track="filed", a=A, end=None, drawn_as
             "structure_note": note,
             "attrs": {"drawn_as": drawn_as if element != "hold_down" else None, "end": end,
                       "zone_from": "post at the end member" if end else None}}
+
+
+PAIR_S104_A103 = {"s": "S-104.00", "a": "A-103.00", "level": "FLOOR_4",
+                  "s_sheet": {"file_id": "f-st", "page_number": 8, "sheet_number": "S-104.00"},
+                  "a_sheet": {"file_id": "f-ar", "page_number": 14, "sheet_number": "A-103.00"},
+                  "registration": {"rms_in": 0.356, "max_in": 0.999, "margin": 9.9}}
 
 
 def structure(track="filed", a=A, note=None, drawn_as="at_level", level="FLOOR_4", s_max=None, s_rms=0.3):
@@ -747,8 +753,7 @@ class WithinDrawingTolerance(unittest.TestCase):
         _present_tol()
         rows = structure()
         before = [dict(r["registration"]) for r in rows]
-        pairs = [{"s": "S-104.00", "a": "A-103.00", "level": "FLOOR_4",
-                  "registration": {"rms_in": 0.356, "max_in": 0.999, "margin": 9.9}}]
+        pairs = [PAIR_S104_A103]
         got = C.with_s_residuals(rows, pairs)
         self.assertEqual([r["registration"] for r in rows], before)          # the input is not changed
         for g, r in zip(got, rows):
@@ -760,6 +765,37 @@ class WithinDrawingTolerance(unittest.TestCase):
         own = structure(s_max=0.5)
         self.assertEqual(C.with_s_residuals(own, pairs)[0]["registration"].get("max_in"), 0.5)
         self.assertEqual(C.with_s_residuals(rows, [])[0]["registration"], before[0])
+
+    def test_the_residual_join_is_the_page_not_the_sheet_name(self):
+        """The cached pair called the gas-change first floor A-100.01; the rows call it A-100.00.
+        Same file, same page: the residual must still reach the rows (the name-keyed join lost it,
+        so every FIRST-FLOOR flag was judged with no S residual)."""
+        _present_tol()
+        rows = structure()                                       # a_sheet: AR.pdf p14, "A-103.00"
+        renamed = dict(PAIR_S104_A103, a="A-100.01",
+                       a_sheet=dict(PAIR_S104_A103["a_sheet"], sheet_number="A-100.01"))
+        got = C.with_s_residuals(rows, [renamed])
+        self.assertEqual([g["registration"].get("max_in") for g in got], [0.999] * 3)
+
+    def test_two_pages_that_share_a_sheet_name_are_not_joined(self):
+        """3.28.25 and the gas change both carry an A-100.00; same names, different pages: the pair
+        registered to the OTHER file's sheet must not hand its residual to these rows."""
+        _present_tol()
+        rows = structure()
+        other_file = dict(PAIR_S104_A103, a_sheet=dict(PAIR_S104_A103["a_sheet"], file_id="f-other"))
+        other_page = dict(PAIR_S104_A103, a_sheet=dict(PAIR_S104_A103["a_sheet"], page_number=2))
+        for pair in (other_file, other_page):
+            got = C.with_s_residuals(rows, [pair])
+            self.assertTrue(all(g["registration"].get("max_in") is None for g in got), pair)
+
+    def test_a_pair_with_no_page_refs_joins_nothing(self):
+        """A cache from before the pairs kept their page refs is matched on NO name: its rows get no
+        residual, and a row with no residual is never softened to a tolerance item."""
+        _present_tol()
+        bare = {"s": "S-104.00", "a": "A-103.00", "level": "FLOOR_4",
+                "registration": {"rms_in": 0.356, "max_in": 0.999, "margin": 9.9}}
+        got = C.with_s_residuals(structure(), [bare])
+        self.assertTrue(all(g["registration"].get("max_in") is None for g in got))
 
     def test_penetration_depth_is_the_shortest_slide_out(self):
         _present_tol()
@@ -900,7 +936,9 @@ class TheBenchmark(unittest.TestCase):
             st = plan_structural.run_track(BENCH_PAGES, open_page, track="filed")
             pl = plan_stacks.run_stacks([("filed", BENCH_PAGES + FLOOR_PAGES)], open_page, None, 56.0,
                                         place=False)
-            cls.res = C.check(C.with_s_residuals(st["rows"], st["summary"]["pairs"]), pl["rows"])
+            cls._pairs = st["summary"]["pairs"]
+            cls._rows = C.with_s_residuals(st["rows"], cls._pairs)
+            cls.res = C.check(cls._rows, pl["rows"])
         return cls.res
 
     def _sw1(self, kind):
@@ -914,6 +952,19 @@ class TheBenchmark(unittest.TestCase):
     def _v4(self):
         return one([i for i in self._run()["inconsistencies"] if i["stack"]["tag_id"] == "V-4"
                     and i["stack"]["plumbing_sheet"].startswith("P-204")])
+
+    def test_every_pair_keeps_its_page_and_every_row_gets_its_s_residual(self):
+        """run_track's own summary pairs carry (file id, page) for both sheets, and through them every
+        placed row of the track receives its S->A residual (none is left to the 'no residual' path)."""
+        _present_tol()
+        require_pdf("PL - 6.29.26.pdf")
+        self._run()
+        for p in self._pairs:
+            self.assertIsNotNone(C.page_key(p.get("s_sheet")), p["s"])
+            self.assertIsNotNone(C.page_key(p.get("a_sheet")), p["a"])
+        rows = [r for r in self._rows if r.get("placement") == "placed"]
+        self.assertTrue(rows)
+        self.assertEqual([r["label"] for r in rows if r["registration"].get("max_in") is None], [])
 
     def test_seventy_pieces_in_sw1_as_drawn_thirty_seven_flagged_eighteen_within_tolerance_fifteen_reclassified(self):
         """70 as drawn = 15 reclassified (ruling 116) + 37 flagged + 18 within drawing tolerance

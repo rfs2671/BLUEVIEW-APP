@@ -435,19 +435,42 @@ def _not_checked(what: str, label: Any, track: Any, level: Any, a_sheet: Optiona
     return out
 
 
+def page_key(ref: Optional[dict]) -> Optional[Tuple[str, int]]:
+    """A sheet's identity for the residual join: (file id, page number). NOT the
+    sheet name: the name is read from the title block and changes between passes
+    (the gas-change first floor was A-100.01 in one and A-100.00 in the next), and
+    two files can carry the same name (3.28.25 and the gas change both have an
+    A-100.00). None when the ref lacks either part: such a ref matches nothing."""
+    ref = ref or {}
+    fid, pn = ref.get("file_id"), ref.get("page_number")
+    if fid in (None, "") or pn in (None, ""):
+        return None
+    try:
+        return (str(fid), int(pn))
+    except (TypeError, ValueError):
+        return None
+
+
 def with_s_residuals(structure: Iterable[dict], pairs: Iterable[dict]) -> List[dict]:
     """Structure rows with their S->A registration's `rms_in` / `max_in` filled in
     from the track summary's pairs (`run_track(...)["summary"]["pairs"]`), which
     keep the whole registration while each ROW's `registration` carries only
-    dx, dy, anchors, margin and the wall check. Matched on (track, S sheet,
-    A sheet); a row that already carries them, or has no pair, is returned as it
-    was. Nothing else about a row changes."""
-    by = {(p.get("s"), p.get("a")): p.get("registration") or {} for p in pairs}
+    dx, dy, anchors, margin and the wall check. Matched on (S page, A page) where a
+    page is (file id, page number) - never the sheet NAME, which is re-read between
+    passes and is not unique across files. A pair that carries no page refs (a cache
+    from before they were kept) matches nothing, so its rows get no residual and the
+    tolerance rule is not applied to them (never softened) rather than joined on a
+    name that may be another sheet. A row that already carries them, or has no
+    pair, is returned as it was. Nothing else about a row changes."""
+    by = {}
+    for p in pairs:
+        k = (page_key(p.get("s_sheet")), page_key(p.get("a_sheet")))
+        if None not in k:
+            by[k] = p.get("registration") or {}
     out = []
     for r in structure:
         rg = r.get("registration") or {}
-        pair = by.get(((r.get("s_sheet") or {}).get("sheet_number"),
-                       (r.get("a_sheet") or {}).get("sheet_number")))
+        pair = by.get((page_key(r.get("s_sheet")), page_key(r.get("a_sheet"))))
         if pair and r.get("registration") is not None and rg.get("max_in") is None                 and pair.get("max_in") is not None:
             r = dict(r, registration=dict(rg, rms_in=pair.get("rms_in"), max_in=pair.get("max_in")))
         out.append(r)

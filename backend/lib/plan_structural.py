@@ -1067,6 +1067,10 @@ def run_track(pages: Sequence[dict], open_page: Callable[[dict], Any], *,
                 e["attrs"]["schedule"] = schedule.get((lv, e["tag"]))
         size_posts_from_schedule(els)
         summary["pairs"].append({"s": s.get("sheet_number"), "a": a.get("sheet_number"), "level": lv,
+                                 # the pair's identity is the PAGE (file id + page number), not the
+                                 # sheet name: a name is re-read between passes (A-100.01 became
+                                 # A-100.00) and two files can carry the same name
+                                 "s_sheet": _page_ref(s), "a_sheet": _page_ref(a),
                                  "registration": rg, "elements": len(els),
                                  "unassigned_tags": got["unassigned_tags"]})
         for e in els:
@@ -1164,6 +1168,7 @@ def track_row(track: str, result: Dict[str, Any], *, project_id: str,
     return _plain({"record_type": RECORD_TRACK, "project_id": str(project_id), "company_id": company_id,
                    "emit_version": EMIT_VERSION, "track": track, "offset": s.get("offset"),
                    "pairs": [{"s": p["s"], "a": p["a"], "level": p["level"],
+                              "s_sheet": p.get("s_sheet"), "a_sheet": p.get("a_sheet"),
                               "elements": p["elements"], "unassigned_tags": p["unassigned_tags"],
                               "registration": {k: (p["registration"] or {}).get(k) for k in (
                                   "dx", "dy", "anchors", "best_peak_anchors", "second_peak_anchors",
