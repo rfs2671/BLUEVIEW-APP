@@ -4688,6 +4688,33 @@ def _names_ceiling_height(naming: str) -> bool:
     return _f2f.names_ceiling_and_height(naming)
 
 
+def _idless_tags(record: Dict[str, Any]) -> set:
+    """The tags of a schedule with no identifier column and two or more distinct
+    tags in its headers (ruling 154); empty for any other record."""
+    if record.get("record_type") != "schedule":
+        return set()
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    cols = payload.get("columns") or []
+    if any(isinstance(c, dict) and c.get("role") == "identifier" for c in cols):
+        return set()
+    tags = {t for c in cols for t in _header_tags(str((c.get("header") if isinstance(c, dict) else c) or ""))}
+    return tags if len(tags) >= 2 else set()
+
+
+def _cells_agree(cands: Sequence[Sequence[str]], found: Sequence[Any], nums: Sequence[Tuple[str, Any]]) -> bool:
+    """Does EVERY candidate cell print every figure of the clause?"""
+    for t in cands:
+        ev = _dims.evidence(t)
+        if any(not _dims.supported(f, ev) for f in found):
+            return False
+        printed = set()
+        for x in t:
+            printed.update(_values(x))
+        if any(v not in printed for v, _sp in nums):
+            return False
+    return True
+
+
 def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
                    citations: Sequence[str],
                    aliases: Optional[Dict[str, Dict[str, List[str]]]] = None
@@ -4713,17 +4740,44 @@ def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
     ceiling = is_ceiling_height_clause(masked)
     if ceiling:
         subject = search_terms(_without_ceiling_height(flat[:min(s for s, _ in spans)]))
+    clause_found, clause_nums = found, nums
     named: List[List[str]] = []
     if subject or ceiling:
         for r in records or []:
             if _vouches_for_nothing(r):
                 continue
             table = (aliases or {}).get(str(r.get("file_id") or ""))
-            for texts, naming in value_parts(r):
+            # RULING 154, step 3: in a grid with no identifier column and two or
+            # more tags, a claim that names none of the tags is about the whole
+            # family, so it binds only when EVERY cell of the family (every tag
+            # column and every blank-header column) prints the figure, or the
+            # family is one cell. The grid-as-a-whole part is not a candidate.
+            gtags = _idless_tags(r)
+            family = bool(gtags) and not ({w.upper() for w in subject} & gtags)
+            if family:
+                # "partition type 2" is named by ONE column's own header (P2's):
+                # a column-specific claim, decided by step 2, not a family claim.
+                sw = [w for w in subject if not _is_mark(w)]
+                heads = [str((c.get("header") if isinstance(c, dict) else c) or "")
+                         for c in ((r.get("payload") or {}).get("columns") or [])]
+                if sw:      # the figures are part of the name: "type 2" is "partition type 2"
+                    sw = sw + [v for v, _sp in clause_nums]
+                sw = [w for w in sw if any(names_subject(h, [w], table) for h in heads)]
+                hits = [h for h in heads if sw and names_subject(h, sw, table)]
+                if hits and len(hits) < len(heads):
+                    family = False
+            cands: List[List[str]] = []
+            for k, (texts, naming) in enumerate(value_parts(r)):
                 if ceiling and not _names_ceiling_height(naming):
                     continue
                 if (not subject) or names_subject(naming, subject, table):
-                    named.append(texts)
+                    if family:
+                        if k:
+                            cands.append(texts)
+                    else:
+                        named.append(texts)
+            if family and cands and _cells_agree(cands, clause_found, clause_nums):   # one cell: it must print it
+                named.extend(cands)
     bad = [f.text.strip() for f in found
            if not any(_dims.supported(f, _dims.evidence(t)) for t in named)]
     printed = set()

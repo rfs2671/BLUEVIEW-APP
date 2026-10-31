@@ -272,8 +272,10 @@ class Ruling12AGridWithoutAnIdentifier(unittest.TestCase):
         self.assertFalse(gate("ceiling height: 1'-4\".", [PARTITIONS]))
         # P2's own header names P2's cell.
         self.assertTrue(gate("partition type 2: 1'-4\".", [PARTITIONS]))
-        # The grid's name ("TABLE") names every cell.
-        self.assertTrue(gate("table: 1'-4\".", [PARTITIONS]))
+        # The grid's name ("TABLE") names every cell; RULING 154 step 3: a claim that names only
+        # the grid is a family claim over a multi-tag grid with no identifier, so it binds only
+        # when EVERY cell prints the figure - P1's cell does not.
+        self.assertFalse(gate("table: 1'-4\".", [PARTITIONS]))
 
 
 # P-400.00's pump row as production stores it: ROOF MECH ROOM and 13 GPM in
