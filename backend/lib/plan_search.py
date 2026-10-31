@@ -4167,8 +4167,6 @@ def value_parts(record: Dict[str, Any]) -> List[Tuple[List[str], str]]:
             neutral = " | ".join([str(payload.get("name") or "")] + [strip(h) for h in headers]
                                  + [str(t) for t in (record.get("subject_terms") or [])])
             own = [(" ".join(t) if len(t) == 1 else "") for t in col_tags]
-            if _own_column_unmapped(record) and not _COUNT_CONFIRMED.get():
-                own = [""] * len(own)
             parts = [(whole, neutral)]
     for row in rows:
         if not isinstance(row, list) or not row:
@@ -4786,6 +4784,11 @@ def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
     if subject or ceiling:
         for r in records or []:
             if _vouches_for_nothing(r):
+                continue
+            # RULING (Roy, 2026-10-30, scope update): EVERY value-path bind
+            # from an unmapped sheet's tag-headed grid (A-400.00), tagged or
+            # untagged, needs a counting source; none is read here.
+            if _idless_tags(r) and _own_column_unmapped(r) and not _COUNT_CONFIRMED.get():
                 continue
             table = (aliases or {}).get(str(r.get("file_id") or ""))
             # RULING 154, step 3: in a grid with no identifier column and two or

@@ -109,5 +109,58 @@
    "areas": "722/201"
   },
   "eval": "30/32"
+ },
+ "a400refuse": {
+  "pr": "fix/a400-own-column-needs-a-counting-source",
+  "base": "05aa22ae",
+  "value_grid": {
+   "claims": 186,
+   "bound": 0,
+   "vs_937_tip": 125,
+   "bound_to_refused": 125,
+   "refused_to_bound": 0
+  },
+  "census": {
+   "A-400 WINDOW": [
+    4,
+    4
+   ],
+   "A-400 INTERIOR DOOR": [
+    34,
+    0
+   ],
+   "A-400 EXTERIOR DOOR": [
+    0,
+    0
+   ],
+   "A-500 wall types": [
+    76,
+    36
+   ],
+   "A-500 partition types": [
+    106,
+    78
+   ]
+  },
+  "untagged_through_multi_tag_grids": {
+   "bound_before": 58,
+   "bound_after": 0
+  },
+  "attribute_grid_79821": {
+   "main": 1326,
+   "branch": 1326,
+   "flips": 0
+  },
+  "prod_probe": [
+   1170,
+   1170
+  ],
+  "probes": {
+   "health": "14,690/640",
+   "doors": "23,744/533",
+   "l3": "891/42",
+   "areas": "722/201"
+  },
+  "eval": "30/32"
  }
 }

@@ -49,6 +49,11 @@ class AnA400OwnColumnNeedsACountingSource(unittest.TestCase):
         self.assertFalse(_ok("W2 rough opening: 4'-0\".", rec))
         self.assertFalse(_ok("W1 rough opening: 5'-0\".", rec))
 
+    def test_an_untagged_claim_through_the_grid_refuses_too(self):
+        same = _sched(COLS, [["frame 4'-0\"", "", "frame 4'-0\"", ""]], "A-400.00")
+        self.assertFalse(_ok("Window frame 4'-0\".", same))
+        self.assertTrue(_ok("Window frame 4'-0\".", _sched(COLS, [["frame 4'-0\"", "", "frame 4'-0\"", ""]], "A-401.00")))
+
     def test_the_wrong_door_binding_refuses(self):
         # the real finding: F's size read as column D's
         rec = _sched(DCOLS, DROWS, "A-400.00", "INTERIOR DOOR SCHEDULE")

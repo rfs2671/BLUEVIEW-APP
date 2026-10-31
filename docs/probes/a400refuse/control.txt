@@ -1,6 +1,9 @@
 E       AssertionError: True is not false
 E       AssertionError: True is not false
+E       AttributeError: module 'lib.plan_search' has no attribute '_OWN_COLUMN_UNMAPPED_SHEETS'
+E       AssertionError: True is not false
 FAILED tests/test_a400_own_column_needs_a_counting_source.py::AnA400OwnColumnNeedsACountingSource::test_a_window_figure_through_its_own_column_refuses
+FAILED tests/test_a400_own_column_needs_a_counting_source.py::AnA400OwnColumnNeedsACountingSource::test_an_untagged_claim_through_the_grid_refuses_too
 FAILED tests/test_a400_own_column_needs_a_counting_source.py::AnA400OwnColumnNeedsACountingSource::test_the_unmapped_sheets_are_named
 FAILED tests/test_a400_own_column_needs_a_counting_source.py::AnA400OwnColumnNeedsACountingSource::test_the_wrong_door_binding_refuses
-3 failed, 5 passed in 0.60s
+4 failed, 5 passed in 0.53s
