@@ -197,7 +197,7 @@ class NoLabelOnlyMatchReachesTheComposingModel(unittest.TestCase):
         import server
         src = inspect.getsource(server._dispatch_agent_tool)
         i = src.index('if name == "search_plans"')
-        block = src[i:i + 1500]
+        block = src[i:i + 1800]
         self.assertIn("await search_plans(", block)
         self.assertIn("_render_records_for_model(found", block)
 
