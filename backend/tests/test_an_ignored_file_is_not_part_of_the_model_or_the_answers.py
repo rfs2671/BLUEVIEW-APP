@@ -285,6 +285,60 @@ class TheOutputsReadNoRowOfIt(unittest.TestCase):
         self.assertEqual([n["applied"] for n in notes], [False])
 
 
+class TheChatEvidenceAndTheExportReadNoRowOfIt(unittest.TestCase):
+    """Through the real search_plans and the takeoff's everything-read: two
+    floors of EF-1 rows (4 each); the 4th floor's mechanical page belongs to
+    the file that gets ignored. Same rows in the database throughout - only the
+    file's state changes."""
+
+    P = "p1"
+
+    def _world(self, ignored):
+        from tests.test_a_located_count_is_complete_or_refused import (
+            EF, _ef_fourth, _floor, _numbered, _schedule)
+        db = AsyncFakeDB()
+        fa, fb = str(ObjectId()), str(ObjectId())
+        db.project_files.docs += [
+            {"_id": ObjectId(fa), "project_id": self.P, "name": "MH.pdf", "is_deleted": False},
+            {"_id": ObjectId(fb), "project_id": self.P, "name": "AR - 8.18.26.pdf",
+             "is_deleted": False, **({"drawing_track": "ignored"} if ignored else {})}]
+        for pid_, fid, sn in (("pg-m102", fa, "M-102.00"), ("pg-m103", fb, "M-103.00"),
+                              ("pg-m001", fa, "M-001.00")):
+            db.document_page_index.docs.append(
+                {"_id": pid_, "project_id": self.P, "file_id": fid, "sheet_number": sn,
+                 "superseded_by": None})
+        rows = _numbered(_floor("102", EF, [("EF-1", u) for u in ("3A", "3B", "3C", "3D")])
+                         + _ef_fourth(1))
+        db.plan_records.docs += [_schedule(EF, ["EF-1"])] + rows
+        return db, fa, fb
+
+    def _evidence(self, db):
+        with patch.object(server, "db", db):
+            return _run(server._glyph_evidence(self.P, "EF-1"))
+
+    def test_the_rows_of_an_ignored_file_never_reach_the_evidence(self):
+        _present()
+        db, _fa, _fb = self._world(ignored=True)
+        got = self._evidence(db)
+        pages = {r.get("page_id") for r in got if r.get("record_type") == "glyph"}
+        self.assertEqual(pages, {"pg-m102"}, "only the live file's page is read")
+        fam = [c for c in got if c.get("kind") == "family" and c.get("record_type") == "glyph_census"]
+        self.assertEqual([c["count"] for c in fam], [4], "the census counts the live file's rows only")
+
+    def test_the_same_rows_are_read_when_nothing_is_ignored(self):
+        db, _fa, _fb = self._world(ignored=False)
+        got = self._evidence(db)
+        pages = {r.get("page_id") for r in got if r.get("record_type") == "glyph"}
+        self.assertEqual(pages, {"pg-m102", "pg-m103"})
+
+    def test_the_takeoff_everything_read_has_none_of_them(self):
+        _present()
+        db, _fa, _fb = self._world(ignored=True)
+        with patch.object(server, "db", db):
+            got = _run(server._glyph_evidence(self.P, "", everything=True))
+        self.assertNotIn("pg-m103", {r.get("page_id") for r in got})
+
+
 class TheDefaultIsUnchanged(unittest.TestCase):
 
     def test_no_stored_track_filed_and_post_co_are_all_live_and_all_read(self):
