@@ -66,8 +66,8 @@ _OWNER_SET_ASKED = re.compile(
     r"\bowners?\b\W{0,2}s?\W*(?:post\W?co\W*)?"
     r"(?:set|plans?|drawings?|sheets?|version|revisions?|additions?|changes?)\b"
     r"|\bpost\W?co(?:\b|nstruction)"
-    r"|\bafter\W?(?:the\W+)?(?:co|certificate\s+of\s+occupancy)\b"
-    r"|\bper\s+the\s+owners?\b",
+    r"|\bafter\W?(?:the\W+)?(?:c\W?o|certificate\s+of\s+occupancy)\b"
+    r"|\bco\s+sets?\b",
     re.I)
 
 _SHEET_STEM = re.compile(r"\.\d{1,2}$")
@@ -76,7 +76,7 @@ _SHEET_STEM = re.compile(r"\.\d{1,2}$")
 def asks_owner_set(*texts: Any) -> bool:
     """True when any of `texts` (the user's own words, the agent's subject)
     says the question is about the owner's / post-CO set: "owner's set",
-    "owners plans", "post-CO", "after CO"."""
+    "owners plans", "owner drawings", "owner set", "post-CO"/"post co", "after CO"/"after C/O", "CO set" (case-insensitive, word-bounded)."""
     return any(_OWNER_SET_ASKED.search(str(t or "")) for t in texts)
 
 

@@ -341,6 +341,19 @@ class TheOwnersSetQuestionIsRouted(unittest.TestCase):
             self.assertFalse(plan_sources.asks_owner_set(text), text)
         self.assertFalse(plan_sources.asks_owner_set(None, ""))
 
+    def test_each_phrase_Roy_named_is_read_in_any_case(self):
+        for text in ("owner drawings for the roof", "OWNER PLANS A-100", "the Owner Set", "owner's set",
+                     "owners plans", "post co changes", "POST-CO", "Post CO", "what changed after C/O",
+                     "after c/o", "AFTER CO", "the CO set roof", "CO SET", "co sets"):
+            self.assertTrue(plan_sources.asks_owner_set(text), text)
+
+    def test_ordinary_words_do_not_trigger_it(self):
+        for text in ("the owner", "owner approved it", "owners of the units", "company set up the roof",
+                     "CO2 sensor count", "co-ordinate with the GC", "coat set", "cost set", "after company",
+                     "after coordination", "after CO2 alarm", "postcode", "post col", "echo set", "disco set", "taco sets",
+                     "a company set of plans", "who is the owner?", "per the owner"):
+            self.assertFalse(plan_sources.asks_owner_set(text), text)
+
     def test_search_plans_reads_the_question_and_passes_it_to_retrieval(self):
         _present()
         seen = []
