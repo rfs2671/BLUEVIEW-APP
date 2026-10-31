@@ -113,6 +113,18 @@ class AnA400TypeBindsByItsPanel(unittest.TestCase):
         # the same words on another sheet are not under the panel-sheet rule
         self.assertTrue(_ok("Door D: 3.", _doors("A-401.00")))
 
+    def test_a_fragment_of_a_dimension_refuses_in_every_panel(self):
+        # Roy 2026-10-31: whole printed dimensions only; the 5 of 5'-0", the 10 of 2'-10" are fragments
+        w, d = _windows(), _doors()
+        for n in ("5", "0", "2", "6"):
+            self.assertFalse(_ok(f"W1 APPLY EXPANDABLE: {n}.", w), n)
+        for n in ("2", "10", "6", "8"):
+            self.assertFalse(_ok(f"type F door INTERIOR STANDARD: {n}.", d), n)
+        # the whole dimension and the whole decimal bind
+        self.assertTrue(_ok("W1 APPLY EXPANDABLE: 5'-0\".", w))
+        self.assertTrue(_ok("W2 AIR INFILTRATION: 0.25.", w))
+        self.assertTrue(_ok("type F door INTERIOR STANDARD: 2'-10\" X 6'-8\".", d))
+
     def test_a_confirmed_count_still_binds(self):
         rec = _windows()
         with mock.patch.object(S, "_located_tags", return_value={"W2"}), \

@@ -168,15 +168,15 @@
   "base": "5f7c2afb (#938)",
   "value_grid": {
    "claims": 186,
-   "bound": 120,
+   "bound": 53,
    "vs_938": 0,
-   "refused_to_bound": 120,
+   "refused_to_bound": 53,
    "bound_to_refused": 0
   },
   "panel_grid_with_body_label_tags": {
    "claims": 208,
-   "bound": 125,
-   "new_vs_value_grid": "5 type F claims (INTERIOR STANDARD 2'-10\" X 6'-8\" and its fragments 2/10/6/8)"
+   "bound": 54,
+   "note": "54 = 15 whole dimensions + 39 whole decimals; 0 fragments; F: 2'-10\" X 6'-8\" only"
   },
   "census": {
    "A-400 WINDOW": [
@@ -219,6 +219,7 @@
    "areas": "722/201"
   },
   "eval": "30/32",
-  "related_sweep": "66 test files, 1227 passed, 0 skipped, 0 failed"
+  "related_sweep": "66 test files, 1227 passed, 0 skipped, 0 failed",
+  "rule": "whole printed values only; 71 bare-integer fragments of the first 125 now refuse"
  }
 }

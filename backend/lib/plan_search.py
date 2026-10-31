@@ -4794,27 +4794,6 @@ def _idless_tags(record: Dict[str, Any]) -> set:
     return tags
 
 
-#: Words a count of a door or window type says besides its tag: "type D doors:
-#: 3", "B interior doors: 3". Any other word ("INTERIOR STANDARD", "APPLY
-#: EXPANDABLE") makes the clause an attribute's, not a count's.
-_TAG_COUNT_FILLER = frozenset({"type", "door", "doors", "window", "windows", "unit", "units",
-                               "interior", "exterior", "each", "total", "number", "count"})
-
-
-def _states_a_tag_count(subject: Sequence[str], found: Sequence[Any],
-                        nums: Sequence[Tuple[str, Any]], tags: set) -> bool:
-    """Does an attribute clause on a panel sheet state a COUNT of a type: one
-    bare integer (no dimension, no decimal) whose subject is the type's tag and
-    nothing else but filler ("B: 3.", "type D door: 3.")? Such a clause is read
-    from a fragment of a dimension in the type's panel (the 3 of 3'-0"), never
-    from a counting source, so on a sheet drawn as panels it binds only when
-    the count rule confirms it (the 36 / 5 / 2 glyph census)."""
-    if found or len(nums) != 1 or "." in nums[0][0]:
-        return False
-    words = [str(w).lower() for w in subject if str(w).lower() not in _TAG_COUNT_FILLER]
-    return bool(words) and all(w.upper() in tags for w in words)
-
-
 def _cells_agree(cands: Sequence[Sequence[str]], found: Sequence[Any], nums: Sequence[Tuple[str, Any]]) -> bool:
     """Does EVERY candidate cell print every figure of the clause?"""
     for t in cands:
@@ -4886,8 +4865,14 @@ def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
             # claim that names NO type is about every panel, which the cells
             # do not all print, so it needs a counting source and none is read
             # here.
-            if _is_panel_sheet(r) and not _COUNT_CONFIRMED.get() and (
-                    family or _states_a_tag_count(subject, clause_found, clause_nums, gtags)):
+            #
+            # WHOLE PRINTED VALUES ONLY (Roy, 2026-10-31, on #939): a bare integer
+            # in a panel's cell is a fragment of a dimension (the 5 of 5'-0", the
+            # 10 of 2'-10") - the reader splits what the drawing prints whole - so
+            # a clause stating one refuses on a panel sheet. A whole dimension and
+            # a whole decimal (0.25) bind.
+            if gtags and _is_panel_sheet(r) and not _COUNT_CONFIRMED.get() and (
+                    family or any("." not in v for v, _sp in clause_nums)):
                 continue
             cands: List[List[str]] = []
             for k, (texts, naming) in enumerate(value_parts(r)):
