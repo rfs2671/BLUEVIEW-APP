@@ -34,7 +34,7 @@ from lib import plan_ocr
 from lib import plan_symbols as psym
 from lib import plan_tally as ptal
 from lib.plan_sheet import (PT_PER_INCH, _pts, load_sheet, plan_unit_tags,
-                            register, symbol_objects)
+                            register_offset, symbol_objects)
 from lib.plan_space import build_space
 
 log = logging.getLogger(__name__)
@@ -447,7 +447,13 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
         reg_ = {"dx": 0.0, "dy": 0.0, "usable": False, "sheet_scope": True}
     else:
         arch = load_sheet(arch_page)
-        reg_ = register(arch, mech)
+        # ONE OFFSET RULE FOR EVERY PAIR (ruling 63, 2026-10-28; moved here by
+        # ruling 107): the offset is the exact census' single best peak with
+        # >= MIN_ANCHORS anchors, the margin recorded on the row, no ratio
+        # threshold. register() refused an offset holding under HALF the best
+        # peak and judged spread against the wall layer - a different rule
+        # from the one S->A and P->A pairs use.
+        reg_ = register_offset(arch, mech)
     dx, dy = reg_["dx"], reg_["dy"]
     unit_labels = plan_unit_tags(arch["corners"], arch["words"], unit_tags) \
         if reg_["usable"] else {}
