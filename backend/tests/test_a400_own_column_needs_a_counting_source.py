@@ -1,4 +1,9 @@
-"""ROLE-SPLIT FINDING 2026-10-30 (crop-read of AR 3.28.25 p23), REFUSALS ONLY:
+"""SUPERSEDED IN PART by TYPE-BY-PANEL (tests/test_a400_type_by_panel.py): a figure in
+a type's own panel binds again; what #938 refused and still stays refused is a claim
+that names no type and a bare tag-and-integer count with no counting source. The
+history below is #938's.
+
+ROLE-SPLIT FINDING 2026-10-30 (crop-read of AR 3.28.25 p23), REFUSALS ONLY:
 A-400.00 is not a column table. Each door and window type has its own panel;
 F and G sit in a second row under D and E, so the grid read F's info table as
 column "NUMBER D": "INTERIOR STANDARD, 2'-10" X 6'-8"" (type F's) bound to D and
@@ -44,10 +49,12 @@ def _ok(text, rec):
 
 class AnA400OwnColumnNeedsACountingSource(unittest.TestCase):
 
-    def test_a_window_figure_through_its_own_column_refuses(self):
+    def test_a_window_figure_binds_only_in_its_own_panel(self):
         rec = _sched(COLS, ROWS, "A-400.00")
-        self.assertFalse(_ok("W2 rough opening: 4'-0\".", rec))
-        self.assertFalse(_ok("W1 rough opening: 5'-0\".", rec))
+        self.assertTrue(_ok("W2 rough opening: 4'-0\".", rec))
+        self.assertTrue(_ok("W1 rough opening: 5'-0\".", rec))
+        self.assertFalse(_ok("W1 rough opening: 4'-0\".", rec))      # W2's panel prints it
+        self.assertFalse(_ok("W2 rough opening: 5'-0\".", rec))
 
     def test_an_untagged_claim_through_the_grid_refuses_too(self):
         same = _sched(COLS, [["frame 4'-0\"", "", "frame 4'-0\"", ""]], "A-400.00")
@@ -55,10 +62,14 @@ class AnA400OwnColumnNeedsACountingSource(unittest.TestCase):
         self.assertTrue(_ok("Window frame 4'-0\".", _sched(COLS, [["frame 4'-0\"", "", "frame 4'-0\"", ""]], "A-401.00")))
 
     def test_the_wrong_door_binding_refuses(self):
-        # the real finding: F's size read as column D's
-        rec = _sched(DCOLS, DROWS, "A-400.00", "INTERIOR DOOR SCHEDULE")
+        # the real finding: F's size sits in the grid under column D, with F's own label above it
+        rec = _sched(DCOLS, [["SIZE 3'-0\" X 7'-0\"", "", "SIZE 3'-0\" X 6'-8\"", ""],
+                             ["NUMBER F", "", "NUMBER G", ""], ["SIZE 2'-10\" X 6'-8\"", "", "SIZE VARIES", ""]],
+                     "A-400.00", "INTERIOR DOOR SCHEDULE")
         self.assertFalse(_ok("Door D size: 2'-10\" X 6'-8\".", rec))
-        self.assertFalse(_ok("Door E size: 3'-0\" X 6'-8\".", rec))
+        self.assertTrue(_ok("Door D size: 3'-0\" X 7'-0\".", rec))
+        self.assertTrue(_ok("Door F size: 2'-10\" X 6'-8\".", rec))
+        self.assertTrue(_ok("Door E size: 3'-0\" X 6'-8\".", rec))
 
     def test_the_same_grid_on_another_sheet_keeps_its_own_column(self):
         rec = _sched(COLS, ROWS, "A-401.00")
@@ -89,9 +100,9 @@ class AnA400OwnColumnNeedsACountingSource(unittest.TestCase):
             self.assertFalse(_ok("W2: 9.", rec))
 
     def test_the_unmapped_sheets_are_named(self):
-        self.assertIn("A-400.00", S._OWN_COLUMN_UNMAPPED_SHEETS)
-        self.assertTrue(S._own_column_unmapped({"sheet_number": " a-400.00 "}))
-        self.assertFalse(S._own_column_unmapped({"sheet_number": "A-500.00"}))
+        self.assertIn("A-400.00", S._PANEL_SHEETS)
+        self.assertTrue(S._is_panel_sheet({"sheet_number": " a-400.00 "}))
+        self.assertFalse(S._is_panel_sheet({"sheet_number": "A-500.00"}))
 
     def test_a_grid_printing_one_tag_or_with_an_identifier_is_unchanged(self):
         pump = _sched([("SYMBOL WBP-1", None), ("PUMP GPM 47", None), ("HP 2", None)],
