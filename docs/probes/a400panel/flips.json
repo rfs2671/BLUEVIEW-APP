@@ -1,0 +1,1371 @@
+{
+ "base": "5f7c2afb (#938)",
+ "direction": "refused->bound only",
+ "bound_to_refused": 0,
+ "refused_to_bound_value_grid": 120,
+ "refused_to_bound_new_type_F": 5,
+ "by_type": {
+  "W1": 27,
+  "W2": 29,
+  "W3": 29,
+  "D1": 19,
+  "D2": 16,
+  "F": 5
+ },
+ "all_verified_in_own_panel": true,
+ "stay_refused": {
+  "value_grid_wrong_D_and_A_INTERIOR_STANDARD": 10,
+  "untagged_family_claims": 58,
+  "count_shaped_interior_doors": 34,
+  "G": "no figure binds (VARIES, G.C. TO DECIDE)"
+ },
+ "verified_against": "crop_a400 words.json inside the type's panel region (crop_a400/map.py boxes; U/SHGC line extended)",
+ "claims": [
+  {
+   "claim": "W1 APPLY EXPANDABLE: 5'-0\".",
+   "type": "W1",
+   "figure": "5'-0\"",
+   "match": "exact",
+   "boxes": [
+    "5'-0\"@(326,374,337,394)",
+    "5'-0\"@(240,273,260,283)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 2'-6\".",
+   "type": "W1",
+   "figure": "2'-6\"",
+   "match": "exact",
+   "boxes": [
+    "2'-6\"@(206,288,226,298)",
+    "2'-6\"@(326,475,337,495)",
+    "2'-6\"@(273,288,294,298)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 5 \".",
+   "type": "W1",
+   "figure": "5 \"",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(326,374,337,394)",
+    "5'-0\"@(240,273,260,283)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 5.",
+   "type": "W1",
+   "figure": "5",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(326,374,337,394)",
+    "5'-0\"@(240,273,260,283)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 0.",
+   "type": "W1",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "0.20@(245,627,264,637)",
+    "0.25,@(154,638,176,649)",
+    "0.31@(215,638,233,649)",
+    "5'-0\"@(326,374,337,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 2.",
+   "type": "W1",
+   "figure": "2",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(206,288,226,298)",
+    "2'-6\"@(326,475,337,495)",
+    "2'-6\"@(273,288,294,298)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 6.",
+   "type": "W1",
+   "figure": "6",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(206,288,226,298)",
+    "2'-6\"@(326,475,337,495)",
+    "2'-6\"@(273,288,294,298)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 5 \".",
+   "type": "W1",
+   "figure": "5 \"",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(326,374,337,394)",
+    "5'-0\"@(240,273,260,283)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 0.",
+   "type": "W1",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "0.20@(245,627,264,637)",
+    "0.25,@(154,638,176,649)",
+    "0.31@(215,638,233,649)",
+    "5'-0\"@(326,374,337,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 5.",
+   "type": "W1",
+   "figure": "5",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(326,374,337,394)",
+    "5'-0\"@(240,273,260,283)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 6.",
+   "type": "W1",
+   "figure": "6",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(206,288,226,298)",
+    "2'-6\"@(326,475,337,495)",
+    "2'-6\"@(273,288,294,298)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 2.",
+   "type": "W1",
+   "figure": "2",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(206,288,226,298)",
+    "2'-6\"@(326,475,337,495)",
+    "2'-6\"@(273,288,294,298)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 2 \".",
+   "type": "W1",
+   "figure": "2 \"",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(206,288,226,298)",
+    "2'-6\"@(326,475,337,495)",
+    "2'-6\"@(273,288,294,298)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 5 \".",
+   "type": "W1",
+   "figure": "5 \"",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(326,374,337,394)",
+    "5'-0\"@(240,273,260,283)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 0.",
+   "type": "W1",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "0.20@(245,627,264,637)",
+    "0.25,@(154,638,176,649)",
+    "0.31@(215,638,233,649)",
+    "5'-0\"@(326,374,337,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 6.",
+   "type": "W1",
+   "figure": "6",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(206,288,226,298)",
+    "2'-6\"@(326,475,337,495)",
+    "2'-6\"@(273,288,294,298)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 2.",
+   "type": "W1",
+   "figure": "2",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(206,288,226,298)",
+    "2'-6\"@(326,475,337,495)",
+    "2'-6\"@(273,288,294,298)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 APPLY EXPANDABLE: 5.",
+   "type": "W1",
+   "figure": "5",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(326,374,337,394)",
+    "5'-0\"@(240,273,260,283)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 INFILTRATION RATE: 0.20.",
+   "type": "W1",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(245,627,264,637)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 INFILTRATION RATE: 0.25.",
+   "type": "W1",
+   "figure": "0.25",
+   "match": "fragment",
+   "boxes": [
+    "0.25,@(154,638,176,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 INFILTRATION RATE: 0.31.",
+   "type": "W1",
+   "figure": "0.31",
+   "match": "exact",
+   "boxes": [
+    "0.31@(215,638,233,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 INFILTRATION RATE: 0.20.",
+   "type": "W1",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(245,627,264,637)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 INFILTRATION RATE: 0.25.",
+   "type": "W1",
+   "figure": "0.25",
+   "match": "fragment",
+   "boxes": [
+    "0.25,@(154,638,176,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 INFILTRATION RATE: 0.31.",
+   "type": "W1",
+   "figure": "0.31",
+   "match": "exact",
+   "boxes": [
+    "0.31@(215,638,233,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 INFILTRATION RATE: 0.20.",
+   "type": "W1",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(245,627,264,637)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 INFILTRATION RATE: 0.25.",
+   "type": "W1",
+   "figure": "0.25",
+   "match": "fragment",
+   "boxes": [
+    "0.25,@(154,638,176,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W1 INFILTRATION RATE: 0.31.",
+   "type": "W1",
+   "figure": "0.31",
+   "match": "exact",
+   "boxes": [
+    "0.31@(215,638,233,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 5'-0\".",
+   "type": "W2",
+   "figure": "5'-0\"",
+   "match": "exact",
+   "boxes": [
+    "5'-0\"@(582,374,593,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 2'-6\".",
+   "type": "W2",
+   "figure": "2'-6\"",
+   "match": "exact",
+   "boxes": [
+    "2'-6\"@(582,475,593,495)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 5 \".",
+   "type": "W2",
+   "figure": "5 \"",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(582,374,593,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 5.",
+   "type": "W2",
+   "figure": "5",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(582,374,593,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 0.",
+   "type": "W2",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "4'-0\"@(510,288,530,298)",
+    "5'-0\"@(582,374,593,394)",
+    "0.20@(515,627,534,637)",
+    "0.25,@(424,638,446,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 2.",
+   "type": "W2",
+   "figure": "2",
+   "match": "fragment",
+   "boxes": [
+    "W2@(471,116,490,136)",
+    "2'-6\"@(582,475,593,495)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 6.",
+   "type": "W2",
+   "figure": "6",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(582,475,593,495)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 4'-0\".",
+   "type": "W2",
+   "figure": "4'-0\"",
+   "match": "exact",
+   "boxes": [
+    "4'-0\"@(510,288,530,298)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 5 \".",
+   "type": "W2",
+   "figure": "5 \"",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(582,374,593,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 4.",
+   "type": "W2",
+   "figure": "4",
+   "match": "fragment",
+   "boxes": [
+    "4'-0\"@(510,288,530,298)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 0.",
+   "type": "W2",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "4'-0\"@(510,288,530,298)",
+    "5'-0\"@(582,374,593,394)",
+    "0.20@(515,627,534,637)",
+    "0.25,@(424,638,446,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 5.",
+   "type": "W2",
+   "figure": "5",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(582,374,593,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 6.",
+   "type": "W2",
+   "figure": "6",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(582,475,593,495)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 2.",
+   "type": "W2",
+   "figure": "2",
+   "match": "fragment",
+   "boxes": [
+    "W2@(471,116,490,136)",
+    "2'-6\"@(582,475,593,495)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 2 \".",
+   "type": "W2",
+   "figure": "2 \"",
+   "match": "fragment",
+   "boxes": [
+    "W2@(471,116,490,136)",
+    "2'-6\"@(582,475,593,495)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 5 \".",
+   "type": "W2",
+   "figure": "5 \"",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(582,374,593,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 0.",
+   "type": "W2",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "4'-0\"@(510,288,530,298)",
+    "5'-0\"@(582,374,593,394)",
+    "0.20@(515,627,534,637)",
+    "0.25,@(424,638,446,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 6.",
+   "type": "W2",
+   "figure": "6",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(582,475,593,495)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 2.",
+   "type": "W2",
+   "figure": "2",
+   "match": "fragment",
+   "boxes": [
+    "W2@(471,116,490,136)",
+    "2'-6\"@(582,475,593,495)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 APPLY EXPANDABLE: 5.",
+   "type": "W2",
+   "figure": "5",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(582,374,593,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 INFILTRATION RATE: 0.20.",
+   "type": "W2",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(515,627,534,637)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 INFILTRATION RATE: 0.25.",
+   "type": "W2",
+   "figure": "0.25",
+   "match": "fragment",
+   "boxes": [
+    "0.25,@(424,638,446,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 INFILTRATION RATE: 0.31.",
+   "type": "W2",
+   "figure": "0.31",
+   "match": "exact",
+   "boxes": [
+    "0.31@(485,638,503,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 INFILTRATION RATE: 0.20.",
+   "type": "W2",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(515,627,534,637)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 INFILTRATION RATE: 0.25.",
+   "type": "W2",
+   "figure": "0.25",
+   "match": "fragment",
+   "boxes": [
+    "0.25,@(424,638,446,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 INFILTRATION RATE: 0.31.",
+   "type": "W2",
+   "figure": "0.31",
+   "match": "exact",
+   "boxes": [
+    "0.31@(485,638,503,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 INFILTRATION RATE: 0.20.",
+   "type": "W2",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(515,627,534,637)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 INFILTRATION RATE: 0.25.",
+   "type": "W2",
+   "figure": "0.25",
+   "match": "fragment",
+   "boxes": [
+    "0.25,@(424,638,446,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W2 INFILTRATION RATE: 0.31.",
+   "type": "W2",
+   "figure": "0.31",
+   "match": "exact",
+   "boxes": [
+    "0.31@(485,638,503,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 5'-0\".",
+   "type": "W3",
+   "figure": "5'-0\"",
+   "match": "exact",
+   "boxes": [
+    "5'-0\"@(852,374,863,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 2'-6\".",
+   "type": "W3",
+   "figure": "2'-6\"",
+   "match": "exact",
+   "boxes": [
+    "2'-6\"@(832,340,843,360)",
+    "2'-6\"@(832,475,843,495)",
+    "2'-6\"@(832,408,843,428)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 5 \".",
+   "type": "W3",
+   "figure": "5 \"",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(852,374,863,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 5.",
+   "type": "W3",
+   "figure": "5",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(852,374,863,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 0.",
+   "type": "W3",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "3'-0\"@(773,288,793,298)",
+    "5'-0\"@(852,374,863,394)",
+    "0.20@(785,627,804,637)",
+    "0.25,@(694,638,716,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 2.",
+   "type": "W3",
+   "figure": "2",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(832,340,843,360)",
+    "2'-6\"@(832,475,843,495)",
+    "2'-6\"@(832,408,843,428)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 6.",
+   "type": "W3",
+   "figure": "6",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(832,340,843,360)",
+    "2'-6\"@(832,475,843,495)",
+    "2'-6\"@(832,408,843,428)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 5 \".",
+   "type": "W3",
+   "figure": "5 \"",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(852,374,863,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 0.",
+   "type": "W3",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "3'-0\"@(773,288,793,298)",
+    "5'-0\"@(852,374,863,394)",
+    "0.20@(785,627,804,637)",
+    "0.25,@(694,638,716,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 5.",
+   "type": "W3",
+   "figure": "5",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(852,374,863,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 6.",
+   "type": "W3",
+   "figure": "6",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(832,340,843,360)",
+    "2'-6\"@(832,475,843,495)",
+    "2'-6\"@(832,408,843,428)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 2.",
+   "type": "W3",
+   "figure": "2",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(832,340,843,360)",
+    "2'-6\"@(832,475,843,495)",
+    "2'-6\"@(832,408,843,428)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 3'-0\".",
+   "type": "W3",
+   "figure": "3'-0\"",
+   "match": "exact",
+   "boxes": [
+    "3'-0\"@(773,288,793,298)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 2 \".",
+   "type": "W3",
+   "figure": "2 \"",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(832,340,843,360)",
+    "2'-6\"@(832,475,843,495)",
+    "2'-6\"@(832,408,843,428)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 5 \".",
+   "type": "W3",
+   "figure": "5 \"",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(852,374,863,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 3.",
+   "type": "W3",
+   "figure": "3",
+   "match": "fragment",
+   "boxes": [
+    "3'-0\"@(773,288,793,298)",
+    "W3@(741,116,760,136)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 0.",
+   "type": "W3",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "3'-0\"@(773,288,793,298)",
+    "5'-0\"@(852,374,863,394)",
+    "0.20@(785,627,804,637)",
+    "0.25,@(694,638,716,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 6.",
+   "type": "W3",
+   "figure": "6",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(832,340,843,360)",
+    "2'-6\"@(832,475,843,495)",
+    "2'-6\"@(832,408,843,428)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 2.",
+   "type": "W3",
+   "figure": "2",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(832,340,843,360)",
+    "2'-6\"@(832,475,843,495)",
+    "2'-6\"@(832,408,843,428)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 APPLY EXPANDABLE: 5.",
+   "type": "W3",
+   "figure": "5",
+   "match": "fragment",
+   "boxes": [
+    "5'-0\"@(852,374,863,394)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 INFILTRATION RATE: 0.20.",
+   "type": "W3",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(785,627,804,637)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 INFILTRATION RATE: 0.25.",
+   "type": "W3",
+   "figure": "0.25",
+   "match": "fragment",
+   "boxes": [
+    "0.25,@(694,638,716,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 INFILTRATION RATE: 0.31.",
+   "type": "W3",
+   "figure": "0.31",
+   "match": "exact",
+   "boxes": [
+    "0.31@(755,638,773,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 INFILTRATION RATE: 0.20.",
+   "type": "W3",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(785,627,804,637)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 INFILTRATION RATE: 0.25.",
+   "type": "W3",
+   "figure": "0.25",
+   "match": "fragment",
+   "boxes": [
+    "0.25,@(694,638,716,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 INFILTRATION RATE: 0.31.",
+   "type": "W3",
+   "figure": "0.31",
+   "match": "exact",
+   "boxes": [
+    "0.31@(755,638,773,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 INFILTRATION RATE: 0.20.",
+   "type": "W3",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(785,627,804,637)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 INFILTRATION RATE: 0.25.",
+   "type": "W3",
+   "figure": "0.25",
+   "match": "fragment",
+   "boxes": [
+    "0.25,@(694,638,716,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "W3 INFILTRATION RATE: 0.31.",
+   "type": "W3",
+   "figure": "0.31",
+   "match": "exact",
+   "boxes": [
+    "0.31@(755,638,773,649)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 4'-8\".",
+   "type": "D1",
+   "figure": "4'-8\"",
+   "match": "exact",
+   "boxes": [
+    "4'-8\"@(240,887,260,898)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 1'-4\".",
+   "type": "D1",
+   "figure": "1'-4\"",
+   "match": "exact",
+   "boxes": [
+    "1'-4\"@(195,908,215,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 3'-4\".",
+   "type": "D1",
+   "figure": "3'-4\"",
+   "match": "exact",
+   "boxes": [
+    "3'-4\"@(258,907,278,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 4.",
+   "type": "D1",
+   "figure": "4",
+   "match": "fragment",
+   "boxes": [
+    "3'-4\"@(258,907,278,918)",
+    "1'-4\"@(195,908,215,918)",
+    "4'-8\"@(240,887,260,898)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 8.",
+   "type": "D1",
+   "figure": "8",
+   "match": "fragment",
+   "boxes": [
+    "8'-0\"@(322,1030,332,1050)",
+    "4'-8\"@(240,887,260,898)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 1.",
+   "type": "D1",
+   "figure": "1",
+   "match": "fragment",
+   "boxes": [
+    "D1@(201,746,219,765)",
+    "1'-4\"@(195,908,215,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 3.",
+   "type": "D1",
+   "figure": "3",
+   "match": "fragment",
+   "boxes": [
+    "3'-4\"@(258,907,278,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 0.",
+   "type": "D1",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "0.20@(245,1256,264,1267)",
+    "0.65,@(154,1268,176,1278)",
+    "0.36@(215,1268,233,1278)",
+    "8'-0\"@(322,1030,332,1050)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 3'-4\".",
+   "type": "D1",
+   "figure": "3'-4\"",
+   "match": "exact",
+   "boxes": [
+    "3'-4\"@(258,907,278,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 3.",
+   "type": "D1",
+   "figure": "3",
+   "match": "fragment",
+   "boxes": [
+    "3'-4\"@(258,907,278,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 4.",
+   "type": "D1",
+   "figure": "4",
+   "match": "fragment",
+   "boxes": [
+    "3'-4\"@(258,907,278,918)",
+    "1'-4\"@(195,908,215,918)",
+    "4'-8\"@(240,887,260,898)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 0.",
+   "type": "D1",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "0.20@(245,1256,264,1267)",
+    "0.65,@(154,1268,176,1278)",
+    "0.36@(215,1268,233,1278)",
+    "8'-0\"@(322,1030,332,1050)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 APPLY EXPANDABLE: 8.",
+   "type": "D1",
+   "figure": "8",
+   "match": "fragment",
+   "boxes": [
+    "8'-0\"@(322,1030,332,1050)",
+    "4'-8\"@(240,887,260,898)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 INFILTRATION RATE: 0.20.",
+   "type": "D1",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(245,1256,264,1267)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 INFILTRATION RATE: 0.65.",
+   "type": "D1",
+   "figure": "0.65",
+   "match": "fragment",
+   "boxes": [
+    "0.65,@(154,1268,176,1278)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 INFILTRATION RATE: 0.36.",
+   "type": "D1",
+   "figure": "0.36",
+   "match": "exact",
+   "boxes": [
+    "0.36@(215,1268,233,1278)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 INFILTRATION RATE: 0.20.",
+   "type": "D1",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(245,1256,264,1267)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 INFILTRATION RATE: 0.65.",
+   "type": "D1",
+   "figure": "0.65",
+   "match": "fragment",
+   "boxes": [
+    "0.65,@(154,1268,176,1278)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D1 INFILTRATION RATE: 0.36.",
+   "type": "D1",
+   "figure": "0.36",
+   "match": "exact",
+   "boxes": [
+    "0.36@(215,1268,233,1278)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 APPLY EXPANDABLE: 3'-4\".",
+   "type": "D2",
+   "figure": "3'-4\"",
+   "match": "exact",
+   "boxes": [
+    "3'-4\"@(478,907,499,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 APPLY EXPANDABLE: 4.",
+   "type": "D2",
+   "figure": "4",
+   "match": "fragment",
+   "boxes": [
+    "3'-4\"@(478,907,499,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 APPLY EXPANDABLE: 8.",
+   "type": "D2",
+   "figure": "8",
+   "match": "fragment",
+   "boxes": [
+    "8'-0\"@(542,1030,553,1050)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 APPLY EXPANDABLE: 3.",
+   "type": "D2",
+   "figure": "3",
+   "match": "fragment",
+   "boxes": [
+    "3'-4\"@(478,907,499,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 APPLY EXPANDABLE: 0.",
+   "type": "D2",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "0.20@(488,1256,507,1267)",
+    "0.65,@(397,1268,419,1278)",
+    "0.36@(458,1268,476,1278)",
+    "8'-0\"@(542,1030,553,1050)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 APPLY EXPANDABLE: 3'-4\".",
+   "type": "D2",
+   "figure": "3'-4\"",
+   "match": "exact",
+   "boxes": [
+    "3'-4\"@(478,907,499,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 APPLY EXPANDABLE: 3.",
+   "type": "D2",
+   "figure": "3",
+   "match": "fragment",
+   "boxes": [
+    "3'-4\"@(478,907,499,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 APPLY EXPANDABLE: 4.",
+   "type": "D2",
+   "figure": "4",
+   "match": "fragment",
+   "boxes": [
+    "3'-4\"@(478,907,499,918)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 APPLY EXPANDABLE: 0.",
+   "type": "D2",
+   "figure": "0",
+   "match": "fragment",
+   "boxes": [
+    "0.20@(488,1256,507,1267)",
+    "0.65,@(397,1268,419,1278)",
+    "0.36@(458,1268,476,1278)",
+    "8'-0\"@(542,1030,553,1050)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 APPLY EXPANDABLE: 8.",
+   "type": "D2",
+   "figure": "8",
+   "match": "fragment",
+   "boxes": [
+    "8'-0\"@(542,1030,553,1050)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 INFILTRATION RATE: 0.20.",
+   "type": "D2",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(488,1256,507,1267)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 INFILTRATION RATE: 0.65.",
+   "type": "D2",
+   "figure": "0.65",
+   "match": "fragment",
+   "boxes": [
+    "0.65,@(397,1268,419,1278)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 INFILTRATION RATE: 0.36.",
+   "type": "D2",
+   "figure": "0.36",
+   "match": "exact",
+   "boxes": [
+    "0.36@(458,1268,476,1278)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 INFILTRATION RATE: 0.20.",
+   "type": "D2",
+   "figure": "0.20",
+   "match": "exact",
+   "boxes": [
+    "0.20@(488,1256,507,1267)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 INFILTRATION RATE: 0.65.",
+   "type": "D2",
+   "figure": "0.65",
+   "match": "fragment",
+   "boxes": [
+    "0.65,@(397,1268,419,1278)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "D2 INFILTRATION RATE: 0.36.",
+   "type": "D2",
+   "figure": "0.36",
+   "match": "exact",
+   "boxes": [
+    "0.36@(458,1268,476,1278)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "type F door INTERIOR STANDARD: 2'-10\" X 6'-8\".",
+   "type": "F",
+   "figure": "2'-10\" X 6'-8\"",
+   "match": "exact",
+   "boxes": [
+    "2'-10\"@(1831,1130,1857,1141)",
+    "6'-8\"@(1882,936,1893,957)",
+    "6'-8\"@(1867,1130,1888,1141)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "type F door INTERIOR STANDARD: 2.",
+   "type": "F",
+   "figure": "2",
+   "match": "fragment",
+   "boxes": [
+    "2'-6\"@(1832,832,1852,842)",
+    "2'-10\"@(1831,1130,1857,1141)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "type F door INTERIOR STANDARD: 10.",
+   "type": "F",
+   "figure": "10",
+   "match": "fragment",
+   "boxes": [
+    "2'-10\"@(1831,1130,1857,1141)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "type F door INTERIOR STANDARD: 6.",
+   "type": "F",
+   "figure": "6",
+   "match": "fragment",
+   "boxes": [
+    "6'-8\"@(1882,936,1893,957)",
+    "2'-6\"@(1832,832,1852,842)",
+    "6'-8\"@(1867,1130,1888,1141)"
+   ],
+   "ok": true
+  },
+  {
+   "claim": "type F door INTERIOR STANDARD: 8.",
+   "type": "F",
+   "figure": "8",
+   "match": "fragment",
+   "boxes": [
+    "6'-8\"@(1882,936,1893,957)",
+    "6'-8\"@(1867,1130,1888,1141)"
+   ],
+   "ok": true
+  }
+ ]
+}
