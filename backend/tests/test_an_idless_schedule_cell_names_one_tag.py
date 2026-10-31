@@ -23,7 +23,7 @@ from lib import plan_search as S  # noqa: E402
 
 
 def _sched(columns, rows, name="WINDOW SCHEDULE"):
-    return {"record_type": "schedule", "sheet_number": "A-400.00", "quote": name + " " + " ".join(
+    return {"record_type": "schedule", "sheet_number": "A-999.00", "quote": name + " " + " ".join(
         str(c) for r in rows for c in r), "payload": {
             "name": name, "columns": [{"header": h, "role": role} for h, role in columns], "rows": rows}}
 

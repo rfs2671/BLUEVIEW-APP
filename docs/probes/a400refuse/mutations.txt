@@ -1,0 +1,5 @@
+M1 rule off (own column always kept) -> KILLED ['FAILED tests/test_a400_own_column_needs_a_counting_source.py::AnA400OwnColumnNeedsACountingSource::test_a_window_figure_through_its_own_column_refuses']
+M2 confirmation never allowed (count claims flip) -> KILLED ['FAILED tests/test_a400_own_column_needs_a_counting_source.py::AnA400OwnColumnNeedsACountingSource::test_a_confirmed_count_still_binds']
+M3 blank on count alone (new binds) -> KILLED ['FAILED tests/test_a400_own_column_needs_a_counting_source.py::AnA400OwnColumnNeedsACountingSource::test_a_confirmed_count_never_binds_a_figure_the_cell_does_not_print']
+M4 rule on every sheet -> KILLED ['FAILED tests/test_a400_own_column_needs_a_counting_source.py::AnA400OwnColumnNeedsACountingSource::test_the_same_grid_on_another_sheet_keeps_its_own_column']
+M5 sheet normalisation dropped -> KILLED ['FAILED tests/test_a400_own_column_needs_a_counting_source.py::AnA400OwnColumnNeedsACountingSource::test_the_unmapped_sheets_are_named']
