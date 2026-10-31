@@ -876,37 +876,37 @@ class QueueAndStore(unittest.TestCase):
 
 #: the filed track's own index rows (production, find()-only probe 2026-10-29)
 BENCH_PAGES = [
-    {"sheet_number": "A-103.00", "sheet_title": "FOURTH FLOOR PLAN", "file_name": "AR - 3.28.25.pdf",
+    {"sheet_number": "A-103.00", "sheet_title": "FOURTH FLOOR PLAN", "file_name": "AR - 3.28.25.pdf", "file_id": "f-ar328",
      "page_number": 14, "page_id": "6adf9c5dbbd592e9bb0e5256"},
-    {"sheet_number": "S-104.00", "sheet_title": "4TH FLOOR FRAMING PLAN", "file_name": "ST - 7.29.26.pdf",
+    {"sheet_number": "S-104.00", "sheet_title": "4TH FLOOR FRAMING PLAN", "file_name": "ST - 7.29.26.pdf", "file_id": "f-st729",
      "page_number": 8, "page_id": "6ab066318cb050f05e5360e9"},
     {"sheet_number": "S-301.00", "sheet_title": "SHEAR WALL SCHEDULE AND DETAILS",
-     "file_name": "ST - 7.29.26.pdf", "page_number": 11, "page_id": "6ab066e68cb050f05e5361b6"},
+     "file_name": "ST - 7.29.26.pdf", "file_id": "f-st729", "page_number": 11, "page_id": "6ab066e68cb050f05e5361b6"},
     {"sheet_number": "S-302.00", "sheet_title": "SHEAR WALL SCHEDULE AND DETAILS",
-     "file_name": "ST - 7.29.26.pdf", "page_number": 12, "page_id": "6ab0666a8cb050f05e53617d"},
+     "file_name": "ST - 7.29.26.pdf", "file_id": "f-st729", "page_number": 12, "page_id": "6ab0666a8cb050f05e53617d"},
     {"sheet_number": "P-204.00", "sheet_title": "FOURTH FLOOR SANITARY & STORM PLAN",
-     "file_name": "PL - 6.29.26.pdf", "page_number": 12, "page_id": "6ab0640c8cb050f05e535f24"},
+     "file_name": "PL - 6.29.26.pdf", "file_id": "f-pl629", "page_number": 12, "page_id": "6ab0640c8cb050f05e535f24"},
 ]
 
 
 #: the other floors' sheets, read only so that V-4's position on each can vote (ruling 116)
 FLOOR_PAGES = [
-    {"sheet_number": "A-100.01", "sheet_title": "FIRST FLOOR PLAN", "file_name": "AR - 8.18.26.pdf",
+    {"sheet_number": "A-100.01", "sheet_title": "FIRST FLOOR PLAN", "file_name": "AR - 8.18.26.pdf", "file_id": "f-AR81826pdf",
      "page_number": 6, "page_id": "6ab05f0a8cb050f05e535ba9"},
-    {"sheet_number": "A-101.00", "sheet_title": "SECOND FLOOR PLAN", "file_name": "AR - 3.28.25.pdf",
+    {"sheet_number": "A-101.00", "sheet_title": "SECOND FLOOR PLAN", "file_name": "AR - 3.28.25.pdf", "file_id": "f-ar328",
      "page_number": 12, "page_id": "6adf9c37bbd592e9bb0e524a"},
-    {"sheet_number": "A-102.00", "sheet_title": "THIRD FLOOR PLAN", "file_name": "AR - 3.28.25.pdf",
+    {"sheet_number": "A-102.00", "sheet_title": "THIRD FLOOR PLAN", "file_name": "AR - 3.28.25.pdf", "file_id": "f-ar328",
      "page_number": 13, "page_id": "6adf9c50bbd592e9bb0e524f"},
-    {"sheet_number": "A-104.00", "sheet_title": "MEZZANINE PLAN", "file_name": "AR - 3.28.25.pdf",
+    {"sheet_number": "A-104.00", "sheet_title": "MEZZANINE PLAN", "file_name": "AR - 3.28.25.pdf", "file_id": "f-ar328",
      "page_number": 15, "page_id": "6adf9c68bbd592e9bb0e525e"},
     {"sheet_number": "P-201.00", "sheet_title": "FIRST FLOOR SANITARY & STORM PLAN",
-     "file_name": "PL - 6.29.26.pdf", "page_number": 9, "page_id": "6ab063d38cb050f05e535ef8"},
+     "file_name": "PL - 6.29.26.pdf", "file_id": "f-pl629", "page_number": 9, "page_id": "6ab063d38cb050f05e535ef8"},
     {"sheet_number": "P-202.00", "sheet_title": "SECOND FLOOR SANITARY & STORM PLAN",
-     "file_name": "PL - 6.29.26.pdf", "page_number": 10, "page_id": "6ab0640e8cb050f05e535f26"},
+     "file_name": "PL - 6.29.26.pdf", "file_id": "f-pl629", "page_number": 10, "page_id": "6ab0640e8cb050f05e535f26"},
     {"sheet_number": "P-203.00", "sheet_title": "THIRD FLOOR SANITARY & STORM PLAN",
-     "file_name": "PL - 6.29.26.pdf", "page_number": 11, "page_id": "6ab0640d8cb050f05e535f25"},
+     "file_name": "PL - 6.29.26.pdf", "file_id": "f-pl629", "page_number": 11, "page_id": "6ab0640d8cb050f05e535f25"},
     {"sheet_number": "P-205.00", "sheet_title": "MEZZANINE FLOOR SANITARY & STORM PLAN",
-     "file_name": "PL - 6.29.26.pdf", "page_number": 13, "page_id": "6ab0644a8cb050f05e535f30"},
+     "file_name": "PL - 6.29.26.pdf", "file_id": "f-pl629", "page_number": 13, "page_id": "6ab0644a8cb050f05e535f30"},
 ]
 
 
