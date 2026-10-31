@@ -17852,8 +17852,14 @@ async def get_suggested_building_levels(
     # keyed by file_id, and an older row may predate the project stamp. A
     # suggestion that silently reads zero pages looks exactly like a building
     # with no levels.
+    # an IGNORED file's pages are not part of the model (IGNORED_TRACK); the
+    # filter is added only when there is one, so every other project's query
+    # is the one it always was
+    _ign = [str(f["_id"]) for f in await db.project_files.find(
+        {"project_id": str(project_id), "drawing_track": IGNORED_TRACK}, {"_id": 1}).to_list(200)]
+    _not_ignored = {"file_id": {"$nin": _ign}} if _ign else {}
     rows = await db.document_page_index.find(
-        {"project_id": str(project_id)},
+        {"project_id": str(project_id), **_not_ignored},
         {"sheet_number": 1, "sheet_title": 1, "floor": 1, "floors": 1,
          "discipline": 1},
     ).to_list(3000)
@@ -17862,6 +17868,7 @@ async def get_suggested_building_levels(
             {"project_id": str(project_id)}, {"_id": 1},
         ).to_list(2000)
         file_ids = [str(f["_id"]) for f in file_docs]
+        file_ids = [i for i in file_ids if i not in _ign]
         if file_ids:
             rows = await db.document_page_index.find(
                 {"file_id": {"$in": file_ids}},
@@ -29954,6 +29961,18 @@ async def download_signed_file(file_id: str, request: Request,
 #: owner's post-CO set". A file with no track set is the filed track.
 DRAWING_TRACKS = ("filed", "post_co")
 
+#: A FILE THAT IS NOT PART OF THE MODEL OR THE ANSWERS (Roy, 10-31: AR 8.18.26,
+#: an unapproved prep set that was never approved). It is a state of the FILE,
+#: stored in the same field as the tracks but never a track: the pass reads no
+#: page of it, the page index returns none (_live_plan_file_ids), set health
+#: and the questions never see it, and a superseded-by mark that names it is
+#: not applied (a reader applies a mark only while the winning file is live).
+#: The file is NOT deleted: its row, its PDF and its index rows stay, and
+#: setting the track back to filed / post_co brings it back. Default for every
+#: existing file: unchanged (no value stored = filed).
+IGNORED_TRACK = "ignored"
+SETTABLE_TRACKS = DRAWING_TRACKS + (IGNORED_TRACK,)
+
 
 class DrawingTrackUpdate(BaseModel):
     track: str
@@ -29972,9 +29991,9 @@ async def set_file_drawing_track(project_id: str, file_id: str, body: DrawingTra
     company, and every change writes an audit row with the old and new value.
     It takes effect on the next glyph pass (rebuild)."""
     track = str(body.track or "").strip().lower()
-    if track not in DRAWING_TRACKS:
+    if track not in SETTABLE_TRACKS:
         raise HTTPException(status_code=422,
-                            detail=f"track must be one of {list(DRAWING_TRACKS)}")
+                            detail=f"track must be one of {list(SETTABLE_TRACKS)}")
     label = re.sub(r"\s+", " ", str(body.label or "")).strip()[:120] or None
     try:
         rec_oid = ObjectId(file_id)
@@ -29987,16 +30006,64 @@ async def set_file_drawing_track(project_id: str, file_id: str, body: DrawingTra
     _same_company_or_403(rec, admin)
     if track == "post_co" and not label:
         label = f"the owner's post-CO set ({rec.get('name') or 'unnamed file'})"
+    if track == IGNORED_TRACK and not label:
+        label = f"ignored: not part of the model or the answers ({rec.get('name') or 'unnamed file'})"
     before = {"track": rec.get("drawing_track") or "filed",
               "label": rec.get("drawing_track_label")}
     await db.project_files.update_one(
         {"_id": rec_oid},
         {"$set": {"drawing_track": track, "drawing_track_label": label,
                   "drawing_track_set_at": datetime.now(timezone.utc)}})
+    out = {"file_id": file_id, "track": track, "label": label, "previous": before}
+    if IGNORED_TRACK in (track, before["track"]):
+        # the index's superseded-by marks are recomputed without (or again with)
+        # this file, so a page it had hidden is current again and a page it
+        # alone hid is not hidden by it; the read-back says what that did
+        try:
+            out["index_marks"] = await _supersede_plan_pages(project_id)
+        except Exception as e:
+            logger.warning("supersession recompute after ignore failed for %s: %r", file_id, e)
+            out["index_marks"] = {"error": type(e).__name__}
     await audit_log("project_file_drawing_track", actor_id(admin), "project_file", file_id,
                     {"project_id": project_id, "file_name": rec.get("name"),
-                     "from": before, "to": {"track": track, "label": label}})
-    return {"file_id": file_id, "track": track, "label": label, "previous": before}
+                     "from": before, "to": {"track": track, "label": label},
+                     "index_marks": out.get("index_marks")})
+    return out
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/drawing-track",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_file_drawing_track(project_id: str, file_id: str, admin=Depends(get_admin_user)):
+    """READ-BACK for the track of one file (company admin): the stored track
+    and label, and what the file reaches today - its index pages, how many of
+    them a search may read (current), how many the glyph pass reads. An
+    ignored file reads 0 and 0."""
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one({"_id": rec_oid, "project_id": project_id,
+                                           "is_deleted": {"$ne": True}})
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    _same_company_or_403(rec, admin)
+    fid = str(rec["_id"])
+    pages = await db.document_page_index.find(
+        {"project_id": project_id, "file_id": fid}, {"_id": 1}).to_list(5000)
+    live = await _live_plan_file_ids(project_id)
+    current = await _current_record_page_ids(project_id)
+    mine = {str(p["_id"]) for p in pages}
+    raw, files, live_set = await _glyph_inputs(project_id)
+    read_by_pass = sum(1 for _t, ps in _glyph_track_pages(raw, files, live_set)
+                       for p in ps if str(p.get("file_id")) == fid)
+    return {"file_id": fid, "name": rec.get("name"),
+            "track": rec.get("drawing_track") or "filed",
+            "label": rec.get("drawing_track_label"),
+            "ignored": (rec.get("drawing_track") or "filed") == IGNORED_TRACK,
+            "index_pages": len(pages),
+            "live": (fid in live) if live is not None else None,
+            "searchable_pages": len(mine & set(current)),
+            "pages_the_pass_reads": read_by_pass}
 
 
 @api_router.delete("/projects/{project_id}/files/{file_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
@@ -65251,7 +65318,7 @@ def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
     by_track: Dict[str, List[dict]] = {}
     for p in raw:
         fid = str(p.get("file_id"))
-        if fid in live:
+        if fid in live and track_of.get(fid, "filed") != IGNORED_TRACK:
             by_track.setdefault(track_of.get(fid, "filed"), []).append(p)
     current: Dict[str, List[dict]] = {}
     for t, rows in by_track.items():
@@ -68290,7 +68357,8 @@ async def _supersede_plan_pages(project_id: str) -> dict:
     # duplicate and both pages stay.
     """
     files = await db.project_files.find(
-        {"project_id": project_id, "is_deleted": {"$ne": True}},
+        {"project_id": project_id, "is_deleted": {"$ne": True},
+         "drawing_track": {"$ne": IGNORED_TRACK}},      # an ignored file supersedes nothing
         {"_id": 1, "created_at": 1, "name": 1},
     ).to_list(2000)
     if not files:
@@ -68531,7 +68599,9 @@ async def _live_plan_file_ids(project_id: str) -> list:
     """
     try:
         rows = await db.project_files.find(
-            {"project_id": project_id, "is_deleted": {"$ne": True}, "index_status.state": {"$ne": COMBINED_SET_SKIPPED}},
+            {"project_id": project_id, "is_deleted": {"$ne": True}, "index_status.state": {"$ne": COMBINED_SET_SKIPPED},
+             # an IGNORED file is not part of the model or the answers (IGNORED_TRACK)
+             "drawing_track": {"$ne": IGNORED_TRACK}},
             {"_id": 1},
         ).to_list(2000)
         return [str(r["_id"]) for r in rows]
