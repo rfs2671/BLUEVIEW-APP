@@ -65300,15 +65300,19 @@ async def _glyph_inputs(pid: str) -> Tuple[List[dict], Dict[str, dict], set]:
     return raw, files, live
 
 
-async def _set_decisions(pid: str) -> List[dict]:
+async def _set_decisions(pid: str, skip: Optional[str] = None) -> List[dict]:
     """The answered drawing-set questions that shape a track's pages: the
     excluded and the replaced (an include changes no page list). Unreadable:
-    none are applied, and it is logged - every question reads as open."""
+    none are applied, and it is logged - every question reads as open.
+    `skip` leaves one question out (the one being AMENDED: its new answer is
+    checked against the pages as the OTHER answers leave them)."""
     from lib import plan_set_questions as psq
     try:
-        return await db[psq.COLLECTION].find(
-            {"project_id": str(pid), "status": psq.ANSWERED,
-             "answer": {"$in": [psq.EXCLUDE, psq.REPLACES]}}).to_list(500)
+        flt: Dict[str, Any] = {"project_id": str(pid), "status": psq.ANSWERED,
+                               "answer": {"$in": [psq.EXCLUDE, psq.REPLACES]}}
+        if skip is not None:
+            flt["_id"] = {"$ne": str(skip)}
+        return await db[psq.COLLECTION].find(flt).to_list(500)
     except Exception as e:
         logger.warning("plan set decisions unreadable for %s: %r", pid, e)
         return []
@@ -65808,6 +65812,93 @@ async def _record_set_answer(pid: str, qid: str, answer: str, actor: str, *, via
     if fields:
         details["replacements"] = fields["replacements"]
     await audit_log("plan_set_question_answered", str(actor), "plan_set_question", qid, details)
+    return doc
+
+
+def _answer_snapshot(q: dict) -> dict:
+    """The answer a question holds now, as the history keeps it."""
+    return {k: q.get(k) for k in ("answer", "replacements", "answered_by", "answered_by_name",
+                                  "answered_at", "answered_via") if q.get(k) is not None}
+
+
+async def _amend_set_answer(pid: str, qid: str, answer: str, actor: str, *, reason: str,
+                            name: Optional[str] = None,
+                            replacements: Optional[List[dict]] = None) -> Optional[dict]:
+    """CHANGE the answer of an ANSWERED question of THIS project - the office
+    only (the admin route), explicit, with the old answer kept.
+
+    Why it exists: an answer is recorded once, to an OPEN question
+    (_record_set_answer), and Q2's was recorded against pages that the office
+    has since ruled out of the model (AR 8.18.26, ignored). An answered
+    question could only be re-opened by writing the database by hand.
+
+    - None when there is no such ANSWERED question (open, withdrawn, another
+      project's);
+    - ValueError (nothing stored) when the reason is empty, the answer is
+      unchanged, or - for a replacement - any page is refused: the new list is
+      validated exactly as _record_set_answer validates one, against the pages
+      as the OTHER answers leave them (this question's old answer is not
+      applied while it is checked), by the same lib.plan_set_questions rules;
+    - the old answer, who gave it and when, goes onto `history` (never
+      overwritten, never dropped), the question stays ANSWERED, and the pass
+      reads the new one only (_set_decisions reads the current fields);
+    - audited as plan_set_question_amended with the old and the new answer.
+    Applied on the next glyph pass; nothing here runs a pass."""
+    from lib import plan_set_questions as psq
+    if answer not in psq.ANSWERS:
+        raise ValueError(f"answer must be one of {psq.ANSWERS}")
+    reason = re.sub(r"\s+", " ", str(reason or "")).strip()[:500]
+    if len(reason) < 3:
+        raise ValueError("an amendment needs a reason, kept with the old answer")
+    pid, qid = str(pid), str(qid)
+    coll = db[psq.COLLECTION]
+    q = await coll.find_one({"_id": qid, "project_id": pid, "status": psq.ANSWERED})
+    if not q:
+        return None
+    fields: Dict[str, Any] = {}
+    unset: Dict[str, Any] = {}
+    if answer == psq.REPLACES:
+        raw, files, live = await _glyph_inputs(pid)
+        tracks = dict(_glyph_track_pages(raw, files, live, await _set_decisions(pid, skip=qid)))
+        resolved, errs = psq.validate_replacements(
+            q, replacements, tracks.get(q.get("track") or "filed", []),
+            [p for p in raw if str(p.get("file_id")) in live])
+        if errs:
+            raise ValueError("; ".join(errs))
+        fields["replacements"] = resolved
+    elif replacements:
+        raise ValueError("replacements belong to the answer 'replaces' only")
+    else:
+        unset["replacements"] = ""
+    same = (q.get("answer") == answer and (
+        answer != psq.REPLACES or [(r.get("page_id"), (r.get("replaces") or {}).get("page_id"))
+                                   for r in q.get("replacements") or []]
+        == [(r.get("page_id"), (r.get("replaces") or {}).get("page_id")) for r in fields["replacements"]]))
+    if same:
+        raise ValueError("the answer is unchanged: nothing to amend")
+    now = datetime.now(timezone.utc)
+    old = _answer_snapshot(q)
+    entry = dict(old, superseded_at=now, superseded_by=str(actor), superseded_by_name=name,
+                 reason=reason)
+    history = list(q.get("history") or []) + [entry]
+    upd: Dict[str, Any] = {"$set": dict(
+        {"answer": answer, "answered_by": str(actor), "answered_by_name": name,
+         "answered_at": now, "answered_via": "admin", "history": history,
+         "amended_at": now, "amended_by": str(actor), "amended_reason": reason}, **fields)}
+    if unset:
+        upd["$unset"] = unset
+    # only the answer that was read: a second amendment or a pass between the read
+    # and the write finds it changed and stores nothing
+    res = await coll.update_one(
+        {"_id": qid, "project_id": pid, "status": psq.ANSWERED, "answered_at": q.get("answered_at")},
+        upd)
+    if not getattr(res, "matched_count", 0):
+        return None
+    doc = await coll.find_one({"_id": qid})
+    await audit_log("plan_set_question_amended", str(actor), "plan_set_question", qid,
+                    {"project_id": pid, "code": (doc or {}).get("code"), "reason": reason,
+                     "from": old, "to": {"answer": answer, **fields},
+                     "label": (doc or {}).get("label")})
     return doc
 
 
@@ -83445,6 +83536,12 @@ class PlanSetAnswer(BaseModel):
         return self
 
 
+class PlanSetAmend(PlanSetAnswer):
+    """An amendment: the new answer (as PlanSetAnswer) and WHY - kept with the
+    old answer on the question's history."""
+    reason: str = Field(min_length=3, max_length=500)
+
+
 @api_router.get("/projects/{project_id}/plan-set-questions",
                 dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def list_plan_set_questions(project_id: str, current_user=Depends(get_admin_user)):
@@ -83475,6 +83572,8 @@ async def list_plan_set_questions(project_id: str, current_user=Depends(get_admi
             "answer": d.get("answer"), "answered_by": d.get("answered_by"),
             "answered_by_name": d.get("answered_by_name"), "answered_at": d.get("answered_at"),
             "answered_via": d.get("answered_via"), "replacements": d.get("replacements"),
+            "history": d.get("history") or [], "amended_at": d.get("amended_at"),
+            "amended_reason": d.get("amended_reason"),
             "created_at": d.get("created_at"), "last_seen_at": d.get("last_seen_at")})
     return {"questions": out}
 
@@ -83520,6 +83619,37 @@ async def answer_plan_set_question(project_id: str, question_id: str, body: Plan
                             detail="no open drawing-set question with that id on this project")
     return {"id": str(doc.get("_id")), "status": doc.get("status"), "answer": doc.get("answer"),
             "replacements": doc.get("replacements"), "applies": "on the next glyph pass"}
+
+
+@api_router.post("/projects/{project_id}/plan-set-questions/{question_id}/amend",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def amend_plan_set_question(project_id: str, question_id: str, body: PlanSetAmend,
+                                  current_user=Depends(get_admin_user)):
+    """Change the answer of an ANSWERED drawing-set question (company admin
+    only, never the platform operator, never a WhatsApp reply): the new answer
+    as in .../answer, plus a `reason`. The old answer stays on the question's
+    `history`; 409 when the question is not answered; 422 when the new
+    replacements do not check out (nothing is stored). Audit-logged
+    (plan_set_question_amended); applied on the next glyph pass."""
+    if is_platform_operator(current_user):
+        raise HTTPException(status_code=403,
+                            detail="the platform operator does not answer a project's "
+                                   "drawing-set questions; its PM or company admin does")
+    who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
+    try:
+        doc = await _amend_set_answer(
+            str(project_id), question_id, body.answer, who, reason=body.reason,
+            name=(current_user or {}).get("full_name") or (current_user or {}).get("name"),
+            replacements=[r.model_dump() for r in body.replacements] if body.replacements else None)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if doc is None:
+        raise HTTPException(status_code=409,
+                            detail="no answered drawing-set question with that id on this project "
+                                   "(an open one is answered, not amended)")
+    return {"id": str(doc.get("_id")), "status": doc.get("status"), "answer": doc.get("answer"),
+            "replacements": doc.get("replacements"), "history": doc.get("history"),
+            "applies": "on the next glyph pass"}
 
 
 @api_router.get("/projects/{project_id}/takeoff.xlsx",
