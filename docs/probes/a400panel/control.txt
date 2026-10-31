@@ -1,0 +1,17 @@
+ E       AssertionError: False is not true
+ E       AssertionError: False is not true
+ E       AssertionError: False is not true
+ E       AssertionError: 'A-400.00' not found in ()
+ E       AssertionError: False is not true
+ E           AssertionError: True is not false : M2
+ E           AssertionError: False is not true : N4
+ E       AssertionError: unexpectedly None
+ FAILED tests/test_a400_type_by_panel.py::AnA400TypeBindsByItsPanel::test_a_fragment_of_a_dimension_refuses_in_every_panel
+ FAILED tests/test_a400_type_by_panel.py::AnA400TypeBindsByItsPanel::test_a_type_above_its_neighbours_label_keeps_its_own_cells
+ FAILED tests/test_a400_type_by_panel.py::AnA400TypeBindsByItsPanel::test_a_window_figure_binds_in_its_own_panel_only
+ FAILED tests/test_a400_type_by_panel.py::AnA400TypeBindsByItsPanel::test_the_panel_sheets_are_named
+ FAILED tests/test_a400_type_by_panel.py::AnA400TypeBindsByItsPanel::test_the_second_row_of_panels_is_not_the_column_above_it
+ FAILED tests/test_a400_type_by_panel.py::APanelIsDerivedFromTheLayoutNotTheSheet::test_a_label_of_two_types_leaves_its_panel_unowned
+ FAILED tests/test_a400_type_by_panel.py::APanelIsDerivedFromTheLayoutNotTheSheet::test_each_figure_binds_to_the_one_panel_that_holds_it
+ FAILED tests/test_a400_type_by_panel.py::APanelIsDerivedFromTheLayoutNotTheSheet::test_panel_regions
+ 8 failed, 7 passed in 0.78s

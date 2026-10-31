@@ -162,5 +162,64 @@
    "areas": "722/201"
   },
   "eval": "30/32"
+ },
+ "a400panel": {
+  "pr": "feat/a400-type-by-panel",
+  "base": "5f7c2afb (#938)",
+  "value_grid": {
+   "claims": 186,
+   "bound": 14,
+   "vs_938": 0,
+   "refused_to_bound": 14,
+   "bound_to_refused": 0
+  },
+  "panel_grid_with_body_label_tags": {
+   "claims": 208,
+   "bound": 15,
+   "note": "15 whole dimensions (14 + type F's 2'-10\" X 6'-8\"); 0 fragments, 0 decimals"
+  },
+  "census": {
+   "A-400 WINDOW": [
+    4,
+    4
+   ],
+   "A-400 INTERIOR DOOR": [
+    0,
+    0
+   ],
+   "A-400 EXTERIOR DOOR": [
+    0,
+    0
+   ],
+   "A-500 wall types": [
+    36,
+    36
+   ],
+   "A-500 partition types": [
+    78,
+    78
+   ]
+  },
+  "untagged_through_multi_tag_grids": {
+   "bound": 0
+  },
+  "attribute_grid_79821": {
+   "main": 1326,
+   "branch": 1326,
+   "flips": 0
+  },
+  "prod_probe": [
+   1170,
+   1170
+  ],
+  "probes": {
+   "health": "14,690/640 (639 distinct)",
+   "doors": "23,744/533",
+   "l3": "891/42",
+   "areas": "722/201"
+  },
+  "eval": "30/32",
+  "related_sweep": "66 test files, 1227 passed, 0 skipped, 0 failed",
+  "rule": "whole printed dimensions only; 71 fragments and 39 decimals refuse"
  }
 }

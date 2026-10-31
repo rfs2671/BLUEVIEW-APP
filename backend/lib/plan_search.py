@@ -4103,28 +4103,76 @@ def _strip_header_tags(header: str) -> str:
     return re.sub(r"\s+", " ", _HEADER_TAG.sub(" ", str(header or ""))).strip()
 
 
-#: Sheets whose tag-headed grid is NOT a column table, so a cell's own column
-#: does not say which tag it belongs to. A-400.00 draws one panel per door and
-#: window type with its own info table beneath; the second row of panels (F, G)
-#: sits under D and E, so the grid reads F's table as column "NUMBER D" and
-#: "INTERIOR STANDARD, 2'-10" X 6'-8"" (type F's) bound to D and to A (crop-read
-#: 2026-10-30, crop_a400/REPORT.md). RULING (Roy, 2026-10-30): refuse every
-#: own-column bind from these sheets until the mapping is read by type panel
-#: (a later PR). A figure from here binds only through a counting source (the
-#: glyph / opening books, which decide a count clause before the value path).
-_OWN_COLUMN_UNMAPPED_SHEETS = frozenset({"A-400.00"})
+#: Sheets drawn as PANELS, not as a column table: one panel per door and window
+#: type (its tag, its dimensioned drawing, its info table beneath). A-400.00
+#: puts the second row of panels (door types F, G) under D and E, so the grid
+#: reader put F's table in column "NUMBER D": "INTERIOR STANDARD, 2'-10" X
+#: 6'-8"" (type F's) bound to D and to A (crop-read 2026-10-30,
+#: crop_a400/REPORT.md). #938 (Roy, 2026-10-30) refused every value-path bind
+#: from the sheet. TYPE-BY-PANEL (this rule) restores the ones whose cell lies
+#: inside exactly one type's panel (_panel_tags). What stays refused on these
+#: sheets: a claim that names NO panel tag (a family claim - "interior doors:
+#: 3'-0"" - would have to hold in every panel, and F's and G's do not), unless a
+#: counting source confirms it.
+_PANEL_SHEETS = frozenset({"A-400.00"})
 
 
-#: True only while `_confirmed_by_counting_source` re-reads a clause the count
-#: rule has already bound from a counting source (a located tally the census
-#: checked, every track stating it): the unmapped sheet's own-column naming is
-#: then allowed, exactly as before this rule, so the value path can still agree.
+#: True only while `_route_counts` re-reads a clause the count rule has already
+#: bound from a counting source (a located tally the census checked, every
+#: track stating it): a family claim on a panel sheet is then allowed, exactly
+#: as before #938, so the value path can still agree.
 _COUNT_CONFIRMED: contextvars.ContextVar = contextvars.ContextVar("plan_search_count_confirmed", default=False)
 
 
-def _own_column_unmapped(record: Dict[str, Any]) -> bool:
-    """Is this record a tag-headed grid whose columns do not map to its tags?"""
-    return str(record.get("sheet_number") or "").strip().upper() in _OWN_COLUMN_UNMAPPED_SHEETS
+def _is_panel_sheet(record: Dict[str, Any]) -> bool:
+    """Is this record a grid from a sheet drawn as panels?"""
+    return str(record.get("sheet_number") or "").strip().upper() in _PANEL_SHEETS
+
+
+_PANEL_LABEL_WORDS = frozenset({"NUMBER", "TYPE", "NO", "MARK", "TAG", "SYMBOL"})
+
+
+def _panel_label(cell: Any) -> Optional[List[str]]:
+    """The tags a BODY cell labels a panel with, or None when it is no label.
+    A label is a cell that is only a label word (NUMBER, TYPE, NO, MARK, TAG,
+    SYMBOL) and tags: "NUMBER F", "TYPE G", "W4 NUMBER". A bare mark, or a cell
+    with any other words ("TYPE F.P.S.C"), is content, never a label."""
+    text = str(cell if cell is not None else "").strip()
+    tags = _header_tags(text)
+    if not tags:
+        return None
+    rest = _strip_header_tags(text).upper().replace(".", " ").split()
+    if not rest or any(w not in _PANEL_LABEL_WORDS for w in rest):
+        return None
+    return tags
+
+
+def _panel_tags(col_tags: Sequence[Sequence[str]], rows: Sequence[Any]) -> List[List[str]]:
+    """For every cell of an ID-less tag-headed grid, the ONE tag whose panel
+    the cell lies in, or "" when it lies in none or in more than one.
+
+    The reader gives a grid of cells; a panel is a rectangle of them. Its
+    TAG LOCATION is a label: the header cell over the column, or a body cell
+    that is only a label (_panel_label) - the tag of the panel that STARTS
+    there. Its BOUNDS are the column (a panel is as wide as the column its
+    label sits in) and, downward, the next label in that column or the end of
+    the grid. So the cells under "NUMBER F" (row 6 of A-400.00's interior door
+    grid, column 6) are F's, not the header's D, and the cells above it stay
+    D's. A header over several tags, or a body label of several, leaves the
+    column unowned from there to the next label (ambiguous: refuse); a column
+    whose header carries no tag owns nothing until a label starts a panel."""
+    cur = [(t[0] if len(t) == 1 else "") for t in col_tags]
+    out: List[List[str]] = []
+    for row in rows:
+        cells = row if isinstance(row, list) else []
+        line: List[str] = []
+        for j in range(len(cur)):
+            lab = _panel_label(cells[j]) if j < len(cells) else None
+            if lab is not None:
+                cur[j] = lab[0] if len(lab) == 1 else ""
+            line.append(cur[j])
+        out.append(line)
+    return out
 
 
 def value_parts(record: Dict[str, Any]) -> List[Tuple[List[str], str]]:
@@ -4166,16 +4214,16 @@ def value_parts(record: Dict[str, Any]) -> List[Tuple[List[str], str]]:
             strip = lambda t: _strip_header_tags(t)
             neutral = " | ".join([str(payload.get("name") or "")] + [strip(h) for h in headers]
                                  + [str(t) for t in (record.get("subject_terms") or [])])
-            own = [(" ".join(t) if len(t) == 1 else "") for t in col_tags]
+            own = _panel_tags(col_tags, rows)
             parts = [(whole, neutral)]
-    for row in rows:
+    for ri, row in enumerate(rows):
         if not isinstance(row, list) or not row:
             continue
         cells = [str(c if c is not None else "") for c in row]
         if ident:
             parts.append((cells, grid + " | " + " | ".join(cells)))
         elif any_tag:
-            parts.extend(([c], neutral + (" | " + own[j] if own[j] else "") + " | " + c)
+            parts.extend(([c], neutral + (" | " + own[ri][j] if j < len(own[ri]) and own[ri][j] else "") + " | " + c)
                          for j, c in enumerate(cells))
         else:
             parts.extend(([c], grid + " | " + c) for c in cells)
@@ -4655,7 +4703,7 @@ def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
                     ok, refused = False, [n for n, _w in _mark_integer_phrases(clause)]
                 if not ok:
                     bad += refused
-                elif any(_own_column_unmapped(r) for r in records or []):
+                elif any(_is_panel_sheet(r) for r in records or []):
                     # RULING (Roy, 2026-10-30): a figure read from an unmapped
                     # sheet's own column (A-400.00) binds only when a counting
                     # source confirms it. The count rule just did; the value
@@ -4737,7 +4785,13 @@ def _idless_tags(record: Dict[str, Any]) -> set:
     if any(isinstance(c, dict) and c.get("role") == "identifier" for c in cols):
         return set()
     tags = {t for c in cols for t in _header_tags(str((c.get("header") if isinstance(c, dict) else c) or ""))}
-    return tags if len(tags) >= 2 else set()
+    if len(tags) < 2:
+        return set()
+    # a panel started by a body label (F, G under D and E on A-400.00) is a tag of the grid too
+    for row in payload.get("rows") or []:
+        for cell in (row if isinstance(row, list) else []):
+            tags.update(_panel_label(cell) or [])
+    return tags
 
 
 def _cells_agree(cands: Sequence[Sequence[str]], found: Sequence[Any], nums: Sequence[Tuple[str, Any]]) -> bool:
@@ -4785,11 +4839,6 @@ def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
         for r in records or []:
             if _vouches_for_nothing(r):
                 continue
-            # RULING (Roy, 2026-10-30, scope update): EVERY value-path bind
-            # from an unmapped sheet's tag-headed grid (A-400.00), tagged or
-            # untagged, needs a counting source; none is read here.
-            if _idless_tags(r) and _own_column_unmapped(r) and not _COUNT_CONFIRMED.get():
-                continue
             table = (aliases or {}).get(str(r.get("file_id") or ""))
             # RULING 154, step 3: in a grid with no identifier column and two or
             # more tags, a claim that names none of the tags is about the whole
@@ -4810,6 +4859,22 @@ def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
                 hits = [h for h in heads if sw and names_subject(h, sw, table)]
                 if hits and len(hits) < len(heads):
                     family = False
+            # TYPE-BY-PANEL (Roy, 2026-10-30, after #938): on a sheet drawn as
+            # panels (A-400.00) a claim that names a type binds on that type's
+            # panel (value_parts names a cell by the panel it lies in); a
+            # claim that names NO type is about every panel, which the cells
+            # do not all print, so it needs a counting source and none is read
+            # here.
+            #
+            # WHOLE PRINTED DIMENSIONS ONLY (Roy, 2026-10-31, on #939): a bare
+            # integer in a panel's cell is a fragment of a dimension (the 5 of
+            # 5'-0", the 10 of 2'-10") - the reader splits what the drawing prints
+            # whole - and a decimal (0.25: infiltration, U, SHGC) is no dimension;
+            # a clause stating either refuses on a panel sheet. Only a whole
+            # dimension (clause_found) binds.
+            if gtags and _is_panel_sheet(r) and not _COUNT_CONFIRMED.get() and (
+                    family or bool(clause_nums)):
+                continue
             cands: List[List[str]] = []
             for k, (texts, naming) in enumerate(value_parts(r)):
                 if ceiling and not _names_ceiling_height(naming):
