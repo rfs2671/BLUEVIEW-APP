@@ -40,6 +40,7 @@ search finds. `render_records` reads `quote`; it has never read `label`.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import re
 from fractions import Fraction
@@ -4102,6 +4103,30 @@ def _strip_header_tags(header: str) -> str:
     return re.sub(r"\s+", " ", _HEADER_TAG.sub(" ", str(header or ""))).strip()
 
 
+#: Sheets whose tag-headed grid is NOT a column table, so a cell's own column
+#: does not say which tag it belongs to. A-400.00 draws one panel per door and
+#: window type with its own info table beneath; the second row of panels (F, G)
+#: sits under D and E, so the grid reads F's table as column "NUMBER D" and
+#: "INTERIOR STANDARD, 2'-10" X 6'-8"" (type F's) bound to D and to A (crop-read
+#: 2026-10-30, crop_a400/REPORT.md). RULING (Roy, 2026-10-30): refuse every
+#: own-column bind from these sheets until the mapping is read by type panel
+#: (a later PR). A figure from here binds only through a counting source (the
+#: glyph / opening books, which decide a count clause before the value path).
+_OWN_COLUMN_UNMAPPED_SHEETS = frozenset({"A-400.00"})
+
+
+#: True only while `_confirmed_by_counting_source` re-reads a clause the count
+#: rule has already bound from a counting source (a located tally the census
+#: checked, every track stating it): the unmapped sheet's own-column naming is
+#: then allowed, exactly as before this rule, so the value path can still agree.
+_COUNT_CONFIRMED: contextvars.ContextVar = contextvars.ContextVar("plan_search_count_confirmed", default=False)
+
+
+def _own_column_unmapped(record: Dict[str, Any]) -> bool:
+    """Is this record a tag-headed grid whose columns do not map to its tags?"""
+    return str(record.get("sheet_number") or "").strip().upper() in _OWN_COLUMN_UNMAPPED_SHEETS
+
+
 def value_parts(record: Dict[str, Any]) -> List[Tuple[List[str], str]]:
     """(the texts a value may be read from, the text that names what they
     are), part by part. The value texts are what `_supported_values` and
@@ -4630,6 +4655,20 @@ def _route_counts(text: str, records: Sequence[Dict[str, Any]], every: bool,
                     ok, refused = False, [n for n, _w in _mark_integer_phrases(clause)]
                 if not ok:
                     bad += refused
+                elif any(_own_column_unmapped(r) for r in records or []):
+                    # RULING (Roy, 2026-10-30): a figure read from an unmapped
+                    # sheet's own column (A-400.00) binds only when a counting
+                    # source confirms it. The count rule just did; the value
+                    # path then decides it with that sheet's own-column naming
+                    # allowed, as it always did, and the clause is blanked
+                    # only if that path binds it - never a new bind.
+                    tok = _COUNT_CONFIRMED.set(True)
+                    try:
+                        value_bad = _attribute_answer_is_bound(source[c0:c1], records, None)[1]
+                    finally:
+                        _COUNT_CONFIRMED.reset(tok)
+                    if not value_bad:
+                        route, decided = True, (ok, refused)
         if route:
             bad += (decided or _count_answer_is_bound(source[c0:c1], records))[1]
             out[c0:c1] = " " * (c1 - c0)
@@ -4745,6 +4784,11 @@ def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
     if subject or ceiling:
         for r in records or []:
             if _vouches_for_nothing(r):
+                continue
+            # RULING (Roy, 2026-10-30, scope update): EVERY value-path bind
+            # from an unmapped sheet's tag-headed grid (A-400.00), tagged or
+            # untagged, needs a counting source; none is read here.
+            if _idless_tags(r) and _own_column_unmapped(r) and not _COUNT_CONFIRMED.get():
                 continue
             table = (aliases or {}).get(str(r.get("file_id") or ""))
             # RULING 154, step 3: in a grid with no identifier column and two or

@@ -1,0 +1,5 @@
+M2 confirmation never allowed (count claims flip) -> KILLED ['test_a_confirmed_count_still_binds']
+M3 blank on count alone (new binds) -> KILLED ['test_a_confirmed_count_never_binds_a_figure_the_cell_does_not_print']
+M4 rule on every sheet -> KILLED ['test_an_untagged_claim_through_the_grid_refuses_too', 'test_the_same_grid_on_another_sheet_keeps_its_own_column']
+M5 sheet normalisation dropped -> KILLED ['test_the_unmapped_sheets_are_named']
+M6 untagged skip removed -> KILLED ['test_a_window_figure_through_its_own_column_refuses', 'test_an_untagged_claim_through_the_grid_refuses_too']

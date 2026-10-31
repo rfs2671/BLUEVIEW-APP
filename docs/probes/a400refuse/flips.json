@@ -1,0 +1,348 @@
+{
+ "base": "05aa22ae (#937)",
+ "direction_all": "bound->refused",
+ "refused_to_bound": 0,
+ "reason": "A-400.00 value-path bind has no counting source",
+ "value_grid_wrong": [
+  {
+   "claim": "type D door INTERIOR STANDARD: 2'-10\" X 6'-8\".",
+   "why": "INTERIOR STANDARD 2'-10\" X 6'-8\" is type F's (crop-read); read via F's table in column D"
+  },
+  {
+   "claim": "type D door INTERIOR STANDARD: 2.",
+   "why": "INTERIOR STANDARD 2'-10\" X 6'-8\" is type F's (crop-read); read via F's table in column D"
+  },
+  {
+   "claim": "type D door INTERIOR STANDARD: 10.",
+   "why": "INTERIOR STANDARD 2'-10\" X 6'-8\" is type F's (crop-read); read via F's table in column D"
+  },
+  {
+   "claim": "type D door INTERIOR STANDARD: 6.",
+   "why": "INTERIOR STANDARD 2'-10\" X 6'-8\" is type F's (crop-read); read via F's table in column D"
+  },
+  {
+   "claim": "type D door INTERIOR STANDARD: 8.",
+   "why": "INTERIOR STANDARD 2'-10\" X 6'-8\" is type F's (crop-read); read via F's table in column D"
+  }
+ ],
+ "value_grid_correct_own_panel": [
+  "W1 APPLY EXPANDABLE: 5'-0\".",
+  "W1 APPLY EXPANDABLE: 2'-6\".",
+  "W1 APPLY EXPANDABLE: 5 \".",
+  "W1 APPLY EXPANDABLE: 5.",
+  "W1 APPLY EXPANDABLE: 0.",
+  "W1 APPLY EXPANDABLE: 2.",
+  "W1 APPLY EXPANDABLE: 6.",
+  "W1 APPLY EXPANDABLE: 5 \".",
+  "W1 APPLY EXPANDABLE: 0.",
+  "W1 APPLY EXPANDABLE: 5.",
+  "W1 APPLY EXPANDABLE: 6.",
+  "W1 APPLY EXPANDABLE: 2.",
+  "W1 APPLY EXPANDABLE: 2 \".",
+  "W1 APPLY EXPANDABLE: 5 \".",
+  "W1 APPLY EXPANDABLE: 0.",
+  "W1 APPLY EXPANDABLE: 6.",
+  "W1 APPLY EXPANDABLE: 2.",
+  "W1 APPLY EXPANDABLE: 5.",
+  "W1 INFILTRATION RATE: 0.20.",
+  "W1 INFILTRATION RATE: 0.25.",
+  "W1 INFILTRATION RATE: 0.31.",
+  "W1 INFILTRATION RATE: 0.20.",
+  "W1 INFILTRATION RATE: 0.25.",
+  "W1 INFILTRATION RATE: 0.31.",
+  "W1 INFILTRATION RATE: 0.20.",
+  "W1 INFILTRATION RATE: 0.25.",
+  "W1 INFILTRATION RATE: 0.31.",
+  "W2 APPLY EXPANDABLE: 5'-0\".",
+  "W2 APPLY EXPANDABLE: 2'-6\".",
+  "W2 APPLY EXPANDABLE: 5 \".",
+  "W2 APPLY EXPANDABLE: 5.",
+  "W2 APPLY EXPANDABLE: 0.",
+  "W2 APPLY EXPANDABLE: 2.",
+  "W2 APPLY EXPANDABLE: 6.",
+  "W2 APPLY EXPANDABLE: 4'-0\".",
+  "W2 APPLY EXPANDABLE: 5 \".",
+  "W2 APPLY EXPANDABLE: 4.",
+  "W2 APPLY EXPANDABLE: 0.",
+  "W2 APPLY EXPANDABLE: 5.",
+  "W2 APPLY EXPANDABLE: 6.",
+  "W2 APPLY EXPANDABLE: 2.",
+  "W2 APPLY EXPANDABLE: 2 \".",
+  "W2 APPLY EXPANDABLE: 5 \".",
+  "W2 APPLY EXPANDABLE: 0.",
+  "W2 APPLY EXPANDABLE: 6.",
+  "W2 APPLY EXPANDABLE: 2.",
+  "W2 APPLY EXPANDABLE: 5.",
+  "W2 INFILTRATION RATE: 0.20.",
+  "W2 INFILTRATION RATE: 0.25.",
+  "W2 INFILTRATION RATE: 0.31.",
+  "W2 INFILTRATION RATE: 0.20.",
+  "W2 INFILTRATION RATE: 0.25.",
+  "W2 INFILTRATION RATE: 0.31.",
+  "W2 INFILTRATION RATE: 0.20.",
+  "W2 INFILTRATION RATE: 0.25.",
+  "W2 INFILTRATION RATE: 0.31.",
+  "W3 APPLY EXPANDABLE: 5'-0\".",
+  "W3 APPLY EXPANDABLE: 2'-6\".",
+  "W3 APPLY EXPANDABLE: 5 \".",
+  "W3 APPLY EXPANDABLE: 5.",
+  "W3 APPLY EXPANDABLE: 0.",
+  "W3 APPLY EXPANDABLE: 2.",
+  "W3 APPLY EXPANDABLE: 6.",
+  "W3 APPLY EXPANDABLE: 5 \".",
+  "W3 APPLY EXPANDABLE: 0.",
+  "W3 APPLY EXPANDABLE: 5.",
+  "W3 APPLY EXPANDABLE: 6.",
+  "W3 APPLY EXPANDABLE: 2.",
+  "W3 APPLY EXPANDABLE: 3'-0\".",
+  "W3 APPLY EXPANDABLE: 2 \".",
+  "W3 APPLY EXPANDABLE: 5 \".",
+  "W3 APPLY EXPANDABLE: 3.",
+  "W3 APPLY EXPANDABLE: 0.",
+  "W3 APPLY EXPANDABLE: 6.",
+  "W3 APPLY EXPANDABLE: 2.",
+  "W3 APPLY EXPANDABLE: 5.",
+  "W3 INFILTRATION RATE: 0.20.",
+  "W3 INFILTRATION RATE: 0.25.",
+  "W3 INFILTRATION RATE: 0.31.",
+  "W3 INFILTRATION RATE: 0.20.",
+  "W3 INFILTRATION RATE: 0.25.",
+  "W3 INFILTRATION RATE: 0.31.",
+  "W3 INFILTRATION RATE: 0.20.",
+  "W3 INFILTRATION RATE: 0.25.",
+  "W3 INFILTRATION RATE: 0.31.",
+  "D1 APPLY EXPANDABLE: 4'-8\".",
+  "D1 APPLY EXPANDABLE: 1'-4\".",
+  "D1 APPLY EXPANDABLE: 3'-4\".",
+  "D1 APPLY EXPANDABLE: 4.",
+  "D1 APPLY EXPANDABLE: 8.",
+  "D1 APPLY EXPANDABLE: 1.",
+  "D1 APPLY EXPANDABLE: 3.",
+  "D1 APPLY EXPANDABLE: 0.",
+  "D1 APPLY EXPANDABLE: 3'-4\".",
+  "D1 APPLY EXPANDABLE: 3.",
+  "D1 APPLY EXPANDABLE: 4.",
+  "D1 APPLY EXPANDABLE: 0.",
+  "D1 APPLY EXPANDABLE: 8.",
+  "D1 INFILTRATION RATE: 0.20.",
+  "D1 INFILTRATION RATE: 0.65.",
+  "D1 INFILTRATION RATE: 0.36.",
+  "D1 INFILTRATION RATE: 0.20.",
+  "D1 INFILTRATION RATE: 0.65.",
+  "D1 INFILTRATION RATE: 0.36.",
+  "D2 APPLY EXPANDABLE: 3'-4\".",
+  "D2 APPLY EXPANDABLE: 4.",
+  "D2 APPLY EXPANDABLE: 8.",
+  "D2 APPLY EXPANDABLE: 3.",
+  "D2 APPLY EXPANDABLE: 0.",
+  "D2 APPLY EXPANDABLE: 3'-4\".",
+  "D2 APPLY EXPANDABLE: 3.",
+  "D2 APPLY EXPANDABLE: 4.",
+  "D2 APPLY EXPANDABLE: 0.",
+  "D2 APPLY EXPANDABLE: 8.",
+  "D2 INFILTRATION RATE: 0.20.",
+  "D2 INFILTRATION RATE: 0.65.",
+  "D2 INFILTRATION RATE: 0.36.",
+  "D2 INFILTRATION RATE: 0.20.",
+  "D2 INFILTRATION RATE: 0.65.",
+  "D2 INFILTRATION RATE: 0.36."
+ ],
+ "untagged_family_claims": [
+  "windows APPLY EXPANDABLE: 0.  [WINDOW SCHEDULE]",
+  "windows APPLY EXPANDABLE: 2.  [WINDOW SCHEDULE]",
+  "windows APPLY EXPANDABLE: 2 \".  [WINDOW SCHEDULE]",
+  "windows APPLY EXPANDABLE: 2'-6\".  [WINDOW SCHEDULE]",
+  "windows APPLY EXPANDABLE: 5.  [WINDOW SCHEDULE]",
+  "windows APPLY EXPANDABLE: 5 \".  [WINDOW SCHEDULE]",
+  "windows APPLY EXPANDABLE: 5'-0\".  [WINDOW SCHEDULE]",
+  "windows APPLY EXPANDABLE: 6.  [WINDOW SCHEDULE]",
+  "windows INFILTRATION RATE: 0.20.  [WINDOW SCHEDULE]",
+  "windows INFILTRATION RATE: 0.25.  [WINDOW SCHEDULE]",
+  "windows INFILTRATION RATE: 0.31.  [WINDOW SCHEDULE]",
+  "window APPLY EXPANDABLE: 0.  [WINDOW SCHEDULE]",
+  "window APPLY EXPANDABLE: 2.  [WINDOW SCHEDULE]",
+  "window APPLY EXPANDABLE: 2 \".  [WINDOW SCHEDULE]",
+  "window APPLY EXPANDABLE: 2'-6\".  [WINDOW SCHEDULE]",
+  "window APPLY EXPANDABLE: 5.  [WINDOW SCHEDULE]",
+  "window APPLY EXPANDABLE: 5 \".  [WINDOW SCHEDULE]",
+  "window APPLY EXPANDABLE: 5'-0\".  [WINDOW SCHEDULE]",
+  "window APPLY EXPANDABLE: 6.  [WINDOW SCHEDULE]",
+  "window INFILTRATION RATE: 0.20.  [WINDOW SCHEDULE]",
+  "window INFILTRATION RATE: 0.25.  [WINDOW SCHEDULE]",
+  "window INFILTRATION RATE: 0.31.  [WINDOW SCHEDULE]",
+  "interior doors APPLY EXPANDABLE: 0.  [INTERIOR DOOR SCHEDULE]",
+  "interior doors APPLY EXPANDABLE: 3.  [INTERIOR DOOR SCHEDULE]",
+  "interior doors APPLY EXPANDABLE: 3'-0\".  [INTERIOR DOOR SCHEDULE]",
+  "interior doors APPLY EXPANDABLE: 7.  [INTERIOR DOOR SCHEDULE]",
+  "doors APPLY EXPANDABLE: 0.  [INTERIOR DOOR SCHEDULE]",
+  "doors APPLY EXPANDABLE: 3.  [INTERIOR DOOR SCHEDULE]",
+  "doors APPLY EXPANDABLE: 3'-0\".  [INTERIOR DOOR SCHEDULE]",
+  "doors APPLY EXPANDABLE: 7.  [INTERIOR DOOR SCHEDULE]",
+  "door APPLY EXPANDABLE: 0.  [INTERIOR DOOR SCHEDULE]",
+  "door APPLY EXPANDABLE: 3.  [INTERIOR DOOR SCHEDULE]",
+  "door APPLY EXPANDABLE: 3'-0\".  [INTERIOR DOOR SCHEDULE]",
+  "door APPLY EXPANDABLE: 7.  [INTERIOR DOOR SCHEDULE]",
+  "exterior doors APPLY EXPANDABLE: 0.  [EXTERIOR DOOR SCHEDULE]",
+  "exterior doors APPLY EXPANDABLE: 3.  [EXTERIOR DOOR SCHEDULE]",
+  "exterior doors APPLY EXPANDABLE: 3'-4\".  [EXTERIOR DOOR SCHEDULE]",
+  "exterior doors APPLY EXPANDABLE: 4.  [EXTERIOR DOOR SCHEDULE]",
+  "exterior doors APPLY EXPANDABLE: 8.  [EXTERIOR DOOR SCHEDULE]",
+  "exterior doors INFILTRATION RATE: 0.20.  [EXTERIOR DOOR SCHEDULE]",
+  "exterior doors INFILTRATION RATE: 0.36.  [EXTERIOR DOOR SCHEDULE]",
+  "exterior doors INFILTRATION RATE: 0.65.  [EXTERIOR DOOR SCHEDULE]",
+  "doors APPLY EXPANDABLE: 0.  [EXTERIOR DOOR SCHEDULE]",
+  "doors APPLY EXPANDABLE: 3.  [EXTERIOR DOOR SCHEDULE]",
+  "doors APPLY EXPANDABLE: 3'-4\".  [EXTERIOR DOOR SCHEDULE]",
+  "doors APPLY EXPANDABLE: 4.  [EXTERIOR DOOR SCHEDULE]",
+  "doors APPLY EXPANDABLE: 8.  [EXTERIOR DOOR SCHEDULE]",
+  "doors INFILTRATION RATE: 0.20.  [EXTERIOR DOOR SCHEDULE]",
+  "doors INFILTRATION RATE: 0.36.  [EXTERIOR DOOR SCHEDULE]",
+  "doors INFILTRATION RATE: 0.65.  [EXTERIOR DOOR SCHEDULE]",
+  "door APPLY EXPANDABLE: 0.  [EXTERIOR DOOR SCHEDULE]",
+  "door APPLY EXPANDABLE: 3.  [EXTERIOR DOOR SCHEDULE]",
+  "door APPLY EXPANDABLE: 3'-4\".  [EXTERIOR DOOR SCHEDULE]",
+  "door APPLY EXPANDABLE: 4.  [EXTERIOR DOOR SCHEDULE]",
+  "door APPLY EXPANDABLE: 8.  [EXTERIOR DOOR SCHEDULE]",
+  "door INFILTRATION RATE: 0.20.  [EXTERIOR DOOR SCHEDULE]",
+  "door INFILTRATION RATE: 0.36.  [EXTERIOR DOOR SCHEDULE]",
+  "door INFILTRATION RATE: 0.65.  [EXTERIOR DOOR SCHEDULE]"
+ ],
+ "count_shaped_interior_doors": [
+  {
+   "claim": "B 0.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "B 3.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "B 7.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "B: 0.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "B: 3.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "B: 7.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "C 0.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "C 3.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "C 7.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "C: 0.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "C: 3.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "C: 7.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D 0.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D 10.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D 2.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D 3.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D 6.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D 7.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D 8.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D: 0.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D: 10.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D: 2.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D: 3.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D: 6.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D: 7.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "D: 8.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "E 0.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "E 3.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "E 6.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "E 8.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "E: 0.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "E: 3.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "E: 6.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  },
+  {
+   "claim": "E: 8.",
+   "schedule": "INTERIOR DOOR SCHEDULE"
+  }
+ ]
+}
