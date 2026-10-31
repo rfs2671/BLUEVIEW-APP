@@ -4754,6 +4754,18 @@ def _subject_bound(clause: str, records: Sequence[Dict[str, Any]],
             # family is one cell. The grid-as-a-whole part is not a candidate.
             gtags = _idless_tags(r)
             family = bool(gtags) and not ({w.upper() for w in subject} & gtags)
+            if family:
+                # "partition type 2" is named by ONE column's own header (P2's):
+                # a column-specific claim, decided by step 2, not a family claim.
+                sw = [w for w in subject if not _is_mark(w)]
+                heads = [str((c.get("header") if isinstance(c, dict) else c) or "")
+                         for c in ((r.get("payload") or {}).get("columns") or [])]
+                if sw:      # the figures are part of the name: "type 2" is "partition type 2"
+                    sw = sw + [v for v, _sp in clause_nums]
+                sw = [w for w in sw if any(names_subject(h, [w], table) for h in heads)]
+                hits = [h for h in heads if sw and names_subject(h, sw, table)]
+                if hits and len(hits) < len(heads):
+                    family = False
             cands: List[List[str]] = []
             for k, (texts, naming) in enumerate(value_parts(r)):
                 if ceiling and not _names_ceiling_height(naming):

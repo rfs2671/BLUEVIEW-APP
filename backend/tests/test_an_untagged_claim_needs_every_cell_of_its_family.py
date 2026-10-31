@@ -71,6 +71,12 @@ class AnUntaggedClaimNeedsEveryCellOfItsFamily(unittest.TestCase):
         rec = _sched(COLS, [["bracket 11", "", "x", ""], ["bracket 22", "", "x", ""]])
         self.assertTrue(_ok("W1 bracket 11.", rec))
 
+    def test_a_claim_one_columns_header_names_is_column_specific(self):
+        # "partition type 2" is P2's header words: step 2 decides it, not the family rule
+        rec = _sched([("PARTITION TYPE 1 P1 STUD", None), ("PARTITION TYPE 2 P2 STUD", None)],
+                     [["tray 11", "tray 22"]], name="TABLE")
+        self.assertTrue(_ok("Partition type 2 tray 22.", rec))
+
     def test_the_whole_grid_is_no_candidate(self):
         rec = _sched(COLS, [["bracket 11", "", "bracket 11", ""]])
         self.assertFalse(_ok("Window schedule 22.", rec))
