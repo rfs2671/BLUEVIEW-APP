@@ -929,11 +929,20 @@ def _one_edit_apart(a: str, b: str) -> bool:
 # `attribute`, and on the benchmark it mostly obeyed; when it does not, the
 # word reaches the floor and the ranker as part of the thing being looked
 # for. So the arguments are normalized here, deterministically, before
-# anything is ranked: a subject word that IS the attribute's word - in
-# either number, or the user's misspelling the agent corrected in the
-# attribute ('sidewalk shed hight' with attribute 'height') - leaves the
-# subject. Only the attribute's own words move; nothing is inferred from a
-# list, and a subject that would be left empty is left as it was.
+# anything is ranked: the user's misspelling of the attribute's word, which
+# the agent corrected in the attribute and left in the subject ('sidewalk
+# shed hight' with attribute 'height'), leaves the subject. Nothing is
+# inferred from a list, and a subject that would be left empty is left as
+# it was.
+#
+# THE ATTRIBUTE'S OWN WORD STAYS (ruling 2026-10-28, option B). Moving the
+# exact word out too ("metal stud gauge" -> "metal stud") dropped A-500.00's
+# '3 1/2" METAL STUD 16" O.C. 20 GAUGE MIN.' from the 8 records returned:
+# the value is printed WITH the attribute's word, and without it the plain
+# METAL STUD dimensions outranked it (eval stud-gauge, production 30 -> 29).
+# So a subject word that is the attribute's word, in either number, is kept;
+# only a near-misspelling of it - one edit apart, four or more letters, same
+# first letter, and not the word itself - moves.
 def normalize_arguments(subject: str, attribute: str = "", intent: str = "",
                         floor: str = "") -> Tuple[str, str, str]:
     """(subject, attribute, floor) as search_plans should use them.
@@ -950,9 +959,9 @@ def normalize_arguments(subject: str, attribute: str = "", intent: str = "",
     kept = []
     for word in raw:
         t = re.sub(r"[^a-z0-9]", "", word.lower())
-        same = bool(t) and (forms & set(term_forms(t)) or any(
-            len(t) >= 4 and t[0] == w[0] and _one_edit_apart(t, w) for w in attr_words))
-        if not same:
+        misspelt = bool(t) and not forms & set(term_forms(t)) and any(
+            len(t) >= 4 and t[0] == w[0] and _one_edit_apart(t, w) for w in attr_words)
+        if not misspelt:
             kept.append(word)
     new_subject = " ".join(kept).strip() if kept else ""
     if not search_terms(new_subject):

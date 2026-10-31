@@ -37,14 +37,19 @@ def _ps():
 
 class ThePropertyLeavesTheSubject(unittest.TestCase):
 
-    def test_the_attribute_word_moves_in_either_number(self):
+    def test_the_attributes_own_word_stays_in_either_number(self):
+        # Ruling 2026-10-28 (option B): the value is often printed WITH the
+        # attribute's word - A-500.00's '3 1/2" METAL STUD 16" O.C. 20 GAUGE
+        # MIN.' - so moving the word itself out of the subject dropped it.
         ps = _ps()
-        self.assertEqual(ps.normalize_arguments("sidewalk shed height", "height")[:2], ("sidewalk shed", "height"))
-        self.assertEqual(ps.normalize_arguments("ceiling heights", "height")[:2], ("ceiling", "height"))
-        # Two letters from the attribute, so only the either-number rule moves it.
-        self.assertEqual(ps.normalize_arguments("pipe inches", "inch")[:2], ("pipe", "inch"))
+        self.assertEqual(ps.normalize_arguments("metal stud gauge", "gauge")[:2], ("metal stud gauge", "gauge"))
+        self.assertEqual(ps.normalize_arguments("sidewalk shed height", "height")[0], "sidewalk shed height")
+        self.assertEqual(ps.normalize_arguments("ceiling heights", "height")[0], "ceiling heights")
+        # 'gauges' is one edit from 'gauge', but it is the word, not a misspelling.
+        self.assertEqual(ps.normalize_arguments("metal stud gauges", "gauge")[0], "metal stud gauges")
+        self.assertEqual(ps.normalize_arguments("pipe inches", "inch")[0], "pipe inches")
 
-    def test_and_so_does_the_typo_the_agent_corrected(self):
+    def test_the_typo_the_agent_corrected_moves(self):
         ps = _ps()
         # The GC typed 'hight'; the agent spelled the attribute right and left
         # the typo in the subject - where the floor reads it as a word the
@@ -95,7 +100,21 @@ SHED = [{"sheet_number": "SSP-009.00", "record_type": "text", "quote": "SIDEWALK
         {"sheet_number": "SSP-003.00", "record_type": "legend_entry", "quote": "8' HIGH SHED"}]
 
 
+# Ten plain METAL STUD dimensions and the one line that prints the gauge,
+# as A-500.00 prints them.
+STUDS = ([{"sheet_number": "A-500.00", "record_type": "dimension", "quote": f'{w} METAL STUD'}
+          for w in ('1 5/8"', '2 1/2"', '3 1/2"', '3 5/8"', '4"', '6"', '2 1/2" 16"', '3 1/2" 16"', '3 5/8" 16"', '6" 16"')]
+         + [{"sheet_number": "A-500.00", "record_type": "text", "quote": '3 1/2" METAL STUD 16" O.C. 20 GAUGE MIN.'}])
+
+
 class TheSearchUsesThem(unittest.TestCase):
+
+    def test_the_line_that_prints_the_gauge_comes_back(self):
+        # Production 2026-10-26: 'metal stud gauge' searched as 'metal stud'
+        # returned 8 plain METAL STUD records and not the 20 GAUGE line.
+        got, _ = _search(STUDS, "metal stud gauge", intent="attribute", attribute="gauge")
+        self.assertIn('3 1/2" METAL STUD 16" O.C. 20 GAUGE MIN.', [r["quote"] for r in got],
+                      "the attribute's own word left the subject, and the line printing the value with it was outranked")
 
     def test_a_misspelled_property_no_longer_empties_the_search(self):
         got, _ = _search(SHED, "sidewalk shed hight", intent="attribute", attribute="height")
