@@ -155,13 +155,14 @@ class RegisterOffsetConfidence(unittest.TestCase):
                                    min_margin=m.PERMISSIVE_MIN_MARGIN)["would_refuse"])
 
     def test_nothing_in_the_pipeline_calls_it(self):
-        """REPORTING ONLY: register_offset's source and every other lib module
-        leave it alone, so no row, placement or answer can move."""
+        """register_offset's source leaves it alone, and the ONLY caller is the
+        roof's composed path (lib.plan_roof_frame, Roy 2026-11-01 ruling 3):
+        no other row, placement or answer can move."""
         _present(self)
         from lib import plan_sheet as PS
         self.assertNotIn("confidence", inspect.getsource(PS.register_offset))
         callers = [p.name for p in LIB.glob("*.py")
-                   if p.name != "plan_registration_confidence.py"
+                   if p.name not in ("plan_registration_confidence.py", "plan_roof_frame.py")
                    and re.search(r"plan_registration_confidence", p.read_text(encoding="utf-8"))]
         server = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
         self.assertEqual(callers, [], callers)

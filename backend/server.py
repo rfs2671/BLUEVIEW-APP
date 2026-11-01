@@ -65592,7 +65592,28 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
             progress.server_stage("stacks")
         try:
             door_in = ((summary["tracks"].get("filed") or {}).get("door") or {}).get("inches")
-            got = await asyncio.to_thread(_stacks.run_stacks, by_track, open_page, None, door_in)
+            # THE COMPOSED ROOF PATH (lib.plan_roof_frame, Roy 2026-11-01): the
+            # 3.28.25 roof is superseded in the filed track, so it is not among
+            # the track pages; it is the middle link of P -> 3.28.25 roof -> gas
+            # roof. Found by file hash + page among ALL the project's index
+            # rows; none found, or the read failing, is no composed path.
+            from lib import plan_roof_frame as _roof_frame
+            try:
+                _raw_idx, _f, _l = await _glyph_inputs(pid)
+                via_pages = [
+                    {"project_id": pid, "company_id": p.get("company_id"),
+                     "file_id": p.get("file_id"), "file_hash": p.get("file_hash"),
+                     "file_name": p.get("file_name"), "page_id": str(p["_id"]),
+                     "page_number": p.get("page_number"), "sheet_number": p.get("sheet_number"),
+                     "sheet_title": p.get("sheet_title"), "discipline": p.get("discipline")}
+                    for p in _raw_idx
+                    if p.get("file_hash") == _roof_frame.REF_HASH
+                    and int(p.get("page_number") or 0) == _roof_frame.REF_PAGE]
+            except Exception as e:
+                logger.warning("roof composed path: page list unavailable for %s: %r", pid, e)
+                via_pages = []
+            got = await asyncio.to_thread(_stacks.run_stacks, by_track, open_page, None, door_in,
+                                          True, via_pages or None)
             stacks = got["rows"] + [_stacks.crosscheck_row(got)]
         except Exception as e:
             logger.exception("plan stacks %s failed: %r", pid, e)

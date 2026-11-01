@@ -496,6 +496,11 @@ class Viewport:
     #: - the drawing's own dimensions did not back a note - and a borrowed
     #: scale is never lent on (`borrow` lends only a viewport's own).
     borrowed: Optional[dict] = None
+    #: set ONLY by lib.plan_roof_frame.apply_records: the evidence of a scale
+    #: RECORDED for this viewport (measured spans, not a printed note and not
+    #: its own dimensions). `verified` is True then, but a recorded scale is
+    #: never lent on (`borrow`): this module did not measure it.
+    recorded: Optional[dict] = None
 
     @property
     def scale_text(self) -> str:
@@ -791,7 +796,7 @@ def borrow(borrower_number: str, borrower: Sheet, lender_number: str, lender: Sh
         out.update(status="own", pt_per_in=vb.pt_per_in)
         return vb, out
     # 3
-    if not va.verified or va.borrowed or not va.pt_per_in:
+    if not va.verified or va.borrowed or va.recorded or not va.pt_per_in:
         return refuse(f"{lender_number}'s {va.title or 'untitled view'} has no scale of its own "
                       f"to lend: {va.refusal or 'its scale is borrowed'}")
     # 5

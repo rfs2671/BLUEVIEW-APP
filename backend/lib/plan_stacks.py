@@ -1134,18 +1134,26 @@ def _reg_view(reg: Optional[dict], usable: bool, why_not: Sequence[str]) -> Opti
 
     def r3(v):
         return None if v is None else round(float(v), 3)
-    return {"dx": r3(reg.get("dx")), "dy": r3(reg.get("dy")), "anchors": reg.get("anchors"),
+    view = {"dx": r3(reg.get("dx")), "dy": r3(reg.get("dy")), "anchors": reg.get("anchors"),
             "best_peak_anchors": reg.get("best_peak_anchors"),
             "second_peak_anchors": reg.get("second_peak_anchors"), "margin": reg.get("margin"),
             "offset_from_best_pt": reg.get("offset_from_best_pt"),
             "rms_in": r3(reg.get("rms_in")), "max_in": r3(reg.get("max_in")),
             "usable": usable, "why_not": list(why_not) or None}
+    if reg.get("composed"):
+        # the composed roof path (lib.plan_roof_frame): the scale to the arch
+        # page, and every link with the conservative pair's verdict. Only a
+        # composed registration has these keys; every other row is as it was.
+        view["scale"] = r3(reg.get("scale"))
+        view["composed"] = reg["composed"]
+    return view
 
 
 def to_arch(x: float, y: float, reg: dict) -> Tuple[float, float]:
     """A point on the other sheet in the architectural sheet's frame
     (register returns other = arch + (dx, dy))."""
-    return x - reg["dx"], y - reg["dy"]
+    k = reg.get("scale") or 1.0           # a composed roof registration only
+    return (x - reg["dx"]) * k, (y - reg["dy"]) * k
 
 
 # ── which space a stack is in ──────────────────────────────────────────────
@@ -1261,6 +1269,19 @@ def _id_key(i: str):
     return (m.group(1), int(m.group(2))) if m else (i, 0)
 
 
+def _composed_position(x: float, y: float, reg: dict) -> Dict[str, Any]:
+    """A composed-path stack in feet in the shared A-plan frame the floors use
+    (lib.plan_roof_frame), with the summed worst case of every link plus the
+    origin ambiguity. `at_arch` is in the gas page's own points (5/16 in)."""
+    from lib import plan_roof_frame as rf
+    pos = rf.roof_position(x, y, "p", p_link=reg["composed"]["links"][0])
+    # the row sits on the gas page, so its worst case is the whole path's:
+    # both links' max residuals plus the origin ambiguity (ruling 3)
+    wc = reg["composed"]["worst_case"]
+    pos.update(worst_case_in=wc["total_in"], worst_case=wc)
+    return pos
+
+
 # ── the rows C1 reads ──────────────────────────────────────────────────────
 
 def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[dict],
@@ -1331,10 +1352,15 @@ def stack_rows(track: str, p_page: dict, a_page: Optional[dict], tags: Sequence[
                            placement_refused="registration not usable: " + "; ".join(why_not))
             else:
                 ax, ay = to_arch(st["x"], st["y"], reg)
+                k = (reg or {}).get("scale") or 1.0
                 row.update(at_arch=(round(ax, 2), round(ay, 2)),
                            footprint_arch={"type": "circle", "x": round(ax, 2), "y": round(ay, 2),
-                                           "r": round(st["r"], 2), "frame": "arch_page_pt"},
+                                           "r": round(st["r"] * k, 2), "frame": "arch_page_pt"},
                            placement_refused=None)
+                if (reg or {}).get("composed"):
+                    row["composed_position"] = _composed_position(st["x"], st["y"], reg)
+                    row.update(space=None, space_how="composed roof registration: the gas roof "
+                                                     "(5/16 in) has no membership map, and holds no apartments")
                 if placed is not None and not level:
                     where, how = placed(ax, ay)
                     row.update(space=where, space_how=how)
@@ -1358,12 +1384,16 @@ def pipe_segment_row(track: str, p_page: dict, a_page: Optional[dict], segs: Seq
     P-204.00, 34 straight and 36 curved sanitary/vent pieces fall in SW 1,
     the 70 T3 counts."""
 
-    def fmtc(dx, dy):
-        return [[[[round(x - dx, 2), round(y - dy, 2)] for x, y in pl], layer_system(layer)]
-                for pl, layer in curves]
-    def fmt(dx, dy):
-        return [[round(a[0] - dx, 2), round(a[1] - dy, 2), round(b[0] - dx, 2),
-                 round(b[1] - dy, 2), layer_system(layer)] for a, b, layer in segs]
+    k = (reg or {}).get("scale") or 1.0       # a composed roof registration only
+
+    def fmtc(dx, dy, k=1.0):
+        return [[[[round((x - dx) * k, 2), round((y - dy) * k, 2)] for x, y in pl],
+                 layer_system(layer)] for pl, layer in curves]
+
+    def fmt(dx, dy, k=1.0):
+        return [[round((a[0] - dx) * k, 2), round((a[1] - dy) * k, 2),
+                 round((b[0] - dx) * k, 2), round((b[1] - dy) * k, 2), layer_system(layer)]
+                for a, b, layer in segs]
     placed = refused is None and usable and reg is not None
     lvl = {"level": level} if level else {}
     return {**lvl, "record_type": "pipe_segments", "row_version": ROW_VERSION, "track": track,
@@ -1375,9 +1405,9 @@ def pipe_segment_row(track: str, p_page: dict, a_page: Optional[dict], segs: Seq
                 "sheet_title", "file_hash")},
             "frame": "arch_page_pt",
             "systems": dict(Counter(layer_system(l) or "unknown" for _a, _b, l in segs)),
-            "segments": fmt(reg["dx"], reg["dy"]) if placed else None,
+            "segments": fmt(reg["dx"], reg["dy"], k) if placed else None,
             "segments_p": fmt(0.0, 0.0),
-            "curves": fmtc(reg["dx"], reg["dy"]) if placed else None,
+            "curves": fmtc(reg["dx"], reg["dy"], k) if placed else None,
             "curves_p": fmtc(0.0, 0.0),
             "registration": _reg_view(reg, usable, why_not),
             "placement_refused": None if placed else (
@@ -1392,7 +1422,11 @@ def continuity(rows: Sequence[dict], tol_in: float = 6.0) -> List[Dict[str, Any]
     from lib.plan_sheet import inches
     by: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
     for r in rows:
-        if r.get("status") == "located" and r.get("at_arch") and r.get("tag_id"):
+        # a composed roof row is in the gas page's own points (5/16 in): not
+        # comparable with the floors' points, and the roof was never in this
+        # check (it was unplaced), so its result is what it was
+        if (r.get("status") == "located" and r.get("at_arch") and r.get("tag_id")
+                and not (r.get("registration") or {}).get("composed")):
             by[(r["track"], r["tag_id"])].append(r)
     out = []
     for (track, tid), rs in sorted(by.items(), key=lambda kv: (kv[0][0], _id_key(kv[0][1]))):
@@ -1432,7 +1466,8 @@ def sheet_row(track: str, p_page: dict, status: str, reason: str) -> Dict[str, A
 
 def run_stacks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable,
                reader: Optional[Callable[[bytes], list]] = None,
-               door_inches: Optional[float] = None, place: bool = True) -> Dict[str, Any]:
+               door_inches: Optional[float] = None, place: bool = True,
+               via_pages: Optional[Sequence[dict]] = None) -> Dict[str, Any]:
     """Every stack of the set, per drawing track, in architectural points.
 
     `tracks`: [(track, page dicts)] as the glyph pass builds them (sheet_number,
@@ -1440,6 +1475,13 @@ def run_stacks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable,
     no track - the filed track holds it, as it holds the mechanical sheets -
     and is read ONCE; each track pairs it with its own architectural plans
     by title level and places its stacks there.
+
+    `via_pages` (lib.plan_roof_frame, ruling 3 of 2026-11-01): every page of
+    the project, the superseded ones too. When a plan's architectural page is
+    the gas roof and the direct registration is refused, the pair is
+    registered through the 3.28.25 roof found among them (P -> 3.28.25 roof
+    -> gas roof), each link behind the conservative pair. None: no composed
+    path, every row as it was.
 
     Returns {"rows", "crosscheck", "continuity", "pairing", "summary"}. Every
     stack is a row; a tag or leader that reaches no stack is a row; a sheet
@@ -1471,6 +1513,7 @@ def run_stacks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable,
     plans = [p for p in p_pages if is_plan(p) and str(p.get("page_id")) in located]
     risers = [p for p in p_pages if is_riser_diagram(p) and str(p.get("page_id")) in located]
     pairing: Dict[str, Any] = {}
+    route_cache: Dict[str, Any] = {}
     for track, pages in tracks:
         arch = [p for p in pages if str(p.get("sheet_number") or "").upper().startswith("A")]
         pr = pair_by_title_level(plans, arch)
@@ -1499,9 +1542,14 @@ def run_stacks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable,
                 arch_pg = open_page(a)
                 A, O = load_sheet(arch_pg), load_sheet(open_page(p))
                 reg, ok, why = register_pair(A, O)
+                if not ok and not lv and via_pages:
+                    reg, ok, why = _composed_pair(a, p, A, O, reg, why, via_pages, open_page,
+                                                  route_cache)
                 placed = None
                 # a below-slab plan is in no apartment: no membership map
-                if ok and place and tags and not lv:
+                # (a composed roof registration has no membership map: the gas
+                # roof is 5/16 in and holds no apartments to be in)
+                if ok and place and tags and not lv and not (reg or {}).get("composed"):
                     placed = _membership(arch_pg, A, door_inches)
                 rows += stack_rows(track, p, a, tags, reg, ok, why, placed, level=lv)
                 rows.append(pipe_segment_row(track, p, a, segs, reg, ok, why, curves=curves,
@@ -1524,6 +1572,29 @@ def run_stacks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable,
             "riser_tags": [{"sheet": p["sheet_number"],
                             "ids": [t.get("id") for t in located[str(p["page_id"])]["tags"]]}
                            for p in risers]}
+
+
+def _composed_pair(a: dict, p: dict, A: dict, O: dict, direct: dict, direct_why: List[str],
+                   via_pages: Sequence[dict], open_page: Callable, cache: Dict[str, Any]
+                   ) -> Tuple[dict, bool, List[str]]:
+    """The direct registration was refused; when `a` is the gas roof, try
+    P -> 3.28.25 roof -> gas roof. (registration, usable, why not): the
+    composed one when it holds, else the DIRECT one with the composed
+    refusal appended to why - never a worse answer than before."""
+    from lib import plan_roof_frame as rf
+    from lib.plan_sheet import load_sheet
+    if rf.route_for(a) is None or not rf.composable(p.get("sheet_number")):
+        return direct, False, direct_why
+    via = rf.via_page(via_pages)
+    if via is None:
+        return direct, False, direct_why + [
+            "composed path: the 3.28.25 roof page is not among the project's pages"]
+    if "ref" not in cache:
+        cache["ref"] = load_sheet(open_page(via))
+    got = rf.compose_route(A, O, cache["ref"], p_name=str(p.get("sheet_number")), cache=cache)
+    if got.get("usable"):
+        return got, True, []
+    return direct, False, direct_why + ["composed path refused: " + str(got.get("refused"))]
 
 
 def _membership(arch_pg, sheet: dict, door_inches: Optional[float]):
