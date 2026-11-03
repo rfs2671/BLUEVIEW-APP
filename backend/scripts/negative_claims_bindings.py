@@ -96,7 +96,7 @@ def only_absence_changed(before: str, after: str, plans: bool = True) -> bool:
     removed = [s for s in b if s not in a]
     added = [s for s in a if s not in b]
     # A removed absence sentence may leave a clause that states a value
-    # ("...not shown; floor-to-floor 10'-0\""): kept, first letter raised.
+    # ("...not shown; floor-to-floor 10'-0\""): kept as written (see measured_clauses).
     kept = {c for s in removed for c in gate.measured_clauses(s)}
     return (all(gate.is_absence_claim(s, plans) for s in removed)
             and all(GATE_LINE.match(s) or s.startswith(gate.NOT_FOUND_PREFIX) or s in kept

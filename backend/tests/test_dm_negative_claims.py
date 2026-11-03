@@ -259,6 +259,82 @@ class ClauseSplit(unittest.TestCase):
         self.assertEqual(n, 1)
         self.assertNotIn("2 coats", out)
 
+    # ── 11-03 review: fail toward the old behaviour ──────────────────────
+    def _whole(self, text):
+        out, n = gate.rewrite(text, self.TRACE)
+        self.assertEqual(n, 1)
+        self.assertEqual(out.split("\n")[0], "Not found in the sheets I searched: A-300.00, A-500.00.")
+        return out
+
+    def test_two_feet_inch_dimensions_are_not_a_fake_quote(self):
+        out, n = gate.rewrite("Plenum is 2'-0\" deep; ceiling height not shown; "
+                              "floor is 10'-0\" high.", self.TRACE)
+        self.assertEqual(n, 1)
+        lines = out.split("\n")
+        self.assertIn("Plenum is 2'-0\" deep", lines)
+        self.assertIn("Floor is 10'-0\" high.", lines)
+        self.assertNotIn("not shown", out)
+
+    def test_semicolon_inside_parentheses_does_not_split(self):
+        out, n = gate.rewrite("Fire rating not specified (see A-300; A-301); floor is 10 ft.",
+                              self.TRACE)
+        self.assertEqual(n, 1)
+        lines = out.split("\n")
+        self.assertIn("Floor is 10 ft.", lines)         # the paren is not split: no "A-301)"
+        self.assertFalse([l for l in lines if "A-301" in l and "Closest" not in l])
+        # an unbalanced paren is not split at all: whole replacement
+        out2 = self._whole("Fire rating not specified (see A-300; floor is 10 ft.")
+        self.assertNotIn("10 ft", out2)
+
+    def test_a_sheet_only_clause_is_not_kept(self):
+        out = self._whole("Ceiling height not shown; see A-300.00.")
+        self.assertNotIn("See A-300.00", out.split("\n")[1:-1])
+        self.assertEqual(len(out.split("\n")), 2)       # not-found + closest only
+
+    def test_three_clauses(self):
+        out, n = gate.rewrite("Plenum is 2'-0\" deep; ceiling height not shown; "
+                              "slab is 8 in; floor is 10'-0\" high.", self.TRACE)
+        self.assertEqual(n, 1)
+        lines = out.split("\n")
+        for want in ("Plenum is 2'-0\" deep", "Slab is 8 in", "Floor is 10'-0\" high."):
+            self.assertIn(want, lines)
+
+    def test_a_mixed_run_with_one_unvalidated_clause_is_replaced_whole(self):
+        out = self._whole("No PTAC shown on 5; 12 on floor 4; none on floor 3.")
+        self.assertNotIn("none on floor 3", out.lower())
+        self.assertNotIn("12 on floor 4", out)
+
+    def test_none_on_floor_3_does_not_survive(self):
+        out = self._whole("Ceiling height not shown; none on floor 3.")
+        self.assertNotIn("None on floor 3", out)
+
+    def test_a_number_inside_the_absence_clause_is_still_dropped(self):
+        # documented, as before: only the absence clause's numbers go with it
+        out, n = gate.rewrite("Fire rating of 2 hr not shown; floor is 10 ft.", self.TRACE)
+        self.assertEqual(n, 1)
+        self.assertIn("Floor is 10 ft.", out.split("\n"))
+        self.assertNotIn("2 hr", out)
+        # and a clause with no unit is not kept, even holding a number
+        out2 = self._whole("Ceiling not shown; 12 are on floor 4.")
+        self.assertNotIn("12", out2.split("\n")[1])
+
+    def test_a_conjunction_led_clause_is_not_kept(self):
+        out = self._whole("Ceiling not shown; but floor-to-floor is 10 ft.")
+        self.assertNotIn("floor-to-floor", out)
+
+    def test_sheet_ids_keep_their_case(self):
+        self.assertEqual(gate.measured_clauses("Ceiling height not shown; a-300 shows 10 ft."),
+                         ["a-300 shows 10 ft."])
+
+    def test_gate_twice_is_the_same(self):
+        for text in (self.RENDER,
+                     "Plenum is 2'-0\" deep; ceiling height not shown; floor is 10'-0\" high.",
+                     "No PTAC shown on 5; 12 on floor 4; none on floor 3."):
+            once, _ = gate.rewrite(text, self.TRACE)
+            twice, n2 = gate.rewrite(once, self.TRACE)
+            self.assertEqual(n2, 0)
+            self.assertEqual(once, twice)
+
 
 if __name__ == "__main__":
     unittest.main()

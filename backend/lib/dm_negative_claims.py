@@ -197,33 +197,81 @@ def not_found_line(sheets: List[str]) -> str:
 
 
 _CLAUSE_MASK = "\x00"
-_HAS_NUMBER = re.compile(r"\d")
+# What a clause split must not look inside: a "..." quote (a straight " opens
+# one only when it is NOT a feet-inch mark, i.e. not after a digit, ' or -),
+# a curly quote, or a parenthesis.
+_CLAUSE_OPAQUE = re.compile(r"(?<![\d'\-])\"[^\"]*\"|“[^”]*”|«[^»]*»|\([^()]*\)")
+_MEASURE = re.compile(
+    r"\d\s*(?:['\"]|ft\b|feet\b|foot\b|in\b|inch(?:es)?\b|mm\b|cm\b|m\b|sf\b|"
+    r"sq\.?\s*ft\b|psf\b|%|°|hrs?\b|hours?\b)", re.I)
+_CONJUNCTION = re.compile(r"^\W*(?:but|and|or|so|yet|however|while|whereas|although|though|"
+                          r"also|then|plus|nor|except|otherwise)\b", re.I)
+_ABSENCE_TOKEN = re.compile(
+    r"\b(?:no|none|not|nothing|never|nor|neither|without|missing|absent|unspecified|unknown|"
+    r"tbd|lacks?|lacking|omitted)\b|n/a|n['’]t\b", re.I)
 
 
 def _clauses(sentence: str) -> List[str]:
-    """The sentence split at semicolons that are outside quotes."""
-    quoted: List[str] = []
+    """The sentence split at semicolons outside quotes and parentheses."""
+    hidden: List[str] = []
 
     def mask(m: re.Match) -> str:
-        quoted.append(m.group(0))
+        hidden.append(m.group(0))
         return _CLAUSE_MASK
-    masked = _QUOTED.sub(mask, sentence)
+    masked = _CLAUSE_OPAQUE.sub(mask, sentence)
     parts = [c.strip() for c in re.split(r";\s*", masked) if c.strip()]
-    it = iter(quoted)
+    it = iter(hidden)
     return [re.sub(_CLAUSE_MASK, lambda _m: next(it), c) for c in parts]
+
+
+def _clean_measured(c: str) -> bool:
+    """POSITIVELY a clean measured-value statement: a unit/measure outside any
+    sheet number, no leading conjunction, no absence word, balanced
+    parentheses. Anything else is not ours to keep."""
+    if c.count("(") != c.count(")"):
+        return False
+    if _CONJUNCTION.search(c) or _ABSENCE_TOKEN.search(c) or _hits(c):
+        return False
+    return bool(_MEASURE.search(SHEET_RE.sub(" ", c)))
+
+
+def _raise_first(c: str) -> str:
+    """Capital for a plain leading word only; never a sheet id or a unit."""
+    m = re.match(r"[a-z]{3,}(?:-[a-z]+)*\b", c)
+    if m and not SHEET_RE.match(c.upper()) and not re.match(r"[a-z]+\s*\d", c):
+        return c[:1].upper() + c[1:]
+    return c
 
 
 def measured_clauses(sentence: str) -> List[str]:
     """The clauses of an absence sentence that state a value and make no
     absence claim of their own: "Ceiling height not shown; floor-to-floor
-    10'-0\" (A-300.00)" -> ["Floor-to-floor 10'-0\" (A-300.00)"]. The absence
-    is the other clause's; this one is kept as written (first letter raised),
-    so the rewrite never takes a number out of an answer."""
-    parts = _clauses(sentence)
-    if len(parts) < 2 or not any(_hits(c) for c in parts):
+    10'-0\" (A-300.00)" -> ["Floor-to-floor 10'-0\" (A-300.00)"].
+
+    FAILS TOWARD THE OLD BEHAVIOUR: the sentence is split only when EVERY
+    clause is either an absence clause (dropped) or positively a clean
+    measured-value statement (kept as written; only a plain leading word is
+    capitalised). If any clause is neither -- a sheet reference alone, a
+    conjunction-led fragment, "none on floor 3", a clause with no unit --
+    the result is [] and the whole sentence is replaced, as before.
+    Numbers inside the ABSENCE clauses are still dropped, as before."""
+    if sentence.count("(") != sentence.count(")"):
         return []
-    keep = [c for c in parts if _HAS_NUMBER.search(c) and not _hits(c)]
-    return [c[:1].upper() + c[1:] for c in keep]
+    parts = _clauses(sentence)
+    if len(parts) < 2:
+        return []
+    keep: List[str] = []
+    dropped = 0
+    for c in parts:
+        if _hits(c):
+            dropped += 1
+        elif _clean_measured(c):
+            keep.append(c)
+        else:
+            return []
+    if not dropped:
+        return []
+    return [_raise_first(c) for c in keep]
 
 
 def rewrite(text: Any, trace: Optional[Iterable[dict]] = None) -> Tuple[str, int]:
