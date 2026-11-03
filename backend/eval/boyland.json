@@ -897,7 +897,7 @@
       "cases": [
         "ac-type"
       ],
-      "status": "ac-type answered by `also` (ruling 2026-10-25); the ranking half stays open for a question asked without the other name",
+      "status": "ac-type passes as of 2026-11-03, because of the `also` PTAC ruling (2026-10-25) plus the 2026-10-26 re-index of AR - 3.28.25, which cleared the known-stale PTAC schedule cells: its lead is now M-104.00 and M-200.00 PTAC schedule cells with no generic note (identical on 2026-10-27 and 2026-11-03, 29/32 and 31/33; it failed on 2026-10-07 when REFRIGERANT notes led). Not a ranking fix: the ranking half stays open for a question asked without the other name",
       "what": "Generic prose that repeats more of the question's words outranks the specific record that answers it. 'AC units' is led by the note 'EACH AC UNIT SHALL HAVE A MINI-CONDENSATE PUMP', which matches both words, while the PTAC schedule matches one. HALF OF IT WAS THE SLOTS, NOT THE RANKING: asked about the AC units, five of the eight records returned were two notes repeated, and the PTAC schedule sat at positions six to eight. A note is now one record across the sheets it is stamped on (dedupe_quotes), and the schedule reaches the lead.",
       "why_it_is_not_tuned_away": "Ranking is similarity-first by design (#589). Special-casing this question would teach the ranker the suite rather than fix the class.",
       "evidence": "The note is printed identically on M-100.00 through M-105.00 and is vision-read (the M-sheet notes are outlined). The project team confirmed on 2026-09-17 that 588 Boyland has PTACs only and no split systems: it is engineer boilerplate that was not stripped. After the collapse, 2026-09-17: ac-type's lead is M-100.00, M-101.00 and two M-200.00 schedule cells, so the case is no longer scored as a failure — it is STALE, because the schedule cells that answer it are the three known-stale PTAC elements. Whether it PASSES is not known until the re-index clears them.",
@@ -919,7 +919,7 @@
       "cases": [
         "door-size"
       ],
-      "status": "open",
+      "status": "door-size passes as of 2026-11-03, because the 2026-10-26 re-index of AR - 3.28.25 replaced A-400.00 heading-only text_layer records with table_finder schedule_cell records whose cells carry 3'-0\" X 7'-0\" (failed 2026-10-07; passing in both 2026-10-27 runs and 2026-11-03). Not a ranking fix: the LIGHTING SCHEDULE on A.3.0 still takes lead slot 1 and render_carries_the_answer is still false, so the class stays open",
       "what": "Asked for the door schedule, the reader still leads with A-400.00's EXTERIOR and INTERIOR DOOR SCHEDULE headings, but a LIGHTING SCHEDULE on A.3.0 - from the second architect's set, current since the 2026-09-20 pass - matches the word 'schedule' and takes one of the 8 slots, and the record that prints 3'-0\" X 7'-0\" no longer comes back.",
       "why_it_is_not_tuned_away": "Corpus-driven: the same 25/30 on the code before #664, on #664 and on #666. The case passed on 2026-09-20 (211f7489) against the 2026-09-19 corpus, where the second set was not current. Ranking a sheet down because of the set it belongs to would be teaching the ranker this project.",
       "evidence": "Preview runs 2026-10-07 against this baseline: lead A.3.0 LIGHTING SCHEDULE (schedule_cell, table_finder), T-001.01 'DOOR AND WINDOW SCHEDULE 24 A-500', A-400.00 'EXTERIOR DOOR SCHEDULE', A-400.00 'INTERIOR DOOR SCHEDULE'; no returned record prints 3'-0\" X 7'-0\". On 2026-09-20 the fourth lead was RCP-002.00's LIGHTING SCHEDULE and the case passed."
