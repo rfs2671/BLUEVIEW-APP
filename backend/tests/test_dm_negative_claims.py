@@ -213,5 +213,52 @@ class TheOldPathSaysNotFound(_Site, unittest.TestCase):
         self.assertRegex(out, r"^No open violations at 588\.")
 
 
+class ClauseSplit(unittest.TestCase):
+    """11-03: the stored ceiling-height render says 'Ceiling height not shown;
+    floor-to-floor 10'-0" (A-300.00)'. The gate took the WHOLE sentence for
+    an absence claim and dropped the 10'-0": a measured value replaced by
+    'Not found'. Only the absence clause is the gate's; a clause that states
+    a value stays."""
+
+    RENDER = "Ceiling height not shown; floor-to-floor 10'-0\" (A-300.00)"
+    TRACE = [{"tool": "search_plans", "args": {}, "result": "",
+              "records": [{"sheet": "A-300.00",
+                           "quote": "BASE PLANE 33.37' 0'-0\" | SECOND FLOOR 43.37' +10'-0\""},
+                          {"sheet": "A-500.00", "quote": "TABLE PARTITION TYPE 1"}]}]
+
+    def test_the_stored_ceiling_height_render_keeps_its_number(self):
+        out, n = gate.rewrite(self.RENDER, self.TRACE)
+        self.assertEqual(n, 1)
+        lines = out.split("\n")
+        self.assertEqual(lines[0], "Not found in the sheets I searched: A-300.00, A-500.00.")
+        self.assertIn("Floor-to-floor 10'-0\" (A-300.00)", lines)
+        # the value is on a line of its own, not inside the gate's line
+        self.assertNotIn("10'-0\"", lines[0])
+        self.assertTrue(lines[-1].startswith("Closest detail: A-300.00"))
+
+    def test_the_value_clause_comes_first_too(self):
+        out, n = gate.rewrite("Floor-to-floor is 10'-0\" (A-300.00); ceiling height not shown.",
+                              self.TRACE)
+        self.assertEqual(n, 1)
+        self.assertIn("Floor-to-floor is 10'-0\" (A-300.00)", out.split("\n"))
+        self.assertNotIn("not shown", out)
+
+    def test_semicolon_inside_a_quote_does_not_split(self):
+        out, n = gate.rewrite('Nothing on the drawings calls for it; see "NOTE 4; 2 HR RATED".',
+                              self.TRACE)
+        self.assertEqual(n, 1)
+        self.assertTrue(out.startswith(gate.NOT_FOUND_PREFIX))
+
+    def test_a_sentence_with_no_value_clause_is_replaced_whole(self):
+        out, n = gate.rewrite("Nothing is specified; check with the architect.", self.TRACE)
+        self.assertEqual(n, 1)
+        self.assertNotIn("architect", out)
+
+    def test_an_answer_with_no_semicolon_is_unchanged_by_the_split(self):
+        out, n = gate.rewrite("Spray foam is not required, 2 coats are shown.", self.TRACE)
+        self.assertEqual(n, 1)
+        self.assertNotIn("2 coats", out)
+
+
 if __name__ == "__main__":
     unittest.main()

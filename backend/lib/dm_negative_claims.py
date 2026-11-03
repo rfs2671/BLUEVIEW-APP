@@ -196,6 +196,36 @@ def not_found_line(sheets: List[str]) -> str:
     return f"{NOT_FOUND_PREFIX}: {', '.join(sheets)}." if sheets else f"{NOT_FOUND_PREFIX}."
 
 
+_CLAUSE_MASK = "\x00"
+_HAS_NUMBER = re.compile(r"\d")
+
+
+def _clauses(sentence: str) -> List[str]:
+    """The sentence split at semicolons that are outside quotes."""
+    quoted: List[str] = []
+
+    def mask(m: re.Match) -> str:
+        quoted.append(m.group(0))
+        return _CLAUSE_MASK
+    masked = _QUOTED.sub(mask, sentence)
+    parts = [c.strip() for c in re.split(r";\s*", masked) if c.strip()]
+    it = iter(quoted)
+    return [re.sub(_CLAUSE_MASK, lambda _m: next(it), c) for c in parts]
+
+
+def measured_clauses(sentence: str) -> List[str]:
+    """The clauses of an absence sentence that state a value and make no
+    absence claim of their own: "Ceiling height not shown; floor-to-floor
+    10'-0\" (A-300.00)" -> ["Floor-to-floor 10'-0\" (A-300.00)"]. The absence
+    is the other clause's; this one is kept as written (first letter raised),
+    so the rewrite never takes a number out of an answer."""
+    parts = _clauses(sentence)
+    if len(parts) < 2 or not any(_hits(c) for c in parts):
+        return []
+    keep = [c for c in parts if _HAS_NUMBER.search(c) and not _hits(c)]
+    return [c[:1].upper() + c[1:] for c in keep]
+
+
 def rewrite(text: Any, trace: Optional[Iterable[dict]] = None) -> Tuple[str, int]:
     """(the answer with each absence assertion replaced, how many were). The
     first becomes the not-found line, the rest are dropped (one line says
@@ -219,10 +249,14 @@ def rewrite(text: Any, trace: Optional[Iterable[dict]] = None) -> Tuple[str, int
                 if not said:
                     kept.append(line_for)
                     said = True
+                # A clause that states a measured value stays, on a line of
+                # its own: only the absence clause is the gate's to replace.
+                for c in measured_clauses(s):
+                    kept.append("\n" + c)
             else:
                 kept.append(s)
         if kept:
-            out_lines.append(" ".join(kept))
+            out_lines.extend(re.sub(r" *\n *", "\n", " ".join(kept)).split("\n"))
     if not n:
         return text, 0
     out = "\n".join(out_lines).strip()
