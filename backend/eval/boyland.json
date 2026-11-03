@@ -309,11 +309,11 @@
         "how": "text_layer",
         "track": "filed",
         "source": "AR - 3.28.25.pdf p16 (A-105.00); gas change (AR - 6.9.26) p2 prints the same 2112 SQ. FT.",
-        "evidence": "FILED TRACK (default retrieval). PASSIVE RECREATION 2112 SF. / 200 = 11 ... TOTAL OCCUPANTS PER STORY 11 PERSONS. Re-authored 2026-11-03 on Roy's ruling: AR - 8.18.26 (A-105.01: 1970 SF / 10) is IGNORED, so it is not the filed answer. The owner's post-CO set prints 1970 / 10 and is held by the case roof-occupancy-load-post-co, never mixed with this figure."
+        "evidence": "FILED TRACK (default retrieval). PASSIVE RECREATION 2112 SF. / 200 = 11 ... TOTAL OCCUPANTS PER STORY 11 PERSONS. Re-authored 2026-11-03 on Roy's ruling: AR - 8.18.26 (A-105.01: 1970 SF / 10) is IGNORED, so it is not the filed answer. The owner's post-CO set prints 1970 / 10 and is held only by passive-recreation-area-post-co-retrieval-only (area only; the owner's set prints no occupancy), never mixed with this figure."
       }
     },
     {
-      "id": "passive-recreation-area-post-co",
+      "id": "passive-recreation-area-post-co-retrieval-only",
       "question": "how big is the passive recreation area in the owner's set",
       "subject": "passive recreation",
       "intent": "attribute",
@@ -334,7 +334,7 @@
         "how": "text_layer",
         "track": "post_co",
         "source": "Owners set - 6.9.26.pdf p6 (A-105.00, owner's post-CO set)",
-        "evidence": "POST-CO TRACK. The owner's set A-105.00 p6 prints PASSIVE RECREATION 1970 SQ. FT. (11 persons filed vs 10 persons post-CO: that sheet carries no occupancy table, so the 10-person figure is held only by the ignored 8.18.26 A-105.01 and is NOT asserted). The suite has no track field: the only switch is plan_sources.asks_owner_set reading \"owner's set\" from `also` (it is NOT read from the subject: a subject of \"owner's set occupancy load\" returned 0 records). Limits: the harness cannot assert the post-CO label or that the filed 2112 is kept apart. By design both tracks are returned together, each cited with its set, so the case only proves the 1970 post-CO record is retrieved. The filed answer is held by passive-recreation-area."
+        "evidence": "POST-CO TRACK, RETRIEVAL-ONLY CASE: asserts only that the 1970 record is retrieved on an owner's-set question; no track-label or separation assertion. The owner's set A-105.00 p6 prints PASSIVE RECREATION 1970 SQ. FT. (11 persons filed vs 10 persons post-CO: that sheet carries no occupancy table, so the 10-person figure is held only by the ignored 8.18.26 A-105.01 and is NOT asserted). The suite has no track field: the only switch is plan_sources.asks_owner_set reading \"owner's set\" from `also` (it is NOT read from the subject: a subject of \"owner's set occupancy load\" returned 0 records). Limits: the harness cannot assert the post-CO label or that the filed 2112 is kept apart. By design both tracks are returned together, each cited with its set, so the case only proves the 1970 post-CO record is retrieved. The filed answer is held by passive-recreation-area."
       }
     },
     {
