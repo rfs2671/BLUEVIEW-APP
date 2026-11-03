@@ -298,8 +298,9 @@ AXIS_TOL_PT = 0.2          # a segment is horizontal/vertical within this
 DASH_GAP_PT = 20.0         # a dash-dot line's gap: 18pt dash to dash across its dot (measured)
 POST_MIN_PT, POST_MAX_PT = 6.0, 12.0   # a 4"-8" post at 1/4" = 1'-0"
 TAG_REACH_PT = 24.0        # an SW tag beside its frame: measured 8-10pt; 16in
-LEADER_REACH_PT = 9.0      # a leader stops at its arrowhead's base, ~7pt short of the post
-LABEL_REACH_PT = 40.0      # a leader's far end to the size word of its label
+LEADER_END_LABEL_PT = 8.0  # a traced leader's label end to the label's box
+LEADER_TOUCH_PT = 0.8      # two leader strokes are one polyline when they touch within this
+ARROW_APEX_POST_PT = 3.0   # an arrowhead's apex to the post it lands on (measured 0.0-1.8pt)
 
 
 def _bare(layer: str) -> str:
@@ -588,35 +589,170 @@ def _posts(page, ext, exclude_layers):
             and g[5] >= 10]
 
 
-def _leaders(page, ext, layer_ok):
-    """Open polylines (leader lines) on annotation layers: [(start, end)]."""
-    out = []
+def _seg_dist(p, a, b):
+    """Distance from point p to the segment a-b."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    n = dx * dx + dy * dy
+    t = 0.0 if n == 0 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / n))
+    return math.dist(p, (a[0] + t * dx, a[1] + t * dy))
+
+
+def _touch(a, b, tol=LEADER_TOUCH_PT):
+    return any(_seg_dist(p, *b) <= tol for p in a) or any(_seg_dist(q, *a) <= tol for q in b)
+
+
+def _leader_strokes(page, ext, layer_ok):
+    """The leader strokes of a plan and its arrowheads: ([(a, b)], [{"apex",
+    "base", "mid"}]). A leader is drawn from open line pieces on the
+    annotation layer (the same stroke drawn twice counts once); an
+    ARROWHEAD is a small closed triangle there, its apex the vertex opposite
+    the shortest side. Strokes whose ends leave the plan view (+40pt) are
+    dropped, as is the sheet frame."""
+    segs, arrows = {}, {}
     for d in page.drawings:
         if not layer_ok(d["layer"]):
             continue
-        its = [it for it in d["items"] if it[0] == "l"]
-        if not its:
+        items = d["items"]
+        if not items or any(it[0] != "l" for it in items):
             continue
-        a, b = its[0][1], its[-1][-1]
-        if math.dist(a, b) < 12:
+        r = d["rect"]
+        w, h = r[2] - r[0], r[3] - r[1]
+        if w > 1000 and h > 1000:
             continue
-        if ext and not (_inside(ext, *a, 60) and _inside(ext, *b, 60)):
+        if len(items) == 3 and max(w, h) <= 12 and math.dist(items[0][1], items[2][2]) < LEADER_TOUCH_PT:
+            vs = [items[0][1], items[1][1], items[2][1]]
+            k = min((math.dist(vs[(i + 1) % 3], vs[(i + 2) % 3]), i) for i in range(3))[1]
+            base = [vs[(k + 1) % 3], vs[(k + 2) % 3]]
+            arrows[(round(vs[k][0], 1), round(vs[k][1], 1))] = {
+                "apex": tuple(vs[k]), "base": base,
+                "mid": ((base[0][0] + base[1][0]) / 2, (base[0][1] + base[1][1]) / 2)}
             continue
-        out.append((tuple(a), tuple(b)))
+        for it in items:
+            a, b = tuple(it[1]), tuple(it[2])
+            if math.dist(a, b) < 0.3:
+                continue
+            segs[tuple(sorted([(round(a[0], 1), round(a[1], 1)), (round(b[0], 1), round(b[1], 1))]))] = (a, b)
+    if ext:
+        def inb(p):
+            return ext[0] - 40 <= p[0] <= ext[2] + 40 and ext[1] - 40 <= p[1] <= ext[3] + 40
+        return [s for s in segs.values() if inb(s[0]) and inb(s[1])], list(arrows.values())
+    return list(segs.values()), list(arrows.values())
+
+
+def _leader_polylines(segs):
+    """Strokes that touch are one polyline: [(indices, free ends)]. A free end
+    is a stroke end that rests on no other stroke of its polyline."""
+    n = len(segs)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    cells: Dict[Tuple[int, int], List[int]] = defaultdict(list)
+    for i, (a, b) in enumerate(segs):
+        for cx in range(int((min(a[0], b[0]) - 1) // 10), int((max(a[0], b[0]) + 1) // 10) + 1):
+            for cy in range(int((min(a[1], b[1]) - 1) // 10), int((max(a[1], b[1]) + 1) // 10) + 1):
+                cells[(cx, cy)].append(i)
+    for members in cells.values():
+        for x, i in enumerate(members):
+            for j in members[x + 1:]:
+                if find(i) != find(j) and _touch(segs[i], segs[j]):
+                    parent[find(i)] = find(j)
+    comps: Dict[int, List[int]] = defaultdict(list)
+    for i in range(n):
+        comps[find(i)].append(i)
+    out = []
+    for idx in comps.values():
+        free = [p for i in idx for p in segs[i]
+                if not any(_seg_dist(p, *segs[j]) <= LEADER_TOUCH_PT for j in idx if j != i)]
+        out.append((idx, free))
     return out
 
 
-def _label_block(words, x, y, reach=LABEL_REACH_PT):
-    """The size token printed at a leader's far end: nearest post/beam size
-    word within `reach`, with the multiplier "(2)" before it."""
-    best = None
-    for i, (t, wx, wy, *_r) in enumerate(words):
-        if _POST_SIZE.match(t) and math.dist((wx, wy), (x, y)) <= reach:
-            d = math.dist((wx, wy), (x, y))
-            if best is None or d < best[0]:
-                prev = words[i - 1][0] if i and re.fullmatch(r"\(\d+\)", words[i - 1][0]) else None
-                best = (d, f"{prev} {t}" if prev else t)
-    return best[1] if best else None
+def _page_word_boxes(page):
+    """[(text, x0, top, x1, bottom, direction)]: the page's own boxes, else a
+    box around each word's centre (a stub page that only has `directed_words`)."""
+    boxes = getattr(page, "directed_word_boxes", None)
+    if boxes is not None:
+        return list(boxes)
+    return [(t, x - 2.8 * len(t), y - 4.0, x + 2.8 * len(t), y + 4.0, d)
+            for t, x, y, d in page.directed_words]
+
+
+def _size_labels(page, ext):
+    """The post-size labels printed on the plan: [{"text", "box"}]. The text
+    is the size word with its "(n)" multiplier when one stands right before it
+    in the same reading direction (the word as printed, "(2) 6SW16"). Words
+    printed twice at one place are one label."""
+    seen, boxes = set(), []
+    for b in _page_word_boxes(page):
+        k = (b[0], round(b[1]), round(b[2]), round(b[3]), round(b[4]), b[5])
+        if k not in seen:
+            seen.add(k)
+            boxes.append(b)
+    out = []
+    for t, x0, y0, x1, y1, d in boxes:
+        if not _POST_SIZE.match(t):
+            continue
+        pref = None
+        for u, a0, b0, a1, b1, dd in boxes:
+            if dd != d or not re.fullmatch(r"\(\d+\)", u):
+                continue
+            if d == "ltr" and abs((b0 + b1) / 2 - (y0 + y1) / 2) < 3 and 0 <= x0 - a1 <= 8:
+                pref = (u, a0, b0, a1, b1)
+            elif d == "btt" and abs((a0 + a1) / 2 - (x0 + x1) / 2) < 3 and 0 <= b0 - y1 <= 8:
+                pref = (u, a0, b0, a1, b1)
+            elif d == "ttb" and abs((a0 + a1) / 2 - (x0 + x1) / 2) < 3 and 0 <= y0 - b1 <= 8:
+                pref = (u, a0, b0, a1, b1)
+            elif d == "rtl" and abs((b0 + b1) / 2 - (y0 + y1) / 2) < 3 and 0 <= a0 - x1 <= 8:
+                pref = (u, a0, b0, a1, b1)
+        box = [x0, y0, x1, y1]
+        if pref:
+            box = [min(x0, pref[1]), min(y0, pref[2]), max(x1, pref[3]), max(y1, pref[4])]
+        if ext and not (ext[0] - 60 <= box[0] and box[2] <= ext[2] + 60
+                        and ext[1] - 60 <= box[1] and box[3] <= ext[3] + 60):
+            continue
+        out.append({"text": f"{pref[0]} {t}" if pref else t, "box": tuple(box)})
+    return out
+
+
+def _traced_post_sizes(page, ext, posts, layer_ok):
+    """TRACED LEADER (membersize/REPORT.md): {index into `posts`: size}.
+
+    A label's leader is a polyline drawn from the label to the member. The
+    polyline end that rests on the label's box (within 8pt) is the label end;
+    every other free end carries an arrowhead, and the post is the ONE post
+    rectangle within 3pt of that arrowhead's apex. A label may fan out into
+    several branches (one trunk, three posts); each branch lands on one post.
+    A post takes the label whose leader lands on it - when every leader that
+    lands on it agrees; two different labels, an arrow with no arrowhead, an
+    apex on no post or on two posts bind NOTHING. No word is ever picked by
+    distance: a size printed near a post is not that post's size."""
+    segs, arrows = _leader_strokes(page, ext, layer_ok)
+    if not segs or not posts:
+        return {}
+    lines = _leader_polylines(segs)
+    claims: Dict[int, List[str]] = defaultdict(list)
+    for lab in _size_labels(page, ext):
+        for _idx, free in lines:
+            ends = [p for p in free if _dist_to_rect(lab["box"], *p) <= LEADER_END_LABEL_PT]
+            if not ends:
+                continue
+            for p in free:
+                if p in ends or any(math.dist(p, q) <= 2 for q in ends):
+                    continue
+                ar = [a for a in arrows if min(math.dist(b, p) for b in a["base"]) <= 2.5
+                      or math.dist(a["mid"], p) <= 3.5]
+                if not ar:
+                    continue
+                apex = min(ar, key=lambda a: math.dist(a["mid"], p))["apex"]
+                hit = [i for i, e in enumerate(posts) if _dist_to_rect(e["rect"], *apex) <= ARROW_APEX_POST_PT]
+                if len(hit) == 1:
+                    claims[hit[0]].append(lab["text"])
+    return {i: c[0] for i, c in claims.items() if len(set(c)) == 1}
 
 
 def _joist_symbols(page, ext):
@@ -747,20 +883,11 @@ def read_elements(page) -> Dict[str, Any]:
     hatch_or_wall = lambda L: _is_hatch_layer(L) or _is_wall_layer(L) or "GRID" in _bare(L) \
         or "DIMENSION" in _bare(L) or "STAIR" in _bare(L)          # noqa: E731
     posts = _posts(page, ext, hatch_or_wall)
-    leaders = _leaders(page, ext, lambda L: "TEXT" in _bare(L) and "|" not in L)
-    for p in posts:
+    sized = _traced_post_sizes(page, ext, posts, lambda L: "TEXT" in _bare(L) and "|" not in L)
+    for k, p in enumerate(posts):
         r = p["rect"]
-        size, via = None, None
-        for a, b in leaders:
-            for near, far in ((a, b), (b, a)):
-                if _dist_to_rect(r, *near) <= LEADER_REACH_PT:
-                    s = _label_block(words, *far)
-                    if s:
-                        size, via = s, "leader"
-            if size:
-                break
         els.append({"element": "post", "polygon": _rect_poly(*r), "tag": None,
-                    "attrs": {"size": size, "size_from": via},
+                    "attrs": {"size": sized.get(k), "size_from": "leader" if k in sized else None},
                     "evidence": {"layer": p["layer"]}})
     # ── beams and headers ───────────────────────────────────────────────
     legend = legend_entries(words)
@@ -977,11 +1104,56 @@ def read_hold_down_notes(page) -> List[dict]:
 # 5. A track: pair, register, read, move into the A frame, rows
 # ══════════════════════════════════════════════════════════════════════════
 
+#: S-301's END MEMBERS cell, as a designation: "(2) 6J14", "(3) 6J10"; a dash is no designation
+_END_MEMBERS = re.compile(r"^\(\d+\)\s*\d+J\d+$")
+END_POST_TOUCH_PT = 0.8    # a post touches its frame within this
+END_POST_AT_END_PT = 1.0   # ... and is at the frame's END when its edge is this near the frame's end
+TAG_MARGIN_PT = 3.0       # the printed tag is nearer its frame than the next frame by this much
+
+
+def _end_post_frames(post_rect, frames):
+    """[(frame, 'end' | 'mid-wall')] for every shear wall the post touches."""
+    out = []
+    for w in frames:
+        wr = _bbox(w["polygon"])
+        if _rect_gap(post_rect, wr) > END_POST_TOUCH_PT:
+            continue
+        if (wr[2] - wr[0]) > (wr[3] - wr[1]):
+            lo, hi, p0, p1 = wr[0], wr[2], post_rect[0], post_rect[2]
+        else:
+            lo, hi, p0, p1 = wr[1], wr[3], post_rect[1], post_rect[3]
+        out.append((w, "end" if (abs(p0 - lo) <= END_POST_AT_END_PT or abs(p1 - hi) <= END_POST_AT_END_PT)
+                    else "mid-wall"))
+    return out
+
+
+def _rect_gap(a, b):
+    return math.hypot(max(a[0] - b[2], 0, b[0] - a[2]), max(a[1] - b[3], 0, b[1] - a[3]))
+
+
+def _tag_is_unambiguous(wall, frames):
+    """The wall's printed SW tag stands nearer its own frame than any other
+    frame by TAG_MARGIN_PT. A wall with no recorded tag position (a stub) is
+    not second-guessed."""
+    xy = (wall.get("evidence") or {}).get("label_xy")
+    if not xy:
+        return True
+    mine = _dist_to_rect(_bbox(wall["polygon"]), *xy)
+    nearest_other = min((_dist_to_rect(_bbox(o["polygon"]), *xy) for o in frames if o is not wall), default=None)
+    return nearest_other is None or nearest_other - mine >= TAG_MARGIN_PT
+
+
 def size_posts_from_schedule(els: List[dict]) -> None:
     """LEGEND 7: "BUILT UP POST, SEE SHEAR WALL SCHEDULE FOR SIZE, U.O.N. ON
     PLAN" - a post with no label of its own, standing in a shear wall, is
-    that wall's scheduled END MEMBERS at this level. Anywhere else the
-    schedule names no size for it, and none is given. In place."""
+    that wall's scheduled END MEMBERS at this level. ONLY an END post of a
+    frame: a post that touches the frame mid-wall (SW 3 has one inside each
+    frame), or touches the ends of two frames, names no end member. The
+    frame's SW tag must stand nearer its frame than any other (3pt), and the
+    schedule must print ONE END MEMBERS cell holding a designation (S-301
+    prints a dash for SW 1 and SW 2 at the ROOF): else the post is `unknown`,
+    never a guess (membersize_rev2/REPORT.md: 72 bound, 12 refused). In place."""
+    frames = [w for w in els if w["element"] == "shear_wall"]
     for e in els:
         if e["element"] != "post":
             continue
@@ -992,10 +1164,14 @@ def size_posts_from_schedule(els: List[dict]) -> None:
         e["attrs"]["in_shear_wall"] = host["tag"] if host else None
         if e["attrs"].get("size") or not host:
             continue
-        sched = host["attrs"].get("schedule") or {}
-        em = next((v for k, v in sched.items() if k.upper().startswith("END")), None)
-        if em:
-            e["attrs"].update(size=em, size_from=f"shear wall schedule, {host['tag']} end members")
+        touching = _end_post_frames(_bbox(e["polygon"]), frames)
+        ends = [w for w, k in touching if k == "end"]
+        if len({w["tag"] for w in ends}) != 1 or not _tag_is_unambiguous(ends[0], frames):
+            continue
+        sched = ends[0]["attrs"].get("schedule") or {}
+        cells = [v for k, v in sched.items() if k.upper().startswith("END")]
+        if len(cells) == 1 and isinstance(cells[0], str) and _END_MEMBERS.match(cells[0].strip()):
+            e["attrs"].update(size=cells[0], size_from=f"shear wall schedule, {ends[0]['tag']} end members")
 
 
 def to_arch(polygon, registration) -> Optional[List[List[float]]]:
