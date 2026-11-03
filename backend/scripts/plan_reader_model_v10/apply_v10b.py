@@ -95,7 +95,7 @@ for track, (efn, gfn, ffn) in TR.items():
                 ex['basis_label'] = 'typical detail (A-302 detail 11): ' + str(ex.get('basis_label', ''))
                 ex['ruling_note'] = 'PM ruling: core stair basis stays A-302 detail 11, labelled typical detail; A-600 gives no data.'
                 if ex.get('to_level') == 'ROOF':
-                    ex['roof_stair_note'] = 'PM ruling: gas-change roof stair (AR - 6.9.26 p2 A-105.01) governs over A-105.00; roof unregistered, geometry NOT changed here; difference recorded once (plan_discrepancies D09).'
+                    ex['roof_stair_note'] = 'PM ruling: gas-change roof stair (AR - 6.9.26 p2 A-105.01) governs over A-105.00; roof unregistered, geometry NOT changed here; difference recorded once (plan_discrepancies D11).'
                 ov.append(dict(track=track, id=i, what='core stair flight', change='basis label typical detail; A-600 answer' + ('; roof stair note' if ex.get('to_level') == 'ROOF' else ''), ruling_source=RS))
         if c == 'plumbing_stack' and ex.get('level') == 'FLOOR_4' and ex.get('sheet') == 'P-103.00' and ex.get('tag') in ('CW-2', 'W-2'):
             printed = ex['tag']; corr = 'W-2' if printed == 'CW-2' else 'CW-2'
