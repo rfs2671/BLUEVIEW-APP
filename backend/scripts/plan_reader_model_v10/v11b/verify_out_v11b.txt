@@ -1,0 +1,162 @@
+
+######## TRACK filed
+PASS filed GLB re-parses; every node referenced exactly once :: 5174 nodes, 4338 meshes, 3678984 bytes bin
+PASS filed accessor min/max == data; index range ok :: bad=0 badidx=0
+PASS filed every v09b mesh-node name present the same number of times :: 1844
+PASS filed every original (v09b) element id present exactly once :: 1206
+PASS filed every v09b and v10c node keeps its name, index and mesh index (nodes only appended) :: 4983 v10c nodes, 5174 v11 nodes
+PASS filed every v11 node keeps its name, index and mesh index (v11b only appends) :: 5152 v11 nodes, 5174 v11b nodes
+INFO v11-added nodes: 169
+PASS filed v11 layer family L6_ceiling_services present as a LAYER group with 3 sublayer groups
+PASS filed rows per L6_ceiling_services sublayer == nodes :: {'ceiling_plane': 5, 'sanitary_runs_sloped': 52, 'sprinkler_heads_at_ceiling': 106}
+PASS filed new rows: CSV bbox/z == GLB mesh extents :: 163 rows
+PASS filed every row has source sheet, detail ref, status; status vocabulary :: []
+PASS filed no clash wiring: every new L6 row clash_include = no; no clash class added
+PASS filed every L6 row ruling_source roy_pm
+PASS filed K1 tag-bound (non-P4) hosts: sum of drawn layers == printed assembly thickness (P5 = 4.75) :: 270 hosts, 4 P5 hosts
+PASS filed K1 layers centred on the drawn centreline (union bbox centre == wall piece centre, +-0.01 ft) :: 270 hosts, 0 off
+PASS filed K1 layer rows of non-P4 types have status printed_assembly; P4 face rows have status chase_wall_variable with the upper-bound label :: {(False, 'printed_assembly'): 929, (True, 'chase_wall_variable'): 84}
+PASS filed K1 P5 rows: 4.75 basis, roy_pm, D01 discrepancy named :: 26
+PASS filed K1 unbound walls: status unbound_type, label "drawn thickness, rounded-up upper bound", roy_pm :: 55
+PASS filed K1 every L1 row roy_pm and carries thickness_basis; GLB extras match :: 3652
+PASS filed no L1 geometry changed vs v10c and v11 (bbox/z of every pre-existing L1 row identical; the chase_cavity rows are new) :: 3631
+PASS filed K2 beam ...645cdd: 2 whole-row outlines in the nSWm class, both labels listed, no split :: [('36.585', '69.028'), ('36.585', '69.028')]
+PASS filed K2 beam outlines are in the LAYER L2_box_beams | label_governed group and roy_pm; beam no longer in not_modelled
+PASS filed K2 engineer question J3 (meaning of SW) added
+PASS filed ceiling plane: one per level (5), z top == pitch_v4 lowest point; MEZZ 81.9441 provisional with 82.0425 beside it :: {'FLOOR_1': '42.1515', 'FLOOR_2': '52.1612', 'FLOOR_3': '61.9758', 'FLOOR_4': '72.1568', 'MEZZANINE': '81.9441'}
+PASS filed sloped runs: 52; high-end top == structure underside; slope tier 1/8 (>=3 in) / 1/4 (<=2 in); stack-end elevations re-derived :: runs 52 bad []; per level {'FLOOR_1': 7, 'FLOOR_2': 16, 'FLOOR_3': 16, 'FLOOR_4': 12, 'MEZZANINE': 1}
+PASS filed sloped runs: GLB mesh max z == structure underside, min z == lowest point :: 0
+PASS filed sloped runs: statuses derived_from_printed; high end z flagged convention_ceiling_drop; count by status :: {'derived_from_printed': 52}
+PASS filed heads at ceiling: 106 (orig 112, ROOF 6 not placed); z top == level ceiling plane; status convention_ceiling_drop; xy == original head; originals untouched :: {'FLOOR_2': 23, 'FLOOR_1': 25, 'FLOOR_3': 23, 'FLOOR_4': 12, 'MEZZANINE': 23}
+PASS filed tops audit: every sprinkler_pipe / exhaust fan on a registered level has z top == structure underside and status convention_ceiling_drop (0 mismatches) :: {('mech_exhaust_fan', 'top at structure underside, co'): 36, ('sprinkler_pipe', 'top at structure underside, co'): 106, ('sprinkler_pipe', 'NOT APPLIED: level not registe'): 7}
+counts per layer | sublayer | status (filed):
+   L1_wall_assemblies         chase_cavity                           chase_wall_variable        21
+   L1_wall_assemblies         finish_exterior                        printed_assembly           75
+   L1_wall_assemblies         sheetrock                              chase_wall_variable        84
+   L1_wall_assemblies         sheetrock                              printed_assembly           854
+   L1_wall_assemblies         studs_track                            layout_assumed             COUNT WITHHELD (layout_assumed)
+   L1_wall_assemblies         unbound_walls                          unbound_type               55
+   L2_box_beams               box_beam_members                       rule_from_printed_detail   62
+   L2_box_beams               label_governed_beams_depth_unknown     rule_from_printed_detail   14
+   L3_openings                frames                                 rule_from_printed_detail   109
+   L3_openings                heads                                  rule_from_printed_detail   109
+   L3_openings                wall_fill_above_opening                header_size_unknown        109
+   L3_openings                wall_fill_below_sill                   rule_from_printed_detail   41
+   L4_floor_panel_joists      floor_panel                            rule_from_printed_detail   30
+   L4_floor_panel_joists      joists                                 rule_from_continuity       330
+   L4_floor_panel_joists      over_stair_underlay_unconfirmed        rule_from_continuity       28
+   L5_shear_walls             end_members                            rule_from_printed_detail   70
+   L5_shear_walls             field_studs                            layout_assumed             COUNT WITHHELD (layout_assumed)
+   L5_shear_walls             gusset_plates                          measured_from_drawing      56
+   L5_shear_walls             gusset_plates                          rule_from_printed_detail   112
+   L5_shear_walls             hold_downs_bound                       rule_from_printed_detail   20
+   L5_shear_walls             straps                                 rule_from_printed_detail   84
+   L5_shear_walls             top_bottom_members                     schedule_merged_cell       70
+   L6_ceiling_services        ceiling_plane                          derived_from_printed       5
+   L6_ceiling_services        sanitary_runs_sloped                   derived_from_printed       52
+   L6_ceiling_services        sprinkler_heads_at_ceiling             convention_ceiling_drop    106
+   door_G_undefined           marker                                 door_G_undefined           15
+
+######## TRACK post_co
+PASS post_co GLB re-parses; every node referenced exactly once :: 4246 nodes, 3522 meshes, 3255336 bytes bin
+PASS post_co accessor min/max == data; index range ok :: bad=0 badidx=0
+PASS post_co every v09b mesh-node name present the same number of times :: 1581
+PASS post_co every original (v09b) element id present exactly once :: 1003
+PASS post_co every v09b and v10c node keeps its name, index and mesh index (nodes only appended) :: 4173 v10c nodes, 4246 v11 nodes
+PASS post_co every v11 node keeps its name, index and mesh index (v11b only appends) :: 4236 v11 nodes, 4246 v11b nodes
+INFO v11-added nodes: 63
+PASS post_co v11 layer family L6_ceiling_services present as a LAYER group with 3 sublayer groups
+PASS post_co rows per L6_ceiling_services sublayer == nodes :: {'ceiling_plane': 5, 'sanitary_runs_sloped': 52}
+PASS post_co new rows: CSV bbox/z == GLB mesh extents :: 57 rows
+PASS post_co every row has source sheet, detail ref, status; status vocabulary :: []
+PASS post_co no clash wiring: every new L6 row clash_include = no; no clash class added
+PASS post_co every L6 row ruling_source roy_pm
+PASS post_co K1 tag-bound (non-P4) hosts: sum of drawn layers == printed assembly thickness (P5 = 4.75) :: 173 hosts, 4 P5 hosts
+PASS post_co K1 layers centred on the drawn centreline (union bbox centre == wall piece centre, +-0.01 ft) :: 173 hosts, 0 off
+PASS post_co K1 layer rows of non-P4 types have status printed_assembly; P4 face rows have status chase_wall_variable with the upper-bound label :: {(False, 'printed_assembly'): 641, (True, 'chase_wall_variable'): 36}
+PASS post_co K1 P5 rows: 4.75 basis, roy_pm, D01 discrepancy named :: 26
+PASS post_co K1 unbound walls: status unbound_type, label "drawn thickness, rounded-up upper bound", roy_pm :: 191
+PASS post_co K1 every L1 row roy_pm and carries thickness_basis; GLB extras match :: 2519
+PASS post_co no L1 geometry changed vs v10c and v11 (bbox/z of every pre-existing L1 row identical; the chase_cavity rows are new) :: 2510
+PASS post_co K2 beam ...645ec2: 2 whole-row outlines in the nSWm class, both labels listed, no split :: [('36.585', '69.028'), ('36.585', '69.028')]
+PASS post_co K2 beam outlines are in the LAYER L2_box_beams | label_governed group and roy_pm; beam no longer in not_modelled
+PASS post_co K2 engineer question J3 (meaning of SW) added
+PASS post_co ceiling plane: one per level (5), z top == pitch_v4 lowest point; MEZZ 81.9441 provisional with 82.0425 beside it :: {'FLOOR_1': '42.1515', 'FLOOR_2': '52.1612', 'FLOOR_3': '61.9758', 'FLOOR_4': '72.1568', 'MEZZANINE': '81.9441'}
+PASS post_co sloped runs: 52; high-end top == structure underside; slope tier 1/8 (>=3 in) / 1/4 (<=2 in); stack-end elevations re-derived :: runs 52 bad []; per level {'FLOOR_1': 7, 'FLOOR_2': 16, 'FLOOR_3': 16, 'FLOOR_4': 12, 'MEZZANINE': 1}
+PASS post_co sloped runs: GLB mesh max z == structure underside, min z == lowest point :: 0
+PASS post_co sloped runs: statuses derived_from_printed; high end z flagged convention_ceiling_drop; count by status :: {'derived_from_printed': 52}
+PASS post_co heads at ceiling: 0 (orig 0, ROOF 0 not placed); z top == level ceiling plane; status convention_ceiling_drop; xy == original head; originals untouched :: {}
+PASS post_co tops audit: every sprinkler_pipe / exhaust fan on a registered level has z top == structure underside and status convention_ceiling_drop (0 mismatches) :: {('mech_exhaust_fan', 'top at structure underside, co'): 36}
+counts per layer | sublayer | status (post_co):
+   L1_wall_assemblies         chase_cavity                           chase_wall_variable        9
+   L1_wall_assemblies         finish_exterior                        printed_assembly           83
+   L1_wall_assemblies         sheetrock                              chase_wall_variable        36
+   L1_wall_assemblies         sheetrock                              printed_assembly           558
+   L1_wall_assemblies         studs_track                            layout_assumed             COUNT WITHHELD (layout_assumed)
+   L1_wall_assemblies         unbound_walls                          unbound_type               191
+   L2_box_beams               box_beam_members                       rule_from_printed_detail   62
+   L2_box_beams               label_governed_beams_depth_unknown     rule_from_printed_detail   14
+   L3_openings                frames                                 rule_from_printed_detail   106
+   L3_openings                heads                                  rule_from_printed_detail   106
+   L3_openings                wall_fill_above_opening                header_size_unknown        106
+   L3_openings                wall_fill_below_sill                   rule_from_printed_detail   42
+   L4_floor_panel_joists      floor_panel                            rule_from_printed_detail   30
+   L4_floor_panel_joists      joists                                 rule_from_continuity       330
+   L4_floor_panel_joists      over_stair_underlay_unconfirmed        rule_from_continuity       28
+   L5_shear_walls             end_members                            rule_from_printed_detail   70
+   L5_shear_walls             field_studs                            layout_assumed             COUNT WITHHELD (layout_assumed)
+   L5_shear_walls             gusset_plates                          measured_from_drawing      56
+   L5_shear_walls             gusset_plates                          rule_from_printed_detail   112
+   L5_shear_walls             hold_downs_bound                       rule_from_printed_detail   20
+   L5_shear_walls             straps                                 rule_from_printed_detail   84
+   L5_shear_walls             top_bottom_members                     schedule_merged_cell       70
+   L6_ceiling_services        ceiling_plane                          derived_from_printed       5
+   L6_ceiling_services        sanitary_runs_sloped                   derived_from_printed       52
+   door_G_undefined           marker                                 door_G_undefined           15
+
+######## K4 pitch_v4
+PASS K4 census covers all 52 leaves (not 9 crops); each has a tag form and a bind result
+PASS K4 bare tags found: 9 (KS 4, FD 3, BT 1, WC 1), each with coordinates (P and A frame)
+PASS K4 binding rule: a bare tag is bound by family iff the key notes list exactly one type of its family (KS, WC, FD); BT is bound by Roy ruling L2 (status tag_printed_without_number_only_BT_type_on_plans); 0 refused :: {'F1-S-1-KS-1': 'BOUND_by_family: the key notes', 'F1-S-4-BT-1': 'BOUND_by_ruling (roy_pm L2, 20', 'F1-S-4-WC-1': 'BOUND_by_family: the key notes', 'F1-S-4-KS-1': 'BOUND_by_family: the key notes', 'F3-S-2-KS-1': 'BOUND_by_family: the key notes', 'F3-S-2-FD-1': 'BOUND_by_family: the key notes', 'F3-S-1-KS-1': 'BOUND_by_family: the key notes', 'F3-S-1-FD-1': 'BOUND_by_family: the key notes', 'MZ-S-3-FD-1': 'BOUND_by_family: the key notes'}
+PASS K4 controlling run per level stated with bareness; levels settled except MEZZ (K3 provisional) :: {'FLOOR_1': ('F1-S-1-BT-1', 'numbered'), 'FLOOR_2': ('F2-S-3-BT-1', 'numbered'), 'FLOOR_3': ('F3-S-2-KS-1', 'bare'), 'FLOOR_4': ('F4-S-3-BT-1', 'numbered'), 'MEZZANINE': ('MZ-S-3-FD-1', 'bare')}
+INFO filed status totals: {'L6_ceiling_services|ceiling_plane|derived_from_printed': 5, 'L6_ceiling_services|sanitary_runs_sloped|derived_from_printed': 52, 'L6_ceiling_services|sprinkler_heads_at_ceiling|convention_ceiling_drop': 106}
+INFO post_co status totals: {'L6_ceiling_services|ceiling_plane|derived_from_printed': 5, 'L6_ceiling_services|sanitary_runs_sloped|derived_from_printed': 52}
+
+######## v11b
+
+---- v11b track filed
+PASS filed P4: one chase_cavity row + one GLB node per P4 piece (21 pieces); status chase_wall_variable; roy_pm :: 21
+PASS filed P4: 4 face rows at the printed 5/8 in each; cavity = drawn thickness - 2.5 in; faces + cavity = drawn thickness (per piece, drawn thickness re-measured from the v09b footprint) :: bad [] of 21 pieces
+PASS filed P4: cavity rows CSV bbox/z == GLB mesh extents :: 21
+PASS filed P4: the original v09b P4 wall nodes carry chase_wall_status and drawn_thickness_is_upper_bound :: 14
+PASS filed P4: stud/track rows keep status layout_assumed (their counts stay withheld) and carry the upper-bound basis
+PASS filed clash flags: every placed stack row re-derived independently (96-point circle, local frame): same relation as the written flag :: mismatches []; counts {'no_p4_on_level': 5, 'outside_p4': 41, 'fully_inside_p4': 72, 'crosses_p4_boundary': 2}
+PASS filed clash flags: all 127 stack rows flagged ({'no_p4_on_level': 5, 'outside_p4': 41, 'fully_inside_p4': 72, 'no_xy': 7, 'crosses_p4_boundary': 2})
+PASS filed clash flags: 52 sloped runs re-derived independently (sampled pipe outline, widest 4 in): same relation as the written flag :: []
+PASS filed clash flags: sprinkler pipe rows re-derived independently (grid over the row bbox): same relation as the written flag :: []
+PASS filed clash flags: inside -> clash_include no + reason; crossing -> yes_flag_p4_boundary + reason; others -> as_before; no clash wiring (no clash class, every L6 clash_include no) :: inside 72 crossing 61
+PASS filed clash flags: the flag is on the GLB node extras of every flagged element that has a node :: 278
+PASS filed BT-1 accepted: F1-S-4-BT-1 tag status tag_printed_without_number_only_BT_type_on_plans in the GLB node; no old BT refusal text in rows or GLB
+PASS filed stairshaft: 7 shaft walls per level (35 = 5 levels x 7), each paired with a wall of the other track; filed walls fully covered by their post_co counterpart :: {'FLOOR_1': 7, 'FLOOR_2': 7, 'FLOOR_3': 7, 'FLOOR_4': 7, 'MEZZANINE': 7}
+
+---- v11b track post_co
+PASS post_co P4: one chase_cavity row + one GLB node per P4 piece (9 pieces); status chase_wall_variable; roy_pm :: 9
+PASS post_co P4: 4 face rows at the printed 5/8 in each; cavity = drawn thickness - 2.5 in; faces + cavity = drawn thickness (per piece, drawn thickness re-measured from the v09b footprint) :: bad [] of 9 pieces
+PASS post_co P4: cavity rows CSV bbox/z == GLB mesh extents :: 9
+PASS post_co P4: the original v09b P4 wall nodes carry chase_wall_status and drawn_thickness_is_upper_bound :: 6
+PASS post_co P4: stud/track rows keep status layout_assumed (their counts stay withheld) and carry the upper-bound basis
+PASS post_co clash flags: every placed stack row re-derived independently (96-point circle, local frame): same relation as the written flag :: mismatches []; counts {'no_p4_on_level': 76, 'outside_p4': 26, 'fully_inside_p4': 18}
+PASS post_co clash flags: all 127 stack rows flagged ({'no_p4_on_level': 76, 'outside_p4': 26, 'fully_inside_p4': 18, 'no_xy': 7})
+PASS post_co clash flags: 52 sloped runs re-derived independently (sampled pipe outline, widest 4 in): same relation as the written flag :: []
+PASS post_co clash flags: sprinkler pipe rows re-derived independently (grid over the row bbox): same relation as the written flag :: []
+PASS post_co clash flags: inside -> clash_include no + reason; crossing -> yes_flag_p4_boundary + reason; others -> as_before; no clash wiring (no clash class, every L6 clash_include no) :: inside 18 crossing 20
+PASS post_co clash flags: the flag is on the GLB node extras of every flagged element that has a node :: 172
+PASS post_co BT-1 accepted: F1-S-4-BT-1 tag status tag_printed_without_number_only_BT_type_on_plans in the GLB node; no old BT refusal text in rows or GLB
+PASS post_co stairshaft: 7 shaft walls per level (35 = 5 levels x 7), each paired with a wall of the other track; filed walls fully covered by their post_co counterpart :: {'FLOOR_1': 7, 'FLOOR_2': 7, 'FLOOR_3': 7, 'FLOOR_4': 7, 'MEZZANINE': 7}
+PASS BT-1 ruling changes no level value: pitch_lowest columns lowest_point / range / set_status / controlling runs identical to v11 :: ['42.1515', '52.1612', '61.9758', '72.1568', '81.9441']
+PASS BT-1 ruling: pitch_runs_v4 differs from v11 only in tag_status_v4 / bind_result_v4 / bound_type_v4 (one row) :: (['bind_result_v4', 'bound_type_v4', 'tag_status_v4'], ['F1-S-4-BT-1'])
+PASS sanitary_runs_sloped_v11.csv: only tag_status changed (2 rows: one per track), no elevation moved :: 2
+PASS wall counts: untagged walls 43 filed / 115 post_co (ids == walltype_read lists); unbound pieces 55 / 191 (== L1 unbound_walls rows); drawn untagged post_co walls 108 + 7 ROOF with no geometry; tag-bound 134 / 77 (post_co 71 drawn + 6 ROOF)
+PASS REPORT (v11 part) / stairshaft note: no "+10" / "+8" shaft-wall claim; REPORT does not list "none below the ceiling plane" as evidence
+
+RESULT v11b: ALL PASS

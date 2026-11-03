@@ -1,0 +1,48 @@
+track,class_,level,p4_relation,count,ids
+filed,plumbing_stack,BELOW_SLAB,no_p4_on_level,5,(5 ids in p4_chase_clash_flags_v11b.csv)
+filed,plumbing_stack,FLOOR_1,fully_inside_p4,2,plan_stacks:6ae49c0c0b73eb6c8664597e | plan_stacks:6ae49c0c0b73eb6c86645982
+filed,plumbing_stack,FLOOR_1,no_xy,1,(1 ids in p4_chase_clash_flags_v11b.csv)
+filed,plumbing_stack,FLOOR_1,outside_p4,22,(22 ids in p4_chase_clash_flags_v11b.csv)
+filed,plumbing_stack,FLOOR_2,fully_inside_p4,16,plan_stacks:6ae49c0c0b73eb6c86645931 | plan_stacks:6ae49c0c0b73eb6c86645932 | plan_stacks:6ae49c0c0b73eb6c86645933 | plan_stacks:6ae49c0c0b73eb6c86645934 | plan_stacks:6ae49c0c0b73eb6c86645935 | plan_stacks:6ae49c0c0b73eb6c86645936 | plan_stacks:6ae49c0c0b73eb6c86645937 | plan_stacks:6ae49c0c0b73eb6c86645938 | plan_stacks:6ae49c0c0b73eb6c8664599e | plan_stacks:6ae49c0c0b73eb6c8664599f | plan_stacks:6ae49c0c0b73eb6c866459a0 | plan_stacks:6ae49c0c0b73eb6c866459a1 | plan_stacks:6ae49c0c0b73eb6c866459a2 | plan_stacks:6ae49c0c0b73eb6c866459a3 | plan_stacks:6ae49c0c0b73eb6c866459a4 | plan_stacks:6ae49c0c0b73eb6c866459a5
+filed,plumbing_stack,FLOOR_2,outside_p4,4,(4 ids in p4_chase_clash_flags_v11b.csv)
+filed,plumbing_stack,FLOOR_3,fully_inside_p4,20,plan_stacks:6ae49c0c0b73eb6c86645947 | plan_stacks:6ae49c0c0b73eb6c86645948 | plan_stacks:6ae49c0c0b73eb6c86645949 | plan_stacks:6ae49c0c0b73eb6c8664594a | plan_stacks:6ae49c0c0b73eb6c8664594b | plan_stacks:6ae49c0c0b73eb6c8664594c | plan_stacks:6ae49c0c0b73eb6c8664594d | plan_stacks:6ae49c0c0b73eb6c8664594e | plan_stacks:6ae49c0c0b73eb6c8664594f | plan_stacks:6ae49c0c0b73eb6c86645950 | plan_stacks:6ae49c0c0b73eb6c86645951 | plan_stacks:6ae49c0c0b73eb6c86645952 | plan_stacks:6ae49c0c0b73eb6c86645993 | plan_stacks:6ae49c0c0b73eb6c86645994 | plan_stacks:6ae49c0c0b73eb6c86645995 | plan_stacks:6ae49c0c0b73eb6c86645996 | plan_stacks:6ae49c0c0b73eb6c86645997 | plan_stacks:6ae49c0c0b73eb6c86645998 | plan_stacks:6ae49c0c0b73eb6c86645999 | plan_stacks:6ae49c0c0b73eb6c8664599a
+filed,plumbing_stack,FLOOR_3,outside_p4,4,(4 ids in p4_chase_clash_flags_v11b.csv)
+filed,plumbing_stack,FLOOR_4,crosses_p4_boundary,1,plan_stacks:6ae49c0c0b73eb6c8664598d
+filed,plumbing_stack,FLOOR_4,fully_inside_p4,19,plan_stacks:6ae49c0c0b73eb6c86645964 | plan_stacks:6ae49c0c0b73eb6c86645965 | plan_stacks:6ae49c0c0b73eb6c86645966 | plan_stacks:6ae49c0c0b73eb6c86645967 | plan_stacks:6ae49c0c0b73eb6c86645968 | plan_stacks:6ae49c0c0b73eb6c86645969 | plan_stacks:6ae49c0c0b73eb6c8664596a | plan_stacks:6ae49c0c0b73eb6c8664596b | plan_stacks:6ae49c0c0b73eb6c8664596c | plan_stacks:6ae49c0c0b73eb6c8664596d | plan_stacks:6ae49c0c0b73eb6c8664596e | plan_stacks:6ae49c0c0b73eb6c8664596f | plan_stacks:6ae49c0c0b73eb6c86645988 | plan_stacks:6ae49c0c0b73eb6c86645989 | plan_stacks:6ae49c0c0b73eb6c8664598a | plan_stacks:6ae49c0c0b73eb6c8664598b | plan_stacks:6ae49c0c0b73eb6c8664598c | plan_stacks:6ae49c0c0b73eb6c8664598e | plan_stacks:6ae49c0c0b73eb6c8664598f
+filed,plumbing_stack,FLOOR_4,outside_p4,4,(4 ids in p4_chase_clash_flags_v11b.csv)
+filed,plumbing_stack,MEZZANINE,crosses_p4_boundary,1,plan_stacks:6ae49c0c0b73eb6c866459b3
+filed,plumbing_stack,MEZZANINE,fully_inside_p4,15,plan_stacks:6ae49c0c0b73eb6c86645956 | plan_stacks:6ae49c0c0b73eb6c86645957 | plan_stacks:6ae49c0c0b73eb6c86645958 | plan_stacks:6ae49c0c0b73eb6c86645959 | plan_stacks:6ae49c0c0b73eb6c8664595a | plan_stacks:6ae49c0c0b73eb6c8664595b | plan_stacks:6ae49c0c0b73eb6c8664595c | plan_stacks:6ae49c0c0b73eb6c8664595f | plan_stacks:6ae49c0c0b73eb6c866459ac | plan_stacks:6ae49c0c0b73eb6c866459ad | plan_stacks:6ae49c0c0b73eb6c866459ae | plan_stacks:6ae49c0c0b73eb6c866459af | plan_stacks:6ae49c0c0b73eb6c866459b0 | plan_stacks:6ae49c0c0b73eb6c866459b1 | plan_stacks:6ae49c0c0b73eb6c866459b2
+filed,plumbing_stack,MEZZANINE,outside_p4,7,(7 ids in p4_chase_clash_flags_v11b.csv)
+filed,plumbing_stack,ROOF,no_xy,6,(6 ids in p4_chase_clash_flags_v11b.csv)
+filed,sanitary_run_sloped,FLOOR_1,crosses_p4_boundary,4,sanitary_run:filed:F1-S-1-BT-1 | sanitary_run:filed:F1-S-1-LAV-1 | sanitary_run:filed:F1-S-1-WC-1 | sanitary_run:filed:F1-S-1-KS-1
+filed,sanitary_run_sloped,FLOOR_1,outside_p4,3,(3 ids in p4_chase_clash_flags_v11b.csv)
+filed,sanitary_run_sloped,FLOOR_2,crosses_p4_boundary,16,sanitary_run:filed:F2-S-2-BT-1 | sanitary_run:filed:F2-S-2-LAV-1 | sanitary_run:filed:F2-S-2-WC-1 | sanitary_run:filed:F2-S-2-KS-1 | sanitary_run:filed:F2-S-3-BT-1 | sanitary_run:filed:F2-S-3-LAV-1 | sanitary_run:filed:F2-S-3-WC-1 | sanitary_run:filed:F2-S-3-KS-1 | sanitary_run:filed:F2-S-1-BT-1 | sanitary_run:filed:F2-S-1-LAV-1 | sanitary_run:filed:F2-S-1-WC-1 | sanitary_run:filed:F2-S-1-KS-1 | sanitary_run:filed:F2-S-4-BT-1 | sanitary_run:filed:F2-S-4-LAV-1 | sanitary_run:filed:F2-S-4-WC-1 | sanitary_run:filed:F2-S-4-KS-1
+filed,sanitary_run_sloped,FLOOR_3,crosses_p4_boundary,16,sanitary_run:filed:F3-S-2-KS-1 | sanitary_run:filed:F3-S-2-FD-1 | sanitary_run:filed:F3-S-2-BT-1 | sanitary_run:filed:F3-S-2-LAV-1 | sanitary_run:filed:F3-S-2-WC-1 | sanitary_run:filed:F3-S-1-KS-1 | sanitary_run:filed:F3-S-1-FD-1 | sanitary_run:filed:F3-S-1-BT-1 | sanitary_run:filed:F3-S-1-LAV-1 | sanitary_run:filed:F3-S-1-WC-1 | sanitary_run:filed:F3-S-4-BT-1 | sanitary_run:filed:F3-S-4-LAV-1 | sanitary_run:filed:F3-S-4-WC-1 | sanitary_run:filed:F3-S-3-BT-1 | sanitary_run:filed:F3-S-3-LAV-1 | sanitary_run:filed:F3-S-3-WC-1
+filed,sanitary_run_sloped,FLOOR_4,crosses_p4_boundary,12,sanitary_run:filed:F4-S-3-BT-1 | sanitary_run:filed:F4-S-3-LAV-1 | sanitary_run:filed:F4-S-3-WC-1 | sanitary_run:filed:F4-S-2-BT-1 | sanitary_run:filed:F4-S-2-LAV-1 | sanitary_run:filed:F4-S-2-WC-1 | sanitary_run:filed:F4-S-1-BT-1 | sanitary_run:filed:F4-S-1-LAV-1 | sanitary_run:filed:F4-S-1-WC-1 | sanitary_run:filed:F4-S-4-BT-1 | sanitary_run:filed:F4-S-4-LAV-1 | sanitary_run:filed:F4-S-4-WC-1
+filed,sanitary_run_sloped,MEZZANINE,crosses_p4_boundary,1,sanitary_run:filed:MZ-S-3-FD-1
+filed,sprinkler_pipe,FLOOR_1,crosses_p4_boundary,3,sp_pipe:FLOOR_1:13 | sp_pipe:FLOOR_1:17 | sp_pipe:FLOOR_1:20
+filed,sprinkler_pipe,FLOOR_1,outside_p4,26,(26 ids in p4_chase_clash_flags_v11b.csv)
+filed,sprinkler_pipe,FLOOR_2,crosses_p4_boundary,3,sp_pipe:FLOOR_2:2 | sp_pipe:FLOOR_2:3 | sp_pipe:FLOOR_2:4
+filed,sprinkler_pipe,FLOOR_2,outside_p4,16,(16 ids in p4_chase_clash_flags_v11b.csv)
+filed,sprinkler_pipe,FLOOR_3,crosses_p4_boundary,3,sp_pipe:FLOOR_3:2 | sp_pipe:FLOOR_3:3 | sp_pipe:FLOOR_3:4
+filed,sprinkler_pipe,FLOOR_3,outside_p4,16,(16 ids in p4_chase_clash_flags_v11b.csv)
+filed,sprinkler_pipe,FLOOR_4,outside_p4,20,(20 ids in p4_chase_clash_flags_v11b.csv)
+filed,sprinkler_pipe,MEZZANINE,crosses_p4_boundary,1,sp_pipe:MEZZANINE:11
+filed,sprinkler_pipe,MEZZANINE,outside_p4,18,(18 ids in p4_chase_clash_flags_v11b.csv)
+filed,sprinkler_pipe,ROOF,no_xy,7,(7 ids in p4_chase_clash_flags_v11b.csv)
+post_co,plumbing_stack,BELOW_SLAB,no_p4_on_level,5,(5 ids in p4_chase_clash_flags_v11b.csv)
+post_co,plumbing_stack,FLOOR_1,fully_inside_p4,2,plan_stacks:6ae49c0c0b73eb6c86645a0c | plan_stacks:6ae49c0c0b73eb6c86645a10
+post_co,plumbing_stack,FLOOR_1,no_xy,1,(1 ids in p4_chase_clash_flags_v11b.csv)
+post_co,plumbing_stack,FLOOR_1,outside_p4,22,(22 ids in p4_chase_clash_flags_v11b.csv)
+post_co,plumbing_stack,FLOOR_2,fully_inside_p4,16,plan_stacks:6ae49c0c0b73eb6c866459bf | plan_stacks:6ae49c0c0b73eb6c866459c0 | plan_stacks:6ae49c0c0b73eb6c866459c1 | plan_stacks:6ae49c0c0b73eb6c866459c2 | plan_stacks:6ae49c0c0b73eb6c866459c3 | plan_stacks:6ae49c0c0b73eb6c866459c4 | plan_stacks:6ae49c0c0b73eb6c866459c5 | plan_stacks:6ae49c0c0b73eb6c866459c6 | plan_stacks:6ae49c0c0b73eb6c86645a2c | plan_stacks:6ae49c0c0b73eb6c86645a2d | plan_stacks:6ae49c0c0b73eb6c86645a2e | plan_stacks:6ae49c0c0b73eb6c86645a2f | plan_stacks:6ae49c0c0b73eb6c86645a30 | plan_stacks:6ae49c0c0b73eb6c86645a31 | plan_stacks:6ae49c0c0b73eb6c86645a32 | plan_stacks:6ae49c0c0b73eb6c86645a33
+post_co,plumbing_stack,FLOOR_2,outside_p4,4,(4 ids in p4_chase_clash_flags_v11b.csv)
+post_co,plumbing_stack,FLOOR_3,no_p4_on_level,24,(24 ids in p4_chase_clash_flags_v11b.csv)
+post_co,plumbing_stack,FLOOR_4,no_p4_on_level,24,(24 ids in p4_chase_clash_flags_v11b.csv)
+post_co,plumbing_stack,MEZZANINE,no_p4_on_level,23,(23 ids in p4_chase_clash_flags_v11b.csv)
+post_co,plumbing_stack,ROOF,no_xy,6,(6 ids in p4_chase_clash_flags_v11b.csv)
+post_co,sanitary_run_sloped,FLOOR_1,crosses_p4_boundary,4,sanitary_run:post_co:F1-S-1-BT-1 | sanitary_run:post_co:F1-S-1-LAV-1 | sanitary_run:post_co:F1-S-1-WC-1 | sanitary_run:post_co:F1-S-1-KS-1
+post_co,sanitary_run_sloped,FLOOR_1,outside_p4,3,(3 ids in p4_chase_clash_flags_v11b.csv)
+post_co,sanitary_run_sloped,FLOOR_2,crosses_p4_boundary,16,sanitary_run:post_co:F2-S-2-BT-1 | sanitary_run:post_co:F2-S-2-LAV-1 | sanitary_run:post_co:F2-S-2-WC-1 | sanitary_run:post_co:F2-S-2-KS-1 | sanitary_run:post_co:F2-S-3-BT-1 | sanitary_run:post_co:F2-S-3-LAV-1 | sanitary_run:post_co:F2-S-3-WC-1 | sanitary_run:post_co:F2-S-3-KS-1 | sanitary_run:post_co:F2-S-1-BT-1 | sanitary_run:post_co:F2-S-1-LAV-1 | sanitary_run:post_co:F2-S-1-WC-1 | sanitary_run:post_co:F2-S-1-KS-1 | sanitary_run:post_co:F2-S-4-BT-1 | sanitary_run:post_co:F2-S-4-LAV-1 | sanitary_run:post_co:F2-S-4-WC-1 | sanitary_run:post_co:F2-S-4-KS-1
+post_co,sanitary_run_sloped,FLOOR_3,no_p4_on_level,16,(16 ids in p4_chase_clash_flags_v11b.csv)
+post_co,sanitary_run_sloped,FLOOR_4,no_p4_on_level,12,(12 ids in p4_chase_clash_flags_v11b.csv)
+post_co,sanitary_run_sloped,MEZZANINE,no_p4_on_level,1,(1 ids in p4_chase_clash_flags_v11b.csv)

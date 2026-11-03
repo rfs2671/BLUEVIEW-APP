@@ -1,0 +1,151 @@
+{
+ "pitch_v4_diff_vs_v11": {
+  "pitch_runs_v4.csv": [
+   "bind_result_v4",
+   "bound_type_v4",
+   "tag_status_v4"
+  ],
+  "pitch_runs_v4.csv rows": [
+   4
+  ],
+  "pitch_lowest_v4.csv": [
+   "headline_controlling_tag_status",
+   "set_status_reason"
+  ],
+  "pitch_lowest_v4.csv rows": [
+   0
+  ],
+  "leaf_tag_census_v4.csv": [
+   "bind_result"
+  ],
+  "leaf_tag_census_v4.csv rows": [
+   4
+  ]
+ },
+ "stairshaft": {
+  "shaft_walls_per_level_filed": 7,
+  "shaft_walls_per_level_post_co": 7,
+  "pairs": 70,
+  "filed_walls_whose_area_is_fully_covered_by_a_post_co_counterpart": 35,
+  "post_co_rows_larger_than_counterpart": [
+   [
+    "FLOOR_4",
+    "45c2d",
+    0.847
+   ],
+   [
+    "MEZZANINE",
+    "45c4d",
+    0.69
+   ]
+  ]
+ },
+ "filed": {
+  "task3_rows_text_changed": 2,
+  "task3_nodes_text_changed": 1,
+  "task3_run_tag_status": "tag_printed_without_number_only_BT_type_on_plans",
+  "P4_walls": 14,
+  "P4_pieces": 21,
+  "P4_pieces_by_level": {
+   "FLOOR_1": 5,
+   "FLOOR_2": 4,
+   "FLOOR_3": 4,
+   "FLOOR_4": 4,
+   "MEZZANINE": 4
+  },
+  "P4_face_rows_to_chase_wall_variable": 84,
+  "P4_stud_track_rows_labelled_status_kept": 286,
+  "P4_cavity_nodes": 21,
+  "clash_flag_counts": {
+   "plumbing_stack": {
+    "crosses_p4_boundary": 2,
+    "fully_inside_p4": 72,
+    "no_p4_on_level": 5,
+    "no_xy": 7,
+    "outside_p4": 41
+   },
+   "sanitary_run_sloped": {
+    "crosses_p4_boundary": 49,
+    "outside_p4": 3
+   },
+   "sprinkler_pipe": {
+    "crosses_p4_boundary": 10,
+    "no_xy": 7,
+    "outside_p4": 96
+   }
+  },
+  "shaft_wall_nodes_with_counterpart": 35,
+  "rows_total": 5323,
+  "status_counts": {
+   "printed_assembly": 929,
+   "layout_assumed": 2812,
+   "chase_wall_variable": 105,
+   "unbound_type": 55,
+   "rule_from_printed_detail": 651,
+   "header_size_unknown": 109,
+   "rule_from_continuity": 358,
+   "schedule_merged_cell": 70,
+   "measured_from_drawing": 56,
+   "door_G_undefined": 15,
+   "derived_from_printed": 57,
+   "convention_ceiling_drop": 106
+  }
+ },
+ "post_co": {
+  "task3_rows_text_changed": 2,
+  "task3_nodes_text_changed": 1,
+  "task3_run_tag_status": "tag_printed_without_number_only_BT_type_on_plans",
+  "P4_walls": 6,
+  "P4_pieces": 9,
+  "P4_pieces_by_level": {
+   "FLOOR_1": 5,
+   "FLOOR_2": 4
+  },
+  "P4_face_rows_to_chase_wall_variable": 36,
+  "P4_stud_track_rows_labelled_status_kept": 118,
+  "P4_cavity_nodes": 9,
+  "clash_flag_counts": {
+   "plumbing_stack": {
+    "fully_inside_p4": 18,
+    "no_p4_on_level": 76,
+    "no_xy": 7,
+    "outside_p4": 26
+   },
+   "sanitary_run_sloped": {
+    "crosses_p4_boundary": 20,
+    "no_p4_on_level": 29,
+    "outside_p4": 3
+   },
+   "sprinkler_pipe": {}
+  },
+  "shaft_wall_nodes_with_counterpart": 35,
+  "rows_total": 4076,
+  "status_counts": {
+   "printed_assembly": 641,
+   "layout_assumed": 1891,
+   "chase_wall_variable": 45,
+   "unbound_type": 191,
+   "rule_from_printed_detail": 646,
+   "header_size_unknown": 106,
+   "rule_from_continuity": 358,
+   "schedule_merged_cell": 70,
+   "measured_from_drawing": 56,
+   "door_G_undefined": 15,
+   "derived_from_printed": 57
+  }
+ },
+ "bt_cells_changed": {
+  "sanitary_runs_sloped_v11.csv": 2,
+  "ceiling_plane_v11.csv": 0,
+  "not_modelled.csv": 0,
+  "engineer_questions_v11.csv": 0
+ },
+ "info": {
+  "post_co_stacks_fully_inside_an_untagged_drawn_wall_piece_by_level_INFO_ONLY_no_flag": {
+   "FLOOR_1": 1,
+   "FLOOR_3": 24,
+   "FLOOR_4": 23,
+   "MEZZANINE": 19
+  }
+ }
+}

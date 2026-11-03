@@ -1,0 +1,21 @@
+track,quantity,count,unit,collection_filter
+filed,all wall rows,177,walls,elements_filed.csv class == wall
+filed,"walls with NO type tag (the ""43 / 115"")",43,walls,"tag == """" (walltype_read/untyped_*.csv, same ids)"
+filed,"  untagged, of which drawn (placed geometry)",43,walls,x_min_ft present
+filed,"  untagged, of which ROOF, no placed geometry",0,walls,"level ROOF, scale_status unscaled -> excluded"
+filed,"PIECES of the drawn untagged walls (the ""55 / 191"")",55,pieces,"footprint_pts_ft rectangles, one L1 unbound_walls row each"
+filed,unbound_walls rows in framing_elements (v11),55,pieces,L1_wall_assemblies | unbound_walls
+filed,walls with a type tag,134,walls,"tag in P1..P5, W1, W2"
+filed,"  tagged, of which drawn (type layers on them = ""134 filed / 71 post-CO"")",134,walls,L1 printed-assembly / P4 layers
+filed,"  tagged, of which ROOF, no placed geometry",0,walls,ROOF unregistered
+filed,P4 walls (tag-bound; chase wall),14,walls,tag P4 (included in the tag-bound line)
+post_co,all wall rows,192,walls,elements_postco.csv class == wall
+post_co,"walls with NO type tag (the ""43 / 115"")",115,walls,"tag == """" (walltype_read/untyped_*.csv, same ids)"
+post_co,"  untagged, of which drawn (placed geometry)",108,walls,x_min_ft present
+post_co,"  untagged, of which ROOF, no placed geometry",7,walls,"level ROOF, scale_status unscaled -> excluded"
+post_co,"PIECES of the drawn untagged walls (the ""55 / 191"")",191,pieces,"footprint_pts_ft rectangles, one L1 unbound_walls row each"
+post_co,unbound_walls rows in framing_elements (v11),191,pieces,L1_wall_assemblies | unbound_walls
+post_co,walls with a type tag,77,walls,"tag in P1..P5, W1, W2"
+post_co,"  tagged, of which drawn (type layers on them = ""134 filed / 71 post-CO"")",71,walls,L1 printed-assembly / P4 layers
+post_co,"  tagged, of which ROOF, no placed geometry",6,walls,ROOF unregistered
+post_co,P4 walls (tag-bound; chase wall),6,walls,tag P4 (included in the tag-bound line)
