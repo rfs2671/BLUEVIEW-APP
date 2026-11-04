@@ -139,9 +139,14 @@ class AnOffsetUnderHalfTheBestPeakIsRefused(unittest.TestCase):
         r = PS.register(arch, mech)
         for k in ("anchors", "best_peak_anchors", "best_peak", "spread", "refused"):
             self.assertIn(k, r)
+        # THE ROW CARRIES THE ONE RULE'S READING (ruling 107): an M->A
+        # placement is registered by plan_sheet.register_offset, its margin on
+        # the row; register() stays for the A->A stair and void links
+        r = PS.register_offset(arch, mech)
         row_reg = {k: r.get(k) for k in ("dx", "dy", "anchors", "rms_in", "max_in", "usable",
-                                         "best_peak_anchors", "best_peak", "spread", "refused")}
-        self.assertGreaterEqual(E.EMIT_VERSION, 4)
+                                         "best_peak_anchors", "best_peak", "second_peak_anchors",
+                                         "second_peak", "margin", "offset_from_best_pt", "refused")}
+        self.assertGreaterEqual(E.EMIT_VERSION, 10)
         page = {"project_id": "p", "page_id": "m", "page_number": 1, "sheet_number": "M-103.00"}
         result = {"registration": r, "records": [
             {"tag": "EF-1", "unit": None, "glyph_status": "resolved", "placement": "refused",
