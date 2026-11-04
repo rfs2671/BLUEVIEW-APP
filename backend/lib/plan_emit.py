@@ -69,7 +69,11 @@ SOURCE = "plan_takeoff"
 #: payload.plan_only (the label, the details and notes naming it, each tag's
 #: words, a note's printed figure), and a refused plan of it payload.role
 #: "plan_only". Rows of every other family are unchanged.
-EMIT_VERSION = 9
+#: 10 (2026-10-29, ruling 107): an M->A placement is registered by the one
+#: offset rule every pair uses (plan_sheet.register_offset); payload.
+#: registration carries its margin, runner-up peak and distance from the
+#: best peak, and no longer a spread (register()'s condition, retired here).
+EMIT_VERSION = 10
 
 #: the citation fields a row carries from its page (as _write_page_records)
 CITE = ("project_id", "company_id", "file_id", "file_hash", "file_name",
@@ -143,7 +147,8 @@ def glyph_rows(result: Dict[str, Any], *, mech: Dict[str, Any],
         "registration": {k: (result.get("registration") or {}).get(k)
                          for k in ("dx", "dy", "anchors", "rms_in", "max_in",
                                    "usable", "best_peak_anchors", "best_peak",
-                                   "spread", "refused")},
+                                   "second_peak_anchors", "second_peak", "margin",
+                                   "offset_from_best_pt", "refused")},
         "units": {k: units.get(k) for k in ("tags", "method", "zero_units",
                                             "multi_level", "seeded", "voids") if k in units},
         "widest_door_in": widest_door.get("inches"),
