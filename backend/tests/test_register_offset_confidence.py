@@ -173,7 +173,7 @@ class RegisterOffsetConfidence(unittest.TestCase):
         self.assertEqual(callers, [], callers)
         self.assertNotIn("plan_registration_confidence", server)
 
-    def test_register_offset_refuses_a_low_fraction_registration_and_fails_closed(self):
+    def test_register_offset_records_counts_and_too_few_corners_is_refused(self):
         _present(self)
         import numpy as np
         from lib import plan_sheet as PS
@@ -217,6 +217,12 @@ class RegisterOffsetConfidence(unittest.TestCase):
         self.assertTrue(ok["usable"], ok)
         self.assertIsNone(ok["refused"])
         self.assertGreaterEqual(ok["anchor_fraction"], m.MIN_ANCHOR_FRACTION)
+
+    def test_no_second_peak_is_an_unambiguous_margin_not_a_missing_one(self):
+        m = _present(self)
+        c = m.confidence({"best_peak_anchors": 50, "second_peak_anchors": 0, "margin": None,
+                          "usable": True}, 100, 100)
+        self.assertTrue(c["confident"], c)
 
     def test_a_missing_count_or_margin_fails_closed(self):
         m = _present(self)

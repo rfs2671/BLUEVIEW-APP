@@ -62,10 +62,9 @@ def confidence(reg: Dict[str, Any], corners_a: int, corners_b: int, *,
     Returns {"fraction", "margin", "fraction_ok", "margin_ok", "confident",
     "would_refuse", "reasons"}. A registration register_offset already
     refused is would_refuse=True with no reason of its own (it stays refused
-    for the reason it carries). An unmeasurable fraction or margin (no
-    second peak is margin None) fails OPEN for that floor only when the other
-    measurement exists: a missing input is reported, never silently passed -
-    `reasons` says "unmeasured". Never mutates `reg`."""
+    for the reason it carries). An unmeasurable fraction or margin FAILS CLOSED: confident is False
+    and `reasons` says "unmeasured" (no second peak at all is the one
+    exception: margin is infinite, the best peak is unambiguous). Never mutates `reg`."""
     frac = anchor_fraction(reg.get("best_peak_anchors"), corners_a, corners_b)
     margin = reg.get("margin")
     second = reg.get("second_peak_anchors")

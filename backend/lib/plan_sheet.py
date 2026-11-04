@@ -576,7 +576,7 @@ def register_offset(arch: dict, other: dict, *, coarse_pt: Optional[float] = Non
     # FAILS CLOSED (confident False -> refused).
     from lib.plan_registration_confidence import confidence as _confidence
     _c = _confidence({"best_peak_anchors": bn, "second_peak_anchors": sn,
-                      "margin": round(bn / sn, 3) if sn else None,
+                      "margin": (bn / sn) if sn else None,   # unrounded: 1.2995 must not round up to the floor
                       "usable": not refused}, int(len(A)), int(len(B)))
     if not _c["confident"]:
         refused.extend("registration not confident: " + r for r in _c["reasons"])
