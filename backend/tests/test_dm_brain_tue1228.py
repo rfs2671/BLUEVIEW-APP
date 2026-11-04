@@ -19,7 +19,8 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from unittest.mock import patch
 
 import server  # noqa: E402
@@ -145,13 +146,20 @@ class TheWalkLib(unittest.TestCase):
 
 
 def _days(db, company, days):
-    now = datetime.now(timezone.utc)
+    # Anchor each check-in at NOON New York time, d calendar days back. It was
+    # `now - timedelta(days=d, hours=1)`: 24h*d of UTC, which across the
+    # 2026-11-01 DST change lands two of the days on one local date for the one
+    # hour a day around New York midnight, so the "distinct days" count was
+    # 4 instead of 5 depending on the wall clock the suite ran at.
+    ny = ZoneInfo("America/New_York")
+    today = datetime.now(timezone.utc).astimezone(ny).date()
     for d in days:
+        at = datetime.combine(today - timedelta(days=d), time(12, 0), tzinfo=ny)
         for w in range(2):
             db.checkins.rows.append({
                 "_id": f"h{company[:3]}{d}{w}", "project_id": THOMAS, "company_id": CO_A,
                 "worker_id": f"{company[:3]}{w}", "worker_name": f"Tech {w}", "worker_company": company,
-                "check_in_time": now - timedelta(days=d, hours=1), "status": "checked_out"})
+                "check_in_time": at, "status": "checked_out"})
 
 
 class TheHvacDays(_Brain):

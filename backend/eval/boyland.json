@@ -4,12 +4,12 @@
     "id": "6a5f63bc147407d3261df2c7",
     "name": "588 Thomas S Boyland Street, Brooklyn",
     "baseline": {
-      "_note": "The corpus as it stood on 2026-10-26 after the operator's re-index of 'AR - 3.28.25.pdf' (#873's call, queued 18:24:16Z, last page 18:35:29Z) and the glyph rebuild that followed (rows written 20:10:05Z). Measured read-only against the 2026-10-25 baseline (20593): AR 3.28.25's 26 pages re-indexed, 12 current, its records 4981 -> 4917 (-64); glyph rows 181 -> 181, read back key for key against expected_rows_v8 (only payload.arch.page_id moved, on 64 rows: the re-index's new page ids for the same sheets); set health 35 items, identical; no other file's pages or records written since. 20593 - 64 = 20529. An earlier glyph pass (19:01:48Z) ran DURING the re-index and wrote 221 rows; it was replaced by the 20:10Z rebuild and is not in this corpus. PREVIOUS NOTE: The corpus as it stood on 2026-10-23, after #747's rebuild - PROPOSED AS-IS, for the operator's acceptance, on the same terms as the 2026-10-07 ruling. Measured read-only: against the 2026-10-07 baseline it adds (1) ONE NON-PLAN PAGE - '588 Thomas S Boyland Street Brooklyn sf.pdf' p1, 'Inspection Letter', indexed 2026-10-22 17:18Z, one text record; (2) the glyph rows rebuilt twice - 84 -> 95, all emit_version 5 since 2026-10-23 22:10Z (#743 registration, #747 stair seeding), read back field by field against the local pass. No plan page was re-indexed and no plan record rewritten, so the page records are still the 2026-09-20 pass plus the five whole-page rewrites recorded below. 20495 + 1 + 11 = 20507. PREVIOUS NOTE (2026-10-07): The corpus as it stood on 2026-10-07, ACCEPTED AS-IS by operator ruling rather than re-indexed. Its makeup, measured read-only: (1) ONE whole-project page pass, 2026-09-20 22:00-23:59Z - all 155 current pages carry an indexed_at in that window, and no file was uploaded after 2026-09-02; (2) FIVE WHOLE-PAGE RECORD REWRITES after that pass - FA-001 and SP-003.00/SP-004.00 at 2026-09-21 23:19Z, P-400.00 and SP-002.00 at 2026-09-22 20:12Z, 257 records in all, each page's records written in one minute with nothing from the 09-20 pass left beside them, so every page's records are still one write; (3) 84 GLYPH ROWS from the placement pass of 2026-10-07 12:50Z (#660, rebuilt after #664), read back identical by content to the reviewed local run; (4) THE SECOND ARCHITECT'S SET BECAME CURRENT in the 09-20 pass - '588 THOMAS BOYLAND ST SET_UPDATED .pdf', 44 pages in A.x numbering, which is the whole of the 111 -> 155 change in current pages. 3,347 records sit on non-current pages and are read by nothing. Scored on this corpus, the suite gives 25/30 IDENTICALLY on the code before #664 (357de57c), on #664 (feaa0da6) and on #666 (63395a9d), so the two verdicts that moved since the last recorded run (2026-09-20, 211f7489, on the 2026-09-19 corpus) moved with the corpus and not with the gate: door-size pass -> fail (known failure a_second_set_takes_the_slot) and packaged-terminal-air-conditioners fail -> pass. WHAT THIS BASELINE CLAIMS: that nothing writes into the project between the start and end of a scored run, and that the page set is this one. Any later write - a re-index, or the placement pass run again - moves newest_record_created_at, and the runner refuses until a new baseline is recorded. RE-RECORDED 2026-10-25 after the two-track rebuild (#859, #861, #860, #866, #867 merged; glyph pass run by the operator at 1d55ec3a): the ONLY change is the glyph rows, 95 -> 181 (filed 95, owner's post-CO 86, all emit_version 8, read back field by field against the local run) - records 20507 -> 20593 (+86), newest_record_created_at the rebuild's write; pages 174 and current pages 156 unchanged.",
+      "_note": "RE-BASELINED 2026-11-03 to the live corpus (records 20529 -> 20793, current_pages 156 -> 163, newest_record_created_at 2026-11-01 15:51:26; pages 174 and newest_page_indexed_at unchanged) after AR - 8.18.26 was set ignored (current_pages +7: the 3.28.25 sheets are current again) and later glyph/record writes; measured read-only by Q2/eval_today.py on 2026-11-03. PREVIOUS NOTE: The corpus as it stood on 2026-10-26 after the operator's re-index of 'AR - 3.28.25.pdf' (#873's call, queued 18:24:16Z, last page 18:35:29Z) and the glyph rebuild that followed (rows written 20:10:05Z). Measured read-only against the 2026-10-25 baseline (20593): AR 3.28.25's 26 pages re-indexed, 12 current, its records 4981 -> 4917 (-64); glyph rows 181 -> 181, read back key for key against expected_rows_v8 (only payload.arch.page_id moved, on 64 rows: the re-index's new page ids for the same sheets); set health 35 items, identical; no other file's pages or records written since. 20593 - 64 = 20529. An earlier glyph pass (19:01:48Z) ran DURING the re-index and wrote 221 rows; it was replaced by the 20:10Z rebuild and is not in this corpus. PREVIOUS NOTE: The corpus as it stood on 2026-10-23, after #747's rebuild - PROPOSED AS-IS, for the operator's acceptance, on the same terms as the 2026-10-07 ruling. Measured read-only: against the 2026-10-07 baseline it adds (1) ONE NON-PLAN PAGE - '588 Thomas S Boyland Street Brooklyn sf.pdf' p1, 'Inspection Letter', indexed 2026-10-22 17:18Z, one text record; (2) the glyph rows rebuilt twice - 84 -> 95, all emit_version 5 since 2026-10-23 22:10Z (#743 registration, #747 stair seeding), read back field by field against the local pass. No plan page was re-indexed and no plan record rewritten, so the page records are still the 2026-09-20 pass plus the five whole-page rewrites recorded below. 20495 + 1 + 11 = 20507. PREVIOUS NOTE (2026-10-07): The corpus as it stood on 2026-10-07, ACCEPTED AS-IS by operator ruling rather than re-indexed. Its makeup, measured read-only: (1) ONE whole-project page pass, 2026-09-20 22:00-23:59Z - all 155 current pages carry an indexed_at in that window, and no file was uploaded after 2026-09-02; (2) FIVE WHOLE-PAGE RECORD REWRITES after that pass - FA-001 and SP-003.00/SP-004.00 at 2026-09-21 23:19Z, P-400.00 and SP-002.00 at 2026-09-22 20:12Z, 257 records in all, each page's records written in one minute with nothing from the 09-20 pass left beside them, so every page's records are still one write; (3) 84 GLYPH ROWS from the placement pass of 2026-10-07 12:50Z (#660, rebuilt after #664), read back identical by content to the reviewed local run; (4) THE SECOND ARCHITECT'S SET BECAME CURRENT in the 09-20 pass - '588 THOMAS BOYLAND ST SET_UPDATED .pdf', 44 pages in A.x numbering, which is the whole of the 111 -> 155 change in current pages. 3,347 records sit on non-current pages and are read by nothing. Scored on this corpus, the suite gives 25/30 IDENTICALLY on the code before #664 (357de57c), on #664 (feaa0da6) and on #666 (63395a9d), so the two verdicts that moved since the last recorded run (2026-09-20, 211f7489, on the 2026-09-19 corpus) moved with the corpus and not with the gate: door-size pass -> fail (known failure a_second_set_takes_the_slot) and packaged-terminal-air-conditioners fail -> pass. WHAT THIS BASELINE CLAIMS: that nothing writes into the project between the start and end of a scored run, and that the page set is this one. Any later write - a re-index, or the placement pass run again - moves newest_record_created_at, and the runner refuses until a new baseline is recorded. RE-RECORDED 2026-10-25 after the two-track rebuild (#859, #861, #860, #866, #867 merged; glyph pass run by the operator at 1d55ec3a): the ONLY change is the glyph rows, 95 -> 181 (filed 95, owner's post-CO 86, all emit_version 8, read back field by field against the local run) - records 20507 -> 20593 (+86), newest_record_created_at the rebuild's write; pages 174 and current pages 156 unchanged.",
       "pages": 174,
-      "current_pages": 156,
-      "records": 20529,
+      "current_pages": 163,
+      "records": 20793,
       "newest_page_indexed_at": "2026-10-26 18:35:29.403000",
-      "newest_record_created_at": "2026-10-26 20:10:05.766000"
+      "newest_record_created_at": "2026-11-01 15:51:26.746000"
     },
     "stale": {
       "_note": "Measured on the 2026-09-19 clean corpus with plan_eval.stale_index. All three classes ZERO and the total stale record count is ZERO, so no case is excluded from scoring. Read off the module rather than assumed: an earlier census in this session reported zero because the function name was wrong, which is the same lie as a probe reading the wrong field.",
@@ -299,16 +299,42 @@
       "kind": "answer",
       "expect": {
         "sheets": [
-          "A-105.01"
+          "A-105.00"
         ],
         "values": [
-          10
+          11
         ]
       },
       "truth": {
         "how": "text_layer",
-        "source": "AR - 8.18.26.pdf p7 (A-105.01)",
-        "evidence": "PASSIVE RECREATION 1970 SF. / 200 = 10 ... TOTAL OCCUPANTS PER STORY 10 PERSONS. OCCUPANCY LOAD is printed on six current sheets; 10 PERSONS on this one only. The OCCUPANCY LOAD table's cells carry the 10 ('/ 200 = | 10'); '10 PERSONS' is a separate text block that does not contain the subject, so it is not expected here."
+        "track": "filed",
+        "source": "AR - 3.28.25.pdf p16 (A-105.00); gas change (AR - 6.9.26) p2 prints the same 2112 SQ. FT.",
+        "evidence": "FILED TRACK (default retrieval). PASSIVE RECREATION 2112 SF. / 200 = 11 ... TOTAL OCCUPANTS PER STORY 11 PERSONS. Re-authored 2026-11-03 on Roy's ruling: AR - 8.18.26 (A-105.01: 1970 SF / 10) is IGNORED, so it is not the filed answer. The owner's post-CO set prints 1970 / 10 and is held only by passive-recreation-area-post-co-retrieval-only (area only; the owner's set prints no occupancy), never mixed with this figure."
+      }
+    },
+    {
+      "id": "passive-recreation-area-post-co-retrieval-only",
+      "question": "how big is the passive recreation area in the owner's set",
+      "subject": "passive recreation",
+      "intent": "attribute",
+      "attribute": "area",
+      "also": [
+        "owner's set"
+      ],
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "A-105.00"
+        ],
+        "values": [
+          1970
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "track": "post_co",
+        "source": "Owners set - 6.9.26.pdf p6 (A-105.00, owner's post-CO set)",
+        "evidence": "POST-CO TRACK, RETRIEVAL-ONLY CASE: asserts only that the 1970 record is retrieved on an owner's-set question; no track-label or separation assertion. The owner's set A-105.00 p6 prints PASSIVE RECREATION 1970 SQ. FT. (11 persons filed vs 10 persons post-CO: that sheet carries no occupancy table, so the 10-person figure is held only by the ignored 8.18.26 A-105.01 and is NOT asserted). The suite has no track field: the only switch is plan_sources.asks_owner_set reading \"owner's set\" from `also` (it is NOT read from the subject: a subject of \"owner's set occupancy load\" returned 0 records). Limits: the harness cannot assert the post-CO label or that the filed 2112 is kept apart. By design both tracks are returned together, each cited with its set, so the case only proves the 1970 post-CO record is retrieved. The filed answer is held by passive-recreation-area."
       }
     },
     {
@@ -320,16 +346,17 @@
       "kind": "answer",
       "expect": {
         "sheets": [
-          "A-105.01"
+          "A-105.00"
         ],
         "values": [
-          1970
+          2112
         ]
       },
       "truth": {
         "how": "text_layer",
-        "source": "AR - 8.18.26.pdf p7 (A-105.01)",
-        "evidence": "PASSIVE RECREATION 1970 SQ. FT."
+        "track": "filed",
+        "source": "AR - 3.28.25.pdf p16 (A-105.00); also p9 GN-004.00 and gas change p2",
+        "evidence": "FILED TRACK (default retrieval). PASSIVE RECREATION 2112 SQ. FT. Re-authored 2026-11-03 on Roy's ruling (AR - 8.18.26 ignored; its A-105.01 printed 1970). The owner's post-CO set prints 1970 SQ. FT. on A-105.00 p6 and is held separately."
       }
     },
     {
@@ -870,7 +897,7 @@
       "cases": [
         "ac-type"
       ],
-      "status": "ac-type answered by `also` (ruling 2026-10-25); the ranking half stays open for a question asked without the other name",
+      "status": "ac-type passes as of 2026-11-03, because of the `also` PTAC ruling (2026-10-25) plus the 2026-10-26 re-index of AR - 3.28.25, which cleared the known-stale PTAC schedule cells: its lead is now M-104.00 and M-200.00 PTAC schedule cells with no generic note (identical on 2026-10-27 and 2026-11-03, 29/32 and 31/33; it failed on 2026-10-07 when REFRIGERANT notes led). Not a ranking fix: the ranking half stays open for a question asked without the other name",
       "what": "Generic prose that repeats more of the question's words outranks the specific record that answers it. 'AC units' is led by the note 'EACH AC UNIT SHALL HAVE A MINI-CONDENSATE PUMP', which matches both words, while the PTAC schedule matches one. HALF OF IT WAS THE SLOTS, NOT THE RANKING: asked about the AC units, five of the eight records returned were two notes repeated, and the PTAC schedule sat at positions six to eight. A note is now one record across the sheets it is stamped on (dedupe_quotes), and the schedule reaches the lead.",
       "why_it_is_not_tuned_away": "Ranking is similarity-first by design (#589). Special-casing this question would teach the ranker the suite rather than fix the class.",
       "evidence": "The note is printed identically on M-100.00 through M-105.00 and is vision-read (the M-sheet notes are outlined). The project team confirmed on 2026-09-17 that 588 Boyland has PTACs only and no split systems: it is engineer boilerplate that was not stripped. After the collapse, 2026-09-17: ac-type's lead is M-100.00, M-101.00 and two M-200.00 schedule cells, so the case is no longer scored as a failure — it is STALE, because the schedule cells that answer it are the three known-stale PTAC elements. Whether it PASSES is not known until the re-index clears them.",
@@ -892,7 +919,7 @@
       "cases": [
         "door-size"
       ],
-      "status": "open",
+      "status": "door-size passes as of 2026-11-03 (observed): A-400.00 returns schedule_cell records carrying 3'-0\" X 7'-0\"; the A.3.0 LIGHTING SCHEDULE is still lead slot 1 and render_carries_the_answer is still false, so the class stays open. Failed 2026-10-07 (A-400.00 came back as heading-only text_layer records); passing in both 2026-10-27 runs and 2026-11-03. The cause of the change is not established: the re-index records were not read.",
       "what": "Asked for the door schedule, the reader still leads with A-400.00's EXTERIOR and INTERIOR DOOR SCHEDULE headings, but a LIGHTING SCHEDULE on A.3.0 - from the second architect's set, current since the 2026-09-20 pass - matches the word 'schedule' and takes one of the 8 slots, and the record that prints 3'-0\" X 7'-0\" no longer comes back.",
       "why_it_is_not_tuned_away": "Corpus-driven: the same 25/30 on the code before #664, on #664 and on #666. The case passed on 2026-09-20 (211f7489) against the 2026-09-19 corpus, where the second set was not current. Ranking a sheet down because of the set it belongs to would be teaching the ranker this project.",
       "evidence": "Preview runs 2026-10-07 against this baseline: lead A.3.0 LIGHTING SCHEDULE (schedule_cell, table_finder), T-001.01 'DOOR AND WINDOW SCHEDULE 24 A-500', A-400.00 'EXTERIOR DOOR SCHEDULE', A-400.00 'INTERIOR DOOR SCHEDULE'; no returned record prints 3'-0\" X 7'-0\". On 2026-09-20 the fourth lead was RCP-002.00's LIGHTING SCHEDULE and the case passed."
