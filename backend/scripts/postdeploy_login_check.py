@@ -106,11 +106,25 @@ def _call(method, url, *, body=None, headers=None):
         return 0, {}
 
 
+def expectation_error(expect, required):
+    """A run that must assert a SHA but was given none is a failed run, not a
+    run with no assertion (an empty expectation hid a 502 on 2026-11-04)."""
+    if required and not expect:
+        return ("EXPECT_SHA is empty but REQUIRE_EXPECT_SHA is set: refusing to "
+                "run without a SHA to assert")
+    return None
+
+
 def main():
     base = os.environ.get("API_BASE", "https://api.levelog.com").rstrip("/")
     email = os.environ.get("SMOKE_EMAIL")
     password = os.environ.get("SMOKE_PASSWORD")
     expect = (os.environ.get("EXPECT_SHA") or "").strip() or None
+    required = (os.environ.get("REQUIRE_EXPECT_SHA") or "").strip() not in ("", "0")
+    err = expectation_error(expect, required)
+    if err:
+        print(err, file=sys.stderr)
+        return 2
 
     if not email or not password:
         print("SMOKE_EMAIL and SMOKE_PASSWORD must be set.", file=sys.stderr)
