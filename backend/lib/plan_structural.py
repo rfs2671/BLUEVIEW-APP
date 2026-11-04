@@ -1082,7 +1082,8 @@ def run_track(pages: Sequence[dict], open_page: Callable[[dict], Any], *,
                          "refused": None if pa is not None else (rg.get("refused") or "not registered"),
                          "registration": {k: rg.get(k) for k in (
                              "dx", "dy", "anchors", "best_peak_anchors", "second_peak_anchors", "margin",
-                             "wall_share_best", "wall_share_second", "usable")},
+                             "wall_share_best", "wall_share_second", "usable",
+                             "corners_arch", "corners_other", "anchor_fraction")},
                          "structure_note": structure_note(s, track, borrowed_from),
                          "attrs": e["attrs"], "evidence": e["evidence"]})
     return {"rows": rows, "summary": summary, "schedule": {f"{k[0]}|{k[1]}": v for k, v in schedule.items()},
@@ -1167,7 +1168,8 @@ def track_row(track: str, result: Dict[str, Any], *, project_id: str,
                               "elements": p["elements"], "unassigned_tags": p["unassigned_tags"],
                               "registration": {k: (p["registration"] or {}).get(k) for k in (
                                   "dx", "dy", "anchors", "best_peak_anchors", "second_peak_anchors",
-                                  "margin", "wall_share_best", "wall_share_second", "usable", "refused")}}
+                                  "margin", "wall_share_best", "wall_share_second", "usable", "refused",
+                                  "corners_arch", "corners_other", "anchor_fraction")}}
                              for p in s.get("pairs") or []],
                    "refused": s.get("refused") or [], "rows": len(result.get("rows") or []),
                    "structure_notes": notes})

@@ -1,8 +1,8 @@
-"""Registration CONFIDENCE for plan_sheet.register_offset: REPORTING ONLY.
+"""Registration CONFIDENCE for plan_sheet.register_offset: WIRED (live gate).
 
 register_offset returns usable=True on three rules (R1 the offset is the exact
 census' best peak, R2 the best peak beats the second, R3 >= MIN_ANCHORS) and
-compares no ratio. A wrong peak therefore reads "usable": the gas roof
+compared no ratio before this module was wired in. A wrong peak read "usable": the gas roof
 (AR 6.9.26 A-105 vs AR 3.28.25 A-105.00) registered at 31 of 687 anchors with
 a best/second margin of 1.10. This module adds two measured floors and nothing
 else:
@@ -14,11 +14,17 @@ else:
   margin          = best_peak_anchors / second_peak_anchors (register_offset's
       own `margin`)
 
-NOT WIRED. Nothing in the pipeline calls this: confidence() is a pure function
-of a register_offset result and the two corner counts. A caller that wants the
-flag asks for it and records it beside the registration; usable is unchanged
-and no row, placement or answer moves. Thresholds are the calibrated
-RECOMMENDED / PERMISSIVE pairs from regthresh/REPORT.md, not live gates.
+WIRED. plan_sheet.register_offset - the one function every discipline pair
+registers through - calls confidence() with the RECOMMENDED pair (fraction >=
+MIN_ANCHOR_FRACTION AND margin >= MIN_MARGIN). A registration that fails
+either floor, or whose fraction or margin cannot be measured, is REFUSED
+(usable False, `refused` carries "registration not confident: <reason>"), so
+the placements, rows and answers that read it lose that placement. The
+corner counts and the fraction are recorded on the registration dict
+(corners_arch, corners_other, anchor_fraction) and on the persisted rows.
+confidence() itself is still a pure function that never mutates its input;
+the PERMISSIVE pair is a calibrated alternative that is NOT in use. Thresholds
+come from regthresh/REPORT.md. register_offset is its only caller.
 """
 from __future__ import annotations
 

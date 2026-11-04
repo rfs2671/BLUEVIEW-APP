@@ -1,7 +1,8 @@
 """REGISTER_OFFSET CONFIDENCE (lib.plan_registration_confidence): a MINIMUM
-ANCHOR FRACTION and a MINIMUM MARGIN over the second peak, REPORTING ONLY.
+ANCHOR FRACTION and a MINIMUM MARGIN over the second peak, WIRED into
+plan_sheet.register_offset (which refuses below either floor).
 
-register_offset has no ratio threshold: the gas roof registered "usable" at 31
+Before the wiring register_offset had no ratio threshold: the gas roof registered "usable" at 31
 of 687 anchors with margin 1.10 (a wrong peak). The recorded numbers below are
 the calibration set (regthresh/REPORT.md, registrations_table.csv): known-good
 registrations from the pass-11 snapshot and the sprinkler lane, known-bad from
@@ -154,18 +155,81 @@ class RegisterOffsetConfidence(unittest.TestCase):
         self.assertFalse(self.conf(row, min_fraction=m.PERMISSIVE_MIN_ANCHOR_FRACTION,
                                    min_margin=m.PERMISSIVE_MIN_MARGIN)["would_refuse"])
 
-    def test_nothing_in_the_pipeline_calls_it(self):
-        """REPORTING ONLY: register_offset's source and every other lib module
-        leave it alone, so no row, placement or answer can move."""
+    def test_register_offset_applies_the_conservative_pair_and_records_corner_counts(self):
+        """WIRED (replaces test_nothing_in_the_pipeline_calls_it):
+        register_offset is the one caller; the result carries corners_arch /
+        corners_other / anchor_fraction; no other lib module or server.py
+        imports the module."""
         _present(self)
         from lib import plan_sheet as PS
-        self.assertNotIn("confidence", inspect.getsource(PS.register_offset))
+        src = inspect.getsource(PS.register_offset)
+        self.assertIn("confidence", src)
+        for k in ("corners_arch", "corners_other", "anchor_fraction"):
+            self.assertIn(k, src)
         callers = [p.name for p in LIB.glob("*.py")
-                   if p.name != "plan_registration_confidence.py"
+                   if p.name not in ("plan_registration_confidence.py", "plan_sheet.py")
                    and re.search(r"plan_registration_confidence", p.read_text(encoding="utf-8"))]
         server = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
         self.assertEqual(callers, [], callers)
         self.assertNotIn("plan_registration_confidence", server)
+
+    def test_register_offset_refuses_a_low_fraction_registration_and_fails_closed(self):
+        _present(self)
+        import numpy as np
+        from lib import plan_sheet as PS
+        rng = np.random.default_rng(0)
+        A = rng.uniform(0, 3000, (400, 2))
+        good = PS.register_offset({"corners": A}, {"corners": A + np.array([10.0, 20.0])})
+        self.assertTrue(good["usable"], good)
+        self.assertEqual((good["corners_arch"], good["corners_other"]), (400, 400))
+        self.assertGreaterEqual(good["anchor_fraction"], 0.10)
+        tiny = PS.register_offset({"corners": A[:3]}, {"corners": A[:3]})
+        self.assertFalse(tiny["usable"])
+        self.assertEqual(tiny["corners_arch"], 3)
+
+    def _pair(self, matched, n=400, seed=1):
+        """Two sheets of n corners each; exactly `matched` of the arch corners
+        reappear on the other sheet at one shared offset, the rest are
+        unrelated, so the best peak holds ~`matched` anchors."""
+        import numpy as np
+        rng = np.random.default_rng(seed)
+        A = rng.uniform(0, 3000, (n, 2))
+        B = rng.uniform(0, 3000, (n, 2))
+        B[:matched] = A[:matched] + np.array([10.0, 20.0])
+        return {"corners": A}, {"corners": B}
+
+    def test_a_low_anchor_fraction_is_refused_with_the_stated_reason(self):
+        """RULING 1 (Roy): 39 of 400 (0.0975) is under the 0.10 floor and is
+        REFUSED with the reason stated; 41 of 400 (0.1025), just above the
+        floor, is accepted. Both have a clear single peak and >= MIN_ANCHORS,
+        so ONLY the fraction floor separates them."""
+        m = _present(self)
+        from lib import plan_sheet as PS
+        low = PS.register_offset(*self._pair(39))
+        self.assertFalse(low["usable"], low)
+        self.assertLess(low["anchor_fraction"], m.MIN_ANCHOR_FRACTION)
+        self.assertIn("registration not confident: anchor fraction", low["refused"])
+        self.assertIn(f"under {m.MIN_ANCHOR_FRACTION:.3f}", low["refused"])
+        self.assertGreaterEqual(low["margin"], m.MIN_MARGIN)  # margin alone would pass
+        self.assertGreaterEqual(low["anchors"], 8)
+        self.assertEqual((low["corners_arch"], low["corners_other"]), (400, 400))
+        ok = PS.register_offset(*self._pair(41))
+        self.assertTrue(ok["usable"], ok)
+        self.assertIsNone(ok["refused"])
+        self.assertGreaterEqual(ok["anchor_fraction"], m.MIN_ANCHOR_FRACTION)
+
+    def test_a_missing_count_or_margin_fails_closed(self):
+        m = _present(self)
+        usable = {"best_peak_anchors": 50, "second_peak_anchors": 10, "margin": 5.0, "usable": True}
+        self.assertTrue(m.confidence(usable, 100, 100)["confident"])
+        for corners in ((0, 100), (100, 0), (None, 100)):
+            c = m.confidence(usable, *corners)
+            self.assertFalse(c["confident"], corners)
+            self.assertTrue(c["would_refuse"])
+            self.assertTrue(any("unmeasured" in r for r in c["reasons"]))
+        c = m.confidence(dict(usable, margin=None, second_peak_anchors=None), 100, 100)
+        self.assertFalse(c["confident"])
+        self.assertFalse(m.confidence(dict(usable, best_peak_anchors=None), 100, 100)["confident"])
 
 
 if __name__ == "__main__":

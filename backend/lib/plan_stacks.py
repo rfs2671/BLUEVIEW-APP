@@ -55,8 +55,10 @@ title reader: teaching that one a new level would move the gate.
 Registration is used ONLY for the offset of a pair already decided, through
 ONE function every discipline pair shares (operator ruling 63, 2026-10-28):
 plan_sheet.register_offset - a single best peak agreeing with the exact 1pt
-search, at least MIN_ANCHORS anchors, and NO tuned ratio threshold; the
-pair's margin (best / second peak) is shown on every row, never compared.
+search, at least MIN_ANCHORS anchors, and the
+confidence floors (register_offset R4: anchor fraction and margin, failing
+closed); the pair's margin (best / second peak) and anchor fraction are shown
+on every row.
 
 Pure: no database, no network. Pages come in as lib.plan_page.PlanPage (or
 anything with `.drawings`), page dicts as the index rows.
@@ -1128,7 +1130,8 @@ def register_pair(arch_sheet: dict, other_sheet: dict) -> Tuple[dict, bool, List
 
 def _reg_view(reg: Optional[dict], usable: bool, why_not: Sequence[str]) -> Optional[dict]:
     """The registration as a row shows it - with the pair's MARGIN (best /
-    second peak), shown and never compared (ruling 63)."""
+    second peak) and ANCHOR FRACTION, shown on every row; register_offset
+    refuses a registration under the confidence floors (R4)."""
     if not reg:
         return None
 
@@ -1138,6 +1141,8 @@ def _reg_view(reg: Optional[dict], usable: bool, why_not: Sequence[str]) -> Opti
             "best_peak_anchors": reg.get("best_peak_anchors"),
             "second_peak_anchors": reg.get("second_peak_anchors"), "margin": reg.get("margin"),
             "offset_from_best_pt": reg.get("offset_from_best_pt"),
+            "corners_arch": reg.get("corners_arch"), "corners_other": reg.get("corners_other"),
+            "anchor_fraction": reg.get("anchor_fraction"),
             "rms_in": r3(reg.get("rms_in")), "max_in": r3(reg.get("max_in")),
             "usable": usable, "why_not": list(why_not) or None}
 
