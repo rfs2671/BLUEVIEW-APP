@@ -467,6 +467,7 @@ def register(arch: dict, mech: dict) -> dict:
 #   "one function, T3's rule (single best peak agreeing with the exact 1pt
 #   search, >=8 anchors) for all pairs, with each pair's margin shown on its
 #   row. ... No tuned ratio threshold."
+#   (superseded in part by Roy's pass-13 scope ruling (2026-11-04); see register_offset R4.)
 #
 # register_offset is that function, for S->A and P->A (lib.plan_structural,
 # lib.plan_stacks). register() above is unchanged: the glyph pass's M->A
@@ -529,18 +530,26 @@ def register_offset(arch: dict, other: dict, *, coarse_pt: Optional[float] = Non
           holds fewer anchors (a tie is two placements the drawings support
           equally)
       R3  at least plan_registration.MIN_ANCHORS anchors
+      R4  (lib.plan_registration_confidence, the one ratio rule) the best peak
+          holds at least MIN_ANCHOR_FRACTION of the smaller sheet's corners
+          and beats the second peak by MIN_MARGIN; a count or margin that
+          cannot be measured FAILS CLOSED (refused). `margin` is still shown
+          on every row. Residuals decide nothing.
     No ratio threshold: `margin` (best / second) is reported, never compared.
+    (superseded in part by Roy's pass-13 scope ruling (2026-11-04): R4 above.)
     Residuals are recorded and decide nothing (usable_for cannot fail: they
     are taken within ANCHOR_MATCH_RADIUS_IN).
 
-    Returns {"dx", "dy", "anchors", "rms_in", "max_in", "best_peak_anchors",
+    Returns {"dx", "dy", "anchors", "corners_arch", "corners_other",
+    "anchor_fraction", "rms_in", "max_in", "best_peak_anchors",
     "best_peak": [x, y], "second_peak_anchors", "second_peak": [x, y],
     "margin", "offset_from_best_pt", "sweep", "usable", "refused"}.
     `coarse_pt` runs the old search (tests); `span_pt` narrows the window."""
     A = np.asarray(arch["corners"], dtype=float).reshape(-1, 2)
     B = np.asarray(other["corners"], dtype=float).reshape(-1, 2)
     out: Dict[str, Any] = {"dx": None, "dy": None, "anchors": 0, "usable": False,
-                           "margin": None}
+                           "margin": None, "corners_arch": int(len(A)),
+                           "corners_other": int(len(B)), "anchor_fraction": None}
     if len(A) < reg.MIN_ANCHORS or len(B) < reg.MIN_ANCHORS:
         out["refused"] = f"too few corners to register ({len(A)} / {len(B)})"
         return out
@@ -562,6 +571,17 @@ def register_offset(arch: dict, other: dict, *, coarse_pt: Optional[float] = Non
                        f"{sn} at ({sxy[0]:.1f}, {sxy[1]:.1f})")
     if n < reg.MIN_ANCHORS:
         refused.append(f"only {n} anchors, need {reg.MIN_ANCHORS}")
+    # R4: the conservative confidence pair (anchor fraction >= MIN_ANCHOR_FRACTION
+    # AND margin >= MIN_MARGIN) refuses here, the one place every consumer
+    # reads register_offset. Counts are recorded; a missing count or margin
+    # FAILS CLOSED (confident False -> refused).
+    from lib.plan_registration_confidence import confidence as _confidence
+    _c = _confidence({"best_peak_anchors": bn, "second_peak_anchors": sn,
+                      "margin": (bn / sn) if sn else None,   # unrounded: 1.2995 must not round up to the floor
+                      "usable": not refused}, int(len(A)), int(len(B)))
+    if not _c["confident"]:
+        refused.extend("registration not confident: " + r for r in _c["reasons"])
+    out["anchor_fraction"] = _c["fraction"]
     out.update({"dx": float(dx), "dy": float(dy), "anchors": n,
                 "rms_in": float(math.sqrt((res ** 2).mean())), "max_in": float(res.max()),
                 "best_peak_anchors": bn, "best_peak": [bxy[0], bxy[1]],

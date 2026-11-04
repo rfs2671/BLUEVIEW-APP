@@ -740,7 +740,8 @@ def borrow(borrower_number: str, borrower: Sheet, lender_number: str, lender: Sh
     from lib.plan_registration import ANCHOR_MATCH_RADIUS_IN
     reg_keys = ("dx", "dy", "anchors", "best_peak_anchors", "best_peak",
                 "second_peak_anchors", "second_peak", "margin", "offset_from_best_pt",
-                "rms_in", "max_in", "sweep", "usable", "refused")
+                "rms_in", "max_in", "sweep", "usable", "refused",
+                "corners_arch", "corners_other", "anchor_fraction")
     out: Dict[str, object] = {
         "sheet": borrower_number, "status": "refused", "pt_per_in": None, "viewport": None,
         "from": {"sheet": lender_number, "viewport": None},

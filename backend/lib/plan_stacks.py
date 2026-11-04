@@ -57,6 +57,8 @@ ONE function every discipline pair shares (operator ruling 63, 2026-10-28):
 plan_sheet.register_offset - a single best peak agreeing with the exact 1pt
 search, at least MIN_ANCHORS anchors, and NO tuned ratio threshold; the
 pair's margin (best / second peak) is shown on every row, never compared.
+(superseded in part by Roy's pass-13 scope ruling (2026-11-04): register_offset R4 now refuses under the
+confidence floors, failing closed, and the anchor fraction is shown too.)
 
 Pure: no database, no network. Pages come in as lib.plan_page.PlanPage (or
 anything with `.drawings`), page dicts as the index rows.
@@ -72,7 +74,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 #: the collection C1 reads (design: one document per stack, per track; see
 #: `stack_rows`). Nothing in this module writes it.
 COLLECTION = "plan_stacks"
-ROW_VERSION = 1
+ROW_VERSION = 2
 
 # ── what the sheet's own drawing is ────────────────────────────────────────
 
@@ -1128,7 +1130,9 @@ def register_pair(arch_sheet: dict, other_sheet: dict) -> Tuple[dict, bool, List
 
 def _reg_view(reg: Optional[dict], usable: bool, why_not: Sequence[str]) -> Optional[dict]:
     """The registration as a row shows it - with the pair's MARGIN (best /
-    second peak), shown and never compared (ruling 63)."""
+    second peak), shown and never compared (ruling 63; superseded in part by Roy's pass-13 scope ruling (2026-11-04):
+    register_offset R4 refuses under the confidence floors, and the ANCHOR
+    FRACTION is shown too)."""
     if not reg:
         return None
 
@@ -1138,6 +1142,8 @@ def _reg_view(reg: Optional[dict], usable: bool, why_not: Sequence[str]) -> Opti
             "best_peak_anchors": reg.get("best_peak_anchors"),
             "second_peak_anchors": reg.get("second_peak_anchors"), "margin": reg.get("margin"),
             "offset_from_best_pt": reg.get("offset_from_best_pt"),
+            "corners_arch": reg.get("corners_arch"), "corners_other": reg.get("corners_other"),
+            "anchor_fraction": reg.get("anchor_fraction"),
             "rms_in": r3(reg.get("rms_in")), "max_in": r3(reg.get("max_in")),
             "usable": usable, "why_not": list(why_not) or None}
 
