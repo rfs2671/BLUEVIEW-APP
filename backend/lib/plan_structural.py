@@ -305,7 +305,7 @@ ARROW_APEX_POST_PT = 3.0   # an arrowhead's apex to the post it lands on (measur
 ARROW_APEX_END_PT = 9.0    # a leader's free end to its arrowhead's apex (measured 6.7-6.8: base midpoint on the end)
 ARROW_SIDES_EQUAL = 0.15   # an arrowhead's two long sides agree within this fraction (measured 0.0-0.01)
 ARROW_BASE_RATIO = 0.6     # its base is at most this fraction of a long side (measured 0.32; equilateral 1.0)
-ARROW_AXIS_COS = 0.8       # it points away along the leader: cos(leader direction, base->apex) (measured 1.00)
+ARROW_AXIS_COS = 0.95      # it points away along the leader: cos(leader direction, base->apex) (measured 1.00)
 DECOY_NEAR_TIP_PT = 12.0   # a second post this near an apex that no arrow lands on is a decoy (a post's width;
                            # measured: the nearest such post is 17.6pt; adjacent posts 3.7 / 8.3pt each have
                            # their own arrowhead)
@@ -621,7 +621,7 @@ def _is_arrowhead(apex, base):
     if longer <= 0:
         return False
     return (abs(s1 - s2) <= ARROW_SIDES_EQUAL * longer
-            and math.dist(base[0], base[1]) <= ARROW_BASE_RATIO * longer)
+            and 1.0 <= math.dist(base[0], base[1]) <= ARROW_BASE_RATIO * longer)   # base >= 1pt: not a needle
 
 
 def _seg_rect_dist(a, b, r):
@@ -761,7 +761,7 @@ def _multiplier_boxes(page):
     """The boxes of every "(n)" word on the page (printed twice at one place = once)."""
     seen, out = set(), []
     for t, x0, y0, x1, y1, d in _page_word_boxes(page):
-        if not re.fullmatch(r"\(\d+\)", t):
+        if not re.fullmatch(r"\(\d+[xX]?\)", t):
             continue
         k = (t, round(x0), round(y0), round(x1), round(y1), d)
         if k not in seen:
@@ -796,8 +796,11 @@ def _traced_post_sizes(page, ext, posts, layer_ok):
     mults = _multiplier_boxes(page)
     claims: Dict[int, List[Optional[str]]] = defaultdict(list)    # None = a claim that must refuse
 
-    def landed(i):                      # some arrowhead's apex is on post i
-        return any(_dist_to_rect(posts[i]["rect"], *a["apex"]) <= ARROW_APEX_POST_PT for a in arrows)
+    free_pts = [p for _i, fr in lines for p in fr]
+
+    def landed(i):                      # an arrowhead on a leader's free end has its apex on post i
+        return any(_dist_to_rect(posts[i]["rect"], *a["apex"]) <= ARROW_APEX_POST_PT
+                   and any(min(math.dist(b, p) for b in a["base"]) <= 2.5 for p in free_pts) for a in arrows)
 
     for lab in _size_labels(page, ext):
         for idx, free in lines:
