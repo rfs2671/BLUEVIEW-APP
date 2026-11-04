@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, TextInput, ScrollView } from 'react-native';
-import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users, Search } from 'lucide-react-native';
+import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users, Search, Share2 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
+import { dropboxAPI, annotationsAPI, usersAPI, projectsAPI } from '../utils/api';
+import { annotationLink, sheetLabelFor, buildShareText, dataUrlToFile, shareViaWhatsApp } from '../utils/whatsappShare';
 import { resolvePdfForIframe } from '../utils/pdfSrc';
 import { openSignedDownload } from '../utils/fileDownload';
 import { downloadSource, signedUrlErrorKey } from '../utils/fileDownloadPlan';
@@ -251,6 +252,40 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
       console.error('Failed to delete:', e);
     }
   }, [selectedAnnotation, loadAnnotations]);
+
+
+  // Project name for the WhatsApp message. Fetched when the viewer opens, NOT
+  // on tap: iOS Safari drops the user-gesture if we await a request before
+  // navigator.share. The name is optional; the message omits it on failure.
+  const [shareProjectName, setShareProjectName] = useState('');
+  useEffect(() => {
+    if (!visible || !projectId) return undefined;
+    let mounted = true;
+    projectsAPI.getById(projectId)
+      .then((p) => { if (mounted) setShareProjectName((p && p.name) || ''); })
+      .catch(() => { /* optional */ });
+    return () => { mounted = false; };
+  }, [visible, projectId]);
+
+  // Share the selected plan note via WhatsApp. A SEPARATE action from the
+  // email send (which happens on create and is untouched). The user picks the
+  // chat inside WhatsApp; nothing is sent to our backend.
+  const handleShareWhatsApp = useCallback(async () => {
+    if (!selectedAnnotation) return;
+    const annId = selectedAnnotation._id || selectedAnnotation.id;
+    let imageFile = null;
+    try { imageFile = await dataUrlToFile(selectedAnnotation.screenshot); } catch (_) { /* text-only */ }
+    const text = buildShareText({
+      projectName: shareProjectName,
+      sheetLabel: sheetLabelFor(file, selectedAnnotation.page_number),
+      note: selectedAnnotation.comment,
+      link: annotationLink(annId),
+    });
+    const res = await shareViaWhatsApp({ text, file: imageFile });
+    if (res.status === 'blocked') {
+      toast.error('WhatsApp', 'Your browser blocked the WhatsApp window. Allow pop-ups and try again.');
+    }
+  }, [selectedAnnotation, shareProjectName, file, toast]);
 
   const getMarkerColor = (annotation) => {
     if (annotation.status === 'resolved') return semantic.verified;
@@ -601,6 +636,10 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                     <Text style={styles.resolveBtnText}>Mark Resolved</Text>
                   </Pressable>
                 )}
+                <Pressable style={styles.whatsappBtn} onPress={handleShareWhatsApp} accessibilityRole="button" accessibilityLabel="Share via WhatsApp">
+                  <Share2 size={16} strokeWidth={1.5} color="#25D366" />
+                  <Text style={styles.whatsappBtnText}>Share via WhatsApp</Text>
+                </Pressable>
                 {canDelete(selectedAnnotation) && (
                   <Pressable style={styles.deleteBtn} onPress={handleDelete}>
                     <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
@@ -649,9 +688,11 @@ const styles = StyleSheet.create({
   replyRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
   replyInput: { flex: 1, backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 10, color: '#e2e8f0', fontSize: 14 },
   replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#E3C27A', alignItems: 'center', justifyContent: 'center' },
-  threadActions: { flexDirection: 'row', gap: 12, marginTop: 16, paddingTop: 12, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08) },
+  threadActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 16, paddingTop: 12, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08) },
   resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.verifiedBg },
   resolveBtnText: { color: semantic.verified, fontSize: 13, fontWeight: '600' },
   deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.criticalBg },
+  whatsappBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: withAlpha('#25D366', 0.15) },
+  whatsappBtnText: { color: '#25D366', fontSize: 13, fontWeight: '600' },
   deleteBtnText: { color: semantic.neutralStrong, fontSize: 13, fontWeight: '600' },
 });
