@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, TextInput, ScrollView } from 'react-native';
-import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users, Search } from 'lucide-react-native';
+import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users, Search, Share2 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
+import { dropboxAPI, annotationsAPI, usersAPI, projectsAPI } from '../utils/api';
+import { composeShareImage, canvasToBlob, loadImage, shareComposedImage, shareFileName, formatShareDate, sheetLabelFor } from '../utils/planNoteShare';
 import { resolvePdfForIframe } from '../utils/pdfSrc';
 import { openSignedDownload } from '../utils/fileDownload';
 import { downloadSource, signedUrlErrorKey } from '../utils/fileDownloadPlan';
@@ -251,6 +252,75 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
       console.error('Failed to delete:', e);
     }
   }, [selectedAnnotation, loadAnnotations]);
+
+
+  // Project name for the share image's caption. Fetched when the viewer opens.
+  // The name is optional; the caption omits it on failure.
+  const [shareProjectName, setShareProjectName] = useState('');
+  useEffect(() => {
+    if (!visible || !projectId) return undefined;
+    let mounted = true;
+    projectsAPI.getById(projectId)
+      .then((p) => { if (mounted) setShareProjectName((p && p.name) || ''); })
+      .catch(() => { /* optional */ });
+    return () => { mounted = false; };
+  }, [visible, projectId]);
+
+  // SHARE A PLAN NOTE AS ONE IMAGE. The note's marker is already placed (that is
+  // what a plan note is). The user adds optional context and an optional photo
+  // from the site; the viewer composes ONE image (plan crop with the marker, the
+  // photo, a caption bar) and hands it to the OS share sheet; on desktop it
+  // downloads. No message text is prefilled, nothing goes to our backend or to
+  // any messaging provider, and it is offered to every role that can open the plan.
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareContext, setShareContext] = useState('');
+  const [sharePhoto, setSharePhoto] = useState(null);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareNote, setShareNote] = useState('');
+  useEffect(() => {
+    setShareOpen(false); setShareContext(''); setSharePhoto(null); setShareNote('');
+  }, [selectedAnnotation?._id, selectedAnnotation?.id]);
+
+  const handleSharePhotoPicked = useCallback((e) => {
+    const f = e && e.target && e.target.files && e.target.files[0];
+    if (f) setSharePhoto(f);
+    if (e && e.target) e.target.value = '';
+  }, []);
+
+  const handleShareImage = useCallback(async () => {
+    if (!selectedAnnotation || shareBusy) return;
+    setShareBusy(true);
+    setShareNote('');
+    let photoUrl = null;
+    try {
+      let planImage = null;
+      if (typeof selectedAnnotation.screenshot === 'string' && selectedAnnotation.screenshot.startsWith('data:image/')) {
+        try { planImage = await loadImage(selectedAnnotation.screenshot); } catch (_) { planImage = null; }
+      }
+      let photo = null;
+      if (sharePhoto) {
+        photoUrl = URL.createObjectURL(sharePhoto);
+        try { photo = await loadImage(photoUrl); } catch (_) { photo = null; }
+      }
+      const date = formatShareDate(new Date());
+      const sheetLabel = sheetLabelFor(file, selectedAnnotation.page_number);
+      // The server-made crop already has the marker drawn at the note's spot.
+      const out = composeShareImage({
+        planImage, photo, context: shareContext, projectName: shareProjectName, sheetLabel, date,
+        createCanvas: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; },
+      });
+      const blob = await canvasToBlob(out.canvas);
+      const res = await shareComposedImage({ blob, filename: shareFileName(sheetLabel, date) });
+      if (res.status === 'downloaded') setShareNote('Image saved. Attach it in WhatsApp.');
+      if (res.status === 'shared') setShareOpen(false);
+    } catch (e) {
+      console.error('Failed to build the share image:', e);
+      toast.error('Share', 'Could not build the image. Try again.');
+    } finally {
+      if (photoUrl) URL.revokeObjectURL(photoUrl);
+      setShareBusy(false);
+    }
+  }, [selectedAnnotation, shareBusy, sharePhoto, shareContext, shareProjectName, file, toast]);
 
   const getMarkerColor = (annotation) => {
     if (annotation.status === 'resolved') return semantic.verified;
@@ -601,6 +671,10 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                     <Text style={styles.resolveBtnText}>Mark Resolved</Text>
                   </Pressable>
                 )}
+                <Pressable style={styles.whatsappBtn} onPress={() => setShareOpen((v) => !v)} accessibilityRole="button" accessibilityLabel="Share as image">
+                  <Share2 size={16} strokeWidth={1.5} color="#25D366" />
+                  <Text style={styles.whatsappBtnText}>Share image</Text>
+                </Pressable>
                 {canDelete(selectedAnnotation) && (
                   <Pressable style={styles.deleteBtn} onPress={handleDelete}>
                     <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
@@ -608,6 +682,41 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                   </Pressable>
                 )}
               </View>
+
+              {shareOpen && (
+                <View style={styles.sharePanel}>
+                  <TextInput
+                    style={styles.replyInput}
+                    placeholder="Context (optional)"
+                    placeholderTextColor="#64748b"
+                    value={shareContext}
+                    onChangeText={setShareContext}
+                    multiline
+                  />
+                  <View style={styles.sharePhotoRow}>
+                    <label style={webLabelStyle}>
+                      <Text style={styles.shareBtnText}>Take photo</Text>
+                      <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleSharePhotoPicked} />
+                    </label>
+                    <label style={webLabelStyle}>
+                      <Text style={styles.shareBtnText}>Choose photo</Text>
+                      <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handleSharePhotoPicked} />
+                    </label>
+                    {!!sharePhoto && (
+                      <Pressable onPress={() => setSharePhoto(null)}><Text style={styles.shareHint}>Remove photo</Text></Pressable>
+                    )}
+                  </View>
+                  {!!sharePhoto && <Text style={styles.shareHint}>Photo: {sharePhoto.name || 'selected'}</Text>}
+                  {!selectedAnnotation.screenshot && (
+                    <Text style={styles.shareHint}>The plan crop for this note is not ready yet; the image will carry the photo and caption.</Text>
+                  )}
+                  <Pressable style={styles.sendBtn} onPress={handleShareImage} disabled={shareBusy} accessibilityRole="button" accessibilityLabel="Share image">
+                    <Share2 size={16} strokeWidth={1.5} color="#fff" />
+                    <Text style={styles.sendBtnText}>{shareBusy ? 'Preparing...' : 'Share'}</Text>
+                  </Pressable>
+                  {!!shareNote && <Text style={styles.shareHint}>{shareNote}</Text>}
+                </View>
+              )}
             </View>
           )}
         </View>
@@ -615,6 +724,8 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
     </View>
   );
 }
+
+const webLabelStyle = { cursor: 'pointer', color: '#e2e8f0', fontSize: 13, fontWeight: 600, padding: '8px 12px', borderRadius: 8, background: 'rgba(255,255,255,0.08)' };
 
 const styles = StyleSheet.create({
   overlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999, backgroundColor: '#131E27', display: 'flex', flexDirection: 'column' },
@@ -649,9 +760,15 @@ const styles = StyleSheet.create({
   replyRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
   replyInput: { flex: 1, backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 10, color: '#e2e8f0', fontSize: 14 },
   replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#E3C27A', alignItems: 'center', justifyContent: 'center' },
-  threadActions: { flexDirection: 'row', gap: 12, marginTop: 16, paddingTop: 12, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08) },
+  threadActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 16, paddingTop: 12, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08) },
   resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.verifiedBg },
   resolveBtnText: { color: semantic.verified, fontSize: 13, fontWeight: '600' },
   deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.criticalBg },
+  whatsappBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: withAlpha('#25D366', 0.15) },
+  whatsappBtnText: { color: '#25D366', fontSize: 13, fontWeight: '600' },
+  sharePanel: { marginTop: 12, gap: 10 },
+  sharePhotoRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10 },
+  shareBtnText: { color: '#e2e8f0', fontSize: 13, fontWeight: '600' },
+  shareHint: { color: '#94a3b8', fontSize: 12 },
   deleteBtnText: { color: semantic.neutralStrong, fontSize: 13, fontWeight: '600' },
 });
