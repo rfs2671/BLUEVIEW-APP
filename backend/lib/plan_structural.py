@@ -301,6 +301,17 @@ TAG_REACH_PT = 24.0        # an SW tag beside its frame: measured 8-10pt; 16in
 LEADER_END_LABEL_PT = 8.0  # a traced leader's label end to the label's box
 LEADER_TOUCH_PT = 0.8      # two leader strokes are one polyline when they touch within this
 ARROW_APEX_POST_PT = 3.0   # an arrowhead's apex to the post it lands on (measured 0.0-1.8pt)
+# HARDENING (every rule fails CLOSED: the size is unknown, never a guess). Boyland measures, ST p5-10:
+ARROW_APEX_END_PT = 9.0    # a leader's free end to its arrowhead's apex (measured 6.7-6.8: base midpoint on the end)
+ARROW_SIDES_EQUAL = 0.15   # an arrowhead's two long sides agree within this fraction (measured 0.0-0.01)
+ARROW_BASE_RATIO = 0.6     # its base is at most this fraction of a long side (measured 0.32; equilateral 1.0)
+ARROW_AXIS_COS = 0.8       # it points away along the leader: cos(leader direction, base->apex) (measured 1.00)
+DECOY_NEAR_TIP_PT = 12.0   # a second post this near an apex that no arrow lands on is a decoy (a post's width;
+                           # measured: the nearest such post is 17.6pt; adjacent posts 3.7 / 8.3pt each have
+                           # their own arrowhead)
+MULTIPLIER_NEAR_PT = 15.0  # a "(n)" word this near a size label or its leader makes the size unknown (the old
+                           # rule kept a multiplier only within 8pt in line and dropped the rest; measured:
+                           # the nearest unattached "(n)" is 19pt from a leader, 38.8pt from a label)
 
 
 def _bare(layer: str) -> str:
@@ -601,6 +612,31 @@ def _touch(a, b, tol=LEADER_TOUCH_PT):
     return any(_seg_dist(p, *b) <= tol for p in a) or any(_seg_dist(q, *a) <= tol for q in b)
 
 
+def _is_arrowhead(apex, base):
+    """A real arrowhead is a narrow isosceles triangle: the two sides that meet
+    at the apex agree and the base (the shortest side) is well under their
+    length. An equilateral or right triangle is a symbol, not an arrowhead."""
+    s1, s2 = math.dist(apex, base[0]), math.dist(apex, base[1])
+    longer = max(s1, s2)
+    if longer <= 0:
+        return False
+    return (abs(s1 - s2) <= ARROW_SIDES_EQUAL * longer
+            and math.dist(base[0], base[1]) <= ARROW_BASE_RATIO * longer)
+
+
+def _seg_rect_dist(a, b, r):
+    """Distance from the segment a-b to the rectangle r (0 when they meet)."""
+    if _dist_to_rect(r, *a) == 0 or _dist_to_rect(r, *b) == 0:
+        return 0.0
+    corners = [(r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])]
+    for i in range(4):          # a segment can cross a rectangle with both ends outside
+        c, d = corners[i], corners[(i + 1) % 4]
+        o = lambda p, q, z: (q[0] - p[0]) * (z[1] - p[1]) - (q[1] - p[1]) * (z[0] - p[0])   # noqa: E731
+        if o(a, b, c) * o(a, b, d) < 0 and o(c, d, a) * o(c, d, b) < 0:
+            return 0.0
+    return min(min(_dist_to_rect(r, *a), _dist_to_rect(r, *b)), *(_seg_dist(c, a, b) for c in corners))
+
+
 def _leader_strokes(page, ext, layer_ok):
     """The leader strokes of a plan and its arrowheads: ([(a, b)], [{"apex",
     "base", "mid"}]). A leader is drawn from open line pieces on the
@@ -623,6 +659,8 @@ def _leader_strokes(page, ext, layer_ok):
             vs = [items[0][1], items[1][1], items[2][1]]
             k = min((math.dist(vs[(i + 1) % 3], vs[(i + 2) % 3]), i) for i in range(3))[1]
             base = [vs[(k + 1) % 3], vs[(k + 2) % 3]]
+            if not _is_arrowhead(vs[k], base):
+                continue          # a small triangle that is not an arrowhead (a symbol, a stray mark)
             arrows[(round(vs[k][0], 1), round(vs[k][1], 1))] = {
                 "apex": tuple(vs[k]), "base": base,
                 "mid": ((base[0][0] + base[1][0]) / 2, (base[0][1] + base[1][1]) / 2)}
@@ -719,6 +757,19 @@ def _size_labels(page, ext):
     return out
 
 
+def _multiplier_boxes(page):
+    """The boxes of every "(n)" word on the page (printed twice at one place = once)."""
+    seen, out = set(), []
+    for t, x0, y0, x1, y1, d in _page_word_boxes(page):
+        if not re.fullmatch(r"\(\d+\)", t):
+            continue
+        k = (t, round(x0), round(y0), round(x1), round(y1), d)
+        if k not in seen:
+            seen.add(k)
+            out.append((x0, y0, x1, y1))
+    return out
+
+
 def _traced_post_sizes(page, ext, posts, layer_ok):
     """TRACED LEADER (membersize/REPORT.md): {index into `posts`: size}.
 
@@ -730,17 +781,36 @@ def _traced_post_sizes(page, ext, posts, layer_ok):
     A post takes the label whose leader lands on it - when every leader that
     lands on it agrees; two different labels, an arrow with no arrowhead, an
     apex on no post or on two posts bind NOTHING. No word is ever picked by
-    distance: a size printed near a post is not that post's size."""
+    distance: a size printed near a post is not that post's size.
+
+    Every doubt fails closed (the post's size is unknown): the arrowhead must
+    be a narrow isosceles triangle (not a symbol), point away along the
+    leader, and put its apex within ARROW_APEX_END_PT of the leader's free
+    end; a second post within DECOY_NEAR_TIP_PT of the apex that no arrowhead
+    lands on is a decoy; and any "(n)" word within MULTIPLIER_NEAR_PT of the
+    label or its leader may be the size's multiplier, so the size is unknown."""
     segs, arrows = _leader_strokes(page, ext, layer_ok)
     if not segs or not posts:
         return {}
     lines = _leader_polylines(segs)
-    claims: Dict[int, List[str]] = defaultdict(list)
+    mults = _multiplier_boxes(page)
+    claims: Dict[int, List[Optional[str]]] = defaultdict(list)    # None = a claim that must refuse
+
+    def landed(i):                      # some arrowhead's apex is on post i
+        return any(_dist_to_rect(posts[i]["rect"], *a["apex"]) <= ARROW_APEX_POST_PT for a in arrows)
+
     for lab in _size_labels(page, ext):
-        for _idx, free in lines:
+        for idx, free in lines:
             ends = [p for p in free if _dist_to_rect(lab["box"], *p) <= LEADER_END_LABEL_PT]
             if not ends:
                 continue
+            lb = lab["box"]
+            doubt = any(
+                not (lb[0] - 0.5 <= m[0] and m[2] <= lb[2] + 0.5 and lb[1] - 0.5 <= m[1] and m[3] <= lb[3] + 0.5)
+                and (math.hypot(max(lb[0] - m[2], 0, m[0] - lb[2]), max(lb[1] - m[3], 0, m[1] - lb[3]))
+                     <= MULTIPLIER_NEAR_PT
+                     or any(_seg_rect_dist(*segs[i], m) <= MULTIPLIER_NEAR_PT for i in idx))
+                for m in mults)
             for p in free:
                 if p in ends or any(math.dist(p, q) <= 2 for q in ends):
                     continue
@@ -748,11 +818,35 @@ def _traced_post_sizes(page, ext, posts, layer_ok):
                       or math.dist(a["mid"], p) <= 3.5]
                 if not ar:
                     continue
-                apex = min(ar, key=lambda a: math.dist(a["mid"], p))["apex"]
+                arrow = min(ar, key=lambda a: math.dist(a["mid"], p))
+                apex = arrow["apex"]
+                if math.dist(apex, p) > ARROW_APEX_END_PT or not _points_away(segs, idx, p, arrow):
+                    continue
                 hit = [i for i, e in enumerate(posts) if _dist_to_rect(e["rect"], *apex) <= ARROW_APEX_POST_PT]
-                if len(hit) == 1:
-                    claims[hit[0]].append(lab["text"])
-    return {i: c[0] for i, c in claims.items() if len(set(c)) == 1}
+                if len(hit) != 1:
+                    continue
+                decoy = [j for j, e in enumerate(posts) if j != hit[0]
+                         and _dist_to_rect(e["rect"], *apex) <= DECOY_NEAR_TIP_PT and not landed(j)]
+                claims[hit[0]].append(None if (doubt or decoy) else lab["text"])
+    return {i: c[0] for i, c in claims.items() if None not in c and len(set(c)) == 1}
+
+
+def _points_away(segs, idx, p, arrow):
+    """The arrowhead at leader end `p` points away along the leader: the
+    direction of the stroke that ends at p agrees with base-midpoint -> apex."""
+    ad = (arrow["apex"][0] - arrow["mid"][0], arrow["apex"][1] - arrow["mid"][1])
+    na = math.hypot(*ad)
+    if na == 0:
+        return False
+    for i in idx:
+        a, b = segs[i]
+        for e, o in ((a, b), (b, a)):
+            if math.dist(e, p) <= 1e-6:
+                ld = (e[0] - o[0], e[1] - o[1])
+                nl = math.hypot(*ld)
+                if nl and (ld[0] * ad[0] + ld[1] * ad[1]) / (nl * na) >= ARROW_AXIS_COS:
+                    return True
+    return False
 
 
 def _joist_symbols(page, ext):

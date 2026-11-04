@@ -48,10 +48,11 @@ def _post(x0, y0):
                 ("l", (x0 + 2, y0 + 1), (x0 + 2, y1 - 1))], POSTL)]
 
 
-def _arrow(ax, ay, dx):
-    """An arrowhead whose apex is (ax, ay), opening away from it by dx."""
-    return _d([("l", (ax, ay), (ax + dx, ay - 3)), ("l", (ax + dx, ay - 3), (ax + dx, ay + 3)),
-               ("l", (ax + dx, ay + 3), (ax, ay))], TEXT)
+def _arrow(ax, ay, dx, hw=1.1):
+    """An arrowhead whose apex is (ax, ay), opening away from it by dx. The Boyland arrowheads are 6.8pt long
+    with a 2.2pt base (half-width 1.1): a narrow isosceles triangle."""
+    return _d([("l", (ax, ay), (ax + dx, ay - hw)), ("l", (ax + dx, ay - hw), (ax + dx, ay + hw)),
+               ("l", (ax + dx, ay + hw), (ax, ay))], TEXT)
 
 
 def _leader(x_from, x_to, y):
@@ -119,8 +120,8 @@ class TheLeaderNamesThePost(unittest.TestCase):
         dr = _grid() + _post(700, 400) + [_leader(556, 693, 404.5), _arrow(700.5, 404.5, -7)]
         # a second label, a second leader whose arrowhead lands on the same post from below
         dr += [_d([("l", (704.5, 440), (704.5, 416.5))], TEXT),
-               _d([("l", (704.5, 409.5), (701.5, 416.5)), ("l", (701.5, 416.5), (707.5, 416.5)),
-                   ("l", (707.5, 416.5), (704.5, 409.5))], TEXT)]
+               _d([("l", (704.5, 409.5), (703.4, 416.5)), ("l", (703.4, 416.5), (705.6, 416.5)),
+                   ("l", (705.6, 416.5), (704.5, 409.5))], TEXT)]
         words = _label(512, 404.5, "(2)", "6SW16") + _label(680, 450, "(2)", "6J18")
         self.assertEqual(_sizes(_Page(dr, words)), [None])
 
@@ -129,6 +130,77 @@ class TheLeaderNamesThePost(unittest.TestCase):
         dr += [_leader(556, 650, 404.5), _arrow(700.5, 404.5, -7), _leader(650, 693, 404.5)]
         dr += [_d([("l", (650, 404.5), (650, 484.5))], TEXT), _leader(650, 693, 484.5), _arrow(700.5, 484.5, -7)]
         self.assertEqual(_sizes(_Page(dr, _label(512, 404.5, "(2)", "6SW16"))), ["(2) 6SW16", "(2) 6SW16"])
+
+
+def _one_post_sized(label_words, extra=()):
+    return _sizes(_Page(_grid() + _post(700, 400) + [_leader(556, 693, 404.5), _arrow(700.5, 404.5, -7)] + list(extra),
+                        list(label_words)))
+
+
+class TheTracedLeaderFailsClosed(unittest.TestCase):
+    """HARDENING (Roy's ruling): every doubt about the traced leader makes the size UNKNOWN, never a pick."""
+
+    # 1. a decoy post near the tip
+    def test_a_second_post_near_the_tip_that_no_arrow_lands_on_refuses(self):
+        """The apex rests on post 1; a second post stands 7pt from it with no arrowhead of its own: the leader's
+        end is not unambiguously one post (the pass bound it to post 1)."""
+        dr = _grid() + _post(700, 400) + _post(700, 411.5) + [_leader(556, 693, 404.5), _arrow(700.5, 404.5, -7)]
+        self.assertEqual(_sizes(_Page(dr, _label(512, 404.5, "(2)", "6SW16"))), [None, None])
+
+    def test_two_adjacent_posts_that_each_have_their_own_arrowhead_are_both_sized(self):
+        """Boyland S-102: posts 1.7pt apart, one arrowhead each (apex 3.7pt / 8.3pt from the neighbour)."""
+        dr = _grid() + _post(700, 400) + _post(700, 411.5) + [_leader(556, 693, 404.5), _arrow(700.5, 404.5, -7)]
+        dr += [_leader(889, 716, 416), _arrow(709, 416, 7)]
+        words = _label(512, 404.5, "(2)", "6SW16") + [("(2)", 850, 416, "ltr"), ("6J18", 876, 416, "ltr")]
+        self.assertEqual(_sizes(_Page(dr, words)), ["(2) 6SW16", "(2) 6J18"])
+
+    # 2. arrowhead apex to the leader's free end
+    def test_an_arrowhead_whose_apex_is_far_from_the_leader_end_refuses(self):
+        """A 10.5pt arrowhead drawn on the leader's end: its apex is 10.5pt from the polyline end (the Boyland
+        arrowheads are 6.8pt). The pass took any arrowhead whose base touched the end, whatever its length."""
+        dr = _grid() + _post(700, 400) + [_leader(556, 690, 404.5), _arrow(700.5, 404.5, -11, hw=1.7)]
+        self.assertEqual(_sizes(_Page(dr, _label(512, 404.5, "(2)", "6SW16"))), [None])
+
+    # 3. arrowhead shape
+    def _tri(self, apex, b0, b1):
+        dr = _grid() + _post(700, 400) + [_leader(556, 693, 404.5),
+                                          _d([("l", apex, b0), ("l", b0, b1), ("l", b1, apex)], TEXT)]
+        return _sizes(_Page(dr, _label(512, 404.5, "(2)", "6SW16")))
+
+    def test_a_blunt_triangle_at_the_end_is_not_an_arrowhead(self):
+        """Base 5pt on 6.5pt sides (0.77; a Boyland arrowhead is 2.2 on 6.8 = 0.32; limit 0.6)."""
+        self.assertEqual(self._tri((700.5, 404.5), (694.5, 402.0), (694.5, 407.0)), [None])
+
+    def test_a_scalene_triangle_at_the_end_is_not_an_arrowhead(self):
+        """Sides 7.1 and 5.9 (an arrowhead's two long sides agree within 15%)."""
+        self.assertEqual(self._tri((700.5, 404.5), (693.5, 403.4), (695.5, 406.0)), [None])
+
+    def test_a_real_arrowhead_still_binds(self):
+        self.assertEqual(_one_post_sized(_label(512, 404.5, "(2)", "6SW16")), ["(2) 6SW16"])
+
+    # 4. a stray triangle near a leader
+    def test_a_narrow_triangle_beside_the_leader_end_that_does_not_point_along_it_is_not_an_arrowhead(self):
+        """The triangle has an arrowhead's proportions and its base on the leader's end, but points DOWN from a
+        horizontal leader onto a post below it: a stray mark, not this leader's arrowhead."""
+        dr = _grid() + _post(688, 410) + [_leader(556, 693, 404.5),
+                                          _d([("l", (693.6, 411.3), (692.5, 404.5)), ("l", (692.5, 404.5), (694.7, 404.5)),
+                                              ("l", (694.7, 404.5), (693.6, 411.3))], TEXT)]
+        self.assertEqual(_sizes(_Page(dr, _label(512, 404.5, "(2)", "6SW16"))), [None])
+
+    # 5. the "(n)" multiplier fails closed
+    def test_a_multiplier_10pt_from_the_size_word_makes_the_size_unknown(self):
+        """"(2)" stands 10pt left of "6SW16" (the old rule kept a multiplier only within 8pt and printed
+        "6SW16" without it). Near = within 15pt of the label's box or of its leader."""
+        words = [("(2)", 507.6, 404.5, "ltr"), ("6SW16", 540, 404.5, "ltr")]
+        self.assertEqual(_one_post_sized(words), [None])
+
+    def test_a_multiplier_near_the_leader_makes_the_size_unknown(self):
+        words = _label(512, 404.5, "(2)", "6SW16") + [("(3)", 620, 392, "ltr")]
+        self.assertEqual(_one_post_sized(words), [None])
+
+    def test_a_multiplier_far_from_the_label_and_its_leader_does_not_matter(self):
+        words = _label(512, 404.5, "(2)", "6SW16") + [("(3)", 620, 330, "ltr")]
+        self.assertEqual(_one_post_sized(words), ["(2) 6SW16"])
 
 
 def _wall(tag, x0, y0, x1, y1, sched, label_xy=None):
