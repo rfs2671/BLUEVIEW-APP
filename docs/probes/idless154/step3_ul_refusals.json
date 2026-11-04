@@ -1,0 +1,3698 @@
+[
+ {
+  "sheet": "A-500.00",
+  "claim": "U4 1.",
+  "tag": "U4",
+  "figure": "1",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4 12.",
+  "tag": "U4",
+  "figure": "12",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4 16.",
+  "tag": "U4",
+  "figure": "16",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4 2.",
+  "tag": "U4",
+  "figure": "2",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4 3.",
+  "tag": "U4",
+  "figure": "3",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4 4.",
+  "tag": "U4",
+  "figure": "4",
+  "source_cells": [
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RATED) UL DES",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 3 W3 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE 720.1 (3)",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE 720.1 (3)",
+    "dimensions_in_cell": []
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4 5.",
+  "tag": "U4",
+  "figure": "5",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4 6.",
+  "tag": "U4",
+  "figure": "6",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4 7.",
+  "tag": "U4",
+  "figure": "7",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4 8.",
+  "tag": "U4",
+  "figure": "8",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42 1.",
+  "tag": "U42",
+  "figure": "1",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42 12.",
+  "tag": "U42",
+  "figure": "12",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42 16.",
+  "tag": "U42",
+  "figure": "16",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42 2.",
+  "tag": "U42",
+  "figure": "2",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42 3.",
+  "tag": "U42",
+  "figure": "3",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42 4.",
+  "tag": "U42",
+  "figure": "4",
+  "source_cells": [
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RATED) UL DES",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 3 W3 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE 720.1 (3)",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE 720.1 (3)",
+    "dimensions_in_cell": []
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42 5.",
+  "tag": "U42",
+  "figure": "5",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42 6.",
+  "tag": "U42",
+  "figure": "6",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42 7.",
+  "tag": "U42",
+  "figure": "7",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42 8.",
+  "tag": "U42",
+  "figure": "8",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42: 1.",
+  "tag": "U42",
+  "figure": "1",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42: 12.",
+  "tag": "U42",
+  "figure": "12",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42: 16.",
+  "tag": "U42",
+  "figure": "16",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42: 2.",
+  "tag": "U42",
+  "figure": "2",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42: 3.",
+  "tag": "U42",
+  "figure": "3",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42: 4.",
+  "tag": "U42",
+  "figure": "4",
+  "source_cells": [
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RATED) UL DES",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 3 W3 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE 720.1 (3)",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE 720.1 (3)",
+    "dimensions_in_cell": []
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42: 5.",
+  "tag": "U42",
+  "figure": "5",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42: 6.",
+  "tag": "U42",
+  "figure": "6",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42: 7.",
+  "tag": "U42",
+  "figure": "7",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U42: 8.",
+  "tag": "U42",
+  "figure": "8",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4: 1.",
+  "tag": "U4",
+  "figure": "1",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4: 12.",
+  "tag": "U4",
+  "figure": "12",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4: 16.",
+  "tag": "U4",
+  "figure": "16",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4: 2.",
+  "tag": "U4",
+  "figure": "2",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4: 3.",
+  "tag": "U4",
+  "figure": "3",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4: 4.",
+  "tag": "U4",
+  "figure": "4",
+  "source_cells": [
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RATED) UL DES",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 3 W3 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE 720.1 (3)",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE 720.1 (3)",
+    "dimensions_in_cell": []
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4: 5.",
+  "tag": "U4",
+  "figure": "5",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4: 6.",
+  "tag": "U4",
+  "figure": "6",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4: 7.",
+  "tag": "U4",
+  "figure": "7",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U4: 8.",
+  "tag": "U4",
+  "figure": "8",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 0,
+    "col_header": "WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 1 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL ",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RAT",
+    "cell": "R-11.5 EPS 2 LAYERS 5 \" INSULATION WITH 8 GYPSUM STUCCO FINISH BOARD 2 LAYERS OF 5/8\" EXTERIOR DENS GLASS BOARD 6\" METAL",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5/8\"",
+     "6\"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "WALL TYPE 4 W4 INTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 7 \" METAL 8 CHANNEL 16\" O.C. POURED CONCRETE (see structural drawings) 5\"7\" VARIES 8 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\"",
+     "5\"",
+     "7\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "WALL TYPE 5 W5 EXTERIOR SHEAR WALL (4HR FIRE RATED) BC TABLE",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION WITH GYPSUM STUCCO FINISH BOARD 7 \" METAL 8 CHANNEL 16\" O.C. CONTINUOUS WATER PROOFI",
+    "dimensions_in_cell": [
+     "5 \"",
+     "7 \"",
+     "16\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "WALL TYPE 6 W6 CONCRETE FOUNDATION WALL (4HR FIRE RATED) BC ",
+    "cell": "R-11.5 EPS 1 LAYER 5 \" 8 INSULATION GYPSUM BOARD 12\" CONCRETE 3 1 \" METAL 2 FOUNDATION STUD 16\" O.C. CONTINUOUS WATER PR",
+    "dimensions_in_cell": [
+     "5 \"",
+     "12\"",
+     "1 \"",
+     "16\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 1.",
+  "tag": "U41",
+  "figure": "1",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 16.",
+  "tag": "U41",
+  "figure": "16",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 2.",
+  "tag": "U41",
+  "figure": "2",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 20.",
+  "tag": "U41",
+  "figure": "20",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 21.",
+  "tag": "U41",
+  "figure": "21",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 3.",
+  "tag": "U41",
+  "figure": "3",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 31.",
+  "tag": "U41",
+  "figure": "31",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 34.",
+  "tag": "U41",
+  "figure": "34",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 4.",
+  "tag": "U41",
+  "figure": "4",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 5.",
+  "tag": "U41",
+  "figure": "5",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 50.",
+  "tag": "U41",
+  "figure": "50",
+  "source_cells": [
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DESIGN NO. U",
+    "dimensions_in_cell": []
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 56.",
+  "tag": "U41",
+  "figure": "56",
+  "source_cells": [
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC 56 UL DESI",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DESIGN NO. U",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC 56 UL DESI",
+    "dimensions_in_cell": []
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 6.",
+  "tag": "U41",
+  "figure": "6",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41 8.",
+  "tag": "U41",
+  "figure": "8",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 1.",
+  "tag": "U41",
+  "figure": "1",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 16.",
+  "tag": "U41",
+  "figure": "16",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 2.",
+  "tag": "U41",
+  "figure": "2",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 20.",
+  "tag": "U41",
+  "figure": "20",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 21.",
+  "tag": "U41",
+  "figure": "21",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 3.",
+  "tag": "U41",
+  "figure": "3",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 31.",
+  "tag": "U41",
+  "figure": "31",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 34.",
+  "tag": "U41",
+  "figure": "34",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 4.",
+  "tag": "U41",
+  "figure": "4",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 5.",
+  "tag": "U41",
+  "figure": "5",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 50.",
+  "tag": "U41",
+  "figure": "50",
+  "source_cells": [
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DESIGN NO. U",
+    "dimensions_in_cell": []
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 56.",
+  "tag": "U41",
+  "figure": "56",
+  "source_cells": [
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC 56 UL DESI",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DESIGN NO. U",
+    "dimensions_in_cell": []
+   },
+   {
+    "row": null,
+    "col": null,
+    "col_header": "(column header text)",
+    "cell": "header: PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC 56 UL DESI",
+    "dimensions_in_cell": []
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 6.",
+  "tag": "U41",
+  "figure": "6",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ },
+ {
+  "sheet": "A-500.00",
+  "claim": "U41: 8.",
+  "tag": "U41",
+  "figure": "8",
+  "source_cells": [
+   {
+    "row": 0,
+    "col": 1,
+    "col_header": "PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC ",
+    "cell": "2 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\" 31 2 \" 5\"5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "6\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 2,
+    "col_header": "PARTITION TYPE 3 P3 INTERIOR STUD WALL (1HR FIRE RATED) UL D",
+    "cell": "1 LAYER 5 \" 8 GYPSUM BOARD 2 1 \" METAL STUD 2 16\" O.C. .PYT \"4-'1 5\" 21 2 \" 5\" 8 8 34 3\"",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "3\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 3,
+    "col_header": "PARTITION TYPE 4 P4 SHAFT WALL (2HR FIRE RATED) STC 56 UL DE",
+    "cell": "2 LAYERS 5 \" 8 TFAHS GYPSUM BOARD LACINAHCEM 1 5 \" METAL 8 STUDS 16\" O.C. .PYT \"4-'1 8 5\"5 8 \"1 8 5\" VARIES 1 8 5\"8 5\" 8",
+    "dimensions_in_cell": [
+     "5 \"",
+     "5 \"",
+     "16\"",
+     "5\"",
+     "8 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 4,
+    "col_header": "PARTITION TYPE 5 P5 SHAFT WALL (2HR FIRE RATED) STC 50 UL DE",
+    "cell": "1 LAYER 1\" GYPSUM LINER PANEL 2 LAYERS 5 \" 8 GYPSUM BOARD 2 1 \" CH STUDS 2 16\" O.C. 20 GA. .PYT FULL HEIGHT SOUND \"4-'1 ",
+    "dimensions_in_cell": [
+     "1\"",
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\""
+    ]
+   },
+   {
+    "row": 0,
+    "col": 5,
+    "col_header": "PARTITION TYPE 6 P6 INTERIOR STUD WALL (3HR FIRE RATED) STC ",
+    "cell": "3 LAYERS 5 \" 8 GYPSUM BOARD 3 1 \" METAL STUD 2 16\" O.C. .PYT FULL HEIGHT SOUND ATTENUATION BLANKET \"4-'1 5\"5\"5\" 31 2 \" 5",
+    "dimensions_in_cell": [
+     "5 \"",
+     "1 \"",
+     "16\"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "2 \"",
+     "5\"",
+     "5\"",
+     "5\"",
+     "71\""
+    ]
+   }
+  ],
+  "routed_to_count_rule": false,
+  "count_rule_bound": false,
+  "schedule_has_quantity_column": false,
+  "figure_is_a_whole_printed_dimension": false,
+  "counting_source_confirmed": false,
+  "why_refused": "UL design number is not a tag: the claim names no tag, so every cell of the family must print the figure; the cells under other columns do not"
+ }
+]

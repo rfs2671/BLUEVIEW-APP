@@ -60,6 +60,21 @@ def role_of(layer_name):
         return None
     return m.group(2).lower()
 
+
+#: A LAYER WHOSE INK IS TO BE REMOVED - the one predicate every reading
+#: shares (rulings 25, 37, 38, 2026-10-28): the layer's own name (after the
+#: last xref "|") is TO REMOVE, or ends in the standard CAD status suffix
+#: -DEMO (A-WALL-DEMO, A-DOOR-DEMO). An EXISTING layer is never one: -EXST,
+#: EXISTING and P-Pipe-Existing are work that stays. role_of() does not
+#: consult it: A-WALL-DEMO is still role "wall" there, so a reading that must
+#: not count removed work asks is_removal_layer() as well.
+REMOVAL_LAYER = re.compile(r"(?i)^(?:TO REMOVE|.*-DEMO)$")
+
+
+def is_removal_layer(layer_name) -> bool:
+    """True when `layer_name` (xref-prefixed or not) names ink to be removed."""
+    return bool(REMOVAL_LAYER.match((layer_name or "").split("|")[-1].strip()))
+
 def pair_fraction(segs, ppi, thick_in):
     """Fraction of axis-aligned wall length with a parallel face 2in..thick."""
     lo_pt, hi_pt = 2.0 * ppi, thick_in * ppi

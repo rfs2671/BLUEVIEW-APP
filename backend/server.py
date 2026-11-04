@@ -14,7 +14,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict, EmailStr
+from pydantic import BaseModel, Field, ConfigDict, EmailStr, model_validator
 from typing import List, Literal, NamedTuple, Optional, Dict, Any, Tuple
 from enum import Enum
 import itertools
@@ -3877,6 +3877,7 @@ from lib import plan_search  # noqa: E402
 from lib import plan_areas  # noqa: E402
 from lib import plan_levels  # noqa: E402
 from lib import plan_term_senses  # noqa: E402
+from lib import plan_floor_to_floor  # noqa: E402
 from lib import plan_crop  # noqa: E402
 from lib import plan_sources  # noqa: E402
 
@@ -17851,8 +17852,14 @@ async def get_suggested_building_levels(
     # keyed by file_id, and an older row may predate the project stamp. A
     # suggestion that silently reads zero pages looks exactly like a building
     # with no levels.
+    # an IGNORED file's pages are not part of the model (IGNORED_TRACK); the
+    # filter is added only when there is one, so every other project's query
+    # is the one it always was
+    _ign = [str(f["_id"]) for f in await db.project_files.find(
+        {"project_id": str(project_id), "drawing_track": IGNORED_TRACK}, {"_id": 1}).to_list(200)]
+    _not_ignored = {"file_id": {"$nin": _ign}} if _ign else {}
     rows = await db.document_page_index.find(
-        {"project_id": str(project_id)},
+        {"project_id": str(project_id), **_not_ignored},
         {"sheet_number": 1, "sheet_title": 1, "floor": 1, "floors": 1,
          "discipline": 1},
     ).to_list(3000)
@@ -17861,6 +17868,7 @@ async def get_suggested_building_levels(
             {"project_id": str(project_id)}, {"_id": 1},
         ).to_list(2000)
         file_ids = [str(f["_id"]) for f in file_docs]
+        file_ids = [i for i in file_ids if i not in _ign]
         if file_ids:
             rows = await db.document_page_index.find(
                 {"file_id": {"$in": file_ids}},
@@ -29953,6 +29961,18 @@ async def download_signed_file(file_id: str, request: Request,
 #: owner's post-CO set". A file with no track set is the filed track.
 DRAWING_TRACKS = ("filed", "post_co")
 
+#: A FILE THAT IS NOT PART OF THE MODEL OR THE ANSWERS (Roy, 10-31: AR 8.18.26,
+#: an unapproved prep set that was never approved). It is a state of the FILE,
+#: stored in the same field as the tracks but never a track: the pass reads no
+#: page of it, the page index returns none (_live_plan_file_ids), set health
+#: and the questions never see it, and a superseded-by mark that names it is
+#: not applied (a reader applies a mark only while the winning file is live).
+#: The file is NOT deleted: its row, its PDF and its index rows stay, and
+#: setting the track back to filed / post_co brings it back. Default for every
+#: existing file: unchanged (no value stored = filed).
+IGNORED_TRACK = "ignored"
+SETTABLE_TRACKS = DRAWING_TRACKS + (IGNORED_TRACK,)
+
 
 class DrawingTrackUpdate(BaseModel):
     track: str
@@ -29971,9 +29991,9 @@ async def set_file_drawing_track(project_id: str, file_id: str, body: DrawingTra
     company, and every change writes an audit row with the old and new value.
     It takes effect on the next glyph pass (rebuild)."""
     track = str(body.track or "").strip().lower()
-    if track not in DRAWING_TRACKS:
+    if track not in SETTABLE_TRACKS:
         raise HTTPException(status_code=422,
-                            detail=f"track must be one of {list(DRAWING_TRACKS)}")
+                            detail=f"track must be one of {list(SETTABLE_TRACKS)}")
     label = re.sub(r"\s+", " ", str(body.label or "")).strip()[:120] or None
     try:
         rec_oid = ObjectId(file_id)
@@ -29986,16 +30006,64 @@ async def set_file_drawing_track(project_id: str, file_id: str, body: DrawingTra
     _same_company_or_403(rec, admin)
     if track == "post_co" and not label:
         label = f"the owner's post-CO set ({rec.get('name') or 'unnamed file'})"
+    if track == IGNORED_TRACK and not label:
+        label = f"ignored: not part of the model or the answers ({rec.get('name') or 'unnamed file'})"
     before = {"track": rec.get("drawing_track") or "filed",
               "label": rec.get("drawing_track_label")}
     await db.project_files.update_one(
         {"_id": rec_oid},
         {"$set": {"drawing_track": track, "drawing_track_label": label,
                   "drawing_track_set_at": datetime.now(timezone.utc)}})
+    out = {"file_id": file_id, "track": track, "label": label, "previous": before}
+    if IGNORED_TRACK in (track, before["track"]):
+        # the index's superseded-by marks are recomputed without (or again with)
+        # this file, so a page it had hidden is current again and a page it
+        # alone hid is not hidden by it; the read-back says what that did
+        try:
+            out["index_marks"] = await _supersede_plan_pages(project_id)
+        except Exception as e:
+            logger.warning("supersession recompute after ignore failed for %s: %r", file_id, e)
+            out["index_marks"] = {"error": type(e).__name__}
     await audit_log("project_file_drawing_track", actor_id(admin), "project_file", file_id,
                     {"project_id": project_id, "file_name": rec.get("name"),
-                     "from": before, "to": {"track": track, "label": label}})
-    return {"file_id": file_id, "track": track, "label": label, "previous": before}
+                     "from": before, "to": {"track": track, "label": label},
+                     "index_marks": out.get("index_marks")})
+    return out
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/drawing-track",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_file_drawing_track(project_id: str, file_id: str, admin=Depends(get_admin_user)):
+    """READ-BACK for the track of one file (company admin): the stored track
+    and label, and what the file reaches today - its index pages, how many of
+    them a search may read (current), how many the glyph pass reads. An
+    ignored file reads 0 and 0."""
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one({"_id": rec_oid, "project_id": project_id,
+                                           "is_deleted": {"$ne": True}})
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    _same_company_or_403(rec, admin)
+    fid = str(rec["_id"])
+    pages = await db.document_page_index.find(
+        {"project_id": project_id, "file_id": fid}, {"_id": 1}).to_list(5000)
+    live = await _live_plan_file_ids(project_id)
+    current = await _current_record_page_ids(project_id)
+    mine = {str(p["_id"]) for p in pages}
+    raw, files, live_set = await _glyph_inputs(project_id)
+    read_by_pass = sum(1 for _t, ps in _glyph_track_pages(raw, files, live_set)
+                       for p in ps if str(p.get("file_id")) == fid)
+    return {"file_id": fid, "name": rec.get("name"),
+            "track": rec.get("drawing_track") or "filed",
+            "label": rec.get("drawing_track_label"),
+            "ignored": (rec.get("drawing_track") or "filed") == IGNORED_TRACK,
+            "index_pages": len(pages),
+            "live": (fid in live) if live is not None else None,
+            "searchable_pages": len(mine & set(current)),
+            "pages_the_pass_reads": read_by_pass}
 
 
 @api_router.delete("/projects/{project_id}/files/{file_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
@@ -46287,6 +46355,9 @@ async def _send_annotation_emails(annotation: dict, project_name: str, recipient
     try:
         # Wait for screenshot to be generated (up to 30s)
         ann_id = annotation.get("id") or str(annotation.get("_id"))
+        # The annotation doc carries its project (set in create_annotation);
+        # this function has no project_id parameter of its own.
+        project_id = annotation.get("project_id")
         screenshot_url = None
         for _ in range(15):
             await asyncio.sleep(2)
@@ -46354,7 +46425,7 @@ async def _send_annotation_emails(annotation: dict, project_name: str, recipient
                     text=text,
                     metadata={
                         "annotation_id": ann_id,
-                        "project_id": str(project_id),
+                        "project_id": str(project_id) if project_id else None,
                         "creator_name": creator_name,
                     },
                 )
@@ -60193,6 +60264,7 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
                                     path=log[3] if log else "headcount")
         reply = _dm_no_negative_claims(reply, log[4] if log and len(log) > 4 else None,
                                        ident=log[0] if log else None)
+        reply = await _dm_set_answer_claims(reply, log[0] if log else None)
     repeated = None
     if reply:
         asked = question if question is not None else (log[2] if log else "")
@@ -61016,7 +61088,9 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             pid = str(job["id"])
             if not await _bot_project_scope(ident["company_id"], pid):
                 return wa_security.BOT_SCOPE_REFUSAL
-            rows = await _find_named_sheet(pid, str(args.get("sheet") or ""))
+            rows = await _find_named_sheet(
+                pid, str(args.get("sheet") or ""),
+                owner_set=plan_sources.asks_owner_set(ctx.get("text"), args.get("sheet")))
             page = rows[0] if rows else None
             if not page:
                 return f"{str(args.get('sheet') or '').upper()} isn't in the indexed drawings for {job['label']}."
@@ -61473,6 +61547,7 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
     if out.get("reply"):
         out["reply"] = dm_brain.redact_phones(out["reply"])
         out["reply"] = _dm_no_negative_claims(out["reply"], out.get("trace"), ident)
+        out["reply"] = await _dm_set_answer_claims(out["reply"], ident)
     # Where on the sheets the answer came from: sent after the words
     # (_dm_brain_reply); the eval only records it.
     out["plan_shots"] = _dm_plan_shots(ctx, out)
@@ -65216,29 +65291,38 @@ async def _opening_schedules(pid: str, page_ids: List[str]) -> List[dict]:
 
 
 def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
-                       live: set) -> List[Tuple[str, List[dict]]]:
+                       live: set, decisions: Optional[List[dict]] = None,
+                       notes: Optional[List[dict]] = None) -> List[Tuple[str, List[dict]]]:
     """[(drawing track, its current index rows)], the filed track first.
 
     NEWEST PAGE PER TRACK; SUPERSESSION ONLY WITHIN A TRACK (ruling
-    2026-10-24). The index supersedes across every set by date, so on 588
-    Boyland the Owner's set (6/9/26, the owner's post-CO additions) hid the
-    filed AR set's A-101 to A-104 - and the pass placed floors 2 to the
-    mezzanine against the post-CO set only. Here each track's pages are
-    superseded among themselves (_supersession_winners, the index's own
-    rule), so the filed track keeps its own plans.
+    2026-10-24). The index used to supersede across every set by date, so on
+    588 Boyland the Owner's set (6/9/26, the owner's post-CO additions) hid
+    the filed AR set's A-101 to A-104. Since 2026-10-31 the index is per
+    track too (_supersession_winners partitions by track); the pass still
+    applies the rule track by track so it does not depend on stored marks.
 
     A mechanical sheet belongs to no track - the filed track holds it. A
     non-filed track is its own architectural plans and the filed track's
     mechanical plans they pair with (plan_derive.PLAN_SHEET, by number), so
     each mechanical symbol is placed once per track that has a plan for its
-    floor, and a floor the track does not redraw is not run twice."""
+    floor, and a floor the track does not redraw is not run twice.
+
+    THE OFFICE'S ANSWERS TO THE DRAWING-SET QUESTIONS (ruling 21,
+    lib.plan_set_questions.apply_decisions) shape each track's pages HERE,
+    before anything reads them, so the rows, areas, walls, stacks, set health
+    and the questions all follow: an excluded page is left out; a replaced
+    page leaves and its replacing page - which may be a page the supersession
+    above dropped - takes its place. `decisions` are the answered questions;
+    `notes`, when given, is filled with what became of each."""
     from lib import plan_derive as _derive
+    from lib import plan_set_questions as _psq
 
     track_of = {fid: (f.get("drawing_track") or "filed") for fid, f in files.items()}
     by_track: Dict[str, List[dict]] = {}
     for p in raw:
         fid = str(p.get("file_id"))
-        if fid in live:
+        if fid in live and track_of.get(fid, "filed") != IGNORED_TRACK:
             by_track.setdefault(track_of.get(fid, "filed"), []).append(p)
     current: Dict[str, List[dict]] = {}
     for t, rows in by_track.items():
@@ -65246,6 +65330,16 @@ def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
         losers = _supersession_winners(
             rows, [dict(files[f], _id=f) for f in fids if f in files])
         current[t] = [r for r in rows if r["_id"] not in losers]
+    decisions = [d for d in decisions or () if d.get("answer") in (_psq.EXCLUDE, _psq.REPLACES)]
+    if decisions:
+        current, got = _psq.apply_decisions(
+            current, [p for p in raw if str(p.get("file_id")) in live], decisions)
+        for n in got:
+            if not n["applied"]:
+                logger.warning("drawing-set answer %s (%s) NOT applied: %s",
+                               n.get("code") or n["id"], n["answer"], "; ".join(n["detail"]))
+        if notes is not None:
+            notes += got
 
     def plan(p, letter):
         m = _derive.PLAN_SHEET.match(str(p.get("sheet_number") or "").strip().upper())
@@ -65259,8 +65353,9 @@ def _glyph_track_pages(raw: List[dict], files: Dict[str, dict],
     return out
 
 
-async def _glyph_pages(pid: str) -> Tuple[List[Tuple[str, List[dict]]], Dict[str, dict]]:
-    """Each track's current index rows (_glyph_track_pages), and the files."""
+async def _glyph_inputs(pid: str) -> Tuple[List[dict], Dict[str, dict], set]:
+    """(the project's index rows, its files, the live file ids) - what
+    _glyph_track_pages splits into tracks."""
     live = set(await _live_plan_file_ids(pid) or [])
     raw = await db.document_page_index.find(
         {"project_id": pid},
@@ -65273,7 +65368,34 @@ async def _glyph_pages(pid: str) -> Tuple[List[Tuple[str, List[dict]]], Dict[str
         {"project_id": pid, "is_deleted": {"$ne": True}},
         {"r2_key": 1, "name": 1, "created_at": 1, "drawing_track": 1,
          "drawing_track_label": 1}).to_list(2000)}
-    return _glyph_track_pages(raw, files, live), files
+    return raw, files, live
+
+
+async def _set_decisions(pid: str, skip: Optional[str] = None) -> List[dict]:
+    """The answered drawing-set questions that shape a track's pages: the
+    excluded and the replaced (an include changes no page list). Unreadable:
+    none are applied, and it is logged - every question reads as open.
+    `skip` leaves one question out (the one being AMENDED: its new answer is
+    checked against the pages as the OTHER answers leave them)."""
+    from lib import plan_set_questions as psq
+    try:
+        flt: Dict[str, Any] = {"project_id": str(pid), "status": psq.ANSWERED,
+                               "answer": {"$in": [psq.EXCLUDE, psq.REPLACES]}}
+        if skip is not None:
+            flt["_id"] = {"$ne": str(skip)}
+        return await db[psq.COLLECTION].find(flt).to_list(500)
+    except Exception as e:
+        logger.warning("plan set decisions unreadable for %s: %r", pid, e)
+        return []
+
+
+async def _glyph_pages(pid: str) -> Tuple[List[Tuple[str, List[dict]]], Dict[str, dict]]:
+    """Each track's current index rows (_glyph_track_pages), with the office's
+    answers to the drawing-set questions applied (_set_decisions), and the
+    files. The pass, the census scope and the per-track reads all come
+    through here, so they read the same pages."""
+    raw, files, live = await _glyph_inputs(pid)
+    return _glyph_track_pages(raw, files, live, await _set_decisions(pid)), files
 
 
 async def _glyph_page_ids(pid: str) -> List[str]:
@@ -65347,6 +65469,10 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         logger.warning("plan set questions unreadable for %s: %r", pid, e)
         set_answers = {}
     tracks, files = await _glyph_pages(pid)
+    # what the stored answers did to the track pages (_glyph_pages applied them):
+    # kept in the result, so a replacement that could not be applied is read
+    # there, not guessed from a count
+    answers_applied = _set_answers_applied(await _set_decisions(pid), tracks)
     by_track: List[Tuple[str, List[dict]]] = []
     door_pages, seen_doors, current_ids = [], set(), set()
     for track, rows_ in tracks:
@@ -65418,7 +65544,8 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         opening_health: List[dict] = []
         set_questions: List[dict] = []
         areas: List[dict] = []
-        summary: Dict[str, Any] = {"tracks": {}}
+        walls: List[dict] = []
+        summary: Dict[str, Any] = {"tracks": {}, "set_answers": answers_applied}
         for track, pages in by_track:
             # (passed only when there is one: a set with no door or window
             # schedule runs exactly the equipment pass it ran before)
@@ -65432,6 +65559,7 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
                                           plan_only=plan_only, **extra)
             rows += out["rows"]
             areas += out.get("areas") or []
+            walls += out.get("walls") or []
             opening_rows += out.get("opening_rows") or []
             opening_health += out.get("opening_health") or []
             set_questions += out.get("set_questions") or []
@@ -65457,6 +65585,41 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         except Exception as e:
             logger.exception("plan set health %s failed: %r", pid, e)
             health = [_health.unavailable(e, datetime.now(timezone.utc))]
+        # PLUMBING STACKS (lane T4, lib.plan_stacks), while the PDFs are still
+        # here: every stack the P plans tag, placed on each track's
+        # architectural plan paired BY TITLE LEVEL - the rows clash v1 reads.
+        # Their own collection: search and the count gate never read them.
+        # A failure writes one marker row, never sinks the pass.
+        from lib import plan_stacks as _stacks
+        if progress is not None:
+            progress.server_stage("stacks")
+        try:
+            door_in = ((summary["tracks"].get("filed") or {}).get("door") or {}).get("inches")
+            got = await asyncio.to_thread(_stacks.run_stacks, by_track, open_page, None, door_in)
+            stacks = got["rows"] + [_stacks.crosscheck_row(got)]
+        except Exception as e:
+            logger.exception("plan stacks %s failed: %r", pid, e)
+            stacks = [_stacks.unavailable(e, datetime.now(timezone.utc))]
+        # STRUCTURE (lane T3, lib.plan_structural; ruling 106, 2026-10-29),
+        # while the PDFs are still here: every S-1xx framing plan's shear
+        # walls, frames, posts, beams, joists and hold-down zones, paired to
+        # each track's architectural plan BY TITLE LEVEL and registered by
+        # the one offset rule (plan_sheet.register_offset) plus the S wall
+        # check. A track with no S sheets (the owner's post-CO set) reads the
+        # filed set's, every row labelled (ruling 68). Own collection: search
+        # and the count gate never read it. A failure writes one marker row,
+        # never sinks the pass.
+        from lib import plan_structural as _structural
+        if progress is not None:
+            progress.server_stage("structure")
+        try:
+            cid = next((p.get("company_id") for _t, ps in by_track for p in ps
+                        if p.get("company_id")), None)
+            structure = (await asyncio.to_thread(_structural.pass_rows, by_track, open_page,
+                                                 project_id=pid, company_id=cid))["rows"]
+        except Exception as e:
+            logger.exception("plan structure %s failed: %r", pid, e)
+            structure = [_structural.unavailable(e, datetime.now(timezone.utc), project_id=pid)]
     # one numbering across the tracks: a row is (page_id, ordinal), and every
     # track's rows of a mechanical sheet cite that sheet's page
     for i, r in enumerate(rows):
@@ -65475,7 +65638,10 @@ async def _plan_glyph_pass(project_id: str, actor: Optional[str] = None,
         return summary
     summary["written"] = await _write_glyph_records(pid, rows)
     summary["set_health"] = await _write_set_health(pid, health)
+    summary["stacks_written"] = await _write_stack_rows(pid, stacks)
     summary["areas_written"] = await _write_area_records(pid, areas)
+    summary["walls_written"] = await _write_wall_records(pid, walls)
+    summary["structure_written"] = await _write_structural_rows(pid, structure)
     try:
         summary["set_questions"] = await _store_set_questions(
             pid, set_questions, opening_rows, actor or "system:glyph_pass")
@@ -65513,6 +65679,34 @@ async def _set_question_answers(pid: str) -> Dict[str, str]:
     docs = await db[psq.COLLECTION].find(
         {"project_id": str(pid), "status": psq.ANSWERED}).to_list(500)
     return {str(d["_id"]): d["answer"] for d in docs if d.get("answer") in psq.ANSWERS}
+
+
+def _set_answers_applied(decisions: List[dict], tracks: List[Tuple[str, List[dict]]]) -> List[dict]:
+    """One line per stored exclude / replaces answer: whether the pages the
+    pass reads show it applied (a replacing page in its track, the replaced
+    one out; an excluded one out), and what each replacement stands for."""
+    from lib import plan_set_questions as psq
+    by = {t: ps for t, ps in tracks}
+    out = []
+    for d in decisions:
+        pages = by.get(d.get("track") or "filed", [])
+        have = {(str(p.get("file_id")), int(p.get("page_number") or 0)) for p in pages}
+        if d.get("answer") == psq.REPLACES:
+            ok = bool(d.get("replacements")) and all(
+                (str(r.get("file_id")), int(r.get("page_number") or 0)) in have
+                and (str((r.get("replaces") or {}).get("file_id")),
+                     int((r.get("replaces") or {}).get("page_number") or 0)) not in have
+                for r in d.get("replacements") or [])
+            what = [f"{psq.sheet_name(r)} replaces {(r.get('replaces') or {}).get('sheet_number')}"
+                    for r in d.get("replacements") or []]
+        else:
+            ok = not any((str(d.get("file_id")), int(qp.get("page_number") or 0)) in have
+                         for qp in d.get("pages") or []) and bool(d.get("pages"))
+            what = [f"{qp.get('sheet_number') or 'unnumbered'} p{qp.get('page_number')} left out"
+                    for qp in d.get("pages") or []]
+        out.append({"id": str(d.get("_id")), "code": d.get("code"), "answer": d.get("answer"),
+                    "applied": ok, "what": what})
+    return out
 
 
 async def _store_set_questions(pid: str, detected: List[dict], opening_rows: List[dict],
@@ -65637,26 +65831,145 @@ async def _ask_set_questions(pid: str, actor: str) -> dict:
 
 
 async def _record_set_answer(pid: str, qid: str, answer: str, actor: str, *, via: str,
-                             name: Optional[str] = None) -> Optional[dict]:
+                             name: Optional[str] = None,
+                             replacements: Optional[List[dict]] = None) -> Optional[dict]:
     """Record one answer - only to an OPEN question of THIS project, once -
     and audit it. None when there was no such question (answered already,
-    withdrawn, another project's). Applied on the next glyph pass."""
+    withdrawn, another project's). Applied on the next glyph pass.
+
+    REPLACES (Roy, 10-30) is recorded by the office only (via "admin"), with
+    the explicit list [{page_id, replaces: {file_id, page_number,
+    sheet_number}}]: every page is validated against the project's current
+    pages (lib.plan_set_questions.validate_replacements) and anything
+    ambiguous raises ValueError - nothing is inferred, nothing is stored. The
+    stored replacements are the resolved pages (files, titles, the number each
+    is paired as), and are in the audit details."""
     from lib import plan_set_questions as psq
     if answer not in psq.ANSWERS:
         raise ValueError(f"answer must be one of {psq.ANSWERS}")
     pid, qid = str(pid), str(qid)
     coll = db[psq.COLLECTION]
+    fields: Dict[str, Any] = {}
+    if answer == psq.REPLACES:
+        if via != "admin":
+            raise ValueError("a replacement is recorded by the office (the admin route), "
+                             "not by a reply")
+        q = await coll.find_one({"_id": qid, "project_id": pid, "status": psq.OPEN})
+        if not q:
+            return None
+        raw, files, live = await _glyph_inputs(pid)
+        # the question's track as the pass will read it: the OTHER answers applied,
+        # this one not yet
+        tracks = dict(_glyph_track_pages(raw, files, live, await _set_decisions(pid)))
+        resolved, errs = psq.validate_replacements(
+            q, replacements, tracks.get(q.get("track") or "filed", []),
+            [p for p in raw if str(p.get("file_id")) in live])
+        if errs:
+            raise ValueError("; ".join(errs))
+        fields["replacements"] = resolved
+    elif replacements:
+        raise ValueError("replacements belong to the answer 'replaces' only")
     now = datetime.now(timezone.utc)
     res = await coll.update_one(
         {"_id": qid, "project_id": pid, "status": psq.OPEN},
-        {"$set": {"status": psq.ANSWERED, "answer": answer, "answered_by": str(actor),
-                  "answered_by_name": name, "answered_at": now, "answered_via": via}})
+        {"$set": dict({"status": psq.ANSWERED, "answer": answer, "answered_by": str(actor),
+                       "answered_by_name": name, "answered_at": now, "answered_via": via},
+                      **fields)})
     if not getattr(res, "matched_count", 0):
         return None
     doc = await coll.find_one({"_id": qid})
-    await audit_log("plan_set_question_answered", str(actor), "plan_set_question", qid,
-                    {"project_id": pid, "code": (doc or {}).get("code"), "answer": answer,
-                     "via": via, "label": (doc or {}).get("label")})
+    details = {"project_id": pid, "code": (doc or {}).get("code"), "answer": answer,
+               "via": via, "label": (doc or {}).get("label")}
+    if fields:
+        details["replacements"] = fields["replacements"]
+    await audit_log("plan_set_question_answered", str(actor), "plan_set_question", qid, details)
+    return doc
+
+
+def _answer_snapshot(q: dict) -> dict:
+    """The answer a question holds now, as the history keeps it."""
+    return {k: q.get(k) for k in ("answer", "replacements", "answered_by", "answered_by_name",
+                                  "answered_at", "answered_via") if q.get(k) is not None}
+
+
+async def _amend_set_answer(pid: str, qid: str, answer: str, actor: str, *, reason: str,
+                            name: Optional[str] = None,
+                            replacements: Optional[List[dict]] = None) -> Optional[dict]:
+    """CHANGE the answer of an ANSWERED question of THIS project - the office
+    only (the admin route), explicit, with the old answer kept.
+
+    Why it exists: an answer is recorded once, to an OPEN question
+    (_record_set_answer), and Q2's was recorded against pages that the office
+    has since ruled out of the model (AR 8.18.26, ignored). An answered
+    question could only be re-opened by writing the database by hand.
+
+    - None when there is no such ANSWERED question (open, withdrawn, another
+      project's);
+    - ValueError (nothing stored) when the reason is empty, the answer is
+      unchanged, or - for a replacement - any page is refused: the new list is
+      validated exactly as _record_set_answer validates one, against the pages
+      as the OTHER answers leave them (this question's old answer is not
+      applied while it is checked), by the same lib.plan_set_questions rules;
+    - the old answer, who gave it and when, goes onto `history` (never
+      overwritten, never dropped), the question stays ANSWERED, and the pass
+      reads the new one only (_set_decisions reads the current fields);
+    - audited as plan_set_question_amended with the old and the new answer.
+    Applied on the next glyph pass; nothing here runs a pass."""
+    from lib import plan_set_questions as psq
+    if answer not in psq.ANSWERS:
+        raise ValueError(f"answer must be one of {psq.ANSWERS}")
+    reason = re.sub(r"\s+", " ", str(reason or "")).strip()[:500]
+    if len(reason) < 3:
+        raise ValueError("an amendment needs a reason, kept with the old answer")
+    pid, qid = str(pid), str(qid)
+    coll = db[psq.COLLECTION]
+    q = await coll.find_one({"_id": qid, "project_id": pid, "status": psq.ANSWERED})
+    if not q:
+        return None
+    fields: Dict[str, Any] = {}
+    unset: Dict[str, Any] = {}
+    if answer == psq.REPLACES:
+        raw, files, live = await _glyph_inputs(pid)
+        tracks = dict(_glyph_track_pages(raw, files, live, await _set_decisions(pid, skip=qid)))
+        resolved, errs = psq.validate_replacements(
+            q, replacements, tracks.get(q.get("track") or "filed", []),
+            [p for p in raw if str(p.get("file_id")) in live])
+        if errs:
+            raise ValueError("; ".join(errs))
+        fields["replacements"] = resolved
+    elif replacements:
+        raise ValueError("replacements belong to the answer 'replaces' only")
+    else:
+        unset["replacements"] = ""
+    same = (q.get("answer") == answer and (
+        answer != psq.REPLACES or [(r.get("page_id"), (r.get("replaces") or {}).get("page_id"))
+                                   for r in q.get("replacements") or []]
+        == [(r.get("page_id"), (r.get("replaces") or {}).get("page_id")) for r in fields["replacements"]]))
+    if same:
+        raise ValueError("the answer is unchanged: nothing to amend")
+    now = datetime.now(timezone.utc)
+    old = _answer_snapshot(q)
+    entry = dict(old, superseded_at=now, superseded_by=str(actor), superseded_by_name=name,
+                 reason=reason)
+    history = list(q.get("history") or []) + [entry]
+    upd: Dict[str, Any] = {"$set": dict(
+        {"answer": answer, "answered_by": str(actor), "answered_by_name": name,
+         "answered_at": now, "answered_via": "admin", "history": history,
+         "amended_at": now, "amended_by": str(actor), "amended_reason": reason}, **fields)}
+    if unset:
+        upd["$unset"] = unset
+    # only the answer that was read: a second amendment or a pass between the read
+    # and the write finds it changed and stores nothing
+    res = await coll.update_one(
+        {"_id": qid, "project_id": pid, "status": psq.ANSWERED, "answered_at": q.get("answered_at")},
+        upd)
+    if not getattr(res, "matched_count", 0):
+        return None
+    doc = await coll.find_one({"_id": qid})
+    await audit_log("plan_set_question_amended", str(actor), "plan_set_question", qid,
+                    {"project_id": pid, "code": (doc or {}).get("code"), "reason": reason,
+                     "from": old, "to": {"answer": answer, **fields},
+                     "label": (doc or {}).get("label")})
     return doc
 
 
@@ -65688,6 +66001,105 @@ async def _handle_set_question_reply(chat_id: str, code: str, answer: str) -> bo
         return False
     await send_whatsapp_message(chat_id, psq.answer_text(q, answer))
     return True
+
+
+async def _handle_set_question_message(chat_id: str, body: Any) -> bool:
+    """Every drawing-set answer in one WhatsApp message, read line by line
+    (psq.split_reply), BEFORE the assistant (10-29: "Gas change govern since
+    it was latest.\\nQ1 no" and "Q2 it's the final roof plan ..." both went
+    to the assistant, which said "Q1 logged" without reading the store).
+    - "Qn YES" / "Qn NO": recorded as _handle_set_question_reply records it;
+      a question already answered gets its stored state (psq.status_text).
+    - "Qn <words>": kept as a note on the question and answered with how to
+      record it (psq.confirm_text) - nothing is recorded from free words.
+    - lines with no code ride along as a note on the questions the message
+      named.
+    Only questions asked of THIS person, who is still a PM on record. True
+    when any line named one: the message is handled here."""
+    from lib import plan_set_questions as psq
+    answers, free, rest = psq.split_reply(body)
+    if not answers and not free:
+        return False
+    optin = await _active_optin_for_phone(wa_dm.phone_digits(chat_id))
+    if not optin or not optin.get("user_id"):
+        return False
+    uid = str(optin["user_id"])
+    codes = sorted({c for c, _a in answers} | {c for c, _t in free})
+    found: Dict[str, List[dict]] = {}
+    for q in await db[psq.COLLECTION].find({"code": {"$in": codes},
+                                             "asked_user_ids": uid}).to_list(20):
+        found.setdefault(str(q.get("code")), []).append(q)
+    mine = {c: qs[0] for c, qs in found.items() if len(qs) == 1}
+    now = datetime.now(timezone.utc)
+    named: Dict[str, dict] = {}
+    for code, answer in answers:
+        q = mine.get(code)
+        if q is None:
+            continue
+        named[str(q["_id"])] = q
+        if q.get("status") == psq.OPEN and await _handle_set_question_reply(chat_id, code, answer):
+            continue
+        q = await db[psq.COLLECTION].find_one({"_id": q["_id"]}) or q
+        await send_whatsapp_message(chat_id, psq.status_text(q))
+    for code, text in free:
+        q = mine.get(code)
+        if q is None:
+            continue
+        named[str(q["_id"])] = q
+        if q.get("status") != psq.OPEN:
+            await send_whatsapp_message(chat_id, psq.status_text(q))
+            continue
+        await send_whatsapp_message(chat_id, psq.confirm_text(q))
+    if not named:
+        return False
+    # The words themselves are kept for the office, on each question named,
+    # from a PM still on record for its project.
+    words = "\n".join([t for _c, t in free] + ([rest] if rest else []))
+    for qid, q in named.items():
+        if not words:
+            break
+        _proj, pms = await _set_question_people(str(q.get("project_id")))
+        if not any(str(u.get("_id")) == uid for u in pms):
+            _security_event("plan_set_note_refused", user_id=uid,
+                            project_id=str(q.get("project_id")), reason="not_pm_on_record")
+            continue
+        await db[psq.COLLECTION].update_one(
+            {"_id": qid}, {"$push": {"notes": {"text": words[:2000], "at": now,
+                                                "user_id": uid, "via": "whatsapp"}}})
+        await audit_log("plan_set_question_note", uid, "plan_set_question", qid,
+                        {"project_id": str(q.get("project_id")), "code": q.get("code")})
+    return True
+
+
+async def _dm_set_answer_claims(reply: Any, ident: Optional[dict] = None) -> Any:
+    """NEVER "RECORDED" UNLESS THE STORE SAYS SO (10-29, 21:23: "Q1 logged as
+    no" - said without reading the store): each outgoing sentence saying a
+    drawing-set answer was logged / recorded / saved becomes the store's own
+    words for that question (psq.rewrite_recorded_claims), read for this
+    sender's projects. A store that cannot be read confirms nothing."""
+    from lib import plan_set_questions as psq
+    if not isinstance(reply, str):
+        return reply
+    claims = psq.recorded_claims(reply)
+    if not claims:
+        return reply
+    stored: Dict[str, dict] = {}
+    try:
+        projects = [str((p.get("_id") or p.get("id")) if isinstance(p, dict) else p)
+                    for p in ((ident or {}).get("projects") or [])]
+        if projects:
+            for q in await db[psq.COLLECTION].find(
+                    {"code": {"$in": sorted({c for _s, c in claims})},
+                     "project_id": {"$in": projects}}).to_list(20):
+                stored.setdefault(str(q.get("code")), q)
+    except Exception as e:
+        logger.warning(f"[dm-gate] set questions unreadable: {type(e).__name__}")
+        stored = {}
+    out, n = psq.rewrite_recorded_claims(reply, stored)
+    if n:
+        logger.info(f"[dm-gate] set-answer claim rewritten "
+                    f"company={(ident or {}).get('company_id') or '?'} n={n}")
+    return out
 
 
 def _glyph_set_health(tracks: List[Tuple[str, List[dict]]], rows: List[dict],
@@ -65738,6 +66150,44 @@ async def _write_area_records(project_id: str, rows: List[dict]) -> int:
     return len(rows)
 
 
+async def _write_wall_records(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's wall rows with one pass's (lib.plan_walls, the
+    glyph pass's `walls` step). IDEMPOTENT PER PROJECT AND TRACK: every row
+    of the project goes and this pass's rows - each track's, each saying its
+    track - come in, so a second run of the same pass leaves the same rows,
+    and a track the set no longer has keeps none. Own collection, as areas:
+    nothing reads it yet (the gate's binding and T5's Walls trade come
+    later); it is written only by the operator-started pass."""
+    from lib.plan_walls import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    docs = []
+    for i, r in enumerate(rows):
+        docs.append(dict(r, project_id=pid, ordinal=i, created_at=now))
+    await db[COLLECTION].insert_many(docs)
+    return len(docs)
+
+
+async def _write_structural_rows(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's structure rows with one pass's
+    (lib.plan_structural.COLLECTION). WHOLE-PROJECT REPLACE, because the
+    pass is: the pairing, the series offset and the shear wall schedule are
+    read across the set. Own collection, like areas and set health: no plan
+    record, so search never returns them and the eval baseline does not move."""
+    from lib.plan_structural import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    await db[COLLECTION].insert_many([dict(r, project_id=pid, ordinal=i, created_at=now)
+                                      for i, r in enumerate(rows)])
+    return len(rows)
+
+
 async def _area_evidence(project_id: str) -> List[dict]:
     """Every area row of the project's last glyph pass (lib.plan_areas):
     whole project, every track, like the located symbols - a floor filter on
@@ -65745,6 +66195,25 @@ async def _area_evidence(project_id: str) -> List[dict]:
     from lib.plan_areas import COLLECTION
     return await db[COLLECTION].find({"project_id": str(project_id)},
                                      {"_id": 0, "created_at": 0}).to_list(2000)
+
+
+async def _legend_count_evidence(project_id: str) -> List[dict]:
+    """Every stored legend symbol count of the project (lib.plan_legend_symbols,
+    its own collection). None is stored until a pass runs (ruling 78: not
+    before the sub-bid benchmark), and then the export is what it was."""
+    from lib.plan_legend_symbols import COLLECTION
+    return await db[COLLECTION].find({"project_id": str(project_id)},
+                                     {"_id": 0, "created_at": 0}).to_list(5000)
+
+
+async def _light_fixture_evidence(project_id: str) -> List[dict]:
+    """Every stored light fixture tag count of the project
+    (lib.plan_light_fixtures, its own collection). None is stored until a
+    pass runs (ruling 78, as for T2: not before the sub-bid benchmark), and
+    then the export is what it was."""
+    from lib.plan_light_fixtures import COLLECTION
+    return await db[COLLECTION].find({"project_id": str(project_id)},
+                                     {"_id": 0, "created_at": 0}).to_list(5000)
 
 
 async def _write_set_health(project_id: str, items: List[dict]) -> int:
@@ -65762,6 +66231,21 @@ async def _write_set_health(project_id: str, items: List[dict]) -> int:
     # Each finding queued for review once (lib/review_queue: set_health).
     await _review_queue_set_health(pid, items)
     return len(docs)
+
+
+async def _write_stack_rows(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's plumbing-stack rows with one pass's
+    (lib.plan_stacks.COLLECTION - their own collection, like set health:
+    no plan record, so search never returns them). WHOLE-PROJECT REPLACE,
+    because the pass is: the pairing and the tag reading are set-wide."""
+    from lib.plan_stacks import COLLECTION
+    pid = str(project_id)
+    await db[COLLECTION].delete_many({"project_id": pid})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    await db[COLLECTION].insert_many([dict(r, project_id=pid, created_at=now) for r in rows])
+    return len(rows)
 
 
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
@@ -67718,9 +68202,35 @@ def _supersession_winners(rows: List[dict], files: List[dict],
                           project_id: str = "") -> Dict[Any, str]:
     """{page row _id: the file id that supersedes it}, over `rows` and
     `files` alone - the rule _supersede_plan_pages writes (see there).
-    Pure, so the glyph pass can apply it WITHIN ONE DRAWING TRACK
-    (_glyph_track_pages): the index supersedes across tracks by date.
-    `files` are project_files rows (_id, created_at, name)."""
+    `files` are project_files rows (_id, created_at, name, drawing_track).
+
+    ── SUPERSESSION IS PER TRACK (Roy, 2026-10-31) ──────────────────────────
+    #
+    # The filed original and its filed amendments are ONE track; the post-CO
+    # set is its own. Revisions are compared only WITHIN a track, so a later
+    # post-CO sheet never hides a filed one and a filed sheet never hides a
+    # post-CO one (the hard rule of 10-30: after-CO sheets are separate
+    # records of changes, they replace nothing approved). Before this, the
+    # Owner's set (title-block 6/9/26) beat the gas change (6/8/26) and the
+    # 3.28.25 sheets in the index, and search offered only the owner's
+    # A-100.00 and A-105.00 once AR 8.18.26 was ignored. A file stated
+    # IGNORED takes no part in any track: it neither wins nor loses.
+    """
+    tracks = {str(f["_id"]): (f.get("drawing_track") or "filed") for f in files}
+    live_files = [f for f in files if tracks[str(f["_id"])] != IGNORED_TRACK]
+    out: Dict[Any, str] = {}
+    for t in sorted({tracks[str(f["_id"])] for f in live_files}):
+        mine = {str(f["_id"]) for f in live_files if tracks[str(f["_id"])] == t}
+        out.update(_supersession_winners_in_one_track(
+            [r for r in rows if str(r.get("file_id")) in mine],
+            [f for f in live_files if str(f["_id"]) in mine], project_id))
+    return out
+
+
+def _supersession_winners_in_one_track(rows: List[dict], files: List[dict],
+                                       project_id: str = "") -> Dict[Any, str]:
+    """The supersession rule over ONE track's rows and files (see
+    _supersession_winners, which partitions by track and calls this)."""
     from collections import Counter as _Counter
     from datetime import date as _date
 
@@ -67871,14 +68381,23 @@ async def _supersede_plan_pages(project_id: str) -> dict:
     # EN-001.00 by PL's. T-, EN- and GN- sheets are never superseded across
     # files at all.
     #
+    # ── AND WITHIN A DRAWING TRACK (Roy, 2026-10-31) ───────────────────────
+    #
+    # Filed original + filed amendments are one track, the post-CO set is its
+    # own, and an ignored file takes no part. A post-CO sheet never hides a
+    # filed one and vice versa: both stay searchable and labelled, and
+    # retrieval picks the filed one unless the question is about the owner's
+    # set (_current_record_page_ids, plan_sources.default_track_hidden).
+    #
     # NOTHING IS DELETED. Readers exclude a row only while the file that
     # superseded it is still live, so deleting the newer file brings the older
     # sheet straight back. A sheet that appears twice INSIDE one file is not a
     # duplicate and both pages stay.
     """
     files = await db.project_files.find(
-        {"project_id": project_id, "is_deleted": {"$ne": True}},
-        {"_id": 1, "created_at": 1, "name": 1},
+        {"project_id": project_id, "is_deleted": {"$ne": True},
+         "drawing_track": {"$ne": IGNORED_TRACK}},      # an ignored file supersedes nothing
+        {"_id": 1, "created_at": 1, "name": 1, "drawing_track": 1},
     ).to_list(2000)
     if not files:
         return {"superseded": 0}
@@ -68118,7 +68637,9 @@ async def _live_plan_file_ids(project_id: str) -> list:
     """
     try:
         rows = await db.project_files.find(
-            {"project_id": project_id, "is_deleted": {"$ne": True}, "index_status.state": {"$ne": COMBINED_SET_SKIPPED}},
+            {"project_id": project_id, "is_deleted": {"$ne": True}, "index_status.state": {"$ne": COMBINED_SET_SKIPPED},
+             # an IGNORED file is not part of the model or the answers (IGNORED_TRACK)
+             "drawing_track": {"$ne": IGNORED_TRACK}},
             {"_id": 1},
         ).to_list(2000)
         return [str(r["_id"]) for r in rows]
@@ -68217,13 +68738,19 @@ def _is_bare_show_request(body: Optional[str]) -> bool:
     return not [w for w in s[len(verb):].split() if w not in _SHOW_FILLER]
 
 
-async def _find_named_sheet(project_id: str, sheet_q: str) -> list:
+async def _find_named_sheet(project_id: str, sheet_q: str, *, owner_set: bool = False) -> list:
     """EXACTLY the sheet asked for, or nothing. Spec pages included.
 
     Live test 2026-09-15: "show me s-001" sent S-002 and M-001. The exact match
     skipped S-001.00 because it is a notes (spec) page, and the search then fell
     through to its closest neighbours. A sheet id is not a search: the named
-    sheet is sent, or the reply says it is not there."""
+    sheet is sent, or the reply says it is not there.
+
+    TWO TRACKS CAN PRINT ONE NUMBER (A-100.00 in the filed set and in the
+    owner's post-CO set; the index keeps both current). The FILED sheet is
+    the one returned, unless `owner_set` (the question is about the owner's
+    set, plan_sources.asks_owner_set), which returns the owner's. A number
+    only the other track prints is returned from that track."""
     q_upper = re.sub(r"\s+", "", (sheet_q or "")).upper()
     m = re.match(r"^([A-Z]{1,4})-?(\d{1,4}[A-Z]?)(\.\d+)?$", q_upper)
     if not m:
@@ -68241,8 +68768,62 @@ async def _find_named_sheet(project_id: str, sheet_q: str) -> list:
     except Exception as e:
         logger.warning(f"named sheet lookup failed for {sheet_q}: {e!r}")
         return []
+    rows = await _prefer_track(project_id, rows, owner_set)
     rows.sort(key=lambda r: (len(r.get("sheet_number") or ""), not r.get("page_jpeg_r2_key")))
     return rows[:1]
+
+
+async def _file_tracks(project_id: str, file_ids: Any) -> Dict[str, str]:
+    """{file id: drawing track} for the files that are NOT filed (a file
+    missing from the answer is filed). {} when there are none or it could
+    not look."""
+    ids = sorted({str(f) for f in file_ids or [] if f})
+    if not ids:
+        return {}
+    try:
+        rows = await db.project_files.find(
+            {"project_id": str(project_id), "is_deleted": {"$ne": True},
+             "drawing_track": {"$in": [t for t in DRAWING_TRACKS if t != "filed"]}},
+            {"_id": 1, "drawing_track": 1}).to_list(2000)
+    except Exception as e:
+        logger.warning(f"drawing tracks lookup failed for {project_id}: {type(e).__name__}")
+        return {}
+    return {str(r["_id"]): r.get("drawing_track") for r in rows if str(r["_id"]) in set(ids)}
+
+
+async def _prefer_track(project_id: str, rows: list, owner_set: bool) -> list:
+    """`rows` (pages of ONE requested sheet) narrowed to one track: the
+    filed track's, else the other's; the owner's first when `owner_set`."""
+    if len(rows) < 2:
+        return rows
+    tracks = await _file_tracks(project_id, [r.get("file_id") for r in rows])
+    if not tracks:
+        return rows
+    other = [r for r in rows if str(r.get("file_id")) in tracks]
+    filed = [r for r in rows if str(r.get("file_id")) not in tracks]
+    first, second = (other, filed) if owner_set else (filed, other)
+    return first or second
+
+
+async def _default_track_hidden_ids(project_id: str, live_ids: Optional[list],
+                                    owner_set: bool) -> set:
+    """The current pages default retrieval leaves out: the post-CO page of a
+    sheet number the filed set also prints (plan_sources.default_track_hidden).
+    Nothing when the question concerns the owner's set, when the project has
+    no post-CO file, or when it could not look."""
+    if owner_set or live_ids is None:
+        return set()
+    try:
+        tracks = await _file_tracks(project_id, live_ids)
+        if not tracks:
+            return set()
+        pages = await db.document_page_index.find(
+            {"project_id": str(project_id), **_current_page_filter(live_ids)},
+            {"_id": 1, "sheet_number": 1, "file_id": 1}).to_list(20000)
+    except Exception as e:
+        logger.warning(f"default track hiding failed for {project_id}: {type(e).__name__}")
+        return set()
+    return plan_sources.default_track_hidden(pages, tracks, owner_set)
 
 
 # ── "SHOW ME", IN A DM: THE SHEET ITSELF (Mon 10:21 AM, 588) ───────────────
@@ -68368,7 +68949,53 @@ async def _plan_file_sources(project_id: str, file_ids: Any) -> Dict[str, dict]:
         src = plan_sources.source_of(r)
         if src:
             out[str(r["_id"])] = src
+    # A replacing page that prints no sheet number is cited as the number it
+    # was given, and says so (ruling 136; plan_sources.UNNUMBERED_KEY).
+    marks = await _unnumbered_marks(project_id, rows)
+    for fid, by_page in marks.items():
+        if fid in out:
+            out[fid][plan_sources.UNNUMBERED_KEY] = by_page
     return out
+
+
+def _record_file_ids(records: Any) -> List[str]:
+    """The files a set of records cites: each record's own and, for a
+    mechanical symbol, the architectural page it is placed on (payload.arch) -
+    a sheet that page borrowed is tagged where it is cited (ruling 136)."""
+    ids = []
+    for r in records or []:
+        ids.append(r.get("file_id"))
+        a = (r.get("payload") or {}).get("arch") if isinstance(r.get("payload"), dict) else None
+        if isinstance(a, dict):
+            ids.append(a.get("file_id"))
+    return [i for i in dict.fromkeys(ids) if i]
+
+
+async def _unnumbered_marks(project_id: str, file_rows: Any) -> Dict[str, Dict[int, dict]]:
+    """{file_id: {page_number: mark}} for the replacing pages of these files
+    that print no sheet number (plan_sources.unnumbered_marks), derived from
+    the answered `replaces` questions and each replacing page's own index
+    record. Read-only; nothing stored. {} when there are none or it could not
+    look: a citation then goes out as it did before."""
+    from lib import plan_set_questions as psq
+    try:
+        decisions = await db[psq.COLLECTION].find(
+            {"project_id": str(project_id), "status": psq.ANSWERED,
+             "answer": psq.REPLACES}).to_list(100)
+        if not decisions:
+            return {}
+        files = {str(f["_id"]): f for f in file_rows or []}
+        want = {str(r.get("page_id")): r for d in decisions for r in d.get("replacements") or []
+                if r.get("page_id") and str(r.get("file_id")) in files}
+        if not want:
+            return {}
+        pages = {str(p["_id"]): p async for p in db.document_page_index.find(
+            {"_id": {"$in": [to_query_id(i) for i in want]}},
+            {"file_id": 1, "file_name": 1, "page_number": 1, "sheet_number": 1, "sheet_title": 1})}
+        return plan_sources.unnumbered_marks(decisions, pages, files)
+    except Exception as e:
+        logger.warning(f"unnumbered replacing pages lookup failed for {project_id}: {type(e).__name__}")
+        return {}
 
 
 async def _drawing_list_and_sheets(project_id: str) -> Tuple[Dict[str, dict], List[str]]:
@@ -68380,6 +69007,8 @@ async def _drawing_list_and_sheets(project_id: str) -> Tuple[Dict[str, dict], Li
     try:
         pages = await db.document_page_index.find(
             {"project_id": pid, **_current_page_filter(live)}, {"sheet_number": 1}).to_list(5000)
+        hidden = await _default_track_hidden_ids(pid, live, False)
+        pages = [p for p in pages if str(p["_id"]) not in hidden]
         recs = await db[PLAN_RECORDS].find(
             {"project_id": pid, "record_type": "schedule",
              "page_id": {"$in": [str(p["_id"]) for p in pages]}},
@@ -68656,7 +69285,9 @@ def _dm_plan_shots(ctx: dict, out: dict) -> list:
     srcs = ctx.get("plan_sources") or {}
     return [{"page": pages[pid], "marks": marks, "total": total,
              "label": plan_sources.cite_with_set(
-                 pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+                 plan_sources.tag_sheet(
+                     pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+                     srcs.get(str(pages[pid].get("file_id") or "")), pages[pid].get("page_number")),
                  srcs.get(str(pages[pid].get("file_id") or ""))),
              "ambiguous": choice["ambiguous"], "unverified": choice["unverified"],
              "pictures": len(groups)}
@@ -68776,7 +69407,7 @@ async def _dm_sheet_turn(ident: dict, dm_chat: str, text: str, history: list,
         await send_whatsapp_message(dm_chat, wa_security.BOT_SCOPE_REFUSAL)
         return True
     short = wa_style.short_job(job["label"])
-    rows = await _find_named_sheet(pid, named)
+    rows = await _find_named_sheet(pid, named, owner_set=plan_sources.asks_owner_set(text))
     page = rows[0] if rows else None
     label = (page or {}).get("sheet_number") or named.upper()
     if not page:
@@ -69143,8 +69774,15 @@ SEARCH_PLANS_CANDIDATES = 3000
 
 
 async def _current_record_page_ids(project_id: str, *, discipline: str = "",
-                                   floor: str = "", sheet_number: str = "") -> list:
-    """The page ids a search may read from: live file, not superseded."""
+                                   floor: str = "", sheet_number: str = "",
+                                   retrieval: bool = False, owner_set: bool = False) -> list:
+    """The page ids a search may read from: live file, not superseded.
+
+    `retrieval` is a SEARCH's read: where the filed set and the owner's
+    post-CO set both print a sheet number, the filed page is returned, and
+    the owner's too only when the question concerns the owner's set
+    (`owner_set`). Every other caller (the census scope, the read-back) gets
+    every current page of every track."""
     live_ids = await _live_plan_file_ids(str(project_id))
     q = {"project_id": str(project_id), **_current_page_filter(live_ids)}
     if sheet_number:
@@ -69155,7 +69793,9 @@ async def _current_record_page_ids(project_id: str, *, discipline: str = "",
     if floor:
         q["floors"] = {"$regex": re.escape(floor), "$options": "i"}
     pages = await db.document_page_index.find(q, {"_id": 1}).to_list(5000)
-    return [str(p["_id"]) for p in pages]
+    hidden = (await _default_track_hidden_ids(str(project_id), live_ids, owner_set)
+              if retrieval else set())
+    return [str(p["_id"]) for p in pages if str(p["_id"]) not in hidden]
 
 
 async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = False) -> List[dict]:
@@ -69185,7 +69825,7 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
         {"project_id": pid, "record_type": "schedule",
          "page_id": {"$in": page_ids}, "sheet_number": {"$regex": "^M-"}},
         {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
-         "payload.rows": 1},
+         "payload.rows": 1, "payload.contested_cells": 1},
     ).to_list(2000)
     fams = _families([{"name": (s.get("payload") or {}).get("name"),
                        "columns": (s.get("payload") or {}).get("columns"),
@@ -69239,8 +69879,10 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
     if owant:
         try:
             from lib import plan_set_questions as _psq
+            # ANSWERED ones too: an answer recorded after the pass is stated as
+            # recorded-not-yet-applied, never as "not decided" (10-29).
             health += [dict(q, record_type="set_question") for q in await db[_psq.COLLECTION].find(
-                {"project_id": pid, "status": _psq.OPEN}).to_list(200)]
+                {"project_id": pid, "status": {"$in": [_psq.OPEN, _psq.ANSWERED]}}).to_list(200)]
         except Exception as e:
             logger.warning("plan set questions unreadable for %s: %r", pid, e)
     if not want and not owant:
@@ -69315,6 +69957,10 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
         src = best if scope is None else obest
         qty = (plan_search.schedule_quantities((src.get(name) or {}).get("payload"), tags)
                if kind == "family" else None)
+        # what the two readings of a contested QTY cell said - for the
+        # takeoff's cross-check column only (ruling 73), never a figure
+        qty_readings = (plan_search.schedule_quantity_readings(
+            (src.get(name) or {}).get("payload"), tags) if kind == "family" else None)
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
                                                family=name, tags=tags, qty=qty,
                                                track=track,
@@ -69322,7 +69968,8 @@ async def _glyph_evidence(project_id: str, subject: str, *, everything: bool = F
                                                           if scope is None else None),
                                                scope=scope,
                                                reads=(reads.get(track) if kind == "family"
-                                                      and scope is None else None)))
+                                                      and scope is None else None),
+                                               qty_readings=qty_readings))
     return rows + census + health
 
 
@@ -69455,10 +70102,14 @@ async def _level_rows(project_id: str) -> List[dict]:
     levels (lib.plan_levels). Read only when a question names a level or a
     meaning that lives on one."""
     live_ids = await _live_plan_file_ids(str(project_id))
-    return await db.document_page_index.find(
+    rows = await db.document_page_index.find(
         {"project_id": str(project_id), **_current_page_filter(live_ids)},
         {"_id": 1, "sheet_number": 1, "sheet_title": 1, "floor": 1, "floors": 1},
     ).to_list(5000)
+    # The filed set's levels; the owner's page of a sheet the filed set also
+    # prints is left out (plan_sources.default_track_hidden).
+    hidden = await _default_track_hidden_ids(str(project_id), live_ids, False)
+    return [r for r in rows if str(r["_id"]) not in hidden]
 
 
 async def _interpret_levels(project_id: str, subject: str, floor: str,
@@ -69570,7 +70221,8 @@ async def _interpret_query(project_id: str, subject: str, floor: str, attribute:
     if scoped and (sheet_number or discipline):
         try:
             allowed = set(await _current_record_page_ids(
-                project_id, discipline=discipline, sheet_number=sheet_number))
+                project_id, discipline=discipline, sheet_number=sheet_number,
+                retrieval=True, owner_set=bool(interp.get("owner_set"))))
         except Exception as e:
             logger.warning(f"search_plans scope filter failed for {subject!r}: {e!r}")
             allowed = set()
@@ -69616,13 +70268,90 @@ def _with_scoped(extra: List[dict], out: List[dict], asked: str, interp: dict) -
     return out
 
 
+#: Level-mark records read per project, and ceiling records counted for the
+#: "not shown" warrant. NOT a silent cap: a read that fills it derives nothing
+#: (levels) or counts nothing (the warrant), and says so.
+LEVEL_EVIDENCE_MAX = 5000
+
+
+async def _level_evidence(project_id: str, ceiling_asked: bool,
+                          asked_levels: Tuple[str, ...] = (),
+                          owner_set: bool = False) -> List[dict]:
+    """The floor-to-floor row (lib.plan_floor_to_floor, ruling 2026-10-27),
+    derived at question time from the level marks a SECTION prints, checked
+    against every current page that prints a mark of the same name - or []
+    when no section prints two marks. READ-ONLY; whole project, like the
+    areas: a floor or discipline filter on the question must not hide the
+    section. `asked_levels`: the levels the question named, as #891 read them
+    against the set (`interp["levels"]`), so the answer names that storey.
+
+    With `ceiling_asked`, also the warrant for "ceiling height not shown":
+    how many parts of the project's current records name a ceiling and a
+    height where they print a dimension (plan_floor_to_floor.names_a_ceiling_height
+    over plan_search.value_parts). None when that count could not be made."""
+    pid = str(project_id)
+    page_ids = await _current_record_page_ids(pid, retrieval=True, owner_set=owner_set)
+    if not page_ids:
+        return []
+    scope = {"project_id": pid, "page_id": {"$in": page_ids}}
+    rows = await db[PLAN_RECORDS].find(
+        {**scope, "quote": {"$regex": plan_floor_to_floor.LEVEL_MARK_QUERY}},
+        {"_id": 0, "embedding": 0}).to_list(LEVEL_EVIDENCE_MAX)
+    if len(rows) >= LEVEL_EVIDENCE_MAX:
+        logger.warning(f"level evidence cap {LEVEL_EVIDENCE_MAX} reached for {pid}; "
+                       f"no floor-to-floor derived")
+        return []
+    pages: Dict[str, dict] = {}
+    for r in sorted(rows, key=lambda r: (str(r.get("page_id")), r.get("ordinal") or 0)):
+        ms = plan_floor_to_floor.marks(r.get("quote") or "")
+        if ms:
+            pages.setdefault(str(r.get("page_id")), dict(r, marks=[]))["marks"].extend(ms)
+    section = plan_floor_to_floor.choose_section(list(pages.values()))
+    if not section:
+        return []
+    derived = plan_floor_to_floor.derive(section["marks"])
+    where = lambda p: str(p.get("sheet_number") or p.get("file_name") or "?")  # noqa: E731
+    conflicting, agreeing = [], set()
+    for k, p in pages.items():
+        if k == str(section.get("page_id")):
+            continue
+        bad = plan_floor_to_floor.conflicts(derived, [(where(p), m) for m in p["marks"]])
+        conflicting += bad
+        if not bad:
+            agreeing.add(where(p))
+    printed: Optional[int] = None
+    if ceiling_asked:
+        rx = {"$regex": r"CEIL|\bCLG", "$options": "i"}
+        named = await db[PLAN_RECORDS].find(
+            {**scope, "$or": [{"quote": rx}, {"subject_terms": rx}, {"payload.name": rx}]},
+            {"_id": 0, "embedding": 0}).to_list(LEVEL_EVIDENCE_MAX)
+        if len(named) < LEVEL_EVIDENCE_MAX:
+            printed = sum(1 for r in named if not plan_search._vouches_for_nothing(r)
+                          for texts, naming in plan_search.value_parts(r)
+                          if plan_floor_to_floor.names_a_ceiling_height(naming, texts))
+        else:
+            logger.warning(f"ceiling-height warrant cap reached for {pid}; not counted")
+    return [plan_floor_to_floor.level_record(section, derived, conflicting, sorted(agreeing),
+                                             ceiling_asked, printed, asked_levels)]
+
+
 async def search_plans(project_id: str, subject: str, *, intent: str = "",
                        discipline: str = "", floor: str = "",
                        sheet_number: str = "", limit: int = 8,
                        also: Optional[List[str]] = None,
                        attribute: str = "",
-                       interp: Optional[dict] = None) -> List[dict]:
+                       interp: Optional[dict] = None,
+                       owner_set: Optional[bool] = None) -> List[dict]:
     """The records on this project's current sheets that speak to `subject`.
+
+    ── TWO DRAWING TRACKS (Roy, 2026-10-31) ─────────────────────────────────
+    #
+    # The filed set (original + amendments) and the owner's post-CO set are
+    # separate tracks and neither hides the other in the index. Where both
+    # print one sheet number the FILED page is searched; the owner's too only
+    # when the question concerns the owner's set (`owner_set`, else read from
+    # the question's own words, plan_sources.asks_owner_set). Both stay cited
+    # with their set, and an answer states them separately, never summed.
 
     Returns RECORDS, not prose. The agent composes; `answer_is_grounded` then
     decides whether what it composed may be sent.
@@ -69654,6 +70383,9 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
         return []
     interp = interp if interp is not None else {}
     asked = f"{subject} {attribute}"
+    owner_set = (plan_sources.asks_owner_set(asked, *(also or []))
+                 if owner_set is None else bool(owner_set))
+    interp["owner_set"] = owner_set
     interp["filters"] = {"sheet_number": sheet_number, "discipline": discipline}
     subject, floor, extra = await _interpret_query(
         project_id, subject, floor, attribute, intent, interp,
@@ -69663,15 +70395,33 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     subject, attribute, floor = plan_search.normalize_arguments(subject, attribute, intent, floor)
     names = [subject] + [a for a in (also or []) if (a or "").strip() and a != subject]
     page_ids = await _current_record_page_ids(
-        project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
+        project_id, discipline=discipline, floor=floor, sheet_number=sheet_number,
+        retrieval=True, owner_set=owner_set)
+    # A CEILING HEIGHT OR A FLOOR-TO-FLOOR (lib.plan_floor_to_floor, ruling
+    # 2026-10-27): the section's level marks print neither CEILING nor HEIGHT,
+    # so no word of the question finds them. The floor-to-floor row derived
+    # from them LEADS - for a ceiling height the set does not print, it is the
+    # answer ("ceiling height not shown; floor-to-floor 10'-0" (A-300.00)") -
+    # and the gate never binds its figures as a ceiling height. A level the
+    # question named (#891, `interp["levels"]`) picks that storey.
+    levels: List[dict] = []
+    said = " ".join([asked] + names[1:])
+    if plan_floor_to_floor.is_level_subject(said):
+        try:
+            levels = await _level_evidence(project_id, plan_floor_to_floor.names_ceiling(said),
+                                           interp.get("levels") or (), owner_set=owner_set)
+        except Exception as e:
+            logger.warning(f"search_plans level evidence failed for {subject!r}: {e}")
     # Nothing found still says what the question meant (_with_scoped fills
     # `term_senses`; the level mapping is already in `interp`).
     if not page_ids:
-        return _with_scoped(extra, [], asked, interp)
+        return levels + _with_scoped(extra, [], asked, interp)
     found = [x for x in [await _ranked_for_subject(project_id, page_ids, n, intent)
                          for n in names] if x is not None]
     if not found and (extra or plan_term_senses.terms_in(asked)):
-        return _with_scoped(extra, [], asked, interp)
+        return levels + _with_scoped(extra, [], asked, interp)
+    if not found and levels:
+        return levels
     if not found:
         return []
     ranked = (found[0][0] if len(found) == 1
@@ -69718,7 +70468,7 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
             out += await _area_evidence(project_id)
         except Exception as e:
             logger.warning(f"search_plans area evidence failed for {subject!r}: {e}")
-    return _with_scoped(extra, out, asked, interp)
+    return levels + _with_scoped(extra, out, asked, interp)
 
 
 def _interp_lines(interp: Optional[dict]) -> List[str]:
@@ -69813,6 +70563,9 @@ def _render_records_for_model(records: List[dict], subject: str,
         # printed figure the check may withhold.
         if plan_areas.is_area_record(r):
             continue
+        # The floor-to-floor row is shown through its derivation, below.
+        if plan_floor_to_floor.is_level_record(r):
+            continue
         # The same citation the crew is shown, for the same reason: a model
         # given '?' or 'pNone' will write one into the answer. A record that
         # cannot say where it is is not offered as evidence at all.
@@ -69850,18 +70603,30 @@ def _render_records_for_model(records: List[dict], subject: str,
             # member. Saying 'two W1 windows' here would be the 41 again.
             line += " (a count of the symbol, not of any one marked type)"
         lines.append(line)
+    # A SHEET A REPLACING PAGE BORROWED IS SAID TO BE (ruling 136): the blocks
+    # below name a sheet with no file or page beside it, so the tagged
+    # citation goes where the bare number was - only for a number every
+    # record of which comes from the marked page (plan_sources.borrowed_labels).
+    borrowed = plan_sources.borrowed_labels(records, sources)
+
+    def named(block: str) -> str:
+        return plan_sources.label_borrowed(block, borrowed) if borrowed else block
+
     located = plan_search.render_glyph_evidence(records)
     if located:
-        lines.append(located)
+        lines.append(named(located))
     openings = plan_search.render_opening_evidence(records)
     if openings:
-        lines.append(openings)
+        lines.append(named(openings))
     areas = plan_areas.render_area_evidence(records)
     if areas:
-        lines.append(areas)
+        lines.append(named(areas))
     health = plan_search.render_set_health(records)
     if health:
-        lines.append(health)
+        lines.append(named(health))
+    levels = plan_floor_to_floor.render_level_evidence(records)
+    if levels:
+        lines.append(named(levels))
     return "\n".join(lines)
 
 
@@ -70021,7 +70786,8 @@ async def _check_one_sheet(project_id: str, user_words: str,
     """
     try:
         page_ids = await _current_record_page_ids(str(project_id),
-                                                  sheet_number=sheet)
+                                                  sheet_number=sheet, retrieval=True,
+                                                  owner_set=plan_sources.asks_owner_set(user_words))
         if not page_ids:
             return None
         page_rec = await db.document_page_index.find_one(
@@ -70098,8 +70864,85 @@ async def _check_one_sheet(project_id: str, user_words: str,
         return None
 
 
+async def plan_abbreviation_tables(project_id: str) -> Dict[str, Dict[str, List[str]]]:
+    """file_id -> the abbreviations table its current pages print in their
+    text layer (plan_search.abbreviation_table): the alternative names an
+    attribute's subject may be printed under, in that file's drawings only
+    (plan_search, ruling 2026-10-27). READ-ONLY. A failure costs only the
+    alternative names - every value then needs its subject spelled out -
+    never a binding."""
+    out: Dict[str, Dict[str, List[str]]] = {}
+    if not project_id:
+        return out
+    try:
+        live = await _live_plan_file_ids(project_id)
+        async for p in db.document_page_index.find(
+                {"project_id": project_id, **_current_page_filter(live),
+                 "raw_text": {"$regex": "ABBREVIATION", "$options": "i"}},
+                {"file_id": 1, "raw_text": 1}):
+            table = plan_search.abbreviation_table(p.get("raw_text") or "")
+            if table:
+                mine = out.setdefault(str(p.get("file_id") or ""), {})
+                for ab, ms in table.items():
+                    mine.setdefault(ab, []).extend(m for m in ms if m not in mine.get(ab, []))
+    except Exception as e:
+        logger.warning(f"abbreviation tables unread for {project_id}: {e!r}")
+        return {}
+    return out
+
+
+async def plan_count_families(project_id: str) -> Dict[str, List[str]]:
+    """name -> tags for every family the count rule can count in the project:
+    the mechanical schedules' families (plan_glyph_pass.families, read from
+    the pages the glyph pass reads, as _glyph_evidence reads them - those
+    with no identifier column among them), the door and window schedules'
+    (plan_openings.families) and the plan-only ones (plan_only.families).
+    The gate routes a plural naming one of them, with a bare integer, to the
+    count rule under every intent (plan_search, ruling 51). READ-ONLY.
+
+    A FAILED READ RAISES (ruling 83, Roy 2026-10-29: "a failed family read
+    refuses the count"). It returned {} here, and the gate then routed on the
+    families of the records in hand alone - the gap ruling 51 closed, reopened
+    by a database hiccup. The caller (gate_and_warrant) turns the failure into
+    a refusal of every count the families could have decided."""
+    out: Dict[str, List[str]] = {}
+    if not project_id:
+        return out
+    from lib.plan_glyph_pass import families as _families
+    from lib import plan_openings as _openings
+    from lib import plan_only as _plan_only
+    pid = str(project_id)
+    page_ids = await _glyph_page_ids(pid)
+    if not page_ids:
+        return out
+    sched = await db[PLAN_RECORDS].find(
+        {"project_id": pid, "record_type": "schedule",
+         "page_id": {"$in": page_ids}, "sheet_number": {"$regex": "^M-"}},
+        {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
+         "payload.rows": 1},
+    ).to_list(2000)
+    found = [_families([{"name": (s.get("payload") or {}).get("name"),
+                         "columns": (s.get("payload") or {}).get("columns"),
+                         "rows": (s.get("payload") or {}).get("rows"),
+                         "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
+                        for s in sched]),
+             _openings.families(await _opening_schedules(pid, page_ids)),
+             _plan_only.families(await db[PLAN_RECORDS].find(
+                 _plan_only.record_query(pid, page_ids), {"embedding": 0}).to_list(2000))]
+    for fams in found:
+        for name, f in (fams or {}).items():
+            tags = (f or {}).get("tags") or []
+            mine = out.setdefault(str(name).strip().upper(), [])
+            mine.extend(str(t).upper() for t in tags if str(t).upper() not in mine)
+    return out
+
+
 def gate_plan_answer(text: str, records: List[dict], subject: str = "",
-                     intent: str = "", sources: Any = ()) -> Tuple[str, str]:
+                     intent: str = "", sources: Any = (),
+                     aliases: Optional[Dict[str, Dict[str, List[str]]]] = None,
+                     families: Optional[Dict[str, List[str]]] = None,
+                     families_unread: Optional[str] = None
+                     ) -> Tuple[str, str]:
     """(text_to_send, outcome). THE HARD GATE.
 
     Every number and dimension in a composed answer must appear in a record
@@ -70140,14 +70983,15 @@ def gate_plan_answer(text: str, records: List[dict], subject: str = "",
     # `sources` (plan_sources.source_of rows for the records' files): a file
     # name or set label the answer cites is a citation, not a figure.
     grounded, unsupported = plan_search.answer_is_grounded(
-        text, records, intent=intent, sources=sources)
+        text, records, intent=intent, aliases=aliases, sources=sources, families=families,
+        families_unread=families_unread)
     leaked = plan_search.contains_label(text, records)
     if grounded and not leaked:
         return text, "grounded"
     logger.warning(
         "plan answer failed the gate: unsupported=%s labels=%s subject=%r text=%r",
         unsupported[:6], leaked[:3], subject[:40], (text or "")[:200])
-    return plan_search.render_records(records, subject), (
+    return plan_search.render_records(records, subject, sources=sources), (
         "ungrounded" if not grounded else "label_leak")
 
 
@@ -70189,7 +71033,27 @@ async def gate_and_warrant(
     sources = (list((await _plan_file_sources(
         project_id, [r.get("file_id") for r in records or []])).values())
         if project_id else [])
-    sent, outcome = gate_plan_answer(text, records, subject, intent=intent, sources=sources)
+    # AN ATTRIBUTE BINDS TO THE SUBJECT ITS RECORD NAMES, or to one of its
+    # alternative names - the set's own abbreviations (plan_search, ruling
+    # 2026-10-27). Read only for an attribute, and only with a project.
+    aliases = (await plan_abbreviation_tables(project_id)
+               if project_id and (intent or "").strip().lower() == "attribute" else None)
+    # A FAMILY'S COUNT IS THE COUNT RULE'S UNDER EVERY INTENT (ruling 51):
+    # the project's families, so a plural names its family whatever this
+    # search returned. Not for a count, which is the count rule already.
+    # A FAILED READ REFUSES THE COUNT (ruling 83): never the families in hand.
+    families: Optional[Dict[str, List[str]]] = None
+    families_unread: Optional[str] = None
+    if project_id and (intent or "").strip().lower() != "count":
+        try:
+            families = await plan_count_families(project_id)
+        except Exception as e:
+            families_unread = f"{type(e).__name__} {e!r}"[:200]
+            logger.warning("count families unread for %s - every count is refused: %r",
+                           project_id, e)
+    sent, outcome = gate_plan_answer(text, records, subject, intent=intent, sources=sources,
+                                     aliases=aliases, families=families,
+                                     families_unread=families_unread)
     if not project_id:
         return sent, outcome
     # TRIGGERED ON `classify_reply`, THE SAME INSTRUMENT THE BENCHMARK COUNTS
@@ -70321,7 +71185,8 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
     candidates: list = []
     if named:
         _stage["named"] = named
-        candidates = await _find_named_sheet(project_id, named)
+        candidates = await _find_named_sheet(
+            project_id, named, owner_set=plan_sources.asks_owner_set(route_text))
         _stage["candidates"] = len(candidates)
         if not candidates:
             await send_whatsapp_message(
@@ -70352,6 +71217,7 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             [str(x) for x in (spec.get("keywords") or [])]
             + [spec.get("floor") or "", spec.get("sheet_type") or ""]).strip()
         found = await search_plans(project_id, subject or route_text,
+                                   owner_set=plan_sources.asks_owner_set(route_text),
                                    discipline=spec.get("discipline") or "",
                                    floor=spec.get("floor") or "")
         _stage["records"] = len(found)
@@ -71775,13 +72641,17 @@ async def _sheet_index_lines(project_id: str) -> list:
             {"project_id": str(project_id), "sheet_number": {"$ne": None},
              "is_document": {"$ne": True},
              **_current_page_filter(live_ids)},
-            {"sheet_number": 1, "sheet_title": 1},
+            {"_id": 1, "sheet_number": 1, "sheet_title": 1},
         ).limit(_SHEET_INDEX_CAP + 1).to_list(_SHEET_INDEX_CAP + 1)
     except Exception as e:
         logger.warning(f"sheet index failed for {project_id}: {e}")
         return []
+    # One title per number: the filed set's, not the owner's (default track).
+    hidden = await _default_track_hidden_ids(str(project_id), live_ids, False)
     seen, out = set(), []
     for r in rows:
+        if str(r.get("_id")) in hidden:
+            continue
         sn = (r.get("sheet_number") or "").strip()
         if not sn or sn in seen:
             continue
@@ -72596,6 +73466,7 @@ async def _dispatch_agent_tool(
             interp: dict = {}
             found = await search_plans(
                 project_id, subject, also=also, attribute=attribute,
+                owner_set=plan_sources.asks_owner_set(user_body, subject),
                 intent=args.get("intent") or "",
                 discipline=args.get("discipline") or "",
                 floor=args.get("floor") or "",
@@ -72612,7 +73483,7 @@ async def _dispatch_agent_tool(
                 f"search_plans subject={subject[:40]!r} intent={args.get('intent')!r} "
                 f"hits={len(found)} top={[r.get('tier') for r in found[:3]]} "
                 f"levels={interp.get('level_mapping') or []}")
-            sources = await _plan_file_sources(project_id, [r.get("file_id") for r in found])
+            sources = await _plan_file_sources(project_id, _record_file_ids(found))
             return _render_records_for_model(found, subject, sources, interp=interp)
         if name == "who_on_site":
             return await _handle_who_on_site(
@@ -72692,6 +73563,7 @@ async def _dispatch_agent_tool(
                 return f"(Plan search initiated for '{synth[:60]}'. Sending the matching sheet image.)"
             found = await search_plans(
                 project_id, question,
+                owner_set=plan_sources.asks_owner_set(user_body, question),
                 discipline=args.get("discipline") or "",
                 floor=args.get("floor") or "",
                 sheet_number=sheet_number)
@@ -72704,7 +73576,7 @@ async def _dispatch_agent_tool(
             logger.info(
                 f"query_plan answered from records subject={question[:40]!r} "
                 f"hits={len(found)} (sheet image sent separately)")
-            sources = await _plan_file_sources(project_id, [r.get("file_id") for r in found])
+            sources = await _plan_file_sources(project_id, _record_file_ids(found))
             return ("(The sheet image is on its way to the group.)\n"
                     + _render_records_for_model(found, question, sources))
         if name == "start_permit_renewal":
@@ -78227,11 +79099,11 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
             if answer and await _handle_gc_confirm_reply(dm_chat, answer):
                 return
             # "Q1 YES" / "Q1 NO" to a drawing-set question Levelog asked this
-            # person (ruling 21). The code is required: a bare "yes" is the
+            # person (ruling 21), on any line of the message, and "Q2 <words>"
+            # as an answer to confirm - read BEFORE the assistant, which never
+            # sees them (10-29). The code is required: a bare "yes" is the
             # assistant's, which confirms its own pending change.
-            from lib import plan_set_questions as _psq
-            set_reply = _psq.parse_reply(parsed.get("body"))
-            if set_reply and await _handle_set_question_reply(dm_chat, *set_reply):
+            if await _handle_set_question_message(dm_chat, parsed.get("body")):
                 return
 
         # ── LEVELOG ASSISTANT IN A DM ─────────────────────────────────────
@@ -82823,7 +83695,8 @@ async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_us
         await _record_glyph_pass_result(pid, tracker)
         try:
             summary = await _plan_glyph_pass(pid, actor=who or None, progress=tracker)
-            counts = {k: summary[k] for k in ("written", "set_health", "areas_written")
+            counts = {k: summary[k] for k in ("written", "set_health", "areas_written",
+                                              "walls_written", "structure_written")
                       if k in summary}
             if summary.get("aborted"):
                 tracker.finish(ABORTED, summary=dict(counts, reindex=summary.get("reindex")))
@@ -82855,8 +83728,37 @@ async def _record_glyph_pass_result(pid: str, tracker) -> None:
         logger.warning("plan glyph pass %s: result not recorded: %r", pid, e)
 
 
+class PlanSetReplaced(BaseModel):
+    """The sheet a page stands in for: all three must match ONE current page."""
+    file_id: str
+    page_number: int
+    sheet_number: str
+
+
+class PlanSetReplacement(BaseModel):
+    page_id: str                    # the replacing page (a page of the question's file)
+    replaces: PlanSetReplaced
+
+
 class PlanSetAnswer(BaseModel):
-    answer: Literal["include", "exclude"]
+    answer: Literal["include", "exclude", "replaces"]
+    #: "replaces" only: which page stands in for which sheet - explicit, never inferred
+    replacements: Optional[List[PlanSetReplacement]] = None
+
+    @model_validator(mode="after")
+    def _replacements_only_with_replaces(self):
+        if self.answer == "replaces" and not self.replacements:
+            raise ValueError("answer 'replaces' needs replacements: "
+                             "[{page_id, replaces: {file_id, page_number, sheet_number}}]")
+        if self.answer != "replaces" and self.replacements:
+            raise ValueError("replacements belong to the answer 'replaces' only")
+        return self
+
+
+class PlanSetAmend(PlanSetAnswer):
+    """An amendment: the new answer (as PlanSetAnswer) and WHY - kept with the
+    old answer on the question's history."""
+    reason: str = Field(min_length=3, max_length=500)
 
 
 @api_router.get("/projects/{project_id}/plan-set-questions",
@@ -82888,7 +83790,9 @@ async def list_plan_set_questions(project_id: str, current_user=Depends(get_admi
             "unasked_reason": d.get("unasked_reason"),
             "answer": d.get("answer"), "answered_by": d.get("answered_by"),
             "answered_by_name": d.get("answered_by_name"), "answered_at": d.get("answered_at"),
-            "answered_via": d.get("answered_via"),
+            "answered_via": d.get("answered_via"), "replacements": d.get("replacements"),
+            "history": d.get("history") or [], "amended_at": d.get("amended_at"),
+            "amended_reason": d.get("amended_reason"),
             "created_at": d.get("created_at"), "last_seen_at": d.get("last_seen_at")})
     return {"questions": out}
 
@@ -82908,7 +83812,9 @@ async def ask_plan_set_questions(project_id: str, current_user=Depends(get_admin
 async def answer_plan_set_question(project_id: str, question_id: str, body: PlanSetAnswer,
                                    current_user=Depends(get_admin_user)):
     """Record the answer to an open drawing-set question (ruling 21), as the
-    PM gave it: "include" (the pages are part of the set) or "exclude".
+    PM gave it: "include" (the pages are part of the set), "exclude", or
+    "replaces" - the pages stand in place of other sheets of the set, named
+    explicitly in `replacements` (422 if any page does not check out).
     Audit-logged; applied on the next glyph pass.
 
     THE COMPANY ANSWERS, NEVER THE OPERATOR (ruling 33): the company's own
@@ -82920,13 +83826,48 @@ async def answer_plan_set_question(project_id: str, question_id: str, body: Plan
                             detail="the platform operator does not answer a project's "
                                    "drawing-set questions; its PM or company admin does")
     who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
-    doc = await _record_set_answer(str(project_id), question_id, body.answer, who, via="admin",
-                                   name=(current_user or {}).get("full_name")
-                                   or (current_user or {}).get("name"))
+    try:
+        doc = await _record_set_answer(
+            str(project_id), question_id, body.answer, who, via="admin",
+            name=(current_user or {}).get("full_name") or (current_user or {}).get("name"),
+            replacements=[r.model_dump() for r in body.replacements] if body.replacements else None)
+    except ValueError as e:                 # a replacement the pages do not support
+        raise HTTPException(status_code=422, detail=str(e))
     if doc is None:
         raise HTTPException(status_code=409,
                             detail="no open drawing-set question with that id on this project")
     return {"id": str(doc.get("_id")), "status": doc.get("status"), "answer": doc.get("answer"),
+            "replacements": doc.get("replacements"), "applies": "on the next glyph pass"}
+
+
+@api_router.post("/projects/{project_id}/plan-set-questions/{question_id}/amend",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def amend_plan_set_question(project_id: str, question_id: str, body: PlanSetAmend,
+                                  current_user=Depends(get_admin_user)):
+    """Change the answer of an ANSWERED drawing-set question (company admin
+    only, never the platform operator, never a WhatsApp reply): the new answer
+    as in .../answer, plus a `reason`. The old answer stays on the question's
+    `history`; 409 when the question is not answered; 422 when the new
+    replacements do not check out (nothing is stored). Audit-logged
+    (plan_set_question_amended); applied on the next glyph pass."""
+    if is_platform_operator(current_user):
+        raise HTTPException(status_code=403,
+                            detail="the platform operator does not answer a project's "
+                                   "drawing-set questions; its PM or company admin does")
+    who = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
+    try:
+        doc = await _amend_set_answer(
+            str(project_id), question_id, body.answer, who, reason=body.reason,
+            name=(current_user or {}).get("full_name") or (current_user or {}).get("name"),
+            replacements=[r.model_dump() for r in body.replacements] if body.replacements else None)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if doc is None:
+        raise HTTPException(status_code=409,
+                            detail="no answered drawing-set question with that id on this project "
+                                   "(an open one is answered, not amended)")
+    return {"id": str(doc.get("_id")), "status": doc.get("status"), "answer": doc.get("answer"),
+            "replacements": doc.get("replacements"), "history": doc.get("history"),
             "applies": "on the next glyph pass"}
 
 
@@ -82944,14 +83885,17 @@ async def get_project_takeoff_xlsx(project_id: str, current_user=Depends(get_adm
     pid = str(project_id)
     records = await _glyph_evidence(pid, "", everything=True)
     areas = await _area_evidence(pid)
+    legend = await _legend_count_evidence(pid)
+    lights = await _light_fixture_evidence(pid)
     fids = set()
-    for r in list(records) + list(areas):
+    for r in list(records) + list(areas) + list(legend) + list(lights):
         fids.add(r.get("file_id"))
         a = (r.get("payload") or {}).get("arch") if isinstance(r.get("payload"), dict) else None
         if isinstance(a, dict):
             fids.add(a.get("file_id"))
     sources = await _plan_file_sources(pid, fids)
-    takeoff = await asyncio.to_thread(_tx.build, records, areas, sources)
+    takeoff = await asyncio.to_thread(_tx.build, records, areas, sources, legend,
+                                      light_rows=lights)
     project = await db.projects.find_one({"_id": to_query_id(pid)}, {"name": 1, "company_id": 1})
     company_id = (project or {}).get("company_id") or get_user_company_id(current_user)
     for ln in takeoff.refused:
@@ -82959,7 +83903,7 @@ async def get_project_takeoff_xlsx(project_id: str, current_user=Depends(get_adm
                                     item_name=f"{ln.item} {ln.tag}".strip(),
                                     scope=" ".join(x for x in (ln.scope, ln.level) if x),
                                     track=ln.set_label, reason=ln.reason,
-                                    sheets=[s for s in ln.sheets.split(", ") if s])
+                                    sheets=_tx.sheet_numbers(ln.sheets))
     now = datetime.now(timezone.utc)
     name = str((project or {}).get("name") or "project")
     content = await asyncio.to_thread(_tx.write, takeoff, project_name=name,

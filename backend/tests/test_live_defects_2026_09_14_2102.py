@@ -127,7 +127,7 @@ class ShowMeAnElementIsNotAShowMeASheet(unittest.TestCase):
         code = _code_only(server._handle_plan_query)
         i = code.index("if named:")
         window = code[i:i + 500]
-        self.assertIn("_find_named_sheet(project_id, named)", window)
+        self.assertRegex(window, r"_find_named_sheet\(\s*project_id, named[,)]")
         self.assertIn("isn't in the indexed drawings", window)
         self.assertIn("return", window)
 

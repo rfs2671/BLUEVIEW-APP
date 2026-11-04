@@ -59,7 +59,7 @@ class EveryReadAsksWhichFilesStillExist(unittest.TestCase):
 
     def test_the_answer_path_filters_through_the_one_helper(self):
         i = SRC.index("async def search_plans(")
-        self.assertIn("await _current_record_page_ids(", SRC[i:i + 1200])
+        self.assertIn("await _current_record_page_ids(", SRC[i:i + 2600])
 
     def test_so_does_the_path_that_picks_the_sheet_to_send(self):
         """The picture and the answer come from the same records now, and the

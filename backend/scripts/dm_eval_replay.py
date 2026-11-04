@@ -76,7 +76,7 @@ class _Replay(_Site):
             kw["tool_trace"].append({"tool": "replay", "result": reply})
             return reply
 
-        async def find(project_id, sheet_q):
+        async def find(project_id, sheet_q, **_kw):
             row = SHEETS.get(sheet_q.upper())
             return [row] if row else []
 

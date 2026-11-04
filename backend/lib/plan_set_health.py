@@ -32,14 +32,25 @@ only the claims that depend on what it names:
                           (sheet-scope floor and building totals still bind -
                           ruling 2026-10-07; M-106.00 narrow, 2026-10-26).
   drawn_on_removal_layer  (queue item 25, ruling 2026-10-28) a door/window
-                          tag whose drawn opening is on a layer named TO
-                          REMOVE: the nearest drawn object to the tag, with
-                          that layer's ink offered beside the door/window
-                          layers', is the removal layer's. One item per
-                          (sheet, track, layer), naming the tags. A FLAG,
-                          NOT A BINDING: it refuses nothing, and no glyph row
-                          and no gate reading changes with it
+                          tag whose drawn opening is on a REMOVAL LAYER - one
+                          named TO REMOVE or ending -DEMO, never an existing
+                          layer (ruling 38, lib.plan_space_layers.
+                          is_removal_layer): the nearest drawn object to the
+                          tag, with that layer's ink offered beside the
+                          door/window layers', is the removal layer's. One
+                          item per (sheet, track, layer), naming the tags. A
+                          FLAG, NOT A BINDING: it refuses nothing, and no
+                          glyph row and no gate reading changes with it
                           (lib.plan_openings.removal_layer_health).
+  removal_layer_ink       (ruling 37, 2026-10-28) a plan's removal layer
+                          draws ink no door/window tag names - the owner's
+                          mezzanine's 80 objects on TO REMOVE. One item per
+                          (sheet, track, layer), the count of those objects
+                          (lib.plan_openings.removal_layer_ink_health). Both
+                          removal items are written for every floor of the
+                          openings pass and every plan read under a set
+                          question (ruling 39), and neither refuses an answer
+                          (ruling 40).
 
 Measured 2026-10-26 on 588 Boyland: the reference rule finds exactly the
 seven real missing sheets (S-204, S-400, FO-101, FO-202, A-600, EN-003,
@@ -62,6 +73,7 @@ MISSING_REFERENCED_SHEET = "missing_referenced_sheet"
 DUPLICATE_SHEET_NUMBER = "duplicate_sheet_number"
 MECHANICAL_WITHOUT_ARCHITECTURAL = "mechanical_without_architectural"
 DRAWN_ON_REMOVAL_LAYER = "drawn_on_removal_layer"
+REMOVAL_LAYER_INK = "removal_layer_ink"
 
 NOT_RECONCILED = "schedule present, no identifier column, not reconciled"
 

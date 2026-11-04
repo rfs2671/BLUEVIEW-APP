@@ -572,3 +572,18 @@ def register_offset(arch: dict, other: dict, *, coarse_pt: Optional[float] = Non
                          f"{reg.ANCHOR_MATCH_RADIUS_IN}in",
                 "usable": not refused, "refused": "; ".join(refused) or None})
     return out
+
+
+def matched_anchors(arch: dict, mech: dict, registration: dict):
+    """(arch corners, mech corners), pairwise: the anchors `registration`'s
+    offset matches within ANCHOR_MATCH_RADIUS_IN - the same set register()
+    and register_offset() took their residuals over (best_translation's
+    final match)."""
+    A = np.asarray(arch["corners"], dtype=float).reshape(-1, 2)
+    B = np.asarray(mech["corners"], dtype=float).reshape(-1, 2)
+    if not len(A) or not len(B):
+        return A[:0], B[:0]
+    d, jj = cKDTree(B).query(A + np.array([registration["dx"], registration["dy"]]),
+                             distance_upper_bound=_pts(reg.ANCHOR_MATCH_RADIUS_IN))
+    ok = np.isfinite(d)
+    return A[ok], B[jj[ok]]

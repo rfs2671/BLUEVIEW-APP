@@ -817,5 +817,509 @@ class TheOperatorViewsAndAsksButNeverAnswers(unittest.TestCase):
         self.assertEqual(wire.dms + wire.messages, [])
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 5. REPLACES (Roy, 10-30): "answers can be IN / NOT IN / REPLACES <sheet>.
+#    The yes/no form can't express supersession."
+# ══════════════════════════════════════════════════════════════════════════
+#
+# The gas-change file's Roof Plan (page 2, unnumbered) is the roof plan, and
+# A-105.01 of AR - 8.18.26 is not; its page 1 (A-100.00, FIRST FLOOR PLAN) is
+# the first floor plan and A-100.01 is not - and page 1 is in NO track today
+# (A-100.01 wins by date), so the question, which covers page 2, cannot name
+# it. The answer carries an explicit list; the pass applies it to each track's
+# pages before anything reads them.
+
+AR325, AR818, GASF, MHF = "ar325", "ar818", "gas", "mh"
+A1XF = "a1x"
+FILES5 = {AR325: {"name": "AR - 3.28.25.pdf"}, AR818: {"name": "AR - 8.18.26.pdf"},
+          GASF: {"name": GAS}, A1XF: {"name": A1X}, MHF: {"name": "MH - 7.2.26.pdf"}}
+
+
+def _raw5():
+    """The filed set as 588 Boyland's index holds it: the March A-100.00 and
+    A-105.00 (superseded by date), the 8.18.26 A-100.01 / A-105.01, the
+    gas-change A-100.00 (superseded by A-100.01) and its unnumbered Roof
+    Plan, the second architect's A.1.1-A.1.7, and the mechanical plans."""
+    pages = [(AR325, 11, "A-100.00", "FIRST FLOOR PLAN"), (AR325, 12, "A-101.00", "SECOND FLOOR PLAN"),
+             (AR325, 16, "A-105.00", "ROOF AND BULKEAD PLAN"),
+             (AR818, 6, "A-100.01", "FIRST FLOOR PLAN"), (AR818, 7, "A-105.01", "ROOF AND BULKEAD PLAN"),
+             (AR818, 8, "A-200.01", "FRONT AND REAR ELEVATIONS"),
+             (GASF, 1, "A-100.00", "FIRST FLOOR PLAN"), (GASF, 2, None, "Roof Plan"),
+             (MHF, 2, "M-100.00", "HVAC FIRST FLOOR PLAN"), (MHF, 3, "M-101.00", "HVAC SECOND FLOOR PLAN"),
+             (MHF, 6, "M-105.00", "HVAC ROOF PLAN")]
+    pages += [(A1XF, 10 + i, f"A.1.{i}", "FLOOR PLAN") for i in range(1, 8)]
+    return [{"_id": f"{f}#{n}", "file_id": f, "file_hash": f"h-{f}", "file_name": FILES5[f]["name"],
+             "page_number": n, "sheet_number": sn, "sheet_title": t, "discipline": "AR",
+             "superseded_by": None} for f, n, sn, t in pages]
+
+
+def _psq5():
+    """lib.plan_set_questions with the REPLACES answer - an assertion, not an
+    AttributeError, on a tree without it."""
+    psq = _psq()
+    assert hasattr(psq, "REPLACES") and hasattr(psq, "validate_replacements")         and hasattr(psq, "apply_decisions"), "answers are include / exclude only in this tree"
+    return psq
+
+
+def _track(decisions=(), notes=None, raw=None):
+    import inspect
+    _server_has("_glyph_track_pages")
+    assert "decisions" in inspect.signature(server._glyph_track_pages).parameters,         "the track pages do not take the office's answers in this tree"
+    got = server._glyph_track_pages(raw or _raw5(), FILES5, set(FILES5), decisions=list(decisions),
+                                    notes=notes)
+    return {t: ps for t, ps in got}["filed"]
+
+
+def _ids(pages):
+    return {p["_id"]: p.get("sheet_number") for p in pages}
+
+
+def _question(file_id, n_pages):
+    """The question the pass raises for a file, by the real pairing."""
+    from lib import plan_derive as derive
+    psq = _psq5()
+    rows = [dict(p, page_id=p["_id"]) for p in _track()]
+    paired = derive.pair_plan_sheets(rows)
+    refused = [(p, why) for p, why, role in paired["refused"] if role == derive.ROLE_ARCHITECTURAL]
+    qs = [q for q in psq.detect(PID, "filed", refused) if q["file_id"] == file_id]
+    assert len(qs) == 1 and len(qs[0]["pages"]) == n_pages, qs
+    return dict(qs[0], _id=qs[0]["id"], code="Q1" if file_id == A1XF else "Q2")
+
+
+def _repl(page_id, file_id, page_number, sheet_number):
+    return {"page_id": page_id, "replaces": {"file_id": file_id, "page_number": page_number,
+                                             "sheet_number": sheet_number}}
+
+
+#: Roy's answer: gas p2 replaces A-105.01, gas p1 replaces A-100.01
+ROY = [_repl("gas#2", AR818, 7, "A-105.01"), _repl("gas#1", AR818, 6, "A-100.01")]
+
+
+def _resolved(items=None):
+    psq = _psq5()
+    q = _question(GASF, 1)
+    got, errs = psq.validate_replacements(q, items or ROY, _track(), _raw5())
+    assert not errs, errs
+    return got
+
+
+def _answered_q2(items=None):
+    return dict(_question(GASF, 1), status="answered", answer="replaces",
+                replacements=_resolved(items))
+
+
+def _answered_q1():
+    return dict(_question(A1XF, 7), status="answered", answer="exclude")
+
+
+class ARepliesAnswerReplacesAPageOfTheTrack(unittest.TestCase):
+
+    def test_today_gas_p1_is_in_no_track_and_the_roof_plan_is_refused(self):
+        """The starting point: A-100.01 and A-105.01 win by date; gas p1 is in
+        no track; the unnumbered Roof Plan is in the filed track, refused."""
+        ids = _ids(_track())
+        self.assertIn("ar818#6", ids)
+        self.assertIn("ar818#7", ids)
+        self.assertNotIn("gas#1", ids)
+        self.assertIn("gas#2", ids)
+
+    def test_the_replaced_pages_leave_and_the_replacing_pages_take_their_place(self):
+        _psq5()
+        ids = _ids(_track([_answered_q2()]))
+        self.assertNotIn("ar818#6", ids, "A-100.01 leaves the track")
+        self.assertNotIn("ar818#7", ids, "A-105.01 leaves the track")
+        self.assertEqual(ids.get("gas#1"), "A-100.00", "gas p1 - in no track before - is in")
+        self.assertEqual(ids.get("gas#2"), "A-105.01", "the unnumbered roof plan is paired as the "
+                                                       "sheet the office said it replaces")
+        self.assertEqual(sum(1 for p in _track([_answered_q2()]) if p["_id"] == "gas#2"), 1,
+                         "it left its old place: one entry")
+
+    def test_the_pairing_rules_are_unchanged_and_the_roof_plan_is_no_question_any_more(self):
+        from lib import plan_derive as derive
+        psq = _psq5()
+        pages = [dict(p, page_id=p["_id"]) for p in _track([_answered_q2()])]
+        paired = derive.pair_plan_sheets(pages)
+        pairs = {(a["_id"], m["_id"]) for a, m in paired["pairs"]}
+        self.assertIn(("gas#1", "mh#2"), pairs, "the gas first floor pairs with M-100.00 by number")
+        self.assertIn(("gas#2", "mh#6"), pairs, "the gas roof pairs with M-105.00 by number")
+        self.assertFalse([p for p, _w, _r in paired["refused"] if p["file_id"] == GASF])
+        refused = [(p, w) for p, w, r in paired["refused"] if r == derive.ROLE_ARCHITECTURAL]
+        self.assertEqual([q["file_id"] for q in psq.detect(PID, "filed", refused)], [A1XF],
+                         "only the A.1.x question is still raised")
+
+    def test_the_title_stays_its_own(self):
+        by = {p["_id"]: p for p in _track([_answered_q2()])}
+        self.assertEqual(by["gas#2"]["sheet_title"], "Roof Plan")
+        self.assertEqual(by["gas#1"]["sheet_title"], "FIRST FLOOR PLAN")
+        self.assertEqual(by["gas#2"]["file_name"], GAS)
+
+    def test_the_track_keeps_its_order_and_other_pages(self):
+        base = [p["_id"] for p in _track()]
+        got = [p["_id"] for p in _track([_answered_q2()])]
+        i = base.index("ar818#6")
+        self.assertEqual(got[i], "gas#1", "in the replaced page's place")
+        self.assertEqual([x for x in got if x not in ("gas#1", "gas#2")],
+                         [x for x in base if x not in ("ar818#6", "ar818#7", "gas#2")])
+
+    def test_q1_exclude_and_q2_replaces_apply_together(self):
+        notes = []
+        ids = _ids(_track([_answered_q1(), _answered_q2()], notes))
+        self.assertFalse([i for i in ids if i.startswith("a1x#")], "A.1.1 to A.1.7 are out")
+        self.assertEqual((ids.get("gas#1"), ids.get("gas#2")), ("A-100.00", "A-105.01"))
+        self.assertNotIn("ar818#6", ids)
+        self.assertEqual(sorted((n["code"], n["answer"], n["applied"]) for n in notes),
+                         [("Q1", "exclude", True), ("Q2", "replaces", True)])
+
+    def test_exclude_leaves_the_pages_out_of_the_whole_track(self):
+        """Before: only the opening rows were left out; the pairing still
+        refused the pages (a refusal row each) and the walls step read them."""
+        ids = _ids(_track([_answered_q1()]))
+        self.assertFalse([i for i in ids if i.startswith("a1x#")])
+        self.assertIn("gas#2", ids, "the other question's page is untouched")
+
+    def test_an_include_changes_no_page_list(self):
+        got = _ids(_track([dict(_answered_q1(), answer="include")]))
+        self.assertEqual(got, _ids(_track()))
+
+    def test_the_input_is_not_changed(self):
+        raw = _raw5()
+        before = [dict(p) for p in raw]
+        _track([_answered_q2()], raw=raw)
+        self.assertEqual(raw, before)
+
+
+class AReplacementIsRefusedWhenAnyPageIsAmbiguous(unittest.TestCase):
+    """Nothing is inferred: each rule has its own refusal."""
+
+    def _refused(self, items, track=None, pool=None, question=None, expect=""):
+        psq = _psq5()
+        got, errs = psq.validate_replacements(question or _question(GASF, 1), items,
+                                              track or _track(), pool or _raw5())
+        self.assertEqual(got, [], "refused: nothing resolved")
+        self.assertTrue(errs, "a reason is given")
+        self.assertRegex("; ".join(errs), expect)
+
+    def test_roys_answer_is_accepted(self):
+        got = _resolved()
+        self.assertEqual([(r["page_id"], r["replaces"]["sheet_number"], r["takes_sheet_number"])
+                          for r in got],
+                         [("gas#2", "A-105.01", "A-105.01"), ("gas#1", "A-100.01", "A-100.00")])
+
+    def test_no_list(self):
+        for none in (None, []):
+            self._refused(none, expect="needs the list")
+
+    def test_a_malformed_item(self):
+        self._refused([{"page_id": "gas#2"}], expect="needs page_id")
+        self._refused([{"replaces": {"file_id": AR818, "page_number": 7, "sheet_number": "A-105.01"}}],
+                      expect="needs page_id")
+
+    def test_the_replacing_page_must_exist(self):
+        self._refused([_repl("nope", AR818, 7, "A-105.01"), ROY[1]], expect="not a page of this project")
+
+    def test_the_replacing_page_must_be_in_the_questions_file(self):
+        self._refused([_repl("ar325#12", AR818, 7, "A-105.01"), ROY[1]],
+                      expect="not in the question's file")
+
+    def test_the_replaced_page_must_match_on_file_page_and_sheet(self):
+        for bad in (_repl("gas#2", AR818, 7, "A-105.00"),        # wrong sheet number
+                    _repl("gas#2", AR818, 9, "A-105.01"),        # wrong page
+                    _repl("gas#2", "nope", 7, "A-105.01")):      # wrong file
+            self._refused([bad, ROY[1]], expect="not one current page")
+
+    def test_the_replaced_page_must_be_current_in_the_track(self):
+        """The March A-105.00 lost to A-105.01 by date: it is in no track."""
+        self._refused([_repl("gas#2", AR325, 16, "A-105.00"), ROY[1]], expect="not one current page")
+
+    def test_the_replaced_page_must_be_a_plan_of_the_series(self):
+        self._refused([_repl("gas#2", AR818, 8, "A-200.01"), ROY[1]],
+                      expect="not an architectural plan of the plan series")
+
+    def test_a_numbered_replacing_page_must_be_the_same_floor_sequence(self):
+        raw = _raw5() + [{"_id": "gas#3", "file_id": GASF, "file_hash": "h-gas", "file_name": GAS,
+                          "page_number": 3, "sheet_number": "A-101.00",
+                          "sheet_title": "SECOND FLOOR PLAN", "discipline": "AR", "superseded_by": None}]
+        self._refused([ROY[0], _repl("gas#3", AR818, 6, "A-100.01")], pool=raw,
+                      expect="not the same floor sequence")
+
+    def test_the_titles_may_not_name_different_floors(self):
+        raw = _raw5()
+        raw[[p["_id"] for p in raw].index("gas#1")]["sheet_title"] = "SECOND FLOOR PLAN"
+        self._refused(ROY, pool=raw, expect="different floors")
+
+    def test_the_replacing_page_must_be_titled_as_a_plan(self):
+        raw = _raw5()
+        raw[[p["_id"] for p in raw].index("gas#2")]["sheet_title"] = "Gas riser diagram"
+        self._refused(ROY, pool=raw, expect="not titled as a plan")
+
+    def test_a_page_named_twice(self):
+        self._refused([ROY[0], _repl("gas#2", AR818, 6, "A-100.01")], expect="named twice")
+        extra = {"_id": "gas#3", "file_id": GASF, "file_hash": "h-gas", "file_name": GAS,
+                 "page_number": 3, "sheet_number": None, "sheet_title": "Roof Plan",
+                 "discipline": "AR", "superseded_by": None}
+        self._refused([ROY[0], _repl("gas#3", AR818, 7, "A-105.01")], pool=_raw5() + [extra],
+                      expect="named twice")
+
+    def test_every_page_the_question_covers_must_be_decided(self):
+        """The question covers gas p2; an answer that names only p1 leaves p2
+        refused and asked about - the answer must decide the whole question."""
+        self._refused([ROY[1]], expect="no replacement names it")
+
+    def test_two_plans_may_not_end_up_on_one_sequence(self):
+        track = _track() + [{"_id": "x#1", "file_id": "x", "file_name": "other.pdf", "page_number": 1,
+                             "sheet_number": "A-100.02", "sheet_title": "FIRST FLOOR PLAN"}]
+        self._refused(ROY, track=track, expect="share a sequence")
+
+
+class ARefusedReplacementIsAppliedNowhere(unittest.TestCase):
+
+    def test_all_or_nothing(self):
+        """One bad item and none of the question's replacements applies: the
+        pages read as before, the note says why."""
+        q = _answered_q2()
+        q["replacements"] = [q["replacements"][0],
+                             dict(q["replacements"][1], replaces=dict(q["replacements"][1]["replaces"],
+                                                                      sheet_number="A-100.09"))]
+        notes = []
+        self.assertEqual(_ids(_track([q], notes)), _ids(_track()))
+        self.assertEqual([(n["applied"], "not one current page" in " ".join(n["detail"]))
+                          for n in notes], [(False, True)])
+
+    def test_a_replaced_page_that_is_gone_since_the_answer(self):
+        raw = [p for p in _raw5() if p["_id"] != "ar818#7"]
+        notes = []
+        self.assertEqual(_ids(_track([_answered_q2()], notes, raw=raw)), _ids(_track(raw=raw)))
+        self.assertFalse(notes[0]["applied"])
+
+    def test_an_unapplied_replacement_is_a_log_line_not_a_pick(self):
+        q = _answered_q2()
+        q["replacements"][0]["replaces"]["sheet_number"] = "A-105.09"
+        with self.assertLogs(level="WARNING") as cm:
+            _track([q])
+        self.assertTrue(any("NOT applied" in m for m in cm.output), cm.output)
+
+
+class AReplacesAnswerIsRecordedByTheOfficeOnly(unittest.TestCase):
+
+    def _world(self):
+        from bson import ObjectId
+        db = AsyncFakeDB()
+        db.projects.docs.append({"_id": ObjectId(PID), "name": "588", "company_id": CID})
+        for fid, f in FILES5.items():
+            db.project_files.docs.append(dict(f, _id=fid, project_id=PID, is_deleted=False))
+        for p in _raw5():
+            db.document_page_index.docs.append(dict(p, project_id=PID))
+        q = _question(GASF, 1)
+        doc = {k: v for k, v in q.items() if k != "id"}
+        doc.update(project_id=PID, company_id=CID, status="open", asked=[], asked_user_ids=[])
+        db["plan_set_questions"].docs.append(doc)
+        return db, doc["_id"]
+
+    def _patches(self, db):
+        async def live(_pid):
+            return list(FILES5)
+        return [patch.object(server, "db", db), patch.object(server, "_live_plan_file_ids", live)]
+
+    def _post(self, db, qid, body):
+        ps = self._patches(db)
+        for p in ps:
+            p.start()
+        try:
+            return _run(server.answer_plan_set_question(PID, qid, body,
+                                                        current_user={"id": "admin-1", "full_name": "Roy"}))
+        finally:
+            for p in ps:
+                p.stop()
+
+    def test_the_admin_route_records_the_list_and_audits_it(self):
+        _server_has("PlanSetReplacement")
+        db, qid = self._world()
+        body = server.PlanSetAnswer(answer="replaces", replacements=ROY)
+        out = self._post(db, qid, body)
+        self.assertEqual(out["answer"], "replaces")
+        q = db["plan_set_questions"].docs[0]
+        self.assertEqual((q["status"], q["answer"], q["answered_via"]), ("answered", "replaces", "admin"))
+        self.assertEqual([(r["page_id"], r["replaces"]["sheet_number"], r["takes_sheet_number"])
+                          for r in q["replacements"]],
+                         [("gas#2", "A-105.01", "A-105.01"), ("gas#1", "A-100.01", "A-100.00")])
+        audit = [a for a in db.audit_logs.docs if a["action"] == "plan_set_question_answered"]
+        self.assertEqual(len(audit), 1)
+        self.assertEqual(len(audit[0]["details"]["replacements"]), 2, "the replacements are in the audit")
+        self.assertEqual(audit[0]["details"]["answer"], "replaces")
+
+    def test_a_replacement_the_pages_do_not_support_is_422_and_stores_nothing(self):
+        from fastapi import HTTPException
+        _server_has("PlanSetReplacement")
+        db, qid = self._world()
+        bad = [_repl("gas#2", AR818, 7, "A-105.00"), ROY[1]]
+        with self.assertRaises(HTTPException) as cm:
+            self._post(db, qid, server.PlanSetAnswer(answer="replaces", replacements=bad))
+        self.assertEqual(cm.exception.status_code, 422)
+        self.assertIn("not one current page", cm.exception.detail)
+        self.assertEqual(db["plan_set_questions"].docs[0]["status"], "open")
+        self.assertFalse([a for a in db.audit_logs.docs if a["action"] == "plan_set_question_answered"])
+
+    def test_the_body_must_agree_with_the_answer(self):
+        _server_has("PlanSetReplacement")
+        from pydantic import ValidationError
+        with self.assertRaises(ValidationError):
+            server.PlanSetAnswer(answer="replaces")
+        with self.assertRaises(ValidationError):
+            server.PlanSetAnswer(answer="include", replacements=ROY)
+        server.PlanSetAnswer(answer="exclude")
+
+    def test_a_reply_cannot_record_a_replacement(self):
+        psq = _psq5()
+        self.assertIn("replaces", psq.ANSWERS)
+        db, qid = self._world()
+        ps = self._patches(db)
+        for p in ps:
+            p.start()
+        try:
+            with self.assertRaises(ValueError):
+                _run(server._record_set_answer(PID, qid, "replaces", "pm", via="whatsapp",
+                                               replacements=[dict(r) for r in ROY]))
+        finally:
+            for p in ps:
+                p.stop()
+        self.assertEqual(db["plan_set_questions"].docs[0]["status"], "open")
+        self.assertIsNone(psq.parse_reply("Q2 replaces A-105.01"))
+        self.assertEqual(psq.split_reply("Q2 replaces A-105.01")[1], [("Q2", "replaces A-105.01")],
+                         "words after a code are a note to confirm, never an answer")
+
+    def test_the_confirmation_says_the_office_records_a_replacement(self):
+        psq = _psq5()
+        txt = psq.confirm_text(dict(_question(GASF, 1)))
+        self.assertIn("replacement", txt)
+        self.assertIn("office records", txt)
+
+    def test_an_answered_replacement_reads_back_in_words(self):
+        psq = _psq5()
+        q = dict(_answered_q2(), answered_by_name="Roy", answered_via="admin",
+                 answered_at="2026-10-30T10:00:00")
+        txt = psq.status_text(q)
+        self.assertIn("A-105.01", txt)
+        self.assertIn("A-100.01", txt)
+        self.assertIn("replaces", txt)
+        self.assertNotIn("not part of", txt)
+
+
+class TheStoredReplacementReachesThePass(unittest.TestCase):
+
+    def _db(self, answers):
+        db = AsyncFakeDB()
+        for fid, f in FILES5.items():
+            db.project_files.docs.append(dict(f, _id=fid, project_id=PID, is_deleted=False))
+        for p in _raw5():
+            db.document_page_index.docs.append(dict(p, project_id=PID))
+        for q in answers:
+            doc = {k: v for k, v in q.items() if k != "id"}
+            db["plan_set_questions"].docs.append(dict(doc, project_id=PID, company_id=CID))
+        return db
+
+    def _pass(self, db, returns=None):
+        _server_has("_plan_glyph_pass")
+        seen = {}
+
+        def fake_pass(pages, open_page, schedules, door_pages=(), track="filed", sweeps=None,
+                      plan_only=None, opening_schedules=(), set_answers=None, **k):
+            seen[track] = {"pages": [(p["page_id"], p["sheet_number"]) for p in pages],
+                           "answers": set_answers}
+            return {"rows": [], "summary": {}, "opening_rows": [], "opening_health": [],
+                    "areas": [], "walls": [], "set_questions": (returns or {}).get(track, [])}
+
+        async def live(_pid):
+            return list(FILES5)
+
+        async def write(_pid, rows):
+            return len(rows)
+
+        async def company(*a, **k):
+            return CID
+
+        async def none(*a, **k):
+            return None
+
+        with patch.object(server, "db", db), patch.object(server, "_live_plan_file_ids", live), \
+                patch("lib.plan_glyph_pass.run_pass", fake_pass), \
+                patch.object(server, "_glyph_set_health", lambda *a, **k: []), \
+                patch.object(server, "_write_glyph_records", write), \
+                patch.object(server, "_write_set_health", write), \
+                patch.object(server, "_write_stack_rows", write), \
+                patch.object(server, "_write_area_records", write), \
+                patch.object(server, "_write_wall_records", write), \
+                patch.object(server, "_project_company_id", company), \
+                patch.object(server, "audit_log", none), \
+                patch.object(server, "_review_queue_plan_set_question", none), \
+                patch("lib.plan_only.record_query", lambda pid, ids: {"project_id": "none"}):
+            return _run(server._plan_glyph_pass(PID)), seen
+
+    def test_the_pass_reads_the_replacing_pages_in_the_replaced_ones_places(self):
+        db = self._db([_answered_q1(), _answered_q2()])
+        summary, seen = self._pass(db)
+        filed = dict(seen["filed"]["pages"])
+        self.assertEqual(filed.get("gas#1"), "A-100.00")
+        self.assertEqual(filed.get("gas#2"), "A-105.01")
+        self.assertNotIn("ar818#6", filed)
+        self.assertNotIn("ar818#7", filed)
+        self.assertFalse([i for i in filed if i.startswith("a1x#")])
+        self.assertIn("ar325#12", filed, "the rest of the set is read as before")
+        applied = {a["code"]: a["applied"] for a in summary["set_answers"]}
+        self.assertEqual(applied, {"Q1": True, "Q2": True})
+
+    def test_the_questions_stay_answered_and_are_not_reopened(self):
+        db = self._db([_answered_q1(), _answered_q2()])
+        self._pass(db)
+        docs = {d["_id"]: d for d in db["plan_set_questions"].docs}
+        self.assertEqual(len(docs), 2, "no new question")
+        self.assertEqual({d["code"]: (d["status"], d["answer"]) for d in docs.values()},
+                         {"Q1": ("answered", "exclude"), "Q2": ("answered", "replaces")})
+
+    def test_a_question_still_raised_after_its_answer_keeps_the_answer(self):
+        """Had the replacement not applied, the pass raises the question again;
+        the store refreshes nothing and re-opens nothing."""
+        db = self._db([_answered_q2()])
+        raised = {"filed": [_question(GASF, 1)]}
+        raised["filed"][0]["id"] = raised["filed"][0].pop("_id")
+        self._pass(db, returns=raised)
+        d = db["plan_set_questions"].docs
+        self.assertEqual([(x["code"], x["status"], x["answer"]) for x in d], [("Q2", "answered", "replaces")])
+
+    def test_the_census_scope_includes_the_replacing_page(self):
+        """The gate counts the rows of the pages the pass read: gas p1 is in no
+        track and not current in the index, and its rows must be counted."""
+        db = self._db([_answered_q2()])
+
+        async def live(_pid):
+            return list(FILES5)
+
+        async def current(_pid):
+            return []
+        with patch.object(server, "db", db), patch.object(server, "_live_plan_file_ids", live), \
+                patch.object(server, "_current_record_page_ids", current):
+            ids = _run(server._glyph_page_ids(PID))
+        self.assertIn("gas#1", ids)
+        self.assertNotIn("ar818#7", ids)
+
+    def test_a_replaces_answer_that_reaches_the_openings_unapplied_reads_as_open(self):
+        """If the pass still raises the question (the replacement could not be
+        applied), its pages are read as the open reading - never as include."""
+        psq = _psq5()
+        from lib import plan_openings as O
+        refused = [(dict(GROOF, page_id="pg-gas-2", project_id=PID), "no mechanical partner")]
+        qid = psq.detect(PID, "filed", refused)[0]["id"]
+        seen = []
+
+        def fake_floor(pg, run, member, why=None):
+            seen.append(1)
+            return {"records": {}, "legend": [], "untagged": 0, "orphans": [], "unreadable": []}
+        with patch.object(O, "floor_records", fake_floor):
+            out = O.run_openings([], lambda p: object(), {"F": {"tags": ["A"]}}, refused=refused,
+                                 answers={qid: "replaces"})
+        self.assertTrue(seen, "its page is still read at sheet scope (the open reading)")
+        self.assertEqual(out["summary"]["set_questions"][0]["applied"],
+                         "open (the replacement was not applied)")
+
+
 if __name__ == "__main__":
     unittest.main()

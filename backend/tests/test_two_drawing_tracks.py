@@ -179,14 +179,17 @@ class SupersessionIsWithinATrack(unittest.TestCase):
         self.assertEqual(got["filed"], ["ar325#12", "ar818#6", "mh#2", "mh#3", "mh#8"])
         self.assertEqual(got["post_co"], ["mh#2", "mh#3", "own#1", "own#2"])
 
-    def test_the_index_rule_alone_would_hide_the_filed_plan(self):
-        """The same rule over every set at once - the index - puts the
-        Owner's set over the filed A-101.00: why the pass splits first."""
+    def test_the_index_rule_no_longer_hides_the_filed_plan_across_tracks(self):
+        """Since 2026-10-31 the index compares revisions only within a track
+        (tests/test_index_supersession_is_per_track.py): the Owner's set no
+        longer hides the filed A-101.00. The same files with the Owner's set
+        read as FILED (no track) are one track again and the later set wins."""
         _present()
         raw, files = _raw()
         losers = server._supersession_winners(raw, [dict(f, _id=k) for k, f in files.items()])
-        self.assertEqual(losers.get("ar325#12"), "own")
-        self.assertNotIn("ar325#12", [p for p in losers if losers[p] == "ar325"])
+        self.assertNotIn("ar325#12", losers)
+        one = [dict(f, _id=k, drawing_track=None) for k, f in files.items()]
+        self.assertEqual(server._supersession_winners(raw, one).get("ar325#12"), "own")
 
     def test_a_mechanical_sheet_goes_only_to_a_track_with_a_plan_for_its_floor(self):
         _present()
@@ -452,6 +455,46 @@ class PerApartment(unittest.TestCase):
         self.assertTrue(_ok("2A has 1 PTAC unit.", recs))
         self.assertTrue(_ok("2A has 1 PTAC unit per the owner's set.", recs))
         self.assertFalse(_ok("2A has 1 PTAC unit in the filed set.", recs))
+
+    def test_a_figure_naming_no_set_does_not_bind_while_the_other_set_differs(self):
+        """RULING 150 (Roy's two-track rule). The filed first floor holds one
+        PTAC in every unit; the owner's holds two in 1A. "PTAC units in each
+        unit on the first floor: 1." is the filed set's figure and not the
+        owner's - it binds only naming its set."""
+        _present()
+        recs = _world()
+        for s in ("PTAC units in each unit on the first floor: 1.",
+                  "Each unit on the first floor has 1 PTAC unit.",
+                  "Each unit on the first floor has 1 PTAC unit per the owner's set.",
+                  "Each unit on the first floor has 2 PTAC units."):
+            self.assertFalse(_ok(s, recs), s)
+        self.assertTrue(_ok("PTAC units in each unit on the first floor in the filed set: 1.", recs))
+        self.assertTrue(_ok("Each unit on the first floor has 1 PTAC unit in the filed set.", recs))
+
+    def test_a_figure_binds_where_the_other_set_has_nothing_at_that_scope(self):
+        """The owner's set here draws no first floor: the filed figure is the
+        only one there is, and binds with no set named."""
+        _present()
+        rows = _numbered(_rows("filed", "100", FILED_100) + _rows("filed", "101", FILED_101)
+                         + _rows("post_co", "101", OWNER_101))
+        recs = list(rows) + _census(rows, "filed") + _census(rows, "post_co")
+        self.assertEqual(sorted(S.glyph_books(recs).tracks), ["filed", "post_co"])
+        self.assertTrue(_ok("PTAC units in each unit on the first floor: 1.", recs))
+        self.assertTrue(_ok("1B has 1 PTAC unit.", recs))
+
+    def test_a_figure_binds_where_the_other_set_withholds_its_count(self):
+        """A set that cannot state its count (an unplaced symbol) says
+        nothing, not something else: ruling 2026-10-24's one-track-only."""
+        _present()
+        recs = _world()
+        self.assertTrue(_ok("Each unit on the second floor has 1 PTAC unit.", recs))
+
+    def test_a_unit_clause_is_read_at_its_own_units_only(self):
+        """The filed set cannot state 2A's count (2C unplaced); the owner's
+        first floor has 1A = 2. A clause about 2A is not stopped by 1A."""
+        _present()
+        recs = _world()
+        self.assertTrue(_ok("PTAC-1 units in 2A: 1.", recs))
 
     def test_a_set_the_project_does_not_have_names_nothing(self):
         _present()

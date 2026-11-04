@@ -111,10 +111,13 @@ class TheTrackIsSetOnTheFileAndAudited(unittest.TestCase):
                 out.add(getattr(x.call, "__name__", type(x.call).__name__))
                 out |= deps(x)
             return out
-        (route,) = [r for r in server.app.routes if isinstance(r, APIRoute)
-                    and r.path == "/api/projects/{project_id}/files/{file_id}/drawing-track"]
-        d = deps(route.dependant)
-        self.assertTrue({"require_approved", "require_project_access", "get_admin_user"} <= d, d)
+        # the PUT that sets it and the GET that reads it back carry the same gates
+        routes = [r for r in server.app.routes if isinstance(r, APIRoute)
+                  and r.path == "/api/projects/{project_id}/files/{file_id}/drawing-track"]
+        self.assertTrue(routes)
+        for route in routes:
+            d = deps(route.dependant)
+            self.assertTrue({"require_approved", "require_project_access", "get_admin_user"} <= d, d)
 
 
 class ThePassCarriesItOntoEveryRow(unittest.TestCase):

@@ -346,14 +346,20 @@ class NoDoublePermissiveLineSurvives(unittest.TestCase):
         pass copies onto every row and the render then names in answers. It
         holds the file to the admin's company with this same comparison, so
         another tenant's admin cannot relabel - or quietly un-label - someone
-        else's drawings."""
+        else's drawings.
+
+        THE ELEVENTH READS THAT TRACK BACK. GET /projects/{id}/files/{file_id}/
+        drawing-track returns the file's track plus the page / glyph / stack
+        counts that an ignored file must read as 0, so it holds the file to the
+        admin's company with this same comparison -- another tenant's admin
+        learns nothing about whose drawings these are."""
         tree = ast.parse(self.SRC)
         calls = sum(
             1 for n in ast.walk(tree)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
             and n.func.id == "_same_company_or_403")
         self.assertGreaterEqual(calls, 3)
-        self.assertEqual(calls, 10)
+        self.assertEqual(calls, 11)
 
     def test_the_helper_treats_empty_string_as_absent(self):
         """The mechanism, not just the outcome: both sides are coerced and

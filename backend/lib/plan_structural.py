@@ -52,6 +52,7 @@ whether the structure's walls then stand on the architect's (`wall_check`).
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections import defaultdict
@@ -1130,13 +1131,69 @@ def run_tracks(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable[[di
     return out
 
 
+def _plain(v):
+    """A row as BSON takes it: numpy scalars and tuples become Python ones."""
+    return json.loads(json.dumps(v, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
+
+
 def rows_for_store(rows: Iterable[dict], *, project_id: str, company_id: Optional[str]) -> List[dict]:
-    """The stored shape (collection COLLECTION, one document per element),
-    DESIGNED, NOT WRITTEN: {project_id, company_id, ...row}. The join key
+    """The stored shape (collection COLLECTION, one document per element):
+    {record_type: "structure", project_id, company_id, ...row}. The join key
     for clash is (track, a_sheet.page_id) and polygon_a's frame is that A
     page's display space - the frame every other trade's registered rows
     use."""
-    return [dict(r, project_id=str(project_id), company_id=company_id) for r in rows]
+    return [_plain(dict(r, record_type=RECORD_STRUCTURE, project_id=str(project_id),
+                        company_id=company_id)) for r in rows]
+
+
+#: one stored row per structural element, one per track saying what the
+#: track's pairing and registrations were (never silent: a track with no
+#: pair says why), and one marker when the step failed
+RECORD_STRUCTURE = "structure"
+RECORD_TRACK = "structure_track"
+RECORD_UNAVAILABLE = "structure_unavailable"
+
+
+def track_row(track: str, result: Dict[str, Any], *, project_id: str,
+              company_id: Optional[str]) -> dict:
+    """What one track's structure step did: its pairs (registration with the
+    margin and the wall check), its refusals, its row count, and - for a
+    track that borrowed its structure - the label every row carries."""
+    s = result.get("summary") or {}
+    notes = sorted({r.get("structure_note") for r in result.get("rows") or [] if r.get("structure_note")})
+    return _plain({"record_type": RECORD_TRACK, "project_id": str(project_id), "company_id": company_id,
+                   "emit_version": EMIT_VERSION, "track": track, "offset": s.get("offset"),
+                   "pairs": [{"s": p["s"], "a": p["a"], "level": p["level"],
+                              "elements": p["elements"], "unassigned_tags": p["unassigned_tags"],
+                              "registration": {k: (p["registration"] or {}).get(k) for k in (
+                                  "dx", "dy", "anchors", "best_peak_anchors", "second_peak_anchors",
+                                  "margin", "wall_share_best", "wall_share_second", "usable", "refused")}}
+                             for p in s.get("pairs") or []],
+                   "refused": s.get("refused") or [], "rows": len(result.get("rows") or []),
+                   "structure_notes": notes})
+
+
+def pass_rows(tracks: Sequence[Tuple[str, List[dict]]], open_page: Callable[[dict], Any], *,
+              project_id: str, company_id: Optional[str] = None) -> Dict[str, Any]:
+    """THE GLYPH PASS'S STRUCTURE STEP (server._plan_glyph_pass): every
+    track's rows as stored, plus one track row each. Pure; the server
+    replaces the project's COLLECTION with them."""
+    out = run_tracks(tracks, open_page)
+    rows: List[dict] = []
+    for t, _pages in tracks:
+        res = out.get(t) or {}
+        rows += rows_for_store(res.get("rows") or [], project_id=project_id, company_id=company_id)
+        rows.append(track_row(t, res, project_id=project_id, company_id=company_id))
+    return {"rows": rows, "by_track": {t: len((out.get(t) or {}).get("rows") or []) for t, _ in tracks}}
+
+
+def unavailable(error: BaseException, when, *, project_id: str) -> dict:
+    """The one row a failed structure step writes: the pass's other rows
+    stand, and the collection says the structure was not read - an empty
+    collection only ever means "not yet run"."""
+    return {"record_type": RECORD_UNAVAILABLE, "project_id": str(project_id),
+            "emit_version": EMIT_VERSION, "error": f"{type(error).__name__}: {error}"[:500],
+            "at": when}
 
 
 __all__ = [
@@ -1144,6 +1201,7 @@ __all__ = [
     "peak_census", "register_pair", "read_elements", "hold_down_zones",
     "read_shear_wall_schedule", "read_hold_down_notes", "size_posts_from_schedule",
     "to_arch", "run_track", "run_tracks", "plan_extent", "wall_check", "wall_share", "with_wall_check",
-    "structure_note", "OWNER_SET_NOTE",
+    "structure_note", "OWNER_SET_NOTE", "pass_rows", "track_row", "unavailable",
+    "RECORD_STRUCTURE", "RECORD_TRACK", "RECORD_UNAVAILABLE",
     "rows_for_store", "bands", "legend_entries", "sw_tags",
 ]

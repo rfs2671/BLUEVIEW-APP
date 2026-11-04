@@ -35,7 +35,14 @@ A400_TABLE = ("TABLE NUMBER A | | NUMBER B | | NUMBER C | | NUMBER D | | NUMBER 
 A400_SIZE = "3'-0\" X 7'-0\""
 
 
-def _gate(text, quotes, intent="attribute"):
+def _gate(text, quotes, intent=""):
+    """WHAT counts as the same printed value, through the union. These
+    claims name no subject their records print ("It is 25'-6"."), and since
+    the ruling of 2026-10-27 an attribute binds only where its record names
+    its subject - so the attribute rule refuses them for that, whatever the
+    value. The union reads dimensions exactly as the attribute rule does
+    (plan_dimensions.supported); the subject is tested in
+    test_a_value_binds_only_to_its_named_subject."""
     from lib import plan_search as ps
     recs = [{"quote": q, "sheet_number": "A-400.00", "record_type": "schedule"} for q in quotes]
     return ps.answer_is_grounded(text, recs, intent=intent)

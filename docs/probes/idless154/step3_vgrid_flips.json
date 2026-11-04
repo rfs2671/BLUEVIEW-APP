@@ -1,0 +1,27 @@
+[
+ {
+  "claim": "type A door INTERIOR STANDARD: 2'-10\" X 6'-8\".",
+  "direction": "bound->refused",
+  "reason": "untagged-in-effect claim; every candidate cell must agree; figure printed only under another column"
+ },
+ {
+  "claim": "type A door INTERIOR STANDARD: 2.",
+  "direction": "bound->refused",
+  "reason": "untagged-in-effect claim; every candidate cell must agree; figure printed only under another column"
+ },
+ {
+  "claim": "type A door INTERIOR STANDARD: 10.",
+  "direction": "bound->refused",
+  "reason": "untagged-in-effect claim; every candidate cell must agree; figure printed only under another column"
+ },
+ {
+  "claim": "type A door INTERIOR STANDARD: 6.",
+  "direction": "bound->refused",
+  "reason": "untagged-in-effect claim; every candidate cell must agree; figure printed only under another column"
+ },
+ {
+  "claim": "type A door INTERIOR STANDARD: 8.",
+  "direction": "bound->refused",
+  "reason": "untagged-in-effect claim; every candidate cell must agree; figure printed only under another column"
+ }
+]

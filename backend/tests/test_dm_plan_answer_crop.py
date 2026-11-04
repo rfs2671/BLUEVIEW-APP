@@ -79,7 +79,7 @@ class _Plans(_Brain):
             self.uploads[key] = data
             return f"https://r2.test/{key}"
 
-        async def named(project_id, sheet_q):
+        async def named(project_id, sheet_q, **_kw):
             return [dict(p) for p in PAGES if p["sheet_number"] == sheet_q.upper()]
         return [patch.object(server, "search_plans", search),
                 patch.object(server, "_fetch_page_jpeg", fetch),
