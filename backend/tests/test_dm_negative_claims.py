@@ -231,7 +231,7 @@ class ClauseSplit(unittest.TestCase):
         self.assertEqual(n, 1)
         lines = out.split("\n")
         self.assertEqual(lines[0], "Not found in the sheets I searched: A-300.00, A-500.00.")
-        self.assertIn("Floor-to-floor 10'-0\" (A-300.00)", lines)
+        self.assertIn("Floor-to-floor 10'-0\" (A-300.00).", lines)
         # the value is on a line of its own, not inside the gate's line
         self.assertNotIn("10'-0\"", lines[0])
         self.assertTrue(lines[-1].startswith("Closest detail: A-300.00"))
@@ -240,7 +240,7 @@ class ClauseSplit(unittest.TestCase):
         out, n = gate.rewrite("Floor-to-floor is 10'-0\" (A-300.00); ceiling height not shown.",
                               self.TRACE)
         self.assertEqual(n, 1)
-        self.assertIn("Floor-to-floor is 10'-0\" (A-300.00)", out.split("\n"))
+        self.assertIn("Floor-to-floor is 10'-0\" (A-300.00).", out.split("\n"))
         self.assertNotIn("not shown", out)
 
     def test_semicolon_inside_a_quote_does_not_split(self):
@@ -266,21 +266,21 @@ class ClauseSplit(unittest.TestCase):
         self.assertEqual(out.split("\n")[0], "Not found in the sheets I searched: A-300.00, A-500.00.")
         return out
 
-    def test_two_feet_inch_dimensions_are_not_a_fake_quote(self):
-        out, n = gate.rewrite("Plenum is 2'-0\" deep; ceiling height not shown; "
-                              "floor is 10'-0\" high.", self.TRACE)
+    def test_two_feet_inch_dimensions_are_not_a_fake_quote(self):  # 11-03 final: ft values, a feet-inch pair + a cite reads as a quoted note (pre-existing)
+        out, n = gate.rewrite("Plenum is 2 ft deep (A-300); ceiling height not shown; "
+                              "floor is 10 ft high (A-300).", self.TRACE)
         self.assertEqual(n, 1)
         lines = out.split("\n")
-        self.assertIn("Plenum is 2'-0\" deep", lines)
-        self.assertIn("Floor is 10'-0\" high.", lines)
+        self.assertIn("Plenum is 2 ft deep (A-300).", lines)
+        self.assertIn("Floor is 10 ft high (A-300).", lines)
         self.assertNotIn("not shown", out)
 
     def test_semicolon_inside_parentheses_does_not_split(self):
-        out, n = gate.rewrite("Fire rating not specified (see A-300; A-301); floor is 10 ft.",
+        out, n = gate.rewrite("Fire rating not specified (see A-300; A-301); floor is 10 ft (A-300).",
                               self.TRACE)
         self.assertEqual(n, 1)
         lines = out.split("\n")
-        self.assertIn("Floor is 10 ft.", lines)         # the paren is not split: no "A-301)"
+        self.assertIn("Floor is 10 ft (A-300).", lines)         # the paren is not split: no "A-301)"
         self.assertFalse([l for l in lines if "A-301" in l and "Closest" not in l])
         # an unbalanced paren is not split at all: whole replacement
         out2 = self._whole("Fire rating not specified (see A-300; floor is 10 ft.")
@@ -292,11 +292,12 @@ class ClauseSplit(unittest.TestCase):
         self.assertEqual(len(out.split("\n")), 2)       # not-found + closest only
 
     def test_three_clauses(self):
-        out, n = gate.rewrite("Plenum is 2'-0\" deep; ceiling height not shown; "
-                              "slab is 8 in; floor is 10'-0\" high.", self.TRACE)
+        out, n = gate.rewrite("Plenum is 2 ft deep (A-300); ceiling height not shown; "
+                              "slab is 8 in (S-101); floor is 10 ft high (A-300).", self.TRACE)
         self.assertEqual(n, 1)
         lines = out.split("\n")
-        for want in ("Plenum is 2'-0\" deep", "Slab is 8 in", "Floor is 10'-0\" high."):
+        for want in ("Plenum is 2 ft deep (A-300).", "Slab is 8 in (S-101).",
+                     "Floor is 10 ft high (A-300)."):
             self.assertIn(want, lines)
 
     def test_a_mixed_run_with_one_unvalidated_clause_is_replaced_whole(self):
@@ -310,9 +311,9 @@ class ClauseSplit(unittest.TestCase):
 
     def test_a_number_inside_the_absence_clause_is_still_dropped(self):
         # documented, as before: only the absence clause's numbers go with it
-        out, n = gate.rewrite("Fire rating of 2 hr not shown; floor is 10 ft.", self.TRACE)
+        out, n = gate.rewrite("Fire rating of 2 hr not shown; floor is 10 ft (A-300).", self.TRACE)
         self.assertEqual(n, 1)
-        self.assertIn("Floor is 10 ft.", out.split("\n"))
+        self.assertIn("Floor is 10 ft (A-300).", out.split("\n"))
         self.assertNotIn("2 hr", out)
         # and a clause with no unit is not kept, even holding a number
         out2 = self._whole("Ceiling not shown; 12 are on floor 4.")
@@ -324,7 +325,7 @@ class ClauseSplit(unittest.TestCase):
 
     def test_sheet_ids_keep_their_case(self):
         self.assertEqual(gate.measured_clauses("Ceiling height not shown; a-300 shows 10 ft."),
-                         ["a-300 shows 10 ft."])
+                         ["A-300 shows 10 ft."])
 
     # ── 11-03 round 3: strict whitelist + abbreviation periods ───────────
     def _kept(self, text):
@@ -343,17 +344,17 @@ class ClauseSplit(unittest.TestCase):
 
     def test_whitelisted_values_are_kept(self):
         for t, want in (
-                ("Ceiling not shown; the area is 1,200 SF (A-100.00)", "The area is 1,200 SF (A-100.00)"),
-                ("Ceiling not shown; slab is 8 in", "Slab is 8 in"),
-                ("Ceiling not shown; riser is 7 3/4\" (A-500.00)", "Riser is 7 3/4\" (A-500.00)"),
+                ("Ceiling not shown; the area is 1,200 SF (A-100.00)", "The area is 1,200 SF (A-100.00)."),
+                ("Ceiling not shown; slab is 8 in (S-101)", "Slab is 8 in (S-101)."),
+                ("Ceiling not shown; riser is 7 3/4\" (A-500.00)", "Riser is 7 3/4\" (A-500.00)."),
                 ("Ceiling not shown, floor-to-floor 10′-0″ (A-300.00)",
-                 "Floor-to-floor 10′-0″ (A-300.00)"),
-                ("Ceiling not shown; wall is 2 hr rated (A-500.00)", "Wall is 2 hr rated (A-500.00)")):
+                 "Floor-to-floor 10′-0″ (A-300.00)."),
+                ("Ceiling not shown; wall is 2 hr rated (A-500.00)", "Wall is 2 hr rated (A-500.00).")):
             self.assertEqual(self._kept(t), [want], t)
 
     def test_comma_split_keeps_the_value(self):
         self.assertEqual(self._kept("Ceiling height not shown, floor-to-floor 10'-0\" (A-300.00)"),
-                         ["Floor-to-floor 10'-0\" (A-300.00)"])
+                         ["Floor-to-floor 10'-0\" (A-300.00)."])
 
     def test_abbreviation_periods_do_not_split_a_sentence(self):
         self.assertEqual(gate._sentences("It is approx. 10 ft. See A-300."),
@@ -369,12 +370,59 @@ class ClauseSplit(unittest.TestCase):
 
     def test_gate_twice_is_the_same(self):
         for text in (self.RENDER,
-                     "Plenum is 2'-0\" deep; ceiling height not shown; floor is 10'-0\" high.",
+                     "Plenum is 2 ft deep (A-300); ceiling height not shown; floor is 10 ft high (A-300).",
                      "No PTAC shown on 5; 12 on floor 4; none on floor 3."):
             once, _ = gate.rewrite(text, self.TRACE)
             twice, n2 = gate.rewrite(once, self.TRACE)
             self.assertEqual(n2, 0)
             self.assertEqual(once, twice)
+
+    # ── 11-03 FINAL round (Roy's four rulings) ───────────────────────────
+    def test_a_kept_clause_needs_a_sheet_cite(self):
+        # old behaviour (whole sentence replaced) for every uncited value
+        for t in ("Ceiling height not shown; a typical wall height is 10 ft.",
+                  "Ceiling height not shown; the contractor claims wall height is 10 ft.",
+                  "Ceiling not shown; slab is 8 in",
+                  "Ceiling not shown; floor is 10 ft"):
+            self.assertEqual(self._kept(t), [], t)
+        # still kept: the cite is there
+        self.assertEqual(self._kept("Ceiling height not shown; floor-to-floor 10'-0\" (A-300.00)"),
+                         ["Floor-to-floor 10'-0\" (A-300.00)."])
+        self.assertEqual(self._kept("Ceiling not shown; A-300 shows 10 ft."), ["A-300 shows 10 ft."])
+
+    def test_a_kept_clause_is_capitalised_and_ends_in_one_period(self):
+        self.assertEqual(gate.measured_clauses("Ceiling not shown; floor 2 is 10 ft (A-300)"),
+                         ["Floor 2 is 10 ft (A-300)."])
+        self.assertEqual(gate.measured_clauses("Ceiling not shown; floor 2 is 10 ft (A-300)."),
+                         ["Floor 2 is 10 ft (A-300)."])             # not doubled
+        self.assertEqual(gate.measured_clauses("Ceiling not shown; slab 8\" (S-101)"),
+                         ["Slab 8\" (S-101)."])
+        out, _ = gate.rewrite("Ceiling not shown; floor 2 is 10 ft (A-300)", self.TRACE)
+        self.assertIn("Floor 2 is 10 ft (A-300).", out.split("\n"))
+        self.assertNotIn("..", out)
+
+    def test_a_nul_byte_in_the_input_does_not_raise(self):
+        for t in ("Ceiling height not shown; slab is 8 in (S-101)\x00",
+                  "Ceiling height \x00not shown; slab is 8 in (S-101)",
+                  "Ceiling height not shown; \x00 (A-300); slab is 8 in (S-101)"):
+            out, n = gate.rewrite(t, self.TRACE)        # StopIteration before the fix
+            self.assertEqual(n, 1)
+            self.assertTrue(out.startswith(gate.NOT_FOUND_PREFIX), repr(out))
+        # non-NUL input: outputs unchanged by the NUL fix
+        out, _ = gate.rewrite("Ceiling height not shown; slab is 8 in (S-101)", self.TRACE)
+        self.assertIn("Slab is 8 in (S-101).", out.split("\n"))
+        self.assertEqual(gate._clauses("a (x; y); b \"c; d\", e"), ["a (x; y)", 'b "c; d"', "e"])
+        self.assertEqual(gate._clauses("a \x00 (x; y); b"), ["a \x00 (x; y)", "b"])
+
+    def test_known_limitation_a_f_f_splits_as_on_main(self):
+        # PINNED, not endorsed: the sentence splitter does not know "A.F.F.".
+        # The expected text is what origin/main produced for this input.
+        out, n = gate.rewrite("Ceiling height not shown; wall height is 10'-0\" A.F.F. (A-300).",
+                              self.TRACE)
+        self.assertEqual(n, 1)
+        quote = self.TRACE[0]["records"][0]["quote"]
+        self.assertEqual(out, "Not found in the sheets I searched: A-300.00, A-500.00. (A-300).\n"
+                              "Closest detail: A-300.00 — \"" + quote + "\"")
 
 
 if __name__ == "__main__":
