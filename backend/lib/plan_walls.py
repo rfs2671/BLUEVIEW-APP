@@ -114,6 +114,13 @@ SIDE_PROBE_IN = 3.0
 SAMPLE_STEP_IN = 6.0
 #: A coordinate equal within this many points is the same line.
 EPS_PT = 0.05
+#: A DOOR JAMB RETURN is the stub of a wall face the drawing runs on past a
+#: doorway's edge, shorter than MIN_FACE_IN (588 Boyland A-100.00: the east
+#: door D2's two 1" returns). It is kept as a face only when it ends ON a
+#: door's edge, beside the door, across the door's own width: the 1.7" hatch
+#: strokes it would otherwise be mistaken for never end on a door's edge.
+JAMB_MIN_IN = 0.5
+JAMB_TOL_PT = 0.5
 
 #: A-500's heading sits right of its diamond (measured: 67pt) and 13pt above
 #: the diamond's centre.
@@ -142,6 +149,7 @@ class Piece:
     a: float
     b: float
     vp: int = -1
+    jamb: bool = False
 
     @property
     def c(self) -> float:
@@ -180,9 +188,12 @@ def wall_lines(page) -> Dict[str, List[Tuple[float, float, float]]]:
 
 
 def bands(lines: Sequence[Tuple[float, float, float]], ppi: float,
-          max_t_in: float) -> List[Tuple[float, float, float, float]]:
-    """[(s, e, a, b)] wall pieces along one axis (see the module note)."""
-    L = [(c, a, b) for c, a, b in lines if b - a >= MIN_FACE_IN * ppi - EPS_PT]
+          max_t_in: float, keep: Sequence[Tuple[float, float, float]] = ()
+          ) -> List[Tuple[float, float, float, float]]:
+    """[(s, e, a, b)] wall pieces along one axis (see the module note).
+    `keep`: face stubs shorter than MIN_FACE_IN that are nevertheless faces
+    (jamb_stubs)."""
+    L = [(c, a, b) for c, a, b in lines if b - a >= MIN_FACE_IN * ppi - EPS_PT or (c, a, b) in keep]
     if not L:
         return []
     arr = np.array(L, dtype=float)
@@ -224,7 +235,30 @@ def bands(lines: Sequence[Tuple[float, float, float]], ppi: float,
     return [tuple(x) for x in out]
 
 
-def opening_boxes(page) -> List[Tuple[float, float, float, float]]:
+def jamb_stubs(lines: Dict[str, Sequence[Tuple[float, float, float]]], doors: Sequence[tuple],
+               ppi: float) -> Dict[str, List[Tuple[float, float, float]]]:
+    """{axis: [(c, a, b)]} - wall face stubs shorter than MIN_FACE_IN, at least
+    JAMB_MIN_IN long, that END ON A DOOR'S EDGE beside it (outside the door's
+    extent along the wall) and lie across the door's width: the wall's face
+    running on past a doorway as a jamb return."""
+    lo, hi = JAMB_MIN_IN * ppi - EPS_PT, MIN_FACE_IN * ppi - EPS_PT
+    out: Dict[str, List[Tuple[float, float, float]]] = {"h": [], "v": []}
+    for ax, ls in lines.items():
+        for c, a, b in ls:
+            if not (lo <= b - a < hi):
+                continue
+            for x0, y0, x1, y1 in doors:
+                across, along = ((x0, x1), (y0, y1)) if ax == "v" else ((y0, y1), (x0, x1))
+                if not (across[0] - JAMB_TOL_PT <= c <= across[1] + JAMB_TOL_PT):
+                    continue
+                if (abs(b - along[0]) <= JAMB_TOL_PT and a < along[0]) \
+                        or (abs(a - along[1]) <= JAMB_TOL_PT and b > along[1]):
+                    out[ax].append((c, a, b))
+                    break
+    return out
+
+
+def opening_boxes(page, roles: Sequence[str] = ("door", "glaz")) -> List[Tuple[float, float, float, float]]:
     """The bounding box of every door / glazing SUBPATH. A CAD path operator
     holds thousands of unrelated strokes; its drawing rect can span the sheet
     (it joined two bedroom walls 29 feet apart across the stair, measured)."""
@@ -232,7 +266,7 @@ def opening_boxes(page) -> List[Tuple[float, float, float, float]]:
     out = []
     for o in symbol_objects(page):
         # a door or window drawn to be removed opens no wall (#918)
-        if role_of(o.get("layer")) in ("door", "glaz") and not is_removal_layer(o.get("layer"))                 and o.get("points"):
+        if role_of(o.get("layer")) in roles and not is_removal_layer(o.get("layer"))                 and o.get("points"):
             xs = [p[0] for p in o["points"]]
             ys = [p[1] for p in o["points"]]
             out.append((min(xs), min(ys), max(xs), max(ys)))
@@ -547,6 +581,7 @@ def floor_walls(page, *, scale_sheet=None, space=None, widest_door_in: Optional[
             by_vp.setdefault(sheet.viewports.index(v), {"h": [], "v": []})[ax].append((c, a, b))
     out["off_viewport_pt"] = round(out["off_viewport_pt"], 1)
     openings = opening_boxes(page)
+    doors = opening_boxes(page, ("door",))
     tags = read_tags(page)
     out["tags"] = [{"text": t["text"], "x": round(t["x"], 1), "y": round(t["y"], 1)} for t in tags]
     claimed = set()
@@ -562,12 +597,23 @@ def floor_walls(page, *, scale_sheet=None, space=None, widest_door_in: Optional[
                 "wall_line_paper_pt": round(paper, 1)})
             continue
         ppi = v.pt_per_in
+        stubs = jamb_stubs(by_vp[k], doors, ppi)
         pieces = [Piece(ax, s, e, a, b, vp=k) for ax in ("h", "v")
-                  for s, e, a, b in bands(by_vp[k][ax], ppi, max_t_in)]
-        short = [p for p in pieces if p.length < p.t]
-        pieces = [p for p in pieces if p.length >= p.t]
+                  for s, e, a, b in bands(by_vp[k][ax], ppi, max_t_in, stubs[ax])]
+        for p in pieces:
+            p.jamb = p.length < MIN_FACE_IN * ppi - EPS_PT and any(
+                p.axis == ax and p.s - 1.0 <= c <= p.e + 1.0 and a < p.b and b > p.a
+                for ax in (p.axis,) for c, a, b in stubs[ax])
+        short = [p for p in pieces if p.length < p.t and not p.jamb]
+        pieces = [p for p in pieces if p.length >= p.t or p.jamb]
         run_of, joints = join_runs(pieces, ppi, openings, by_vp[k], max_t_in, widest_door_in)
         ends, short = absorb_short(short, pieces, run_of, ppi)
+        # a jamb return that joined no wall is a short piece: listed, counted nowhere
+        alone = defaultdict(list)
+        for i, r in enumerate(run_of):
+            alone[r].append(i)
+        lone = {r for r, ix in alone.items() if all(pieces[i].jamb for i in ix)}
+        short = short + [pieces[i] for r in lone for i in alone[r]]
         out["short_pieces"] += [{"axis": q.axis, "rect": [round(z, 1) for z in q.rect()],
                                  "length_in": round(q.length / ppi, 1)} for q in short]
         tags_on: Dict[int, List[str]] = defaultdict(list)
@@ -589,6 +635,8 @@ def floor_walls(page, *, scale_sheet=None, space=None, widest_door_in: Optional[
             runs[r].append(i)
         for r in sorted(runs, key=lambda r: (pieces[runs[r][0]].axis, round(pieces[runs[r][0]].c, 1),
                                              min(pieces[i].a for i in runs[r]))):
+            if r in lone:
+                continue
             for part, types in split_types(runs[r], pieces, joints, tags_on):
                 out["walls"].append(_wall(part, types, pieces, joints, ends, ppi, v, space, tags_on))
     for ti, t in enumerate(tags):
