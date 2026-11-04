@@ -238,5 +238,15 @@ class RegisterOffsetConfidence(unittest.TestCase):
         self.assertFalse(m.confidence(dict(usable, best_peak_anchors=None), 100, 100)["confident"])
 
 
+class RowVersionsMoveWithTheGate(unittest.TestCase):
+    """Rows stored before the confidence gate carry no anchor_fraction; the
+    row versions say which rows were written under the gate (Roy, 2026-11-04)."""
+
+    def test_structure_and_stack_row_versions_are_bumped(self):
+        from lib import plan_structural, plan_stacks
+        self.assertGreaterEqual(plan_structural.EMIT_VERSION, 2)
+        self.assertGreaterEqual(plan_stacks.ROW_VERSION, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

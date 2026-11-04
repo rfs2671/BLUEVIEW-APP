@@ -467,8 +467,7 @@ def register(arch: dict, mech: dict) -> dict:
 #   "one function, T3's rule (single best peak agreeing with the exact 1pt
 #   search, >=8 anchors) for all pairs, with each pair's margin shown on its
 #   row. ... No tuned ratio threshold."
-#   (Superseded in part, 2026-11: Roy ruled the confidence floors in -
-#   register_offset R4 below; the single-peak rule stays.)
+#   (superseded in part by Roy's pass-13 scope ruling (2026-11-04); see register_offset R4.)
 #
 # register_offset is that function, for S->A and P->A (lib.plan_structural,
 # lib.plan_stacks). register() above is unchanged: the glyph pass's M->A
@@ -536,6 +535,8 @@ def register_offset(arch: dict, other: dict, *, coarse_pt: Optional[float] = Non
           and beats the second peak by MIN_MARGIN; a count or margin that
           cannot be measured FAILS CLOSED (refused). `margin` is still shown
           on every row. Residuals decide nothing.
+    No ratio threshold: `margin` (best / second) is reported, never compared.
+    (superseded in part by Roy's pass-13 scope ruling (2026-11-04): R4 above.)
     Residuals are recorded and decide nothing (usable_for cannot fail: they
     are taken within ANCHOR_MATCH_RADIUS_IN).
 

@@ -66,7 +66,7 @@ from lib.plan_derive import title_ordinal
 from lib.plans.level_suggestion import tokens_in
 
 #: the stored rows' shape; bump when a row's meaning changes
-EMIT_VERSION = 1
+EMIT_VERSION = 2
 #: where a pass would write them (designed, not written - see `rows_for_store`)
 COLLECTION = "plan_structural"
 
