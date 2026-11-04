@@ -171,7 +171,7 @@ class RegisterOffsetConfidence(unittest.TestCase):
                    and re.search(r"plan_registration_confidence", p.read_text(encoding="utf-8"))]
         server = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
         self.assertEqual(callers, [], callers)
-        self.assertNotIn("plan_registration_confidence", server)
+        self.assertIsNone(re.search(r"plan_registration_confidence", server))
 
     def test_register_offset_records_counts_and_too_few_corners_is_refused(self):
         _present(self)
