@@ -326,6 +326,47 @@ class ClauseSplit(unittest.TestCase):
         self.assertEqual(gate.measured_clauses("Ceiling height not shown; a-300 shows 10 ft."),
                          ["a-300 shows 10 ft."])
 
+    # ── 11-03 round 3: strict whitelist + abbreviation periods ───────────
+    def _kept(self, text):
+        out, n = gate.rewrite(text, self.TRACE)
+        self.assertEqual(n, 1)
+        return out.split("\n")[1:-1]               # between not-found and closest
+
+    def test_unit_lookalikes_are_not_values(self):
+        for t in ("Ceiling height not shown; unit 5 in kitchens",
+                  "Ceiling height not shown; meet 5 m or more",
+                  "Ceiling height not shown; typical is 10 ft (from my experience)",
+                  "Ceiling height not shown; typical is 10 ft",
+                  "Ceiling height not shown; ten feet high (A-300.00)",
+                  "Ceiling height not shown; 10 ft (A-300.00)"):
+            self.assertEqual(self._kept(t), [], t)
+
+    def test_whitelisted_values_are_kept(self):
+        for t, want in (
+                ("Ceiling not shown; the area is 1,200 SF (A-100.00)", "The area is 1,200 SF (A-100.00)"),
+                ("Ceiling not shown; slab is 8 in", "Slab is 8 in"),
+                ("Ceiling not shown; riser is 7 3/4\" (A-500.00)", "Riser is 7 3/4\" (A-500.00)"),
+                ("Ceiling not shown, floor-to-floor 10′-0″ (A-300.00)",
+                 "Floor-to-floor 10′-0″ (A-300.00)"),
+                ("Ceiling not shown; wall is 2 hr rated (A-500.00)", "Wall is 2 hr rated (A-500.00)")):
+            self.assertEqual(self._kept(t), [want], t)
+
+    def test_comma_split_keeps_the_value(self):
+        self.assertEqual(self._kept("Ceiling height not shown, floor-to-floor 10'-0\" (A-300.00)"),
+                         ["Floor-to-floor 10'-0\" (A-300.00)"])
+
+    def test_abbreviation_periods_do_not_split_a_sentence(self):
+        self.assertEqual(gate._sentences("It is approx. 10 ft. See A-300."),
+                         ["It is approx. 10 ft.", "See A-300."])
+        self.assertEqual(gate._sentences("Ask Dr. Lee about no. 5 in. kitchens. Done."),
+                         ["Ask Dr. Lee about no. 5 in. kitchens.", "Done."])
+        self.assertEqual(gate._sentences("Slab 8 in. Next one."), ["Slab 8 in.", "Next one."])
+        self.assertEqual(gate._sentences("I said no. Then left."), ["I said no.", "Then left."])
+        out, n = gate.rewrite("Nothing shown at approx. A-104.00. Slab is 10 ft. See A-300.", self.TRACE)
+        self.assertEqual(n, 1)
+        self.assertIn("Slab is 10 ft. See A-300.", out)
+        self.assertNotIn("approx", out)             # no garbled "approx." fragment left behind
+
     def test_gate_twice_is_the_same(self):
         for text in (self.RENDER,
                      "Plenum is 2'-0\" deep; ceiling height not shown; floor is 10'-0\" high.",

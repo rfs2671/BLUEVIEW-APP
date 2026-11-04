@@ -79,10 +79,42 @@ _OTHER_SUBJECT = re.compile(
     re.I)
 _QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”|«[^»]*»")
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=\S)")
+# A period after one of these is an abbreviation, not the end of a sentence.
+# STRONG: never a sentence end ("approx. 10 ft", "Dr. Lee", "e.g. A-104").
+# WEAK: a unit/word that may also end a sentence ("... is 10 in. See A-300."):
+# no split only when the next word is not capitalised.
+_ABBR_STRONG = frozenset({"approx", "dr", "mr", "mrs", "ms", "vs", "fig", "sq", "typ", "dia",
+                          "ref", "dwg", "dwgs", "e.g", "i.e", "nos", "est", "incl", "no"})
+_ABBR_WEAK = frozenset({"in", "ft", "sf", "min", "max", "ca", "etc", "ave", "st", "sec"})
+
+
+def _is_abbreviation_end(line: str, start: int, end: int) -> bool:
+    """The period at line[start:end] closes an abbreviation, not a sentence."""
+    if line[start] != ".":
+        return False
+    m = re.search(r"([A-Za-z](?:[A-Za-z.]*[A-Za-z])?)$", line[:start])
+    if not m:
+        return False
+    word = m.group(1).lower()
+    if m.start() > 0 and line[m.start() - 1] in "-/" + "0123456789":
+        return False                                  # part of a sheet id / number
+    nxt = line[end:end + 1]
+    if word == "no":
+        return nxt.isdigit()                          # "No. 5" -- not "I said no. Then"
+    if word in _ABBR_STRONG:
+        return True
+    return word in _ABBR_WEAK and not nxt.isupper()
 
 
 def _sentences(line: str) -> List[str]:
-    return [s for s in _SENT_SPLIT.split(line) if s.strip()]
+    out, last = [], 0
+    for m in re.finditer(r"[.!?]+(?=\s)\s+(?=\S)", line):
+        if _is_abbreviation_end(line, m.start(), m.end()):
+            continue
+        out.append(line[last:m.end()])
+        last = m.end()
+    out.append(line[last:])
+    return [s.strip() for s in out if s.strip()]
 
 
 _ADVICE = re.compile(r"\b(?:there(?:'s|’s|\s+is)\s+)?no\s+need\s+to\b", re.I)
@@ -201,9 +233,52 @@ _CLAUSE_MASK = "\x00"
 # one only when it is NOT a feet-inch mark, i.e. not after a digit, ' or -),
 # a curly quote, or a parenthesis.
 _CLAUSE_OPAQUE = re.compile(r"(?<![\d'\-])\"[^\"]*\"|“[^”]*”|«[^»]*»|\([^()]*\)")
-_MEASURE = re.compile(
+_MEASURE = re.compile(      # ANY number+unit: used only to reject a lookalike inside a subject
     r"\d\s*(?:['\"]|ft\b|feet\b|foot\b|in\b|inch(?:es)?\b|mm\b|cm\b|m\b|sf\b|"
     r"sq\.?\s*ft\b|psf\b|%|°|hrs?\b|hours?\b)", re.I)
+# STRICT WHITELIST (Roy, 11-03): a kept clause must be exactly
+#     <subject> [is|are|=|:|of|at] <VALUE> [dimension word] [(sheet cite)]
+# with VALUE one of a closed set, and the subject naming a measure (height,
+# slab, floor-to-floor, ...) OR the clause citing a sheet. Anything else
+# ("unit 5 in kitchens", "5 m or more", "typical is 10 ft (from my
+# experience)", word numbers, no-unit clauses) is not a value: the whole
+# sentence is replaced, as before.
+_PRIMES = str.maketrans({"′": "'", "’": "'", "″": '"', "”": '"',
+                         "“": '"', "‘": "'"})
+_FRAC = r"(?:\s+\d+/\d+|-\d+/\d+)"
+_VALUE = re.compile(
+    r"(?:\d+(?:\.\d+)?'\s*-?\s*\d*" + _FRAC + r"?(?:\.\d+)?\s*\"?"      # 10'-0"  3'-6 1/2"  10'
+    r"|\d+(?:\.\d+)?" + _FRAC + r"?\s*\""                                # 8" 5 1/2"
+    r"|\d[\d,]*(?:\.\d+)?\s*(?:ft|feet|foot|inch(?:es)?|in|m)\b\.?"      # 10 ft  8 in  3 m
+    r"|\d[\d,]*(?:\.\d+)?\s*(?:sf|sq\.?\s*ft|gpm|cfm|psf|psi|mm|cm|btuh?|kw|mbh|tons?|hrs?|hours?)\b\.?"
+    r"|\d[\d,]*(?:\.\d+)?\s*(?:%|°\s*[FC]?))", re.I)
+_DIMWORD = r"(?:deep|high|wide|thick|long|tall|clear|minimum|maximum|min|max|rated|rating|o\.?c\.?|apart|diameter|dia)"
+_SHEET_ID = SHEET_RE.pattern.replace(r"\b", "")
+_SHEET_CITE = re.compile(r"\(\s*(?:see\s+)?" + _SHEET_ID + r"(?:\s*(?:,|&|/|and)\s*" + _SHEET_ID + r")*\s*\)")
+_MEASURE_NOUN = re.compile(
+    r"height|floor|ceiling|slab|plenum|depth|width|thickness|clearance|length|diameter|"
+    r"span|spacing|elevation|dimension|size|riser|tread|parapet|setback|opening|wall|door|"
+    r"roof|beam|joist|column|duct|pipe|area|capacity|flow|load|slope|grade|level|story|"
+    r"storey|headroom", re.I)
+_CLAUSE_SHAPE = re.compile(
+    r"^(?P<pre>[A-Za-z][\w'/. ,-]{0,60}?)\s*(?:\b(?:is|are|=|of|at)\b|:)?\s*"
+    r"(?P<val>" + _VALUE.pattern + r")"
+    r"(?:\s+" + _DIMWORD + r")?"
+    r"(?P<cite>\s*" + _SHEET_CITE.pattern + r")?\s*\.?$", re.I)
+
+
+def _whitelisted_value(clause: str) -> bool:
+    c = clause.translate(_PRIMES).strip()
+    m = _CLAUSE_SHAPE.match(c)
+    if not m:
+        return False
+    pre = m.group("pre")
+    if _MEASURE.search(re.sub(_SHEET_ID, " ", pre)):
+        return False                                  # a second value / lookalike in the subject
+    return (bool(m.group("cite")) or bool(_MEASURE_NOUN.search(pre))
+            or bool(re.search(_SHEET_ID, pre, re.I)))      # "A-300 shows 10 ft"
+
+
 _CONJUNCTION = re.compile(r"^\W*(?:but|and|or|so|yet|however|while|whereas|although|though|"
                           r"also|then|plus|nor|except|otherwise)\b", re.I)
 _ABSENCE_TOKEN = re.compile(
@@ -212,27 +287,27 @@ _ABSENCE_TOKEN = re.compile(
 
 
 def _clauses(sentence: str) -> List[str]:
-    """The sentence split at semicolons outside quotes and parentheses."""
+    """The sentence split at ; , : (followed by a space) outside quotes and
+    parentheses. "1,000 SF" has no space after the comma: not split."""
     hidden: List[str] = []
 
     def mask(m: re.Match) -> str:
         hidden.append(m.group(0))
         return _CLAUSE_MASK
     masked = _CLAUSE_OPAQUE.sub(mask, sentence)
-    parts = [c.strip() for c in re.split(r";\s*", masked) if c.strip()]
+    parts = [c.strip() for c in re.split(r"[;,:]\s+", masked) if c.strip()]
     it = iter(hidden)
     return [re.sub(_CLAUSE_MASK, lambda _m: next(it), c) for c in parts]
 
 
 def _clean_measured(c: str) -> bool:
-    """POSITIVELY a clean measured-value statement: a unit/measure outside any
-    sheet number, no leading conjunction, no absence word, balanced
-    parentheses. Anything else is not ours to keep."""
+    """POSITIVELY a whitelisted measured-value statement (see _CLAUSE_SHAPE):
+    no leading conjunction, no absence word, balanced parentheses."""
     if c.count("(") != c.count(")"):
         return False
     if _CONJUNCTION.search(c) or _ABSENCE_TOKEN.search(c) or _hits(c):
         return False
-    return bool(_MEASURE.search(SHEET_RE.sub(" ", c)))
+    return _whitelisted_value(c)
 
 
 def _raise_first(c: str) -> str:

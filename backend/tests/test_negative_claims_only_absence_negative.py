@@ -45,6 +45,15 @@ class OnlyAbsenceChangedStillFlags(unittest.TestCase):
         after2 = NF + "\n" + KEPT + " The door is wide (A-601)."
         self.assertFalse(nb.only_absence_changed(before, after2))
 
+    def test_added_value_line_must_be_a_piece_of_a_removed_sentence(self):
+        # independent of the gate's own splitter: a value line that is not
+        # verbatim from a removed sentence is flagged, whatever the gate says
+        after = NF + "\n" + 'Floor-to-floor 10\'-0" (A-301.00).'
+        self.assertFalse(nb.only_absence_changed(ABSENCE, after))
+        before = "Nothing is specified; typical is 10 ft (from my experience)."
+        after2 = NF + "\n" + "Typical is 20 ft."
+        self.assertFalse(nb.only_absence_changed(before, after2))
+
 
 if __name__ == "__main__":
     unittest.main()

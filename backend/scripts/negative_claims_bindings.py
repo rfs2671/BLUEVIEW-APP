@@ -96,11 +96,18 @@ def only_absence_changed(before: str, after: str, plans: bool = True) -> bool:
     removed = [s for s in b if s not in a]
     added = [s for s in a if s not in b]
     # A removed absence sentence may leave a clause that states a value
-    # ("...not shown; floor-to-floor 10'-0\""): kept as written (see measured_clauses).
-    kept = {c for s in removed for c in gate.measured_clauses(s)}
+    # ("...not shown; floor-to-floor 10'-0\""). INDEPENDENT of the gate's own
+    # splitter: an added line is accepted only if it is a verbatim piece of a
+    # removed sentence (case/period aside) and adds no number that sentence
+    # did not have.
+    def norm(t):
+        return re.sub(r"\s+", " ", t.strip().rstrip(".")).lower()
+
+    def piece_of_removed(s):
+        return any(norm(s) in norm(r) and not (numbers(s) - numbers(r)) for r in removed)
     return (all(gate.is_absence_claim(s, plans) for s in removed)
-            and all(GATE_LINE.match(s) or s.startswith(gate.NOT_FOUND_PREFIX) or s in kept
-                    for s in added))
+            and all(GATE_LINE.match(s) or s.startswith(gate.NOT_FOUND_PREFIX)
+                    or piece_of_removed(s) for s in added))
 
 
 def bindings() -> dict:
