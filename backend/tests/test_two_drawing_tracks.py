@@ -179,14 +179,17 @@ class SupersessionIsWithinATrack(unittest.TestCase):
         self.assertEqual(got["filed"], ["ar325#12", "ar818#6", "mh#2", "mh#3", "mh#8"])
         self.assertEqual(got["post_co"], ["mh#2", "mh#3", "own#1", "own#2"])
 
-    def test_the_index_rule_alone_would_hide_the_filed_plan(self):
-        """The same rule over every set at once - the index - puts the
-        Owner's set over the filed A-101.00: why the pass splits first."""
+    def test_the_index_rule_no_longer_hides_the_filed_plan_across_tracks(self):
+        """Since 2026-10-31 the index compares revisions only within a track
+        (tests/test_index_supersession_is_per_track.py): the Owner's set no
+        longer hides the filed A-101.00. The same files with the Owner's set
+        read as FILED (no track) are one track again and the later set wins."""
         _present()
         raw, files = _raw()
         losers = server._supersession_winners(raw, [dict(f, _id=k) for k, f in files.items()])
-        self.assertEqual(losers.get("ar325#12"), "own")
-        self.assertNotIn("ar325#12", [p for p in losers if losers[p] == "ar325"])
+        self.assertNotIn("ar325#12", losers)
+        one = [dict(f, _id=k, drawing_track=None) for k, f in files.items()]
+        self.assertEqual(server._supersession_winners(raw, one).get("ar325#12"), "own")
 
     def test_a_mechanical_sheet_goes_only_to_a_track_with_a_plan_for_its_floor(self):
         _present()

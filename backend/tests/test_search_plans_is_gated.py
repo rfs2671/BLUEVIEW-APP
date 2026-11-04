@@ -267,7 +267,7 @@ class TheGateIsWiredToWhatGetsSent(unittest.TestCase):
                + inspect.getsource(self.server.search_plans))
         self.assertIn("plan_search.rank(", src)
         self.assertIn("best_per_attribute", src)
-        self.assertIn("-> List[dict]", inspect.getsource(self.server.search_plans)[:400])
+        self.assertIn("-> List[dict]", inspect.getsource(self.server.search_plans)[:600])
 
     def test_the_search_only_reads_current_pages(self):
         src = inspect.getsource(self.server._current_record_page_ids)

@@ -24,6 +24,11 @@ With no plan tool this turn, a sentence that says the drawings lack something
 becomes "I didn't search the sheets for that." A turn with no plan tool and
 no drawing word (attendance: "No one checked in yet") is not touched.
 
+KNOWN LIMITATION (left as on main, pinned by a test): the sentence splitter
+does not know "A.F.F." -- 'Ceiling height not shown; wall height is 10'-0"
+A.F.F. (A-300).' splits after "A.F.F." and the sheet-cite fragment makes the
+whole thing be replaced. Fixing it would be a deliberate change.
+
 NOT FLAGGED: questions; the allowed "Not found in the sheets…" line; what the
 bot says of itself ("I couldn't find that in the drawings I've indexed");
 a sheet's own note quoted with its sheet (A-302 note: "…NOT REQUIRED…").
@@ -79,10 +84,42 @@ _OTHER_SUBJECT = re.compile(
     re.I)
 _QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”|«[^»]*»")
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=\S)")
+# A period after one of these is an abbreviation, not the end of a sentence.
+# STRONG: never a sentence end ("approx. 10 ft", "Dr. Lee", "e.g. A-104").
+# WEAK: a unit/word that may also end a sentence ("... is 10 in. See A-300."):
+# no split only when the next word is not capitalised.
+_ABBR_STRONG = frozenset({"approx", "dr", "mr", "mrs", "ms", "vs", "fig", "sq", "typ", "dia",
+                          "ref", "dwg", "dwgs", "e.g", "i.e", "nos", "est", "incl", "no"})
+_ABBR_WEAK = frozenset({"in", "ft", "sf", "min", "max", "ca", "etc", "ave", "st", "sec"})
+
+
+def _is_abbreviation_end(line: str, start: int, end: int) -> bool:
+    """The period at line[start:end] closes an abbreviation, not a sentence."""
+    if line[start] != ".":
+        return False
+    m = re.search(r"([A-Za-z](?:[A-Za-z.]*[A-Za-z])?)$", line[:start])
+    if not m:
+        return False
+    word = m.group(1).lower()
+    if m.start() > 0 and line[m.start() - 1] in "-/" + "0123456789":
+        return False                                  # part of a sheet id / number
+    nxt = line[end:end + 1]
+    if word == "no":
+        return nxt.isdigit()                          # "No. 5" -- not "I said no. Then"
+    if word in _ABBR_STRONG:
+        return True
+    return word in _ABBR_WEAK and not nxt.isupper()
 
 
 def _sentences(line: str) -> List[str]:
-    return [s for s in _SENT_SPLIT.split(line) if s.strip()]
+    out, last = [], 0
+    for m in re.finditer(r"[.!?]+(?=\s)\s+(?=\S)", line):
+        if _is_abbreviation_end(line, m.start(), m.end()):
+            continue
+        out.append(line[last:m.end()])
+        last = m.end()
+    out.append(line[last:])
+    return [s.strip() for s in out if s.strip()]
 
 
 _ADVICE = re.compile(r"\b(?:there(?:'s|’s|\s+is)\s+)?no\s+need\s+to\b", re.I)
@@ -196,6 +233,127 @@ def not_found_line(sheets: List[str]) -> str:
     return f"{NOT_FOUND_PREFIX}: {', '.join(sheets)}." if sheets else f"{NOT_FOUND_PREFIX}."
 
 
+# What a clause split must not look inside: a "..." quote (a straight " opens
+# one only when it is NOT a feet-inch mark, i.e. not after a digit, ' or -),
+# a curly quote, or a parenthesis.
+_CLAUSE_OPAQUE = re.compile(r"(?<![\d'\-])\"[^\"]*\"|“[^”]*”|«[^»]*»|\([^()]*\)")
+_MEASURE = re.compile(      # ANY number+unit: used only to reject a lookalike inside a subject
+    r"\d\s*(?:['\"]|ft\b|feet\b|foot\b|in\b|inch(?:es)?\b|mm\b|cm\b|m\b|sf\b|"
+    r"sq\.?\s*ft\b|psf\b|%|°|hrs?\b|hours?\b)", re.I)
+# STRICT WHITELIST (Roy, 11-03): a kept clause must be exactly
+#     <subject> [is|are|=|:|of|at] <VALUE> [dimension word] [(sheet cite)]
+# with VALUE one of a closed set, and the subject naming a measure (height,
+# slab, floor-to-floor, ...) OR the clause citing a sheet. Anything else
+# ("unit 5 in kitchens", "5 m or more", "typical is 10 ft (from my
+# experience)", word numbers, no-unit clauses) is not a value: the whole
+# sentence is replaced, as before.
+_PRIMES = str.maketrans({"′": "'", "’": "'", "″": '"', "”": '"',
+                         "“": '"', "‘": "'"})
+_FRAC = r"(?:\s+\d+/\d+|-\d+/\d+)"
+_VALUE = re.compile(
+    r"(?:\d+(?:\.\d+)?'\s*-?\s*\d*" + _FRAC + r"?(?:\.\d+)?\s*\"?"      # 10'-0"  3'-6 1/2"  10'
+    r"|\d+(?:\.\d+)?" + _FRAC + r"?\s*\""                                # 8" 5 1/2"
+    r"|\d[\d,]*(?:\.\d+)?\s*(?:ft|feet|foot|inch(?:es)?|in|m)\b\.?"      # 10 ft  8 in  3 m
+    r"|\d[\d,]*(?:\.\d+)?\s*(?:sf|sq\.?\s*ft|gpm|cfm|psf|psi|mm|cm|btuh?|kw|mbh|tons?|hrs?|hours?)\b\.?"
+    r"|\d[\d,]*(?:\.\d+)?\s*(?:%|°\s*[FC]?))", re.I)
+_DIMWORD = r"(?:deep|high|wide|thick|long|tall|clear|minimum|maximum|min|max|rated|rating|o\.?c\.?|apart|diameter|dia)"
+_SHEET_ID = SHEET_RE.pattern.replace(r"\b", "")
+_SHEET_CITE = re.compile(r"\(\s*(?:see\s+)?" + _SHEET_ID + r"(?:\s*(?:,|&|/|and)\s*" + _SHEET_ID + r")*\s*\)")
+_CLAUSE_SHAPE = re.compile(
+    r"^(?P<pre>[A-Za-z][\w'/. ,-]{0,60}?)\s*(?:\b(?:is|are|=|of|at)\b|:)?\s*"
+    r"(?P<val>" + _VALUE.pattern + r")"
+    r"(?:\s+" + _DIMWORD + r")?"
+    r"(?P<cite>\s*" + _SHEET_CITE.pattern + r")?\s*\.?$", re.I)
+
+
+def _whitelisted_value(clause: str) -> bool:
+    c = clause.translate(_PRIMES).strip()
+    m = _CLAUSE_SHAPE.match(c)
+    if not m:
+        return False
+    pre = m.group("pre")
+    if _MEASURE.search(re.sub(_SHEET_ID, " ", pre)):
+        return False                                  # a second value / lookalike in the subject
+    # Roy 11-03 (final): every kept clause carries a SHEET CITE -- "(A-300.00)"
+    # or a sheet id in the clause ("A-300 shows 10 ft"). No cite, no keep: the
+    # sentence is replaced whole. (No hedge-word list; a hedged value WITH a
+    # cite is out of scope.)
+    return bool(m.group("cite")) or bool(re.search(_SHEET_ID, pre, re.I))
+
+
+_CONJUNCTION = re.compile(r"^\W*(?:but|and|or|so|yet|however|while|whereas|although|though|"
+                          r"also|then|plus|nor|except|otherwise)\b", re.I)
+_ABSENCE_TOKEN = re.compile(
+    r"\b(?:no|none|not|nothing|never|nor|neither|without|missing|absent|unspecified|unknown|"
+    r"tbd|lacks?|lacking|omitted)\b|n/a|n['’]t\b", re.I)
+
+
+def _clauses(sentence: str) -> List[str]:
+    """The sentence split at ; , : (followed by a space) outside quotes and
+    parentheses. "1,000 SF" has no space after the comma: not split.
+    No placeholder text is spliced in (a NUL or any other character in the
+    input is just text): the opaque spans are located first and a separator
+    inside one is skipped."""
+    spans = [(m.start(), m.end()) for m in _CLAUSE_OPAQUE.finditer(sentence)]
+    parts, last = [], 0
+    for m in re.finditer(r"[;,:]\s+", sentence):
+        if any(a <= m.start() < b for a, b in spans):
+            continue
+        parts.append(sentence[last:m.start()])
+        last = m.end()
+    parts.append(sentence[last:])
+    return [c.strip() for c in parts if c.strip()]
+
+
+def _clean_measured(c: str) -> bool:
+    """POSITIVELY a whitelisted measured-value statement (see _CLAUSE_SHAPE):
+    no leading conjunction, no absence word, balanced parentheses."""
+    if c.count("(") != c.count(")"):
+        return False
+    if _CONJUNCTION.search(c) or _ABSENCE_TOKEN.search(c) or _hits(c):
+        return False
+    return _whitelisted_value(c)
+
+
+def _finish(c: str) -> str:
+    """A kept clause is a line of its own: first letter capital, ends in one
+    period (never doubled)."""
+    c = c.strip()
+    c = c[:1].upper() + c[1:]
+    return c if c.endswith(".") else c + "."
+
+
+def measured_clauses(sentence: str) -> List[str]:
+    """The clauses of an absence sentence that state a value and make no
+    absence claim of their own: "Ceiling height not shown; floor-to-floor
+    10'-0\" (A-300.00)" -> ["Floor-to-floor 10'-0\" (A-300.00)."].
+
+    FAILS TOWARD THE OLD BEHAVIOUR: the sentence is split only when EVERY
+    clause is either an absence clause (dropped) or positively a clean
+    measured-value statement WITH A SHEET CITE (kept as written, first letter
+    capitalised, ending in a period). If any clause is neither -- a sheet reference alone, a
+    conjunction-led fragment, "none on floor 3", a clause with no unit --
+    the result is [] and the whole sentence is replaced, as before.
+    Numbers inside the ABSENCE clauses are still dropped, as before."""
+    if sentence.count("(") != sentence.count(")"):
+        return []
+    parts = _clauses(sentence)
+    if len(parts) < 2:
+        return []
+    keep: List[str] = []
+    dropped = 0
+    for c in parts:
+        if _hits(c):
+            dropped += 1
+        elif _clean_measured(c):
+            keep.append(c)
+        else:
+            return []
+    if not dropped:
+        return []
+    return [_finish(c) for c in keep]
+
+
 def rewrite(text: Any, trace: Optional[Iterable[dict]] = None) -> Tuple[str, int]:
     """(the answer with each absence assertion replaced, how many were). The
     first becomes the not-found line, the rest are dropped (one line says
@@ -219,10 +377,14 @@ def rewrite(text: Any, trace: Optional[Iterable[dict]] = None) -> Tuple[str, int
                 if not said:
                     kept.append(line_for)
                     said = True
+                # A clause that states a measured value stays, on a line of
+                # its own: only the absence clause is the gate's to replace.
+                for c in measured_clauses(s):
+                    kept.append("\n" + c)
             else:
                 kept.append(s)
         if kept:
-            out_lines.append(" ".join(kept))
+            out_lines.extend(re.sub(r" *\n *", "\n", " ".join(kept)).split("\n"))
     if not n:
         return text, 0
     out = "\n".join(out_lines).strip()

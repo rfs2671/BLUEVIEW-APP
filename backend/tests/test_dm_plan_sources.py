@@ -88,7 +88,7 @@ class _Sources(_Plans):
     def patches(self, records):
         ps = super().patches(records)
 
-        async def named(project_id, sheet_q):
+        async def named(project_id, sheet_q, **_kw):
             want = plan_sources.sheet_key(sheet_q)
             return [dict(p) for p in self.db.document_page_index.rows
                     if plan_sources.sheet_key(p.get("sheet_number")) == want][:1]
@@ -315,7 +315,7 @@ class TheEvalSendsNoFile(unittest.TestCase):
                                                if p["_id"] in (THOMAS, WALWORTH)]}
         fetched, uploads = [], []
 
-        async def named(project_id, sheet_q):
+        async def named(project_id, sheet_q, **_kw):
             return [dict(p) for p in PAGES if p["sheet_number"] == sheet_q.upper()]
 
         async def fetch_pdf(frec, dest):
