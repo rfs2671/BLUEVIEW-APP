@@ -256,8 +256,20 @@ ok(/STORIES ABOVE GROUND/.test(FORM), 'the project form asks for a storey count'
 ['has_sub_cellar', 'has_cellar', 'has_mezzanine', 'has_roof_bulkhead']
   .forEach((k) => ok(FORM.includes(k), `the form carries ${k}`));
 ok(/function LevelFields/.test(FORM),
-  'ONE field block, used by create and by edit — two copies is how the edit '
-  + 'form quietly stops matching the create form');
+  'ONE field block, so there is one copy of the questions to keep right');
+// The add modal runs from its own comment to the next <Modal, which is the
+// Building levels editor.
+const addAt = FORM.indexOf('{/* Add Modal */}');
+const editAt = FORM.indexOf('<Modal', FORM.indexOf('<Modal', addAt) + 1);
+const ADD_MODAL = FORM.slice(addAt, editAt);
+ok(addAt >= 0 && /PROJECT ADDRESS/.test(ADD_MODAL),
+  'the add modal is found (the check below would pass on an empty slice)');
+ok(!/<LevelFields/.test(ADD_MODAL),
+  'NEW PROJECT DOES NOT ASK. With the levels in it the modal was taller than a '
+  + 'laptop screen and the address field could not be reached; levels are '
+  + 'answered on the project afterwards, in the Building levels editor');
+ok(/<LevelFields/.test(FORM.slice(editAt)),
+  'the Building levels editor still asks');
 ok(/openLevelEditor\(project\)/.test(FORM),
   'the card list opens the editor — a form nothing opens is a field nobody fills in');
 ok(/onEditLevels=\{openLevelEditor\}/.test(FORM),
