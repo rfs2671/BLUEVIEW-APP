@@ -58,17 +58,27 @@ jobs:
           API_BASE: ${{ github.event.inputs.api_base || 'https://api.levelog.com' }}
           WANT: ${{ github.event.inputs.expect_sha || github.sha }}
         run: |
+          if [ -z "$WANT" ]; then
+            echo "::error::No expected SHA (github.sha / expect_sha is empty)."
+            echo "Refusing to run: an empty expectation matches any answer,"
+            echo "including a 502 that returns no commit at all."
+            exit 1
+          fi
           echo "waiting for $WANT at $API_BASE"
+          # 40 attempts x 15 s = 10 minutes. An empty or unreachable answer
+          # (LIVE empty) is NEVER a match: it is just "not deployed yet".
           for i in $(seq 1 40); do
             LIVE=$(curl -s --max-time 10 "$API_BASE/api/version" \
                    | python3 -c "import sys,json;print(json.load(sys.stdin).get('commit',''))" 2>/dev/null || echo "")
             echo "  attempt $i: ${LIVE:0:12}"
-            case "$WANT" in
-              "$LIVE"*) echo "deployed=$LIVE" >> "$GITHUB_OUTPUT"; exit 0 ;;
-            esac
-            case "$LIVE" in
-              "$WANT"*) echo "deployed=$LIVE" >> "$GITHUB_OUTPUT"; exit 0 ;;
-            esac
+            if [ -n "$LIVE" ]; then
+              case "$WANT" in
+                "$LIVE"*) echo "deployed=$LIVE" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              esac
+              case "$LIVE" in
+                "$WANT"*) echo "deployed=$LIVE" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              esac
+            fi
             sleep 15
           done
           echo "::error::$API_BASE never reported $WANT. The deploy did not"
@@ -83,4 +93,5 @@ jobs:
           SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
           SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
           EXPECT_SHA: ${{ steps.wait.outputs.deployed }}
+          REQUIRE_EXPECT_SHA: "1"
         run: python backend/scripts/postdeploy_login_check.py

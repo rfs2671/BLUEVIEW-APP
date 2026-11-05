@@ -15,7 +15,7 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND / "scripts"))
 
-from postdeploy_login_check import evaluate  # noqa: E402
+from postdeploy_login_check import evaluate, expectation_error  # noqa: E402
 
 OK = dict(version_status=200, sha="a6536de1234567890", login_status=200,
           me_status=200, me_status_no_header=200)
@@ -105,6 +105,44 @@ class UnreachableIsNotHealthy(unittest.TestCase):
         failures = evaluate(version_status=0, sha="", login_status=0,
                             me_status=0, me_status_no_header=0)
         self.assertGreaterEqual(len(failures), 3)
+
+
+class AnEmptyExpectedShaFailsLoudly(unittest.TestCase):
+    def test_required_and_empty_is_an_error(self):
+        self.assertIsNotNone(expectation_error(None, True))
+        self.assertIsNotNone(expectation_error("", True))
+
+    def test_required_with_a_sha_passes(self):
+        self.assertIsNone(expectation_error("abc1234", True))
+
+    def test_not_required_keeps_the_manual_behaviour(self):
+        self.assertIsNone(expectation_error(None, False))
+
+
+class TheWaitStepNeverMatchesAnEmptyAnswer(unittest.TestCase):
+    """The 2026-11-04 miss: a 502 gives LIVE='', and case "$WANT" in "$LIVE"*)
+    matches every WANT when LIVE is empty, so the wait step passed with no
+    deployed SHA and the sign-in ran against a half-deployed API."""
+
+    @classmethod
+    def setUpClass(cls):
+        wf = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "postdeploy-login-check.yml"
+        cls.text = wf.read_text(encoding="utf-8")
+
+    def test_the_comparison_is_only_reached_for_a_non_empty_live_sha(self):
+        self.assertIn('if [ -n "$LIVE" ]; then', self.text)
+        self.assertLess(self.text.index('if [ -n "$LIVE" ]; then'),
+                        self.text.index('"$LIVE"*) echo "deployed='))
+
+    def test_an_empty_expected_sha_stops_the_wait_step(self):
+        self.assertIn('if [ -z "$WANT" ]; then', self.text)
+
+    def test_the_sign_in_step_requires_an_expected_sha(self):
+        self.assertIn('REQUIRE_EXPECT_SHA: "1"', self.text)
+
+    def test_the_wait_is_ten_minutes(self):
+        self.assertIn("seq 1 40", self.text)
+        self.assertIn("sleep 15", self.text)
 
 
 class ItLeaksNothing(unittest.TestCase):
