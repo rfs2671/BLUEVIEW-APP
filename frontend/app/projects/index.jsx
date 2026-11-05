@@ -543,11 +543,10 @@ export default function ProjectsScreen() {
                     </View>
                   </View>
 
-                  <LevelFields
-                    s={s}
-                    value={newProject}
-                    onChange={(patch) => setNewProject({ ...newProject, ...patch })}
-                  />
+                  {/* No building levels here: with them the modal was taller
+                      than a laptop screen and the address field could not be
+                      reached. They are answered on the project afterwards, in
+                      the Building levels editor below. */}
 
                   <GlassButton
                     title="Create Project"
