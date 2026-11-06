@@ -54026,7 +54026,8 @@ async def _dm_ask_account(dm_chat: str, options: List[dict], held: str, lang: st
                           jobs: Optional[List[dict]] = None, photo: bool = False) -> None:
     """Ask which of their companies (or which of the same-named jobs) a
     message is for: numbered, by real names. The message is held and
-    answered once they pick."""
+    answered once they pick -- never dropped: with a question already open,
+    this one waits its turn behind it (_dm_question_open)."""
     if jobs:
         labels = [_dm_job_with_company(j) for j in jobs]
         uids = [j["acct"]["user_id"] for j in jobs]
@@ -54040,9 +54041,11 @@ async def _dm_ask_account(dm_chat: str, options: List[dict], held: str, lang: st
         head = wa_dm.ACCOUNT_PICK_LINES.get(lang, wa_dm.ACCOUNT_PICK_LINES["en"])["which_company"]
     if photo:
         head += " " + wa_dm.ACCOUNT_PICK_LINES.get(lang, wa_dm.ACCOUNT_PICK_LINES["en"])["send_again"]
-    await _dm_state_set(DM_ACCT_PICK_STATE, dm_chat, dm_actions.PENDING_SECONDS,
-                        user_ids=uids, labels=labels, project_ids=pids, held=held[:2000])
-    await send_whatsapp_message(dm_chat, dm_actions.numbered(head, labels))
+    asked = dm_actions.numbered(head, labels)
+    if await _dm_question_open(DM_ACCT_PICK_STATE, dm_chat, {
+            "user_ids": uids, "labels": labels, "project_ids": pids, "held": held[:2000],
+            "asked": asked, "lang": lang}, lang):
+        await send_whatsapp_message(dm_chat, asked)
 
 
 def _dm_is_short_answer(text: str) -> bool:
@@ -54082,10 +54085,27 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
 
     pick = await _dm_state_get(DM_ACCT_PICK_STATE, dm_chat)
     if pick:
-        await _dm_state_clear(DM_ACCT_PICK_STATE, dm_chat)
         labels = list(pick.get("labels") or [])
         k = dm_actions.pick(text, labels) if labels else None
-        if k is not None:
+        if k is not None and not await _dm_newest_question(
+                dm_chat, DM_ACCT_PICK_STATE, pick.get("asked_at") or pick.get("updated_at")):
+            k = None                     # a newer question (a menu, a change) takes the number
+        if k is None:
+            # Something else: answered as usual below; the question stays
+            # open with the message it holds, said again once after.
+            await _dm_remind_once(DM_ACCT_PICK_STATE, dm_chat, pick,
+                                  str(pick.get("lang") or lang))
+        else:
+            nxt = await _dm_question_close(DM_ACCT_PICK_STATE, dm_chat)
+            if nxt:
+                # The next held message's question, after this one's answer.
+                async def ask_next(q=str(nxt.get("asked") or "")):
+                    await send_whatsapp_message(dm_chat, q)
+                after = _DM_AFTER.get()
+                if after is None:
+                    await ask_next()
+                else:
+                    after.insert(0, ask_next)
             acct = by_uid.get(str((pick.get("user_ids") or [None] * len(labels))[k]))
             if acct:
                 pid = (pick.get("project_ids") or [None] * len(labels))[k]
@@ -54097,7 +54117,8 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
                     finally:
                         _dm_leave(toks)
                 return one(acct, str(pick.get("held") or text))
-        # Not a pick: a new message, routed as one.
+            # That account is gone: the held message is routed as a new one.
+            text = str(pick.get("held") or text)
 
     async def open_flow() -> Optional[dict]:
         for kind in _DM_ACCT_FLOW_KINDS:
@@ -57094,6 +57115,38 @@ async def _upcoming_brief_events(user: dict, company_id: str, role: str,
 
 # ── The day-before DM, and a reminder on its day ──
 
+async def _upcoming_person_day_before(accounts: List[dict], tomorrow: _Date,
+                                      now: datetime) -> Tuple[Optional[list], Optional[datetime]]:
+    """(tomorrow's events across one person's accounts, each named with its
+    company; a Shabbos hold or None) for their ONE 5 PM "Tomorrow" DM.
+    Accounts with "Tomorrow" reminders off are left out (None: all are). A
+    company keeping Shabbos / Yom Tov now is left out; when every one is,
+    all of them are kept and the hold is the latest one's end (the existing
+    hold / skip then applies)."""
+    on = [a for a in accounts
+          if (await get_whatsapp_prefs(str(a.get("_id")), None)).get("upcoming_reminders", True)]
+    if not on:
+        return None, None
+    awake, holds = [], []
+    for a in on:
+        q = await _shabbos_quiet(a.get("company_id"), None, now)
+        if q:
+            holds.append(q)
+        else:
+            awake.append(a)
+    until = max(holds) if holds and not awake else None
+    rows = []
+    for a in (awake or on):
+        cid = str(a.get("company_id") or "")
+        co = await _company_display_name(cid)
+        for r in await _upcoming_for(a, cid, wa_dm.norm_role(a.get("role")), tomorrow, tomorrow,
+                                     include_reminders=False):
+            if co and r.get("project_name"):
+                r = dict(r, project_name=f"{r['project_name']} ({co})")
+            rows.append(r)
+    return sorted(rows, key=upcoming.sort_key), until
+
+
 async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
     """From 5pm New York: one DM per opted-in admin/PM with tomorrow's
     events on their jobs. From 8am: each personal reminder due today, to
@@ -57126,16 +57179,32 @@ async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
                         optin.get("company_id") or user.get("company_id"),
                         user.get("company_id")):
                     continue
-                if not (await get_whatsapp_prefs(uid, None)).get("upcoming_reminders", True):
-                    report["pref_off"] += 1
+                # ONE PERSON, ONE "TOMORROW": accounts in several companies on
+                # one number get one DM, as the first account connected (the
+                # morning brief's rules); the other accounts are skipped here.
+                accounts = await _brief_accounts(user, optin)
+                multi = len(accounts) > 1
+                if multi and str(accounts[0].get("_id")) != uid:
+                    report["merged"] = report.get("merged", 0) + 1
                     continue
-                cid = str(user.get("company_id"))
-                rows = await _upcoming_for(user, cid, wa_dm.norm_role(user.get("role")),
-                                           tomorrow, tomorrow, include_reminders=False)
+                if multi:
+                    rows, until = await _upcoming_person_day_before(accounts, tomorrow, now)
+                    if rows is None:
+                        report["pref_off"] += 1
+                        continue
+                    cid = str(user.get("company_id"))
+                else:
+                    if not (await get_whatsapp_prefs(uid, None)).get("upcoming_reminders", True):
+                        report["pref_off"] += 1
+                        continue
+                    cid = str(user.get("company_id"))
+                    rows = await _upcoming_for(user, cid, wa_dm.norm_role(user.get("role")),
+                                               tomorrow, tomorrow, include_reminders=False)
                 text = upcoming.day_before_dm(rows, tomorrow)
                 if not text:
                     continue
-                until = await _shabbos_quiet(cid, None, now)
+                if not multi:
+                    until = await _shabbos_quiet(cid, None, now)
                 if until:
                     from lib import shabbos as _shabbos
                     if tomorrow <= until.astimezone(_shabbos.NY).date():
@@ -57152,7 +57221,8 @@ async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
                         report["shabbos_queued"] += 1
                     continue
                 sent = await send_whatsapp_dm(uid, text, kind=UPCOMING_DAY_BEFORE_KIND,
-                                              window=tomorrow.isoformat())
+                                              window=tomorrow.isoformat(),
+                                              history_company=DM_SCOPE_MULTI if multi else None)
                 if not sent and await _dm_retry_if_failed(
                         uid, text, kind=UPCOMING_DAY_BEFORE_KIND, window=tomorrow.isoformat(),
                         company_id=cid, deadline=_ny_day_end(now), now=now):
@@ -61962,12 +62032,18 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
                       for a in person]
             uids, pids, head = [a["user_id"] for a in person], [None] * len(person), \
                 lines["which_company"]
-        if not ctx.get("dry_run"):
-            await _dm_state_set(DM_ACCT_PICK_STATE, ctx["dm_chat"], dm_actions.PENDING_SECONDS,
-                                user_ids=uids, labels=labels, project_ids=pids,
-                                held=str(ctx["text"])[:2000])
+        asked = dm_actions.numbered(head, labels)
+        if not ctx.get("dry_run") and not await _dm_question_open(
+                DM_ACCT_PICK_STATE, ctx["dm_chat"],
+                {"user_ids": uids, "labels": labels, "project_ids": pids,
+                 "held": str(ctx["text"])[:2000], "asked": asked, "lang": lang}, lang):
+            # One is open already: this one waits its turn (they were told).
+            return json.dumps({"status": "queued_behind_an_open_question",
+                               "note": "Nothing has been changed. They were told it will be "
+                                       "asked right after the question already open. Say "
+                                       "nothing more about it."}, ensure_ascii=False)
         return json.dumps({"status": "dry_run" if ctx.get("dry_run") else "needs_an_answer",
-                           "system_says": [dm_actions.numbered(head, labels)],
+                           "system_says": [asked],
                            "options": labels,
                            "note": "Nothing has been changed. Their jobs are in more than one "
                                    "company: ask which one, with the numbered options, before "
