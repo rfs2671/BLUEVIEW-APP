@@ -397,7 +397,7 @@ class AdminAddUser(unittest.TestCase):
         self.assertIn("this company", text)
         self.assertIn("esta empresa", text)
 
-    def test_re_adding_a_removed_person_restores_the_old_account(self):
+    def test_readding_a_removed_person_restores_the_old_account(self):
         """ROY, 2026-11-06: same _id and history; the add request's role,
         name, phone, password and projects; never a second row."""
         async def s(c, db):
