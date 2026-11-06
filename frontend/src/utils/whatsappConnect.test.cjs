@@ -89,6 +89,18 @@ for (const st of ['phone_missing', 'phone_shared', 'unavailable']) {
 }
 ok(W.alertsView({ ...me('not_connected'), connect_url: null }).button === null,
    'no link from the server: no button, whatever the state');
+{
+  // One person, an account per company, one phone (Roy 2026-11-06): the
+  // server says "phone_shared" only for a second account IN THE SAME
+  // company, and the line says so -- never "ask support to remove it".
+  const en = W.alertsView(me('phone_shared'));
+  ok(en.line.includes('in your company') && !en.line.includes('support'),
+     'phone_shared: names the same company, no support ticket');
+  const es = W.alertsView(me('phone_shared'), null, 'es');
+  ok(es.chip.label === 'Teléfono compartido' && es.chip.tone === 'warn', 'phone_shared: Spanish chip');
+  ok(es.line.includes('de su compañía') && !es.line.includes('\n'), 'phone_shared: Spanish line, one line');
+  ok(Object.keys(W.PHONE_SHARED).sort().join() === 'en,es', 'phone_shared: English and Spanish');
+}
 
 console.log('\nthe single-use link');
 {

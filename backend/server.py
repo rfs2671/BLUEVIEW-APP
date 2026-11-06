@@ -47249,19 +47249,43 @@ async def _consume_reply_window(phone: str) -> bool:
         return False
 
 
-async def _active_optin_for_phone(phone: str) -> Optional[dict]:
-    """The active opt-in for a phone, or for a chat: a person who opted in
+async def _active_optins_for_phone(phone: str, user_id: Any = None) -> List[dict]:
+    """The active opt-ins for a phone, or for a chat: a person who opted in
     from a WhatsApp privacy id (@lid) is keyed by `chat_digits`, because
-    their messages — and so the replies and sends to them — use that id."""
+    their messages — and so the replies and sends to them — use that id.
+
+    ONE ROW PER (phone, account). One person may hold an account in several
+    companies with the same phone (Roy, 2026-11-06), each connected by their
+    own YES, so a phone has as many active rows as connected accounts --
+    most recently connected first. `user_id`: that account's row only."""
     digits = wa_dm.phone_digits(phone)
     if not digits:
-        return None
+        return []
+    query: Dict[str, Any] = {"status": "active",
+                             "$or": [{"phone": digits}, {"chat_digits": digits}]}
+    if user_id is not None:
+        if not str(user_id or "").strip():
+            return []
+        query["user_id"] = str(user_id)
     try:
-        return await db[WA_OPTINS].find_one(
-            {"status": "active",
-             "$or": [{"phone": digits}, {"chat_digits": digits}]})
+        rows = await db[WA_OPTINS].find(query).to_list(20)
     except Exception:
-        return None
+        return []
+    return sorted(rows, key=lambda r: _utc(r.get("opted_in_at")) or _EPOCH, reverse=True)
+
+
+async def _optin_phones_of(user_id: Any) -> set:
+    """{"phone:<digits>"} for each active opt-in of this account: the
+    PERSON behind it, for the callers that must not ask one person two
+    numbered questions at once across their companies."""
+    if not str(user_id or "").strip():
+        return set()
+    try:
+        rows = await db[WA_OPTINS].find(
+            {"user_id": str(user_id), "status": "active"}, {"phone": 1}).to_list(10)
+    except Exception:
+        return set()
+    return {f"phone:{r['phone']}" for r in rows if r.get("phone")}
 
 
 #: A ledger row still "sending" after this is a send that died midway.
@@ -47281,12 +47305,17 @@ async def _dm_send_verdict(chat_id: str, message: str,
     if dm_meta is None and await _consume_reply_window(digits):
         return {"allowed": True, "reason": "reply"}
 
-    optin = await _active_optin_for_phone(digits)
-    if not optin:
-        return {"allowed": False, "reason": "no_active_optin"}
     meta = dm_meta or {}
-    if meta.get("user_id") and str(optin.get("user_id")) != str(meta["user_id"]):
-        return {"allowed": False, "reason": "optin_user_mismatch"}
+    optins = await _active_optins_for_phone(digits)
+    if not optins:
+        return {"allowed": False, "reason": "no_active_optin"}
+    # A send for one account rides THAT account's opt-in: the same phone may
+    # be connected for accounts in several companies, each by its own YES.
+    optin = optins[0]
+    if meta.get("user_id"):
+        optin = next((o for o in optins if str(o.get("user_id")) == str(meta["user_id"])), None)
+        if optin is None:
+            return {"allowed": False, "reason": "optin_user_mismatch"}
 
     now = datetime.now(timezone.utc)
     kind = str(meta.get("kind") or "adhoc")
@@ -48066,6 +48095,10 @@ async def _gc_propose_tick(now: Optional[datetime] = None) -> dict:
             prop = (row.get("whatsapp_project") or {}).get("gc_proposal")
             if _gc_proposal_open(prop, now):
                 busy_admins.add(str(prop.get("admin_user_id")))
+                # ...and the PERSON: the same phone may be the main admin of
+                # another company too, and "1" in that chat would then answer
+                # one of two questions.
+                busy_admins.update(await _optin_phones_of(prop.get("admin_user_id")))
             elif isinstance(prop, dict):
                 await _gc_answer(row, prop, "expired", now)    # only while still pending
     except Exception as e:
@@ -48109,7 +48142,8 @@ async def _gc_propose_tick(now: Optional[datetime] = None) -> dict:
             report["no_admin"] += 1
             continue
         admin_id = str(admin.get("_id"))
-        if admin_id in busy_admins:
+        admin_phones = await _optin_phones_of(admin_id)
+        if admin_id in busy_admins or admin_phones & busy_admins:
             report["busy"] += 1
             continue
         group_name = wa_groups.display_name(pick.get("group_name"))
@@ -48131,6 +48165,7 @@ async def _gc_propose_tick(now: Optional[datetime] = None) -> dict:
                 "sent_at": now,
                 "expires_at": now + timedelta(hours=GC_PROPOSAL_TTL_HOURS)}})
         busy_admins.add(admin_id)
+        busy_admins.update(admin_phones)
         report["asked"] += 1
     logger.info(f"[wa-gc] propose {report}")
     return report
@@ -48165,20 +48200,36 @@ async def _handle_gc_confirm_reply(chat_id: str, answer: str) -> bool:
     """An admin's "1" / "2" to a GC group question. True when it was one
     (and was answered); False sends the message on to normal handling."""
     now = datetime.now(timezone.utc)
-    optin = await _active_optin_for_phone(wa_dm.phone_digits(chat_id))
-    if not optin or not optin.get("user_id"):
+    # Every account this number is connected for: the person may be the main
+    # admin of more than one company.
+    optins = {str(o["user_id"]): o for o in
+              await _active_optins_for_phone(wa_dm.phone_digits(chat_id)) if o.get("user_id")}
+    if not optins:
         return False
-    uid = str(optin["user_id"])
     try:
-        row = await db.notification_preferences.find_one(
+        rows = await db.notification_preferences.find(
             {"user_id": None, "scope": "project",
              "whatsapp_project.gc_proposal.status": "pending",
-             "whatsapp_project.gc_proposal.admin_user_id": uid})
+             "whatsapp_project.gc_proposal.admin_user_id": {"$in": list(optins)}}).to_list(10)
     except Exception:
         return False
-    prop = ((row or {}).get("whatsapp_project") or {}).get("gc_proposal")
-    if not row or not _gc_proposal_open(prop, now):
+    open_rows = [r for r in rows if _gc_proposal_open(
+        ((r or {}).get("whatsapp_project") or {}).get("gc_proposal"), now)]
+    if not open_rows:
         return False
+    if len(open_rows) > 1:
+        # Two questions open at once (two companies): "1" is not guessed.
+        labels = []
+        for r in open_rows:
+            p = await _bot_project_scope(r.get("company_id"), r.get("project_id"))
+            labels.append(wa_groups.project_label(p) if p else "a project")
+        await send_whatsapp_message(chat_id, wa_dm.GC_TWO_OPEN_LINES["en"].format(
+            projects=wa_dm.and_list(labels)))
+        return True
+    row = open_rows[0]
+    prop = ((row or {}).get("whatsapp_project") or {}).get("gc_proposal")
+    uid = str(prop.get("admin_user_id"))
+    optin = optins[uid]
     project_id = str(row.get("project_id") or "")
     company_id = str(row.get("company_id") or "")
     group_id = str(prop.get("group_id") or "")
@@ -52942,21 +52993,22 @@ async def _waapi_contact_phone(jid: str) -> str:
 
 async def _dm_start_hint_due(chat: str, raw: Any = None) -> bool:
     """A DM from someone not using the assistant: True only when the number
-    is ONE eligible Admin / PM's own profile phone (a shared number is
-    refused by START too), the number never opted in or out (STOP stays
-    silent), and today's hint is claimed here -- an insert keyed by number
-    and day, so a redelivered webhook can't send it twice. Everyone else is
-    not answered at all (no "for admins only" line telling a stranger this
-    is a bot). Codex on #838."""
+    is an eligible Admin / PM's own profile phone -- one account, or one per
+    company (START connects them together; two in one company it refuses,
+    so no hint) -- the number never opted in or out (STOP stays silent), and
+    today's hint is claimed here -- an insert keyed by number and day, so a
+    redelivered webhook can't send it twice. Everyone else is not answered
+    at all (no "for admins only" line telling a stranger this is a bot).
+    Codex on #838."""
     phone = await _resolve_dm_phone(chat, raw)
     if not phone:
         return False
-    users = await _find_users_by_phone(phone)
-    if len(users) != 1 or not wa_dm.is_dm_eligible(users[0]):
+    acc = await _phone_accounts(phone)
+    if acc["dup_company"] or not acc["eligible"]:
         return False
     digits = wa_dm.phone_digits(chat)
     # The same keys STOP writes: the chat, the phone, and the person.
-    keys = [{"phone": phone}, {"user_id": str(users[0].get("_id") or "")}]
+    keys = [{"phone": phone}] + [{"user_id": str(u.get("_id") or "")} for u in acc["eligible"]]
     if digits:
         keys += [{"phone": digits}, {"chat_digits": digits}]
     keys = [k for k in keys if all(k.values())]
@@ -53197,9 +53249,69 @@ async def whatsapp_public_vcard():
                  "Cache-Control": "public, max-age=300"})
 
 
+async def _company_display_name(company_id: Any) -> str:
+    """The company's name as people know it, for a message to the person
+    ("Blueview"); "" when it cannot be read."""
+    if not str(company_id or "").strip():
+        return ""
+    try:
+        co = await db.companies.find_one({"_id": to_query_id(str(company_id))}, {"name": 1})
+    except Exception:
+        co = None
+    return str((co or {}).get("name") or "").strip()
+
+
+async def _phone_accounts(phone: str) -> dict:
+    """Every live account on this number: {"users", "eligible" (the
+    DM-eligible ones, in a stable order), "dup_company" (a company with two
+    live accounts on the number, or "")}.
+
+    One person, one account per company, the same phone in each: that is
+    Roy's design (2026-11-06) and every such account may be connected.
+    Two accounts on the number in ONE company are not one person's to
+    choose between, so START keeps refusing them (PHONE_SHARED_TEXT)."""
+    users = await _find_users_by_phone(phone)
+    by_company: Dict[str, int] = {}
+    for u in users:
+        cid = str(u.get("company_id") or "").strip()
+        if cid:
+            by_company[cid] = by_company.get(cid, 0) + 1
+    dup = next((c for c, n in by_company.items() if n > 1), "")
+    eligible = sorted((u for u in users if wa_dm.is_dm_eligible(u)),
+                      key=lambda u: str(u.get("_id")))
+    return {"users": users, "eligible": eligible, "dup_company": dup}
+
+
+#: START (or a new account on the number) asked "Reply YES to connect …":
+#: {mode: "start" | "later", user_ids, phone, phone_verified, source, lang,
+#: held}. 30 minutes; any other message clears it (the person moved on, and
+#: a later "yes" is someone else's question's). `held`: the message a
+#: "later" question held back, answered once they reply.
+ACCOUNTS_STATE = "dm_accounts"
+#: After a "later" question that got no YES / NO: not asked again for a day.
+ACCOUNTS_SNOOZE_STATE = "dm_accounts_snooze"
+
+
+async def _ask_accounts(chat: str, users: List[dict], phone: str, *, mode: str,
+                        phone_verified: bool, source: str, lang: str,
+                        held: Optional[str] = None) -> None:
+    """Ask before connecting: the real company names, YES / NO."""
+    names = [await _company_display_name(u.get("company_id")) or "another company"
+             for u in users]
+    await _dm_state_set(ACCOUNTS_STATE, chat, dm_actions.PENDING_SECONDS,
+                        mode=mode, user_ids=[str(u.get("_id")) for u in users],
+                        phone=phone, phone_verified=bool(phone_verified), source=source,
+                        lang=lang, held=held)
+    _security_event("whatsapp_optin_confirm_asked", mode=mode, accounts=len(users),
+                    jid_kind=wa_dm.jid_kind(chat))
+    await _reply_dm(chat, wa_dm.accounts_text(
+        lang, "start_confirm" if mode == "start" else "later_confirm", names),
+        f"{mode}_accounts_asked")
+
+
 async def _handle_dm_start(chat_id: str, body: str = "START",
                            raw: Any = None) -> None:
-    """START, from any chat: opt the right user in, or say plainly why not.
+    """START, from any chat: opt the right accounts in, or say plainly why not.
 
     Two ways to know who is writing:
       * the PHONE the message came from (a @c.us chat, or a @lid whose phone
@@ -53208,12 +53320,23 @@ async def _handle_dm_start(chat_id: str, body: str = "START",
         names the account that showed it. This is what makes a @lid sender
         whose phone WhatsApp withholds connectable at all.
     When both are present they must agree. Every path replies, to the chat
-    the START came from."""
+    the START came from.
+
+    SEVERAL COMPANIES, ONE PERSON (Roy, 2026-11-06). The number may carry an
+    account in more than one company. One eligible account: connected, as
+    before. More: every one is listed by its company's name and the person
+    confirms ONCE ("Reply YES to connect both"); nothing is connected
+    without that YES (_dm_accounts_turn). A connect code from a chat whose
+    number is unproven (a @lid with no phone) connects the coded account
+    only. Two accounts on the number in the SAME company: refused."""
     chat = wa_dm.dm_chat_id(chat_id)
     chat_digits = wa_dm.phone_digits(chat)
     kind = wa_dm.jid_kind(chat)
     phone = await _resolve_dm_phone(chat, raw)
     code = wa_dm.parse_start_code(body)
+    lang = "es" if dm_actions.reply_lang(body) == "es" else "en"
+    # A new START replaces any question an earlier one left open.
+    await _dm_state_clear(ACCOUNTS_STATE, chat)
 
     if code:
         u = await _redeem_connect_code(code, chat)
@@ -53234,14 +53357,21 @@ async def _handle_dm_start(chat_id: str, body: str = "START",
             await _reply_dm(chat, wa_dm.WRONG_PHONE_TEXT, "start_wrong_phone")
             await _review_queue_registration([u], "code_phone_mismatch", chat)
             return
-        others = [x for x in await _find_users_by_phone(profile)
-                  if str(x.get("_id")) != str(u.get("_id"))]
-        if others:
+        acc = await _phone_accounts(profile)
+        same_company = [x for x in acc["users"] if str(x.get("_id")) != str(u.get("_id"))
+                        and wa_security.same_company(x.get("company_id"), u.get("company_id"))]
+        if same_company or acc["dup_company"]:
             await _reply_dm(chat, wa_dm.PHONE_SHARED_TEXT, "start_phone_shared")
-            await _review_queue_registration([u] + others, "phone_shared", chat)
+            await _review_queue_registration([u] + same_company, "phone_shared", chat)
             return
-        await _record_optin(u, profile, chat, chat_digits,
-                            phone_verified=bool(phone), source="start_code")
+        more = [x for x in acc["eligible"] if str(x.get("_id")) != str(u.get("_id"))]
+        if more and phone:
+            # The number is proven: every company account on it, confirmed once.
+            await _ask_accounts(chat, [u] + more, profile, mode="start", phone_verified=True,
+                                source="start_code", lang=lang)
+            return
+        await _record_optins([u], profile, chat, chat_digits,
+                             phone_verified=bool(phone), source="start_code", lang=lang)
         return
 
     if not phone:
@@ -53249,14 +53379,16 @@ async def _handle_dm_start(chat_id: str, body: str = "START",
                         jid_kind=kind)
         await _reply_dm(chat, wa_dm.NEED_APP_TEXT, "start_lid_unresolved")
         return
-    users = await _find_users_by_phone(phone)
-    if len(users) > 1:
+    acc = await _phone_accounts(phone)
+    users = acc["users"]
+    if acc["dup_company"]:
         _security_event("whatsapp_optin_refused", reason="ambiguous",
                         row_count=len(users), jid_kind=kind)
         await _reply_dm(chat, wa_dm.PHONE_SHARED_TEXT, "start_phone_shared")
         await _review_queue_registration(users, "ambiguous", chat)
         return
-    if len(users) != 1 or not wa_dm.is_dm_eligible(users[0]):
+    eligible = acc["eligible"]
+    if not eligible:
         _security_event("whatsapp_optin_refused",
                         reason="no_user" if not users else "role_not_eligible",
                         row_count=len(users), jid_kind=kind)
@@ -53266,43 +53398,188 @@ async def _handle_dm_start(chat_id: str, body: str = "START",
         if users:
             await _review_queue_registration(users, "role_not_eligible", chat)
         return
-    await _record_optin(users[0], phone, chat, chat_digits,
-                        phone_verified=True, source="start")
+    if len(eligible) > 1:
+        await _ask_accounts(chat, eligible, phone, mode="start", phone_verified=True,
+                            source="start", lang=lang)
+        return
+    await _record_optins(eligible, phone, chat, chat_digits,
+                         phone_verified=True, source="start", lang=lang)
 
 
-async def _record_optin(u: dict, phone: str, chat: str, chat_digits: str, *,
-                        phone_verified: bool, source: str) -> None:
-    """Write the opt-in (keyed by the profile phone) and send the intro to
-    the chat it came from. A write that fails is SAID, not swallowed."""
-    uid, cid = str(u.get("_id")), str(u.get("company_id"))
+async def _record_optins(users: List[dict], phone: str, chat: str, chat_digits: str, *,
+                         phone_verified: bool, source: str, lang: str = "en",
+                         later: bool = False) -> bool:
+    """Write one opt-in per account -- keyed by (profile phone, account) --
+    and answer the chat it came from. A write that fails is SAID, not
+    swallowed. One account: the welcome (their first START ever) or the
+    intro, as before. Several: one welcome (or the intro), then which
+    companies are on. `later`: accounts added to a person already
+    connected -- no second welcome, just which companies are on now."""
     now = datetime.now(timezone.utc)
     try:
-        await db[WA_OPTINS].update_many(
-            {"user_id": uid, "phone": {"$ne": phone}, "status": "active"},
-            {"$set": {"status": "superseded", "updated_at": now}},
-        )
-        await db[WA_OPTINS].update_one(
-            {"phone": phone},
-            {"$set": {"phone": phone, "user_id": uid, "company_id": cid,
-                      "chat_id": chat, "chat_digits": chat_digits,
-                      "chat_kind": wa_dm.jid_kind(chat),
-                      "phone_verified": phone_verified,
-                      "status": "active", "opted_in_at": now,
-                      "opted_out_at": None, "updated_at": now,
-                      "source": source}},
-            upsert=True,
-        )
+        for u in users:
+            uid, cid = str(u.get("_id")), str(u.get("company_id"))
+            await db[WA_OPTINS].update_many(
+                {"user_id": uid, "phone": {"$ne": phone}, "status": "active"},
+                {"$set": {"status": "superseded", "updated_at": now}},
+            )
+            await db[WA_OPTINS].update_one(
+                {"phone": phone, "user_id": uid},
+                {"$set": {"phone": phone, "user_id": uid, "company_id": cid,
+                          "chat_id": chat, "chat_digits": chat_digits,
+                          "chat_kind": wa_dm.jid_kind(chat),
+                          "phone_verified": phone_verified,
+                          "status": "active", "opted_in_at": now,
+                          "opted_out_at": None, "updated_at": now,
+                          "source": source}},
+                upsert=True,
+            )
     except Exception as e:
         logger.warning(f"opt-in write failed: {type(e).__name__}")
         await _reply_dm(chat, wa_dm.TRY_AGAIN_TEXT, "start_write_failed")
-        return
-    _security_event("whatsapp_optin", user_id=uid, company_id=cid,
-                    jid_kind=wa_dm.jid_kind(chat), source=source)
-    # Their first START ever: the welcome (and the card) instead of the
-    # intro. Every START after that: the intro, as before.
-    if await _dm_welcome(u, chat, "start_welcomed"):
-        return
-    await _reply_dm(chat, wa_dm.INTRO_TEXT, "start_opted_in")
+        return False
+    for u in users:
+        _security_event("whatsapp_optin", user_id=str(u.get("_id")),
+                        company_id=str(u.get("company_id")),
+                        jid_kind=wa_dm.jid_kind(chat), source=source)
+    if len(users) == 1 and not later:
+        # Their first START ever: the welcome (and the card) instead of the
+        # intro. Every START after that: the intro, as before.
+        if await _dm_welcome(users[0], chat, "start_welcomed"):
+            return True
+        await _reply_dm(chat, wa_dm.INTRO_TEXT, "start_opted_in")
+        return True
+    if later:
+        # Already talking to the assistant: no second hello for the new account.
+        for u in users:
+            await _dm_welcome_claim(u)
+    else:
+        greeted = False
+        for u in users:
+            if not greeted:
+                greeted = await _dm_welcome(u, chat, "start_welcomed")
+            else:
+                await _dm_welcome_claim(u)     # one hello per person, not per account
+        if not greeted:
+            await _reply_dm(chat, wa_dm.INTRO_TEXT, "start_opted_in")
+    names = []
+    rows = sorted(await _active_optins_for_phone(phone),
+                  key=lambda o: (_utc(o.get("opted_in_at")) or _EPOCH, str(o.get("user_id"))))
+    for o in rows:                       # first connected first
+        name = await _company_display_name(o.get("company_id"))
+        if name and name not in names:
+            names.append(name)
+    if names:
+        await _reply_dm(chat, wa_dm.accounts_text(lang, "connected", names),
+                        "start_opted_in_accounts")
+    return True
+
+
+async def _dm_accounts_turn(dm_chat: str, parsed: dict) -> Optional[dict]:
+    """The YES / NO to "Reply YES to connect …", and the question itself for
+    an account that appeared on the number after the person connected.
+    None: nothing here, the message goes on. {"continue_with": text}: the
+    answer was handled and the message it held is answered now. {}: handled.
+
+    NO SILENT SIGN-UP (Roy, 2026-11-06). An account is connected only by
+    this person's YES, re-checked when it arrives: the same proven number,
+    each account still live, eligible and on that number, still not a
+    second account in one company. A new account is asked about once, on
+    the person's next plain-text message (held, then answered); a NO is
+    remembered ("declined") and not asked again -- START lists everything
+    again. Any other reply clears the question, and a "later" question that
+    was passed over waits a day."""
+    body = str(parsed.get("body") or "")
+    plain = not parsed.get("has_audio") and not parsed.get("has_image") and body.strip()
+    st = await _dm_state_get(ACCOUNTS_STATE, dm_chat)
+    if st:
+        yn = dm_actions.yes_no(body) if plain else None
+        await _dm_state_clear(ACCOUNTS_STATE, dm_chat)
+        if yn is None:
+            if st.get("mode") == "later":
+                await _dm_state_set(ACCOUNTS_SNOOZE_STATE, dm_chat, 24 * 3600)
+            return None
+        return await _dm_accounts_answer(dm_chat, parsed, st, yn, body)
+    if not plain or await _dm_state_get(ACCOUNTS_SNOOZE_STATE, dm_chat):
+        return None
+    chat_digits = wa_dm.phone_digits(dm_chat)
+    optins = await _active_optins_for_phone(chat_digits)
+    phones = {str(o.get("phone") or "") for o in optins}
+    if len(phones) != 1 or not any(o.get("phone_verified") for o in optins):
+        return None                       # not connected, or the number is unproven
+    phone = phones.pop()
+    acc = await _phone_accounts(phone)
+    if acc["dup_company"] or not acc["eligible"]:
+        return None
+    try:
+        known = {str(r.get("user_id")) for r in await db[WA_OPTINS].find(
+            {"phone": phone}, {"user_id": 1}).to_list(50)}
+    except Exception:
+        return None
+    new = [u for u in acc["eligible"] if str(u.get("_id")) not in known]
+    if not new:
+        return None
+    await _ask_accounts(dm_chat, new, phone, mode="later", phone_verified=True,
+                        source="later_confirm", lang=dm_actions.reply_lang(body),
+                        held=body[:2000])
+    return {}
+
+
+async def _dm_accounts_answer(dm_chat: str, parsed: dict, st: dict, yes: bool,
+                              body: str) -> dict:
+    lang = "es" if (dm_actions.reply_lang(body) == "es"
+                    or re.match(r"(?i)^\s*s[ií]\b", body)) else (st.get("lang") or "en")
+    phone = str(st.get("phone") or "")
+    ids = [str(x) for x in st.get("user_ids") or []]
+    held = st.get("held") or None
+    done = {"continue_with": held} if held else {}
+    acc = await _phone_accounts(phone)
+    if not yes:
+        names = [await _company_display_name(u.get("company_id")) or "another company"
+                 for u in acc["users"] if str(u.get("_id")) in ids]
+        if st.get("mode") == "later":
+            now = datetime.now(timezone.utc)
+            for uid in ids:
+                try:
+                    await db[WA_OPTINS].update_one(
+                        {"phone": phone, "user_id": uid},
+                        {"$setOnInsert": {"phone": phone, "user_id": uid, "status": "declined",
+                                          "company_id": next((str(u.get("company_id"))
+                                                              for u in acc["users"]
+                                                              if str(u.get("_id")) == uid), None),
+                                          "chat_id": dm_chat,
+                                          "chat_digits": wa_dm.phone_digits(dm_chat),
+                                          "declined_at": now, "updated_at": now,
+                                          "source": "later_confirm"}},
+                        upsert=True)
+                except Exception as e:
+                    logger.warning(f"opt-in decline write failed: {type(e).__name__}")
+            await _reply_dm(dm_chat, wa_dm.accounts_text(lang, "declined_later", names),
+                            "later_accounts_declined")
+        else:
+            await _reply_dm(dm_chat, wa_dm.accounts_text(lang, "declined_start", names),
+                            "start_accounts_declined")
+        _security_event("whatsapp_optin_declined", mode=st.get("mode"), accounts=len(ids))
+        return done
+    now_phone = await _resolve_dm_phone(dm_chat, parsed.get("raw"))
+    if st.get("phone_verified") and now_phone != phone:
+        _security_event("whatsapp_optin_refused", reason="confirm_phone_mismatch",
+                        jid_kind=wa_dm.jid_kind(dm_chat))
+        await _reply_dm(dm_chat, wa_dm.WRONG_PHONE_TEXT, "confirm_wrong_phone")
+        return done
+    if acc["dup_company"]:
+        await _reply_dm(dm_chat, wa_dm.PHONE_SHARED_TEXT, "confirm_phone_shared")
+        await _review_queue_registration(acc["users"], "ambiguous", dm_chat)
+        return done
+    users = [u for u in acc["eligible"] if str(u.get("_id")) in ids]
+    if not users:
+        await _reply_dm(dm_chat, wa_dm.NOT_ELIGIBLE_TEXT, "confirm_not_eligible")
+        return done
+    await _record_optins(users, phone, wa_dm.dm_chat_id(dm_chat), wa_dm.phone_digits(dm_chat),
+                         phone_verified=bool(st.get("phone_verified")),
+                         source=str(st.get("source") or "start"), lang=lang,
+                         later=st.get("mode") == "later")
+    return done
 
 
 # ── THE WELCOME: ONCE PER PERSON (lib/wa_welcome.py) ────────────────────
@@ -53397,6 +53674,9 @@ async def _handle_dm_stop(chat_id: str, raw: Any = None) -> None:
         return
     phone = await _resolve_dm_phone(chat, raw)
     now = datetime.now(timezone.utc)
+    # A "Reply YES to connect …" still open would connect them after STOP.
+    await _dm_state_clear(ACCOUNTS_STATE, chat)
+    # Every account on the number: STOP is the person's, not one account's.
     keys = [{"phone": digits}, {"chat_digits": digits}]
     if phone and phone != digits:
         keys.append({"phone": phone})
@@ -53551,9 +53831,23 @@ DM_VOICE_HEARD_PREFIX = "Heard: "
 
 async def _dm_assistant_identity(chat_id: str) -> Optional[dict]:
     """{user, user_id, company_id, role, projects} for an opted-in Admin/PM
-    writing from this chat, or None. Fail closed on anything unresolved."""
+    writing from this chat, or None. Fail closed on anything unresolved.
+
+    A number connected for accounts in several companies: the one connected
+    FIRST that still checks out answers here. (One account per DM turn; the
+    person-level DM across all of them is its own change.)"""
     digits = wa_dm.phone_digits(chat_id)
-    optin = await _active_optin_for_phone(digits)
+    for optin in reversed(await _active_optins_for_phone(digits)):
+        ident = await _dm_identity_of_optin(optin)
+        if ident:
+            return ident
+    return None
+
+
+async def _dm_identity_of_optin(optin: dict) -> Optional[dict]:
+    """The DM identity one active opt-in row names, or None when it does
+    not check out (the account gone or ineligible, another company, the
+    phone on the record changed since START)."""
     if not optin or not optin.get("user_id"):
         return None
     try:
@@ -64480,6 +64774,53 @@ async def ensure_document_page_indexes():
         logger.warning(f"ensure_document_page_indexes: {e}")
 
 
+#: whatsapp_optins' unique key: one row per (phone, account). Replaces
+#: WA_OPTINS_OLD_UNIQUE_INDEX (one row per phone, so a second company's
+#: account on the same number could only take the first one's row over).
+WA_OPTINS_UNIQUE_INDEX = "whatsapp_optins_phone_user_unique"
+WA_OPTINS_OLD_UNIQUE_INDEX = "whatsapp_optins_phone_unique"
+
+
+async def _wa_optins_index_migration() -> dict:
+    """SCHEMA CHANGE, in code, every boot, idempotent; never raises.
+
+    1. Build the unique (phone, user_id) index. Every existing row already
+       satisfies it: the old index allowed one row per phone, so no
+       (phone, user_id) pair can repeat. NO DATA IS REWRITTEN -- an existing
+       opt-in stays exactly as it is and keeps working, with no re-confirm.
+    2. Only once (1) holds, drop the old unique (phone) index -- by name,
+       if it is there. While it stands, a second account's opt-in on the
+       same number fails to write (START says "try again") instead of
+       taking the first account's row over.
+    A failed build leaves the old index in place (and is flagged by
+    _ensure_index_resilient); the next boot tries again."""
+    out = {"built": False, "dropped_old": False}
+    coll = db[WA_OPTINS]
+    # A literal collection and key spec: scripts/find_unserved_sorts.py reads them.
+    await _ensure_index_resilient(
+        db[WA_OPTINS], keys=[("phone", 1), ("user_id", 1)],
+        name=WA_OPTINS_UNIQUE_INDEX, unique=True)
+    try:
+        names = set((await coll.index_information()).keys())
+    except Exception as e:
+        logger.warning(f"[wa-optins] index read failed: {type(e).__name__}")
+        return out
+    out["built"] = WA_OPTINS_UNIQUE_INDEX in names
+    if not out["built"]:
+        logger.error(f"[wa-optins] {WA_OPTINS_UNIQUE_INDEX} not built; "
+                     f"{WA_OPTINS_OLD_UNIQUE_INDEX} kept")
+        return out
+    if WA_OPTINS_OLD_UNIQUE_INDEX in names:
+        try:
+            await coll.drop_index(WA_OPTINS_OLD_UNIQUE_INDEX)
+            out["dropped_old"] = True
+            logger.info(f"[wa-optins] dropped {WA_OPTINS_OLD_UNIQUE_INDEX}")
+        except Exception as e:
+            logger.warning(f"[wa-optins] drop of {WA_OPTINS_OLD_UNIQUE_INDEX} failed: "
+                           f"{type(e).__name__}")
+    return out
+
+
 # Retention, by operator decision 2026-10-07.
 WA_WEBHOOK_LOG_RETENTION_DAYS = 30
 # whatsapp_messages: project-based, see lib/wa_retention.py (24 months only
@@ -64534,9 +64875,10 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db[SEND_FAILURES], keys=[("expires_at", 1)],
         name="outbound_failures_ttl", expireAfterSeconds=0)
-    await _ensure_index_resilient(
-        db[WA_OPTINS], keys=[("phone", 1)],
-        name="whatsapp_optins_phone_unique", unique=True)
+    # One opt-in per (phone, account): one person may connect an account in
+    # each company they work for, all on one number (Roy, 2026-11-06). The
+    # old one-row-per-phone index is replaced, not kept beside it.
+    await _wa_optins_index_migration()
     await _ensure_index_resilient(
         db[WA_OPTINS], keys=[("user_id", 1), ("status", 1)],
         name="whatsapp_optins_by_user")
@@ -66017,34 +66359,136 @@ async def _amend_set_answer(pid: str, qid: str, answer: str, actor: str, *, reas
     return doc
 
 
-async def _handle_set_question_reply(chat_id: str, code: str, answer: str) -> bool:
+async def _phone_optin_user_ids(chat_id: str) -> List[str]:
+    """Every account this chat's number is connected for (most recent first)."""
+    return [str(o["user_id"]) for o in
+            await _active_optins_for_phone(wa_dm.phone_digits(chat_id)) if o.get("user_id")]
+
+
+async def _handle_set_question_reply(chat_id: str, code: str, answer: str, *,
+                                     qid: Optional[str] = None) -> bool:
     """A PM's "Q1 YES" / "Q1 NO" to a drawing-set question Levelog asked
     THEM. True when it was one (recorded, and confirmed back); False sends
     the message on to normal handling. Re-checked at the moment of the
     answer: the person is still a PM / Site Manager on record for that
-    project."""
+    project.
+
+    THEM is every account the number is connected for (one person, several
+    companies). Codes are unique per company, so two companies can each
+    have a Q3 open for this person: then `qid` (the pick) names the one,
+    and without it nothing is recorded (_handle_set_question_message asks)."""
     from lib import plan_set_questions as psq
-    optin = await _active_optin_for_phone(wa_dm.phone_digits(chat_id))
-    if not optin or not optin.get("user_id"):
+    uids = await _phone_optin_user_ids(chat_id)
+    if not uids:
         return False
-    uid = str(optin["user_id"])
-    qs = await db[psq.COLLECTION].find({"code": code, "status": psq.OPEN,
-                                        "asked_user_ids": uid}).to_list(5)
+    query: Dict[str, Any] = {"code": code, "status": psq.OPEN, "asked_user_ids": {"$in": uids}}
+    if qid:
+        query["_id"] = qid
+    qs = await db[psq.COLLECTION].find(query).to_list(5)
     if len(qs) != 1:
         return False
     q = qs[0]
+    asked = {str(u) for u in q.get("asked_user_ids") or []}
     _proj, pms = await _set_question_people(str(q.get("project_id")))
-    me = next((u for u in pms if str(u.get("_id")) == uid), None)
+    me = next((u for u in pms if str(u.get("_id")) in uids and str(u.get("_id")) in asked), None)
     if me is None:
-        _security_event("plan_set_answer_refused", user_id=uid,
+        _security_event("plan_set_answer_refused", user_id=next((u for u in uids if u in asked), uids[0]),
                         project_id=str(q.get("project_id")), reason="not_pm_on_record")
         return False
+    uid = str(me.get("_id"))
     doc = await _record_set_answer(str(q["project_id"]), str(q["_id"]), answer, uid,
                                    via="whatsapp", name=me.get("full_name") or me.get("name"))
     if doc is None:
         return False
     await send_whatsapp_message(chat_id, psq.answer_text(q, answer))
     return True
+
+
+#: "Q3 is open on more than one job. Which one?": the numbered pick, 10 min.
+SET_Q_PICK_STATE = "dm_setq_pick"
+
+
+async def _set_q_pick_labels(qs: List[dict]) -> List[str]:
+    """"588 Thomas S Boyland St (Blueview)" for each question: its job and
+    its company, so the person can tell two Q3s apart."""
+    out = []
+    for q in qs:
+        p = None
+        try:
+            p = await db.projects.find_one({"_id": to_query_id(str(q.get("project_id")))},
+                                           {"name": 1, "address": 1, "company_id": 1})
+        except Exception:
+            p = None
+        co = await _company_display_name((p or {}).get("company_id"))
+        label = wa_assistant.street_label(p) if p else str(q.get("label") or "a job")
+        out.append(f"{label} ({co})" if co else label)
+    return out
+
+
+async def _ask_set_q_pick(chat_id: str, code: str, qs: List[dict], *, answer: Optional[str],
+                          text: Optional[str], lang: str) -> None:
+    labels = await _set_q_pick_labels(qs)
+    await _dm_state_set(SET_Q_PICK_STATE, chat_id, wa_assistant.MENU_SECONDS,
+                        code=code, answer=answer, text=text, labels=labels,
+                        qids=[str(q["_id"]) for q in qs])
+    head = (wa_dm.SET_Q_PICK_LINES.get(lang) or wa_dm.SET_Q_PICK_LINES["en"]).format(code=code)
+    await send_whatsapp_message(chat_id, dm_actions.numbered(head, labels))
+
+
+async def _handle_set_question_pick(chat_id: str, body: Any) -> bool:
+    """The number answering "Q3 is open on more than one job. Which one?":
+    the answer (or the words) it held, for the question picked. False when
+    no pick is open or this is not one (the message goes on)."""
+    from lib import plan_set_questions as psq
+    st = await _dm_state_get(SET_Q_PICK_STATE, chat_id)
+    if not st:
+        return False
+    labels = list(st.get("labels") or [])
+    n = dm_actions.pick(str(body or ""), labels)
+    if n is None:
+        return False
+    await _dm_state_clear(SET_Q_PICK_STATE, chat_id)
+    qid = (st.get("qids") or [None] * len(labels))[n]
+    code = str(st.get("code") or "")
+    if st.get("answer"):
+        if await _handle_set_question_reply(chat_id, code, str(st["answer"]), qid=qid):
+            return True
+        q = await db[psq.COLLECTION].find_one({"_id": qid})
+        if q:
+            await send_whatsapp_message(chat_id, psq.status_text(q))
+        return True
+    q = await db[psq.COLLECTION].find_one({"_id": qid})
+    if q is None:
+        return True
+    if q.get("status") != psq.OPEN:
+        await send_whatsapp_message(chat_id, psq.status_text(q))
+        return True
+    await send_whatsapp_message(chat_id, psq.confirm_text(q))
+    await _set_question_note(q, str(st.get("text") or ""), await _phone_optin_user_ids(chat_id),
+                             datetime.now(timezone.utc))
+    return True
+
+
+async def _set_question_note(q: dict, words: str, uids: List[str], now: datetime) -> None:
+    """Keep the person's words on the question, from an account that is a PM
+    still on record for its project (never another company's)."""
+    from lib import plan_set_questions as psq
+    if not words:
+        return
+    qid = str(q.get("_id"))
+    _proj, pms = await _set_question_people(str(q.get("project_id")))
+    asked = {str(u) for u in q.get("asked_user_ids") or []}
+    me = next((str(u.get("_id")) for u in pms if str(u.get("_id")) in uids
+               and str(u.get("_id")) in asked), None)
+    if me is None:
+        _security_event("plan_set_note_refused", user_id=(uids or [""])[0],
+                        project_id=str(q.get("project_id")), reason="not_pm_on_record")
+        return
+    await db[psq.COLLECTION].update_one(
+        {"_id": qid}, {"$push": {"notes": {"text": words[:2000], "at": now,
+                                            "user_id": me, "via": "whatsapp"}}})
+    await audit_log("plan_set_question_note", me, "plan_set_question", qid,
+                    {"project_id": str(q.get("project_id")), "code": q.get("code")})
 
 
 async def _handle_set_question_message(chat_id: str, body: Any) -> bool:
@@ -66058,25 +66502,35 @@ async def _handle_set_question_message(chat_id: str, body: Any) -> bool:
       record it (psq.confirm_text) - nothing is recorded from free words.
     - lines with no code ride along as a note on the questions the message
       named.
-    Only questions asked of THIS person, who is still a PM on record. True
-    when any line named one: the message is handled here."""
+    Only questions asked of THIS person (any account their number is
+    connected for), who is still a PM on record. A code open in two of their
+    companies is never guessed: "Which one?" with the jobs numbered
+    (_handle_set_question_pick). True when any line named one: the message
+    is handled here."""
     from lib import plan_set_questions as psq
     answers, free, rest = psq.split_reply(body)
     if not answers and not free:
         return False
-    optin = await _active_optin_for_phone(wa_dm.phone_digits(chat_id))
-    if not optin or not optin.get("user_id"):
+    uids = await _phone_optin_user_ids(chat_id)
+    if not uids:
         return False
-    uid = str(optin["user_id"])
     codes = sorted({c for c, _a in answers} | {c for c, _t in free})
     found: Dict[str, List[dict]] = {}
     for q in await db[psq.COLLECTION].find({"code": {"$in": codes},
-                                             "asked_user_ids": uid}).to_list(20):
+                                             "asked_user_ids": {"$in": uids}}).to_list(20):
         found.setdefault(str(q.get("code")), []).append(q)
     mine = {c: qs[0] for c, qs in found.items() if len(qs) == 1}
+    # The same code in two companies: the open ones are asked about by number.
+    twice = {c: [q for q in qs if q.get("status") == psq.OPEN] or qs
+             for c, qs in found.items() if len(qs) > 1}
+    lang = dm_actions.reply_lang(body)
     now = datetime.now(timezone.utc)
     named: Dict[str, dict] = {}
     for code, answer in answers:
+        if code in twice:
+            await _ask_set_q_pick(chat_id, code, twice.pop(code), answer=answer, text=None,
+                                  lang=lang)
+            return True
         q = mine.get(code)
         if q is None:
             continue
@@ -66086,6 +66540,10 @@ async def _handle_set_question_message(chat_id: str, body: Any) -> bool:
         q = await db[psq.COLLECTION].find_one({"_id": q["_id"]}) or q
         await send_whatsapp_message(chat_id, psq.status_text(q))
     for code, text in free:
+        if code in twice:
+            await _ask_set_q_pick(chat_id, code, twice.pop(code), answer=None,
+                                  text="\n".join([text] + ([rest] if rest else [])), lang=lang)
+            return True
         q = mine.get(code)
         if q is None:
             continue
@@ -66102,16 +66560,7 @@ async def _handle_set_question_message(chat_id: str, body: Any) -> bool:
     for qid, q in named.items():
         if not words:
             break
-        _proj, pms = await _set_question_people(str(q.get("project_id")))
-        if not any(str(u.get("_id")) == uid for u in pms):
-            _security_event("plan_set_note_refused", user_id=uid,
-                            project_id=str(q.get("project_id")), reason="not_pm_on_record")
-            continue
-        await db[psq.COLLECTION].update_one(
-            {"_id": qid}, {"$push": {"notes": {"text": words[:2000], "at": now,
-                                                "user_id": uid, "via": "whatsapp"}}})
-        await audit_log("plan_set_question_note", uid, "plan_set_question", qid,
-                        {"project_id": str(q.get("project_id")), "code": q.get("code")})
+        await _set_question_note(q, words, uids, now)
     return True
 
 
@@ -79137,6 +79586,20 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                 await _handle_dm_contact(dm_chat,
                                          parsed.get("message_id_serialized"))
                 return
+            # YES / NO to "Reply YES to connect …" (START listed accounts in
+            # several companies), and the same question for an account added
+            # on the number since: asked on the next message, which is held
+            # and answered after the reply.
+            accounts = await _dm_accounts_turn(dm_chat, parsed)
+            if accounts is not None:
+                if not accounts.get("continue_with"):
+                    return
+                parsed = dict(parsed, body=accounts["continue_with"])
+            # The number to "Q3 is open on more than one job. Which one?"
+            # (two of the person's companies each asked a Q3). Before "1" /
+            # "2" is read as a GC answer: it is the question asked last.
+            if await _handle_set_question_pick(dm_chat, parsed.get("body")):
+                return
             # "1" / "2" to an open GC group question from Levelog. Anything
             # else, or no open question for this person, carries on below.
             answer = wa_gc.parse_confirm_reply(parsed.get("body"))
@@ -80802,15 +81265,15 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
     if status == "active" and row and row.get("phone") not in [
             wa_dm.phone_digits(v) for v in _contact_phone_variants(phone)]:
         status = "phone_changed"
-    # START's own rule: any OTHER live account on this number and it opts
-    # nobody in. Asked even when already connected: profile edits enforce
-    # phone uniqueness only within a company, so another company's account
-    # can take the number later, and from then on a STOP/START or a reply
-    # from this phone cannot be attributed to this user.
+    # START's own rule: another live account on this number IN THIS COMPANY
+    # and it opts nobody in. An account in ANOTHER company on the same number
+    # is the same person (Roy, 2026-11-06): START lists both and they confirm
+    # once, so it is not "shared". Asked even when already connected: an
+    # admin can give the number to a second account of the company later.
     phone_shared = False
     if eligible and has_phone:
-        phone_shared = any(str(u.get("_id")) != uid
-                           for u in await _find_users_by_phone(digits))
+        phone_shared = any(str(u.get("_id")) != uid for u in await _find_users_by_phone(
+            digits, company_id=current_user.get("company_id")))
     bot = _wa_bot_digits()
     state = wa_dm.connect_state(
         eligible=eligible, bot_configured=bool(bot), has_phone=has_phone,

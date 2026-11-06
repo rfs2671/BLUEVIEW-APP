@@ -45,6 +45,15 @@ from tests import test_the_system_never_picks_a_set as T  # noqa: E402
 
 CHAT = "15550008154@c.us"
 
+def _as_list(one):
+    """The opt-in lookup returns every active row for the number now (one
+    person may connect an account in each of several companies)."""
+    async def rows(phone, user_id=None):
+        r = await one(phone)
+        return [r] if r else []
+    return rows
+
+
 
 def _need(*names):
     """Fail by assertion, not AttributeError, on a tree without the fix."""
@@ -80,7 +89,7 @@ class EveryLineIsRead(unittest.TestCase):
 
     def test_q1_no_on_the_second_line_is_recorded(self):
         db, wire, t = _asked()
-        with patch.object(server, "_active_optin_for_phone", _optin):
+        with patch.object(server, "_active_optins_for_phone", _as_list(_optin)):
             ok = t._with(db, wire, lambda: server._handle_set_question_message(
                 CHAT, "Gas change govern since it was latest. \nQ1 no"))
         self.assertTrue(ok)
@@ -93,7 +102,7 @@ class EveryLineIsRead(unittest.TestCase):
 
     def test_free_words_after_a_code_are_to_confirm_not_recorded(self):
         db, wire, t = _asked()
-        with patch.object(server, "_active_optin_for_phone", _optin):
+        with patch.object(server, "_active_optins_for_phone", _as_list(_optin)):
             ok = t._with(db, wire, lambda: server._handle_set_question_message(
                 CHAT, "Q1 they're the second architect's, not ours"))
         self.assertTrue(ok, "handled here: the assistant never sees it")
@@ -105,7 +114,7 @@ class EveryLineIsRead(unittest.TestCase):
 
     def test_an_answered_question_gets_its_stored_state(self):
         db, wire, t = _asked()
-        with patch.object(server, "_active_optin_for_phone", _optin):
+        with patch.object(server, "_active_optins_for_phone", _as_list(_optin)):
             t._with(db, wire, lambda: server._handle_set_question_message(CHAT, "Q1 no"))
             ok = t._with(db, wire, lambda: server._handle_set_question_message(CHAT, "q1 YES"))
         self.assertTrue(ok)
@@ -119,7 +128,7 @@ class EveryLineIsRead(unittest.TestCase):
 
         async def other(phone):
             return {"user_id": "someone-else", "phone": phone}
-        with patch.object(server, "_active_optin_for_phone", other):
+        with patch.object(server, "_active_optins_for_phone", _as_list(other)):
             ok = t._with(db, wire, lambda: server._handle_set_question_message(CHAT, "Q1 no"))
         self.assertFalse(ok)
         self.assertEqual(db[psq.COLLECTION].docs[0]["status"], psq.OPEN)
@@ -143,7 +152,7 @@ class NeverRecordedUnlessTheStoreSaysSo(unittest.TestCase):
         open_ = self._gate(db, ident)
         self.assertNotIn("logged", open_)
         self.assertTrue(open_.startswith('Q1 is not recorded yet: reply "Q1 YES" or "Q1 NO"'))
-        with patch.object(server, "_active_optin_for_phone", _optin):
+        with patch.object(server, "_active_optins_for_phone", _as_list(_optin)):
             t._with(db, wire, lambda: server._handle_set_question_message(CHAT, "Q1 no"))
         done = self._gate(db, ident)
         self.assertTrue(done.startswith("Q1 is recorded: "), done)

@@ -97,7 +97,7 @@ def _world(**extra):
                            for p in ("proj_a", "proj_b")],
     )
     cols.update(extra)
-    return FakeDb(unique={server.WA_OPTINS: ("phone",)}, **cols)
+    return FakeDb(unique={server.WA_OPTINS: (("phone", "user_id"),)}, **cols)
 
 
 LONG_AGO = datetime(2026, 9, 1, tzinfo=timezone.utc)

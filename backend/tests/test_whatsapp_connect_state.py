@@ -2,9 +2,11 @@
 
 Each blocked state must name the first thing to fix, and the Connect link is
 offered only when pressing it can work. "Phone shared" is START's own refusal
-rule seen from the screen: if another live account carries the number, START
-opts nobody in, so offering Connect would send the user into a neutral
-"not available" reply with no explanation.
+rule seen from the screen: if another live account OF THE SAME COMPANY carries
+the number, START opts nobody in, so offering Connect would send the user into
+a neutral "not available" reply with no explanation. An account in ANOTHER
+company on the same number is the same person (Roy, 2026-11-06): START lists
+both and they confirm once, so that number is not "shared".
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ def _admin(**kw):
 
 
 def _me(user, *, users=None, optins=None, bot=BOT):
-    db = FakeDb(unique={server.WA_OPTINS: ("phone",)},
+    db = FakeDb(unique={server.WA_OPTINS: (("phone", "user_id"),)},
                 users=users if users is not None else [_admin()])
     for row in optins or []:
         db[server.WA_OPTINS].rows.append(row)
@@ -75,22 +77,34 @@ class TheStates(unittest.TestCase):
         self.assertEqual(out["state"], "phone_missing")
         self.assertIsNone(out["connect_url"])
 
-    def test_phone_on_another_account_is_shared(self):
-        other = {"_id": "u_other", "company_id": "co_b", "role": "cp",
+    def test_phone_on_another_account_of_the_company_is_shared(self):
+        other = {"_id": "u_other", "company_id": "co_a", "role": "cp",
                  "phone": PHONE}
         out = _me(_admin(), users=[_admin(), other])
         self.assertEqual(out["state"], "phone_shared")
         self.assertIsNone(out["connect_url"])
 
-    def test_a_number_shared_after_connecting_is_still_reported(self):
-        """Another company's account can take the number after the opt-in
-        (uniqueness is per company). START and STOP from it would then be
-        ambiguous, so the card says so instead of "Connected"."""
-        other = {"_id": "u_other", "company_id": "co_b", "role": "pm",
+    def test_a_number_shared_in_the_company_after_connecting_is_still_reported(self):
+        """An admin can give the number to a second account of the company
+        after the opt-in (only profile edits check it). START and STOP from
+        it would then be ambiguous, so the card says so instead of
+        "Connected"."""
+        other = {"_id": "u_other", "company_id": "co_a", "role": "pm",
                  "phone": "+" + PHONE}
         out = _me(_admin(), users=[_admin(), other], optins=[_optin()])
         self.assertEqual(out["state"], "phone_shared")
         self.assertFalse(out["connected"])
+
+    def test_the_same_number_in_another_company_is_not_shared(self):
+        """Roy, 2026-11-06: one person, an account per company, one phone.
+        The other company's account does not block this one; connected
+        stays connected."""
+        other = {"_id": "u_other", "company_id": "co_b", "role": "pm",
+                 "phone": "+" + PHONE}
+        self.assertEqual(_me(_admin(), users=[_admin(), other])["state"], "not_connected")
+        out = _me(_admin(), users=[_admin(), other], optins=[_optin()])
+        self.assertEqual(out["state"], "connected")
+        self.assertTrue(out["connected"])
 
     def test_a_deleted_account_on_the_number_does_not_count(self):
         gone = {"_id": "u_gone", "company_id": "co_b", "phone": PHONE,

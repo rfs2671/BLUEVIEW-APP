@@ -3,7 +3,8 @@
 Supports: equality (incl. a scalar against an array field), $in, $nin, $ne,
 $gt, $gte, $lt, $lte, $exists, $regex, $or; updates $set, $setOnInsert, $inc,
 $push (with $each, $slice), $addToSet (with $each),
-$unset; unique `_id` and optional unique single fields; find / find_one /
+$unset; unique `_id` and optional unique single fields (or a tuple of fields,
+a compound key, given to FakeDb(unique=...)); find / find_one /
 find_one_and_update / insert_one / update_one / update_many / replace_one /
 count_documents / delete_one / create_index (recorded, not enforced except
 `unique` on a single field)."""
@@ -192,7 +193,10 @@ class Coll:
             if "_id" in doc and r.get("_id") == doc.get("_id"):
                 raise DuplicateKeyError("E11000 duplicate key _id")
             for f in self.unique:
-                if f in doc and r.get(f) == doc.get(f):
+                if isinstance(f, tuple):          # a compound unique key
+                    if all(k in doc for k in f) and all(r.get(k) == doc.get(k) for k in f):
+                        raise DuplicateKeyError(f"E11000 duplicate key {f}")
+                elif f in doc and r.get(f) == doc.get(f):
                     raise DuplicateKeyError(f"E11000 duplicate key {f}")
 
     async def insert_one(self, doc):
@@ -316,6 +320,11 @@ class Coll:
         return out
 
     async def drop_index(self, name):
+        for ix in self.indexes:
+            keys = ix.get("keys")
+            if (ix.get("name") == name and ix.get("unique") and isinstance(keys, list)
+                    and len(keys) == 1):
+                self.unique.discard(keys[0][0])   # a unique index created here stops holding
         self.indexes = [ix for ix in self.indexes if ix.get("name") != name]
 
     async def index_information(self):

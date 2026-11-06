@@ -102,6 +102,67 @@ TRY_AGAIN_TEXT = (
     "START again in a minute."
 )
 
+# ONE PERSON, SEVERAL COMPANIES (Roy, 2026-11-06). Each company's admin
+# creates that company's account; one person can hold an account in several
+# companies, all with the same phone. START lists every company account on
+# the number and the person confirms ONCE; an account added later is asked
+# about on their next message. Nothing is connected without their YES.
+# Two accounts on one number in the SAME company are still refused
+# (PHONE_SHARED_TEXT).
+#
+# START itself names no language; a later question answers in the language
+# of the message it holds (dm_actions.reply_lang), and the YES / NO answer in
+# its own.
+ACCOUNTS_LINES = {
+    "en": {
+        "start_confirm": ("Levelog Assistant here. This number has a Levelog account at "
+                          "{companies}. Reply YES to connect {all}, or NO to cancel."),
+        "later_confirm": ("Levelog Assistant here. This number now also has a Levelog "
+                          "account at {companies}. Reply YES to connect {it} too, or NO to "
+                          "keep {it} off."),
+        "connected": ("Done. Levelog Assistant is on for {companies}. Ask me about any of "
+                      "your jobs here. Reply STOP to turn it off."),
+        "declined_start": "OK, nothing was connected. Send START if you change your mind.",
+        "declined_later": "OK, {companies} stays off. Send START if you change your mind.",
+        "both": "both", "all_n": "all {n}", "it": "it", "them": "them", "and": "and",
+    },
+    "es": {
+        "start_confirm": ("Levelog Assistant. Este número tiene una cuenta de Levelog en "
+                          "{companies}. Responda SÍ para conectar {all}, o NO para cancelar."),
+        "later_confirm": ("Levelog Assistant. Este número ahora también tiene una cuenta de "
+                          "Levelog en {companies}. Responda SÍ para conectar{it} también, o NO "
+                          "para dejar{it} apagada{s}."),
+        "connected": ("Listo. Levelog Assistant está activo para {companies}. Pregúnteme aquí "
+                      "por cualquiera de sus trabajos. Responda STOP para apagarlo."),
+        "declined_start": "Está bien, no se conectó nada. Mande START si cambia de opinión.",
+        "declined_later": ("Está bien, {companies} queda apagado. Mande START si cambia de "
+                           "opinión."),
+        "both": "las dos", "all_n": "las {n}", "it": "la", "them": "las", "and": "y",
+    },
+}
+
+
+def and_list(names: Iterable[str], lang: str = "en") -> str:
+    """"Blueview and XYZ" / "A, B and C" (ES: "y")."""
+    items = [str(n) for n in names if str(n or "").strip()]
+    word = (ACCOUNTS_LINES.get(lang) or ACCOUNTS_LINES["en"])["and"]
+    if len(items) <= 1:
+        return items[0] if items else ""
+    return ", ".join(items[:-1]) + f" {word} " + items[-1]
+
+
+def accounts_text(lang: str, key: str, companies: Iterable[str]) -> str:
+    """One of ACCOUNTS_LINES, with the company names filled in (the real
+    names, "and"-joined) and the words that depend on how many there are."""
+    table = ACCOUNTS_LINES.get(lang) or ACCOUNTS_LINES["en"]
+    names = [str(n) for n in companies if str(n or "").strip()]
+    n = len(names)
+    many = n > 1
+    every = table["both"] if n == 2 else table["all_n"].format(n=n)
+    it = table["them"] if many else table["it"]
+    return table[key].format(companies=and_list(names, lang), all=every, it=it,
+                             s="s" if many else "")
+
 # GC group confirm-by-DM (lib/wa_gc.py, server.py _gc_*).
 GC_CONFIRM_TEXT = (
     "Levelog Assistant here. Use '{group}' as the GC group for {project}? "
@@ -119,6 +180,23 @@ GC_GONE_TEXT = (
     "That group is no longer linked to {project}, so nothing was changed. "
     "Pick the GC group in the Levelog app: open the project, then WhatsApp."
 )
+# A "1" / "2" from a person with a GC question open in two of their companies
+# at once (the propose tick asks one at a time per PERSON; this is the case
+# it could not prevent): neither is guessed.
+GC_TWO_OPEN_LINES = {
+    "en": ("Levelog Assistant here. You have a GC group question open for {projects}, so "
+           "nothing was changed. Pick the GC group for each in the Levelog app: open the "
+           "project, then WhatsApp."),
+    "es": ("Levelog Assistant. Tiene una pregunta de grupo GC abierta para {projects}, así "
+           "que no cambié nada. Elija el grupo GC de cada uno en la app de Levelog: abra el "
+           "proyecto y luego WhatsApp."),
+}
+# "Q3 YES" from a person whose two companies each asked a Q3 (codes are
+# unique per company): which one, by number.
+SET_Q_PICK_LINES = {
+    "en": "{code} is open on more than one job. Which one? Reply with the number.",
+    "es": "{code} está abierta en más de un trabajo. ¿Cuál? Responda con el número.",
+}
 
 _START_WORDS = frozenset({"start"})
 _STOP_WORDS = frozenset({"stop", "parar"})
@@ -194,9 +272,11 @@ def connect_state(*, eligible: bool, bot_configured: bool, has_phone: bool,
     reported when every state above it is clear, so the user is told the
     first thing to fix, not the last.
 
-    `phone_shared` is START's own refusal rule seen from the screen: if any
-    other live account carries this number, START cannot tell whose it is
-    and opts nobody in. `optin_status` is the latest opt-in row's status,
+    `phone_shared` is START's own refusal rule seen from the screen: if
+    another live account OF THE SAME COMPANY carries this number, START
+    cannot tell whose it is and opts nobody in. (Accounts in OTHER
+    companies on the same number are the same person and are connected
+    together, ACCOUNTS_LINES.) `optin_status` is the latest opt-in row's status,
     with "phone_changed" when that row is active for a phone no longer on
     the user's record."""
     if not eligible:

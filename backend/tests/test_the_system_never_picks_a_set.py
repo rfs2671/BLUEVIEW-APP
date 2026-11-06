@@ -59,6 +59,15 @@ TAGS = {INT: list("ABCDEFG"), WIN: ["W1", "W2", "W3"]}
 A1X = "588 THOMAS BOYLAND ST SET_UPDATED .pdf"
 GAS = "AR - 6.9.26 (Gas change).pdf"
 
+def _as_list(one):
+    """The opt-in lookup returns every active row for the number now (one
+    person may connect an account in each of several companies)."""
+    async def rows(phone, user_id=None):
+        r = await one(phone)
+        return [r] if r else []
+    return rows
+
+
 
 def _psq():
     """On a tree without the rule this is the failure - an assertion, never
@@ -532,7 +541,7 @@ class TheAnswerIsRecordedAuditedAndApplied(unittest.TestCase):
 
         async def optin(phone):
             return {"user_id": PM_ID, "phone": phone}
-        with patch.object(server, "_active_optin_for_phone", optin):
+        with patch.object(server, "_active_optins_for_phone", _as_list(optin)):
             ok = t._with(db, wire, lambda: server._handle_set_question_reply(
                 "15550008154@c.us", "Q1", psq.EXCLUDE))
             again = t._with(db, wire, lambda: server._handle_set_question_reply(
@@ -553,7 +562,7 @@ class TheAnswerIsRecordedAuditedAndApplied(unittest.TestCase):
 
         async def optin(phone):
             return {"user_id": "someone-else", "phone": phone}
-        with patch.object(server, "_active_optin_for_phone", optin):
+        with patch.object(server, "_active_optins_for_phone", _as_list(optin)):
             ok = t._with(db, wire, lambda: server._handle_set_question_reply(
                 "15550001111@c.us", "Q1", psq.INCLUDE))
         self.assertFalse(ok)
@@ -570,7 +579,7 @@ class TheAnswerIsRecordedAuditedAndApplied(unittest.TestCase):
 
         async def optin(phone):
             return {"user_id": late, "phone": phone}
-        with patch.object(server, "_active_optin_for_phone", optin):
+        with patch.object(server, "_active_optins_for_phone", _as_list(optin)):
             ok = t._with(db, wire, lambda: server._handle_set_question_reply(
                 "15550002222@c.us", "Q1", psq.INCLUDE))
         self.assertFalse(ok)

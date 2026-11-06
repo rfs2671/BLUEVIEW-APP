@@ -61,7 +61,7 @@ def _users():
 
 def _db(**extra):
     return FakeDb(
-        unique={server.WA_OPTINS: ("phone",)},
+        unique={server.WA_OPTINS: (("phone", "user_id"),)},
         users=_users(),
         projects=[{"_id": "proj_a", "company_id": CO_A, "name": "A"},
                   {"_id": "proj_b", "company_id": CO_B, "name": "B"}],
@@ -274,9 +274,11 @@ class StartAndStop(unittest.TestCase):
         self.assertEqual([p["message"] for p in c.wire.calls],
                          [wa_dm.NOT_ELIGIBLE_TEXT])
 
-    def test_a_number_on_two_users_is_ambiguous(self):
+    def test_a_number_on_two_users_of_one_company_is_ambiguous(self):
+        """Two accounts on one number in ONE company: still refused. (In two
+        companies it is one person: tests/test_wa_same_phone_accounts.py.)"""
         db = _db()
-        db.users.rows.append({"_id": "u_dup", "company_id": CO_B,
+        db.users.rows.append({"_id": "u_dup", "company_id": CO_A,
                               "role": "admin", "phone": ADMIN_PHONE})
         with _Ctx(db) as c:
             self._process(c, ADMIN_PHONE, "START")
@@ -854,7 +856,11 @@ class RetentionIsInCode(unittest.TestCase):
         self.assertNotIn("whatsapp_messages_ttl_24m", by_name)
         self.assertFalse([ix for ix in db.whatsapp_messages.indexes
                           if "expireAfterSeconds" in ix])
-        self.assertTrue(by_name["whatsapp_optins_phone_unique"][1]["unique"])
+        # One opt-in per (phone, account): the one-per-phone index is replaced.
+        self.assertEqual((by_name["whatsapp_optins_phone_user_unique"][1]["keys"],
+                          by_name["whatsapp_optins_phone_user_unique"][1]["unique"]),
+                         ([("phone", 1), ("user_id", 1)], True))
+        self.assertNotIn("whatsapp_optins_phone_unique", by_name)
         for name in ("scheduler_leases_ttl", "whatsapp_dm_reply_windows_ttl",
                      "whatsapp_notification_ledger_ttl"):
             self.assertEqual(by_name[name][1]["expireAfterSeconds"], 0)
