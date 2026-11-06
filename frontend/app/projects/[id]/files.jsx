@@ -11,6 +11,7 @@ import {
   Platform,
   Image,
   Modal,
+  Alert,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -83,6 +84,7 @@ import { useT } from '../../../src/i18n';
 import {
   openSignedDownload, startNativeDownload, shareDownloadedFile,
 } from '../../../src/utils/fileDownload';
+import { saveToAndroidDownloads } from '../../../src/utils/saveToDownloads';
 import {
   downloadSource, downloadFraction, signedUrlErrorKey,
 } from '../../../src/utils/fileDownloadPlan';
@@ -851,9 +853,10 @@ export default function ProjectFilesScreen() {
       return;
     }
 
-    // NATIVE: bytes to the device with the token in a HEADER, then the share
-    // sheet. A plan already saved for offline is shared from disk, so this is
-    // not refused offline up front.
+    // NATIVE: bytes to the device with the token in a HEADER. Android then
+    // saves them straight into Downloads (saveToDownloads.js); iPhone keeps
+    // the share sheet, whose "Save to Files" is the save. A plan already saved
+    // for offline is taken from disk, so this is not refused offline up front.
     if (download) return;
     const job = startNativeDownload({
       file,
@@ -867,6 +870,24 @@ export default function ProjectFilesScreen() {
     try {
       const { uri } = await job.promise;
       setDownload(null);
+      if (Platform.OS === 'android') {
+        try {
+          const res = await saveToAndroidDownloads(uri, file, { confirmFirstPick: askWhereToSave });
+          if (res.saved) {
+            toast.success(
+              tDl('savedTitle'),
+              tDl('savedBody').replace('{name}', res.name).replace('{folder}', res.folder || 'Download'),
+            );
+          } else {
+            toast.info(tDl('notSavedTitle'), tDl('noFolder'));
+          }
+          return;
+        } catch (_e) {
+          // The file is on the device; never strand it. The share sheet is
+          // the way out when the folder could not be written.
+          toast.error(tDl('failTitle'), tDl('saveFailed'));
+        }
+      }
       if (!(await shareDownloadedFile(uri, file))) {
         toast.info(tDl('failTitle'), tDl('shareUnavailable'));
       }
@@ -878,6 +899,14 @@ export default function ProjectFilesScreen() {
       else toast.error(tDl('failTitle'), tDl(code));
     }
   };
+
+  // Android asks for the folder once; say why before the system picker opens.
+  const askWhereToSave = () => new Promise((resolve) => {
+    Alert.alert(tDl('pickTitle'), tDl('pickBody'), [
+      { text: tDl('cancel'), style: 'cancel', onPress: () => resolve(false) },
+      { text: tDl('pickGo'), onPress: () => resolve(true) },
+    ], { cancelable: true, onDismiss: () => resolve(false) });
+  });
 
   const downloadMeta = () => {
     if (!download) return '';
@@ -1403,9 +1432,14 @@ export default function ProjectFilesScreen() {
                               e.stopPropagation();
                               handleDownloadFile(file);
                             }}
-                            style={s.fileActionBtn}
+                            accessibilityRole="button"
+                            accessibilityLabel={Platform.OS === 'ios' ? tDl('saveLabel') : tDl('downloadLabel')}
+                            style={Platform.OS === 'ios' ? [s.fileActionBtn, s.fileActionBtnLabeled] : s.fileActionBtn}
                           >
                             <Download size={18} strokeWidth={1.5} color={colors.text.muted} />
+                            {Platform.OS === 'ios' && (
+                              <Text style={s.fileActionLabel}>{tDl('saveLabel')}</Text>
+                            )}
                           </Pressable>
                           {isAdmin && (
                             <Pressable
@@ -2088,6 +2122,17 @@ function buildStyles(colors, isDark) {
     backgroundColor: colors.glass.background,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // iPhone: the download button says "Save" (it opens the share sheet).
+  fileActionBtnLabeled: {
+    width: 'auto',
+    flexDirection: 'row',
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+  },
+  fileActionLabel: {
+    fontSize: 12,
+    color: colors.text.muted,
   },
   emptyFiles: {
     alignItems: 'center',

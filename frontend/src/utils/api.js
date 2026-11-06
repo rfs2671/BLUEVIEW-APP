@@ -1,6 +1,7 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearAllCpProfiles } from './cpProfileCache';
+import { clearAccountQueues } from './accountQueues';
 import Constants from 'expo-constants';
 import {
   refreshedTokenFrom, unauthorizedVerdict, KEEP, VERIFY, REJECTED,
@@ -162,7 +163,16 @@ export const removeStoredUser = async () => {
 // AND EVERY SAVED SIGNER PROFILE ON THE DEVICE. A signature left behind on a
 // shared phone is how Shawn's drawing reached Michael's filed logs; see
 // utils/cpProfileCache.
+//
+// AND EVERY QUEUED WRITE, FIRST. The offline queue, the pending logbook pushes
+// and the filed-photo queue replay on their own after the next sign-in, under
+// whoever that is. Every path that ends a session comes through here: the
+// explicit logout (which has already tried to SEND them, see
+// logoutQueues.drainAndClearAccountQueues), a 401 the server means, a session
+// that cannot be restored at boot. So this is where they are emptied, before
+// the token goes. clearAccountQueues never throws.
 export const clearAuth = async () => {
+  await clearAccountQueues();
   await removeToken();
   await removeStoredUser();
   await clearAllCpProfiles();

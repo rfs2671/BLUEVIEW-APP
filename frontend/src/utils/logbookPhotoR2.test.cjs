@@ -102,6 +102,11 @@ function loadDrafts({ copyFails = false, upload = null, store = {} } = {}) {
     },
     fetch: async () => ({ blob: async () => 'BLOB' }),
   };
+  // markPending stamps the queuing account (accountQueues); the REAL module,
+  // over this same fake device.
+  env.stampDraftOwner = loadEsm('src/utils/accountQueues.js', {
+    stubs: { '@react-native-async-storage/async-storage': env.AsyncStorage },
+  }).stampDraftOwner;
   // eslint-disable-next-line no-new-func
   const mod = new Function('__env', `
     const AsyncStorage = __env.AsyncStorage;
@@ -111,6 +116,7 @@ function loadDrafts({ copyFails = false, upload = null, store = {} } = {}) {
     const isOfflineError = __env.isOfflineError;
     const FormData = __env.FormData;
     const fetch = __env.fetch;
+    const stampDraftOwner = __env.stampDraftOwner;
     ${strip(draftsSrc)}
     return {
       persistPhoto, persistActivityPhotos, hasDurableCopy, photoPersistError,
