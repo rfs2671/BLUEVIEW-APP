@@ -5,6 +5,8 @@ import {
 } from '../utils/api';
 import { isTokenExpired } from '../utils/sessionSurvival';
 import { setSentryUser, clearSentryUser } from '../lib/sentry';
+import { drainAccountQueues, drainAndClearAccountQueues } from '../utils/logoutQueues';
+import { countPendingWrites } from '../utils/accountQueues';
 
 const AuthContext = createContext(null);
 
@@ -219,7 +221,35 @@ export const AuthProvider = ({ children }) => {
     return normalizedUser;
   };
 
-  const logout = async () => {
+  /**
+   * BEFORE A LOGOUT: try to send what is queued, then say what is left.
+   *
+   * Runs with the token still on disk, so anything that goes, goes under the
+   * account that queued it. Returns the count still unsent — the number the
+   * "will be deleted if you log out" confirm shows (useLogoutConfirm).
+   */
+  const prepareLogout = async () => {
+    try { await drainAccountQueues(); } catch (e) { /* the count below still answers */ }
+    try {
+      return await countPendingWrites();
+    } catch (e) {
+      return { offline: 0, drafts: 0, photos: 0, total: 0 };
+    }
+  };
+
+  // `drain: false` when prepareLogout already drained and the person chose to
+  // delete the rest. A bare logout() drains first. Either way the queues are
+  // EMPTIED before the token goes: nothing queued here may replay after the
+  // next sign-in, under whoever that is (logoutQueues).
+  // (Read off `opts` rather than destructured: a screen may still pass this
+  // straight to onPress, which hands it an event, or nothing.)
+  const logout = async (opts) => {
+    const drain = !(opts && opts.drain === false);
+    try {
+      await drainAndClearAccountQueues({ drain });
+    } catch (e) {
+      // clearAuth below empties them again; a logout must complete.
+    }
     try {
       await authAPI.logout();
     } catch (e) {
@@ -268,6 +298,7 @@ export const AuthProvider = ({ children }) => {
         siteProject,
         login,
         logout,
+        prepareLogout,
         validateSession,
         updateUser,
       }}

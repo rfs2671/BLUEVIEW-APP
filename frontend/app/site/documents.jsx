@@ -32,6 +32,7 @@ import SiteReadinessNotice, {
 } from '../../src/components/SiteReadinessNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { useLogoutConfirm } from '../../src/hooks/useLogoutConfirm';
 import apiClient from '../../src/utils/api';
 import { settleFetch } from '../../src/utils/offlineState';
 import {
@@ -96,12 +97,12 @@ export default function SiteDocumentsScreen() {
   const isWide = useIsWide();
   const s = useMemo(() => buildStyles(colors, isDark), [colors, isDark]);
   const router = useRouter();
-  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
+  // Drains what is queued, asks before deleting what could not be sent.
+  const { requestLogout: handleLogout, logoutDialog } = useLogoutConfirm({
+    onLoggedOut: () => router.replace('/login'),
+  });
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -448,6 +449,7 @@ export default function SiteDocumentsScreen() {
           onClose={() => { setPdfViewerVisible(false); setSelectedPdfFile(null); }}
         />
       </SafeAreaView>
+      {logoutDialog}
     </AnimatedBackground>
   );
 }

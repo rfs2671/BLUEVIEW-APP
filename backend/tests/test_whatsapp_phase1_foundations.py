@@ -464,9 +464,8 @@ class TheLeaseRunsAJobOnce(unittest.TestCase):
         body = src[start:]
         # + project reports, + photo pipeline, + DOT stipulations, + DOT embargo alerts,
         # + sheet tile sweep (main, #864) -> 44 on #853; + DOT summons -> permit
-        # links (dot_nov_links, Phase 1 A, #855) -> 45; + the memberships
-        # mirror (membership_mirror) -> 46.
-        self.assertEqual(body.count("scheduler.add_job("), 46)
+        # links (dot_nov_links, Phase 1 A, #855) -> 45.
+        self.assertEqual(body.count("scheduler.add_job("), 45)
 
 
 # ══════════════════════════════════════════════════════════════════════════
