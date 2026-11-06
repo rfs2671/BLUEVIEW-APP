@@ -53318,7 +53318,9 @@ async def _dm_newest_question(chat: str, kind: str, asked_at: Any) -> bool:
         if other == kind:
             continue
         st = await _dm_state_get(other, chat)
-        if st and (_utc(st.get("asked_at") or st.get("updated_at")) or _EPOCH) > mine:
+        # A tie goes to the other question (the clock ticks coarsely: two
+        # questions can share a stamp); ours is said again after its answer.
+        if st and (_utc(st.get("asked_at") or st.get("updated_at")) or _EPOCH) >= mine:
             return False
     return True
 
