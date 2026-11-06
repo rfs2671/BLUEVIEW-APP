@@ -62938,7 +62938,8 @@ def _contact_phone_variants(phone: str) -> list:
     return [p for p in out if not (p in seen or seen.add(p))]
 
 
-async def _find_whatsapp_contact(phone: str, *, all_rows: bool = False):
+async def _find_whatsapp_contact(phone: str, *, all_rows: bool = False,
+                                 company_id: Any = None):
     """A contact row for this number in any format a writer here can produce.
 
     `user_id: {$ne: None}` is carried from the original queries and matters:
@@ -62948,11 +62949,19 @@ async def _find_whatsapp_contact(phone: str, *, all_rows: bool = False):
     `all_rows=True` returns every live row (a list) instead of one, for the
     callers that must know whether the number belongs to more than one
     company. It raises on a failed read so that caller can fail closed; the
-    single-row form keeps its old log-and-None behaviour."""
+    single-row form keeps its old log-and-None behaviour.
+
+    `company_id`: only that company's row. One person can hold an account in
+    several companies with the same phone, so a lookup made FOR a company
+    (a group's sender) must not take another company's row first."""
     variants = _contact_phone_variants(phone)
     if not variants:
         return [] if all_rows else None
     query = {"phone": {"$in": variants}, "user_id": {"$ne": None}}
+    if company_id is not None:
+        if not str(company_id or "").strip():
+            return [] if all_rows else None
+        query["company_id"] = _company_id_filter(company_id)
     if all_rows:
         return await db.whatsapp_contacts.find(
             query, {"company_id": 1}).to_list(20)
@@ -79480,7 +79489,11 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                     # The retired "owner" is gone from the tuple; the operator
                     # is admitted by `is_company_admin` on the user document,
                     # because his role string is still the retired one.
-                    contact = await _find_whatsapp_contact(sender)
+                    # THIS group's company only: the same phone can be a
+                    # contact in several companies, and the first row found
+                    # (another company's) refused an admin of this one.
+                    contact = await _find_whatsapp_contact(
+                        sender, company_id=msg_company_id)
                     sender_role = None
                     user_doc = None
                     if contact and contact.get("user_id"):
