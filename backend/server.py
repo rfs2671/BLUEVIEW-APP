@@ -53335,8 +53335,11 @@ async def _dm_remind_once(kind: str, chat: str, st: dict, lang: str) -> None:
         return
 
     async def go():
+        cur = await _dm_state_get(kind, chat)
+        if not cur or cur.get("reminded"):
+            return                       # answered meanwhile, or said again already
         await _dm_state_bump(kind, chat, reminded=True, asked_at=datetime.now(timezone.utc))
-        await send_whatsapp_message(chat, wa_dm.still_open_text(lang, str(st["asked"])))
+        await send_whatsapp_message(chat, wa_dm.still_open_text(lang, str(cur.get("asked") or "")))
     after = _DM_AFTER.get()
     if after is None:
         await go()
