@@ -409,7 +409,7 @@ class CodexOn759(_Live):
         self.assertEqual(self.db[punch.COLLECTION].rows[0]["status"], "ready_to_check")
         import inspect
         src = inspect.getsource(server._process_whatsapp_message)
-        gate = src.index("ident = await _dm_assistant_identity(dm_chat)")
+        gate = src.index("person = await _dm_identities(dm_chat)")
         self.assertIn("_punch_dm_done_by_number", src[gate:gate + 900])     # before NOT_FOR_YOU
 
     def test_asap_items_are_in_the_chase_query_every_day(self):

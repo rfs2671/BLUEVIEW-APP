@@ -220,7 +220,7 @@ class TheDmPathReadsSetAnswersFirst(unittest.TestCase):
         src = Path(server.__file__).read_text(encoding="utf-8")
         self.assertIn("await _handle_set_question_message(dm_chat", src)
         i = src.index("await _handle_set_question_message(dm_chat, parsed.get(\"body\"))")
-        j = src.index("ident = await _dm_assistant_identity(dm_chat)", i)
+        j = src.index("person = await _dm_identities(dm_chat)", i)
         self.assertLess(i, j)
         self.assertNotRegex(src[i - 2000:j], r"_psq\.parse_reply\(parsed")
 

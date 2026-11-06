@@ -191,6 +191,18 @@ GC_TWO_OPEN_LINES = {
            "que no cambié nada. Elija el grupo GC de cada uno en la app de Levelog: abra el "
            "proyecto y luego WhatsApp."),
 }
+# A DM from a person with accounts in several companies that CHANGES
+# something (or a photo, or a message the old pipeline must answer) with no
+# job naming the company: which company, by number. The same street in two
+# of their companies: which one, by number, each "<job> (<company>)".
+ACCOUNT_PICK_LINES = {
+    "en": {"which_company": "Which company is this for?",
+           "which_job": "Which one?",
+           "send_again": "Then send the photo again."},
+    "es": {"which_company": "¿Para qué compañía es?",
+           "which_job": "¿Cuál?",
+           "send_again": "Luego mande la foto otra vez."},
+}
 # "Q3 YES" from a person whose two companies each asked a Q3 (codes are
 # unique per company): which one, by number.
 SET_Q_PICK_LINES = {

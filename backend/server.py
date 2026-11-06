@@ -47446,7 +47446,8 @@ async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict,
 
 
 async def send_whatsapp_dm(user_id: Any, message: str, *, kind: str,
-                           window: str, project_id: Any = None) -> Optional[dict]:
+                           window: str, project_id: Any = None,
+                           history_company: Optional[str] = None) -> Optional[dict]:
     """The way to send a PROACTIVE direct message. None when refused.
 
     Refused unless: the user is live and DM-eligible (company admin or PM),
@@ -47496,7 +47497,11 @@ async def send_whatsapp_dm(user_id: Any, message: str, *, kind: str,
         optin.get("chat_id") or wa_dm.dm_chat_id(optin["phone"]), message,
         dm_meta={"user_id": uid, "company_id": company_id,
                  "project_id": str(project_id) if project_id else None,
-                 "kind": kind, "window": window},
+                 "kind": kind, "window": window,
+                 # Whose content this is, for the chat's history (a person's
+                 # one brief carries every company's jobs): default the
+                 # account's company.
+                 **({"history_company": str(history_company)} if history_company else {})},
     )
 
 
@@ -53838,13 +53843,228 @@ async def _dm_assistant_identity(chat_id: str) -> Optional[dict]:
     writing from this chat, or None. Fail closed on anything unresolved.
 
     A number connected for accounts in several companies: the one connected
-    FIRST that still checks out answers here. (One account per DM turn; the
-    person-level DM across all of them is its own change.)"""
+    FIRST that still checks out. Callers that act for a known company use
+    _dm_identity_for_company; the DM turn itself uses _dm_identities and
+    routes each message to the right account (_dm_route_accounts)."""
+    found = await _dm_identities(chat_id)
+    return found[0] if found else None
+
+
+async def _dm_identities(chat_id: str) -> List[dict]:
+    """Every account this chat's number is connected for that still checks
+    out, one identity each (one company each), first connected first.
+    One person, several companies (Roy, 2026-11-06): each identity stays a
+    one-company identity, so everything that is handed one acts for one
+    company only."""
     digits = wa_dm.phone_digits(chat_id)
+    out, seen = [], set()
     for optin in reversed(await _active_optins_for_phone(digits)):
         ident = await _dm_identity_of_optin(optin)
-        if ident:
+        if ident and ident["user_id"] not in seen:
+            seen.add(ident["user_id"])
+            out.append(ident)
+    return out
+
+
+async def _dm_identity_for_company(chat_id: str, company_id: Any) -> Optional[dict]:
+    """This chat's identity IN `company_id`, or None: a tool acting for one
+    company's project acts as the person's account in that company, never
+    as their account in another."""
+    for ident in await _dm_identities(chat_id):
+        if wa_security.same_company(ident.get("company_id"), company_id):
             return ident
+    return None
+
+
+#: The account a DM turn acts as (its user id), once routed: every question
+#: the turn leaves open carries it (`acct` on the state row, _dm_state_set),
+#: so its answer is read as the same account.
+_DM_ACCT: contextvars.ContextVar = contextvars.ContextVar("dm_acct", default=None)
+#: Whose content this DM turn is: a company id, or DM_SCOPE_MULTI (a turn
+#: across all of one person's accounts). Stamped on the turn's rows in
+#: whatsapp_messages (`dm_company`).
+_DM_SCOPE: contextvars.ContextVar = contextvars.ContextVar("dm_scope", default=None)
+#: Set only for a person with accounts in several companies: the history a
+#: turn reads is the rows stamped with ITS scope (or neutral) -- one
+#: company's content never feeds another company's answer.
+_DM_HISTORY_SCOPE: contextvars.ContextVar = contextvars.ContextVar("dm_history_scope",
+                                                                   default=None)
+DM_SCOPE_MULTI = "multi"
+DM_SCOPE_NEUTRAL = "none"
+#: "Which company?" / "Which one?" asked by the router: {user_ids, labels,
+#: project_ids, held}; 30 minutes; any other message clears it.
+DM_ACCT_PICK_STATE = "dm_acct_pick"
+#: The open questions an answer belongs to the account that asked them.
+_DM_ACCT_FLOW_KINDS = ("dm_action", "dm_menu", "dm_clarify", "upcoming_remind", "dm_more")
+
+
+def _dm_history_filter(q: dict) -> dict:
+    """A history query, narrowed for a person with accounts in several
+    companies to this turn's scope (and neutral rows). Rows written before
+    a row carried its scope are not read for such a person."""
+    scope = _DM_HISTORY_SCOPE.get()
+    if scope:
+        q = dict(q, dm_company={"$in": [str(scope), DM_SCOPE_NEUTRAL]})
+    return q
+
+
+def _dm_enter(ident: Optional[dict], scope: str, multi: bool) -> list:
+    """Set this turn's account and scope (contextvars); the tokens to reset."""
+    return [(_DM_ACCT, _DM_ACCT.set(str((ident or {}).get("user_id") or "") or None)),
+            (_DM_SCOPE, _DM_SCOPE.set(scope)),
+            (_DM_HISTORY_SCOPE, _DM_HISTORY_SCOPE.set(scope if multi else None))]
+
+
+def _dm_leave(tokens: list) -> None:
+    for var, tok in reversed(tokens):
+        try:
+            var.reset(tok)
+        except Exception:
+            pass
+
+
+async def _dm_person_jobs(person: List[dict]) -> List[dict]:
+    """Every job of every account, each tagged with its account (`acct`)
+    and its company's name (`company`) -- the same street can be a job in
+    two of the person's companies (a GC and a sub on one building)."""
+    out = []
+    for acct in person:
+        name = await _company_display_name(acct.get("company_id"))
+        for j in await _dm_jobs(acct):
+            out.append(dict(j, acct=acct, company=name or "another company"))
+    return out
+
+
+def _dm_job_with_company(j: dict) -> str:
+    return f"{j['label']} ({j['company']})" if j.get("company") else j["label"]
+
+
+async def _dm_ask_account(dm_chat: str, options: List[dict], held: str, lang: str, *,
+                          jobs: Optional[List[dict]] = None, photo: bool = False) -> None:
+    """Ask which of their companies (or which of the same-named jobs) a
+    message is for: numbered, by real names. The message is held and
+    answered once they pick."""
+    if jobs:
+        labels = [_dm_job_with_company(j) for j in jobs]
+        uids = [j["acct"]["user_id"] for j in jobs]
+        pids = [j["id"] for j in jobs]
+        head = wa_dm.ACCOUNT_PICK_LINES.get(lang, wa_dm.ACCOUNT_PICK_LINES["en"])["which_job"]
+    else:
+        labels = [await _company_display_name(a.get("company_id")) or "another company"
+                  for a in options]
+        uids = [a["user_id"] for a in options]
+        pids = [None] * len(options)
+        head = wa_dm.ACCOUNT_PICK_LINES.get(lang, wa_dm.ACCOUNT_PICK_LINES["en"])["which_company"]
+    if photo:
+        head += " " + wa_dm.ACCOUNT_PICK_LINES.get(lang, wa_dm.ACCOUNT_PICK_LINES["en"])["send_again"]
+    await _dm_state_set(DM_ACCT_PICK_STATE, dm_chat, dm_actions.PENDING_SECONDS,
+                        user_ids=uids, labels=labels, project_ids=pids, held=held[:2000])
+    await send_whatsapp_message(dm_chat, dm_actions.numbered(head, labels))
+
+
+def _dm_is_short_answer(text: str) -> bool:
+    """yes / no / a number / disregard / undo: an answer to an open question,
+    never a question naming a job."""
+    t = str(text or "").strip()
+    return (dm_actions.yes_no(t) is not None or dm_actions.is_drop(t) or dm_actions.is_undo(t)
+            or bool(re.fullmatch(r"#?\s*\d{1,2}\s*[.)]?", t)))
+
+
+async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
+                             brain: bool, has_image: bool = False) -> Optional[dict]:
+    """Which of a person's accounts (one per company) a DM is for.
+
+    {"ident": one account, "body", "scope": its company id}, or {"ident":
+    None, "body", "scope": "multi"} for a read across every account (the
+    brain only), or None when a numbered question was asked (and the
+    message is held).
+
+    Roy, 2026-11-06: reads range across all connected accounts' projects,
+    each answer tied to its own project's company; a WRITE whose job is in
+    two of the person's companies asks which one before writing, by number.
+    In order: the number answering our own "Which company?"; an answer
+    (yes / no / a number) to a question one account left open; a job named
+    in the message (one company: that account; the same street in two: asked
+    for a change, read across for a question); a question one account left
+    open; a question about all their jobs (read across); the job used in
+    the last 30 minutes; then a read across all of them -- and anything that
+    would CHANGE something, or a photo, or the old pipeline, is asked
+    "Which company?" first."""
+    by_uid = {a["user_id"]: a for a in person}
+    lang = dm_actions.reply_lang(text)
+
+    def one(acct: dict, body: Optional[str] = None) -> dict:
+        return {"ident": acct, "body": text if body is None else body,
+                "scope": str(acct["company_id"])}
+
+    pick = await _dm_state_get(DM_ACCT_PICK_STATE, dm_chat)
+    if pick:
+        await _dm_state_clear(DM_ACCT_PICK_STATE, dm_chat)
+        labels = list(pick.get("labels") or [])
+        k = dm_actions.pick(text, labels) if labels else None
+        if k is not None:
+            acct = by_uid.get(str((pick.get("user_ids") or [None] * len(labels))[k]))
+            if acct:
+                pid = (pick.get("project_ids") or [None] * len(labels))[k]
+                if pid:
+                    toks = _dm_enter(acct, str(acct["company_id"]), True)
+                    try:
+                        await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
+                                            project_id=str(pid))
+                    finally:
+                        _dm_leave(toks)
+                return one(acct, str(pick.get("held") or text))
+        # Not a pick: a new message, routed as one.
+
+    async def open_flow() -> Optional[dict]:
+        for kind in _DM_ACCT_FLOW_KINDS:
+            st = await _dm_state_get(kind, dm_chat)
+            if st:
+                return by_uid.get(str(st.get("acct") or "")) or person[0]
+        walking = []
+        for acct in person:
+            if await _punch_session(acct["user_id"]):
+                walking.append(acct)
+        return walking[0] if len(walking) == 1 else None
+
+    short = _dm_is_short_answer(text)
+    if short and dm_actions.is_undo(text):
+        last = await _dm_state_get(DM_ACTION_LAST, dm_chat)
+        if last and by_uid.get(str(last.get("acct") or "")):
+            return one(by_uid[str(last["acct"])])
+    if short:
+        acct = await open_flow()
+        if acct:
+            return one(acct)
+
+    jobs = await _dm_person_jobs(person)
+    by_id = {j["id"]: j for j in jobs}
+    write = dm_actions.looks_like_request(text)
+    if not short:
+        ids = wa_assistant.find_jobs(text, jobs)
+        if not ids:
+            jid = wa_assistant.job_named(text, jobs, in_sentence=True)
+            ids = [jid] if jid else []
+        named = [by_id[i] for i in ids if i in by_id]
+        accts = {j["acct"]["user_id"] for j in named}
+        if len(accts) == 1:
+            return one(named[0]["acct"])
+        if len(accts) > 1:
+            if brain and not write and not has_image:
+                return {"ident": None, "body": text, "scope": DM_SCOPE_MULTI}
+            await _dm_ask_account(dm_chat, [], text, lang, jobs=named, photo=has_image)
+            return None
+        acct = await open_flow()
+        if acct:
+            return one(acct)
+    all_jobs = wa_assistant.question_scope(text) == wa_assistant.SCOPE_ALL
+    if not all_jobs:
+        cur = await _dm_state_get("dm_job", dm_chat)
+        if cur and str(cur.get("project_id")) in by_id:
+            return one(by_id[str(cur["project_id"])]["acct"])
+    if brain and not write and not has_image:
+        return {"ident": None, "body": text, "scope": DM_SCOPE_MULTI}
+    await _dm_ask_account(dm_chat, person, text, lang, photo=has_image)
     return None
 
 
@@ -54087,33 +54307,116 @@ async def _brief_for_user(user: dict, now: datetime,
     something to say (the 6 most severe; every_job: all of them, as of the
     brief before today's), then their reminders and quiet jobs
     (wa_brief.compose_messages); [] when they have no jobs."""
-    company_id = str(user.get("company_id") or "").strip()
-    if not company_id:
+    return await _brief_for_accounts([user], now, every_job=every_job)
+
+
+async def _brief_for_accounts(users: List[dict], now: datetime, every_job: bool = False,
+                              lead_uid: Optional[str] = None) -> List[Tuple[str, str]]:
+    """The brief for one PERSON across their accounts (one per company, all
+    on one number; Roy, 2026-11-06): ONE brief, not one per account. Each
+    job is read as its own company's (its account's items, punch, check-ins
+    and events) and, with more than one company, named with it. The 6 most
+    severe jobs across every account get their own message; the rest and
+    every account's reminders share the last one. Ledger, since and the
+    parts already sent are the lead account's (`lead_uid`, else users[0])."""
+    if not users:
         return []
-    role = wa_dm.norm_role(user.get("role"))
-    projects = await _dm_assistant_projects(user, company_id, role)
-    if not projects:
-        return []
+    lead_uid = str(lead_uid or users[0].get("_id"))
+    multi = len(users) > 1
     today = wa_brief.local_now(now).date().isoformat()
-    since = await _brief_since(str(user.get("_id")), now,
-                               before_day=today if every_job else None)
-    me = await _brief_me(user)
-    jobs = [await _brief_job(p, company_id, since, now, me) for p in projects]
-    # Upcoming events: today's under each job's Today, the rest of the week
-    # under its Later this week; a reminder of their own (no job) at the end.
-    try:
-        events = await _upcoming_brief_events(user, company_id, role, now)
-    except Exception as e:
-        logger.warning(f"[wa-brief] upcoming failed: {type(e).__name__}")
-        events = []
-    by_job = wa_brief.events_by_job(events, wa_brief.local_now(now).date())
-    for p, job in zip(projects, jobs):
-        job["today"], job["later"] = by_job.get(str(p.get("_id")), ([], []))
-    own_today, own_later = by_job.get(None, ([], []))
+    since = await _brief_since(lead_uid, now, before_day=today if every_job else None)
+    jobs: List[dict] = []
+    own_today: list = []
+    own_later: list = []
+    seen_own: set = set()
+    for user in users:
+        company_id = str(user.get("company_id") or "").strip()
+        if not company_id:
+            continue
+        role = wa_dm.norm_role(user.get("role"))
+        projects = await _dm_assistant_projects(user, company_id, role)
+        if not projects:
+            continue
+        co = await _company_display_name(company_id) if multi else ""
+        me = await _brief_me(user)
+        mine = [await _brief_job(p, company_id, since, now, me) for p in projects]
+        # Upcoming events: today's under each job's Today, the rest of the week
+        # under its Later this week; a reminder of their own (no job) at the end.
+        try:
+            events = await _upcoming_brief_events(user, company_id, role, now)
+        except Exception as e:
+            logger.warning(f"[wa-brief] upcoming failed: {type(e).__name__}")
+            events = []
+        by_job = wa_brief.events_by_job(events, wa_brief.local_now(now).date())
+        for p, job in zip(projects, mine):
+            job["today"], job["later"] = by_job.get(str(p.get("_id")), ([], []))
+            if co:
+                job["label"] = f"{job['label']} ({co})"
+            job["company_id"] = company_id
+        t, later = by_job.get(None, ([], []))
+        for ev in list(t) + list(later):
+            key = str(ev.get("id") or id(ev))
+            if key in seen_own:
+                continue
+            seen_own.add(key)
+            (own_today if ev in t else own_later).append(ev)
+        jobs += mine
+    if not jobs:
+        return []
     return wa_brief.compose_messages(
         now, jobs, {"today": own_today, "later": own_later},
         max_jobs=None if every_job else wa_brief.MAX_JOB_MESSAGES,
-        already=None if every_job else await _brief_sent_parts(str(user.get("_id")), today))
+        already=None if every_job else await _brief_sent_parts(lead_uid, today))
+
+
+async def _brief_accounts(user: dict, optin: Optional[dict] = None) -> List[dict]:
+    """The accounts one person's ONE brief covers: every live, eligible
+    account connected on the same number as `user`'s active opt-in, its
+    phone still the one that opted in, first connected first (the lead).
+    Just [user] when there is no other (or no opt-in to read)."""
+    uid = str(user.get("_id"))
+    mine = optin if optin and optin.get("status") == "active" else None
+    if mine is None:
+        try:
+            mine = await db[WA_OPTINS].find_one({"user_id": uid, "status": "active"})
+        except Exception:
+            mine = None
+    if not mine or not mine.get("phone"):
+        return [user]
+    try:
+        rows = await db[WA_OPTINS].find({"phone": mine["phone"], "status": "active"}).to_list(20)
+    except Exception:
+        return [user]
+    rows.sort(key=lambda o: (_utc(o.get("opted_in_at")) or _EPOCH, str(o.get("user_id"))))
+    out = []
+    for o in rows:
+        if str(o.get("user_id")) == uid:
+            out.append(user)
+            continue
+        ident = await _dm_identity_of_optin(o)
+        if ident:
+            out.append(ident["user"])
+    return out if any(str(u.get("_id")) == uid for u in out) else [user]
+
+
+async def _brief_person_settings(users: List[dict], now: datetime) -> Tuple[dict, List[dict]]:
+    """(settings, accounts in today's brief) for one person's ONE brief.
+    One account: its own settings, as before. Several: the EARLIEST brief
+    time any of them set (an account set to Off is left out of the brief),
+    weekends when any of them has weekends on -- and on a Saturday or
+    Sunday only the accounts with weekends on are in it."""
+    if len(users) == 1:
+        return await _brief_settings(str(users[0].get("_id"))), list(users)
+    each = [(u, await _brief_settings(str(u.get("_id")))) for u in users]
+    on = [(u, s) for u, s in each if s.get("brief_time") not in (None, "off")]
+    if not on:
+        return dict(each[0][1], brief_time="off"), []
+    t = min(s["brief_time"] for _u, s in on)
+    weekend = any(s.get("brief_weekend") for _u, s in on)
+    merged = dict(on[0][1], brief_time=t, brief_weekend=weekend, brief_saturday=weekend)
+    weekday = wa_brief.local_now(now).weekday() < 5
+    included = [u for u, s in on if weekday or s.get("brief_weekend")]
+    return merged, included
 
 
 #: Wed Oct 14: WaAPI's send-message answered HTTP 500 at 8:05, the ledger
@@ -54379,18 +54682,19 @@ async def _brief_pace(uid: str) -> None:
     _BRIEF_LAST_SEND[uid] = _brief_clock()
 
 
-async def _brief_send_parts(uid: str, day: str, messages: List[Tuple[str, str]]) -> dict:
+async def _brief_send_parts(uid: str, day: str, messages: List[Tuple[str, str]],
+                            companies: Optional[Dict[str, str]] = None) -> dict:
     """Send each message of today's brief not already out, at least
     BRIEF_SEND_GAP_SECONDS after the person's previous one (_brief_pace).
     {sent, already, failed (the last WaAPI error, or None), busy (another
     run is sending one), refused (refused before WaAPI; the rest are not
     tried)}."""
     async with _brief_send_lock(uid):
-        return await _brief_send_parts_locked(uid, day, messages)
+        return await _brief_send_parts_locked(uid, day, messages, companies)
 
 
-async def _brief_send_parts_locked(uid: str, day: str,
-                                   messages: List[Tuple[str, str]]) -> dict:
+async def _brief_send_parts_locked(uid: str, day: str, messages: List[Tuple[str, str]],
+                                   companies: Optional[Dict[str, str]] = None) -> dict:
     out: Dict[str, Any] = {"sent": 0, "already": 0, "failed": None, "busy": False,
                            "refused": False}
     for part, text in messages:
@@ -54401,7 +54705,8 @@ async def _brief_send_parts_locked(uid: str, day: str,
             out["already"] += 1
             continue
         await _brief_pace(uid)
-        if await send_whatsapp_dm(uid, text, kind=MORNING_BRIEF_KIND, window=window):
+        if await send_whatsapp_dm(uid, text, kind=MORNING_BRIEF_KIND, window=window,
+                                  history_company=(companies or {}).get(part)):
             out["sent"] += 1
             continue
         row = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1, "error": 1})
@@ -54470,6 +54775,38 @@ async def _brief_mark_sent(uid: str, company_id: Any, day: str, now: datetime,
         logger.warning(f"[wa-brief] ledger write failed: {type(e).__name__}")
 
 
+async def _brief_part_companies(users: List[dict]) -> Dict[str, str]:
+    """{part: company id} for one person's brief: each job message is its
+    company's content (the chat's history keeps it apart, _DM_HISTORY_SCOPE);
+    the shared last message is the person's across companies."""
+    out: Dict[str, str] = {wa_brief.REST: DM_SCOPE_MULTI, wa_brief.MORE: DM_SCOPE_MULTI}
+    for u in users:
+        cid = str(u.get("company_id") or "")
+        for p in await _dm_assistant_projects(u, cid, wa_dm.norm_role(u.get("role"))):
+            out[str(p.get("_id"))] = cid
+    return out
+
+
+async def _brief_mark_others(lead_uid: str, accounts: List[dict], day: str, now: datetime,
+                             status: str) -> None:
+    """The person's other accounts: their brief went out in the lead's (one
+    brief per person), so each says so -- brief_status, "since your brief"
+    and the next brief's "since" read it."""
+    try:
+        row = await db[WA_LEDGER].find_one(
+            {"_id": wa_dm.ledger_key(lead_uid, None, MORNING_BRIEF_KIND, day)})
+    except Exception:
+        row = None
+    at = _utc((row or {}).get("created_at")) or now
+    for a in accounts:
+        other = str(a.get("_id"))
+        if other == lead_uid:
+            continue
+        await _brief_mark_sent(other, a.get("company_id"), day, now, at=at)
+        await _brief_log(other, a.get("company_id"), day, status, now=now,
+                         extra={"in_brief_of": lead_uid})
+
+
 async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
     report = {"optins": 0, "due": 0, "sent": 0, "refused": 0, "skipped": 0,
@@ -54513,6 +54850,19 @@ async def _morning_brief_one(optin: dict, now: datetime, today: str, report: dic
             if due:
                 await _brief_log(uid, company_id, today, "skipped", reason="not_eligible", now=now)
             return
+        # ONE PERSON, ONE BRIEF: accounts in several companies on one number
+        # get one brief, sent once, as the first account connected (the
+        # lead); the other accounts' opt-ins are skipped here.
+        accounts = await _brief_accounts(user, optin)
+        multi = len(accounts) > 1
+        if multi:
+            if str(accounts[0].get("_id")) != uid:
+                report["merged"] = report.get("merged", 0) + 1
+                return
+            settings, included = await _brief_person_settings(accounts, now)
+            due = wa_brief.is_due(now, settings["brief_time"], settings["brief_weekend"])
+        else:
+            included = [user]
         if not due:
             return
         report["due"] += 1
@@ -54524,20 +54874,26 @@ async def _morning_brief_one(optin: dict, now: datetime, today: str, report: dic
             return
         if had or (log or {}).get("status") == "failed":
             report["retried"] += 1
-        if await _shabbos_quiet(user.get("company_id"), None, now):
-            # Shabbos / Yom Tov: today's brief is skipped, not queued.
+        # Shabbos / Yom Tov is each company's own setting: a company that
+        # observes it is left out of the brief; when every one does, today's
+        # brief is skipped, not queued.
+        awake = [a for a in included
+                 if not await _shabbos_quiet(a.get("company_id"), None, now)]
+        if not awake:
             await _ledger_hold(key, "skipped_shabbos", user_id=uid,
                                company_id=user.get("company_id"),
                                kind=MORNING_BRIEF_KIND, window=today)
             await _brief_log(uid, company_id, today, "skipped", reason="shabbos", now=now)
             report["shabbos_skipped"] += 1
             return
-        messages = await _brief_for_user(user, now)
+        messages = (await _brief_for_accounts(awake, now, lead_uid=uid) if multi
+                    else await _brief_for_user(user, now))
         if not messages:
             report["skipped"] += 1
             await _brief_log(uid, company_id, today, "skipped", reason="no_jobs", now=now)
             return
-        out = await _brief_send_parts(uid, today, messages)
+        out = await _brief_send_parts(uid, today, messages,
+                                      await _brief_part_companies(awake) if multi else None)
         if out["refused"]:
             # Refused before WaAPI: the person's own gates (the same for
             # every message of the brief).
@@ -54561,6 +54917,8 @@ async def _morning_brief_one(optin: dict, now: datetime, today: str, report: dic
             report["sent"] += 1
             await _brief_mark_sent(uid, company_id, today, now)
             await _brief_log(uid, company_id, today, "sent", attempt=True, now=now)
+            if multi:
+                await _brief_mark_others(uid, accounts, today, now, "sent")
     except Exception as e:
         # The whole error, once per user: "user failed: KeyError" told
         # nobody anything.
@@ -54586,11 +54944,19 @@ async def _brief_resend(user: dict, dm_chat: str, now: datetime,
     every_job ("brief all"): the job messages this morning's brief left out
     (more than wa_brief.MAX_JOB_MESSAGES jobs), under the morning's own
     ledger keys (_brief_send_parts): a job already sent today is not sent
-    again. "nothing" when every job is already out."""
+    again. "nothing" when every job is already out.
+
+    A person with accounts in several companies gets their ONE brief (the
+    lead account's, _brief_accounts), whichever account asked."""
+    accounts = await _brief_accounts(user)
+    multi = len(accounts) > 1
+    user = accounts[0]
     uid = str(user.get("_id"))
     today = wa_brief.local_now(now).date().isoformat()
+    parts_of = await _brief_part_companies(accounts) if multi else {}
     try:
-        messages = await _brief_for_user(user, now, every_job=every_job)
+        messages = (await _brief_for_accounts(accounts, now, every_job=every_job, lead_uid=uid)
+                    if multi else await _brief_for_user(user, now, every_job=every_job))
     except Exception as e:
         logger.exception(f"[wa-brief] resend for {uid[-6:]} failed: {type(e).__name__}: {e}")
         await _brief_log(uid, user.get("company_id"), today, "failed", reason="error",
@@ -54602,7 +54968,7 @@ async def _brief_resend(user: dict, dm_chat: str, now: datetime,
     if every_job:
         jobs = [(part, text) for part, text in messages
                 if part not in (wa_brief.REST, wa_brief.MORE)]
-        out = await _brief_send_parts(uid, today, jobs)
+        out = await _brief_send_parts(uid, today, jobs, parts_of or None)
         if out["refused"] or out["failed"] is not None:
             return "failed"
         if not out["sent"] and not out["busy"]:
@@ -54617,7 +54983,16 @@ async def _brief_resend(user: dict, dm_chat: str, now: datetime,
                 meta = {"user_id": uid, "company_id": str(user.get("company_id") or ""),
                         "kind": MORNING_BRIEF_KIND, "window": f"{today}:resend-{run}:{part}"}
             await _brief_pace(uid)
-            if await send_whatsapp_message(dm_chat, text, dm_meta=meta):
+            if meta and parts_of.get(part):
+                meta["history_company"] = parts_of[part]
+            # Each message is its own company's content in the chat's history.
+            tok = _DM_SCOPE.set(parts_of[part]) if parts_of.get(part) else None
+            try:
+                ok = await send_whatsapp_message(dm_chat, text, dm_meta=meta)
+            finally:
+                if tok is not None:
+                    _DM_SCOPE.reset(tok)
+            if ok:
                 sent += 1
                 # Also under the part's own key ({day}:{part}), as the morning
                 # sends it: "brief all" and the tick then never send it again.
@@ -54628,6 +55003,8 @@ async def _brief_resend(user: dict, dm_chat: str, now: datetime,
         return "failed"
     await _brief_log(uid, user.get("company_id"), today, "resent", now=now)
     await _brief_mark_sent(uid, user.get("company_id"), today, now, at=now)
+    if multi:
+        await _brief_mark_others(uid, accounts, today, now, "resent")
     return "sent"
 
 
@@ -56853,6 +57230,10 @@ async def _dm_state_set(kind: str, chat: str, seconds: int, **fields) -> None:
     if _DM_DRY.get():
         return
     now = datetime.now(timezone.utc)
+    # The account this turn acts as: its answer is read as the same account
+    # (_dm_route_accounts), whatever company the next message seems to name.
+    if _DM_ACCT.get() and "acct" not in fields:
+        fields["acct"] = _DM_ACCT.get()
     try:
         await db[_DM_STATE].update_one(
             {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": ""},
@@ -58761,9 +59142,9 @@ async def _dm_history(dm_chat: str, now: datetime) -> list:
     guard pairs an answer with the wrong question. An ObjectId grows with
     insertion; tests/test_history_ties.py injects the tie."""
     try:
-        rows = await db.whatsapp_messages.find(
+        rows = await db.whatsapp_messages.find(_dm_history_filter(
             {"group_id": {"$in": _dm_chat_ids(dm_chat)}, "is_dm": True,
-             "created_at": {"$gte": now - timedelta(hours=wa_assistant.HISTORY_HOURS)}}
+             "created_at": {"$gte": now - timedelta(hours=wa_assistant.HISTORY_HOURS)}})
         ).sort([("created_at", -1), ("_id", -1)]).to_list(wa_assistant.HISTORY_MAX)
     except Exception as e:
         logger.warning(f"[wa-assistant] history read failed: {type(e).__name__}")
@@ -58774,10 +59155,15 @@ async def _dm_history(dm_chat: str, now: datetime) -> list:
 
 async def _dm_store_inbound(ident: dict, dm_chat: str, text: str,
                             message_id: str) -> None:
-    """Their side of the chat, kept like a group's, so the next turn has it."""
+    """Their side of the chat, kept like a group's, so the next turn has it.
+    Stamped with the turn's scope (`dm_company`: its company, or "multi" for
+    a read across a person's several companies -- then no company_id)."""
+    scope = _DM_SCOPE.get() or str(ident["company_id"])
     try:
         await db.whatsapp_messages.insert_one({
-            "group_id": dm_chat, "is_dm": True, "company_id": ident["company_id"],
+            "group_id": dm_chat, "is_dm": True,
+            "company_id": None if scope == DM_SCOPE_MULTI else ident["company_id"],
+            "dm_company": scope,
             "user_id": ident["user_id"], "sender": wa_dm.phone_digits(dm_chat),
             "body": text, "message_id": message_id, "from_me": False,
             "created_at": datetime.now(timezone.utc)})
@@ -60047,7 +60433,8 @@ async def _dm_user_level_turn(ident: dict, dm_chat: str, text: str, now: datetim
 
 async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                               message_id: str, heard: Optional[str] = None,
-                              quoted: Optional[dict] = None, brain: bool = False) -> None:
+                              quoted: Optional[dict] = None, brain: bool = False,
+                              person: Optional[List[dict]] = None) -> None:
     """Answer one DM from an Admin/PM (see the block comment above).
 
     A conversation, not a string of new chats: the last 20 messages of this
@@ -60067,7 +60454,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     _answer_turn_begin()
     if brain:
         # The DM brain (flag dm_brain_v2): one model, tools, guardrails.
-        await _dm_brain_reply(ident, dm_chat, body, message_id, heard=heard, quoted=quoted)
+        # `person`: a read across all of a person's companies (each job and
+        # each tool call tied to its own company, _dm_brain_exec).
+        await _dm_brain_reply(ident, dm_chat, body, message_id, heard=heard, quoted=quoted,
+                              **({"person": person} if person else {}))
         return
     text = (body or "").strip()
     if not text:
@@ -61163,8 +61553,8 @@ async def _dm_brain_history(dm_chat: str, now: datetime, before: Optional[dateti
     if before:
         q["created_at"]["$lt"] = before
     try:
-        rows = await db.whatsapp_messages.find(q).sort([("created_at", -1), ("_id", -1)]).to_list(
-            dm_brain.HISTORY_TURNS)
+        rows = await db.whatsapp_messages.find(_dm_history_filter(q)).sort(
+            [("created_at", -1), ("_id", -1)]).to_list(dm_brain.HISTORY_TURNS)
     except Exception as e:
         logger.warning(f"[dm-brain] history read failed: {type(e).__name__}")
         return []
@@ -61203,7 +61593,9 @@ def _dm_brain_find_job(ctx: dict, said: Any) -> Tuple[Optional[dict], str]:
     """(job, "") for a job reference, or (None, why) to tell the model."""
     jobs, by_id = ctx["jobs"], ctx["by_id"]
     s = str(said or "").strip()
-    names = "; ".join(f"{j['id']}: {j['label']}" for j in jobs)
+    # Several companies: each job named with its company (the same street
+    # can be a job in two of them).
+    names = "; ".join(f"{j['id']}: {_dm_job_with_company(j)}" for j in jobs)
     if not s:
         if ctx.get("active") in by_id:
             return by_id[ctx["active"]], ""
@@ -61220,7 +61612,7 @@ def _dm_brain_find_job(ctx: dict, said: Any) -> Tuple[Optional[dict], str]:
         return by_id[ids[0]], ""
     if len(ids) > 1:
         return None, f"'{s}' matches more than one job: " + "; ".join(
-            f"{i}: {by_id[i]['label']}" for i in ids) + "."
+            f"{i}: {_dm_job_with_company(by_id[i])}" for i in ids) + "."
     return None, f"None of their jobs matches '{s}'. Their jobs: {names}."
 
 
@@ -61410,8 +61802,118 @@ async def _dm_do_set_trade(ident: dict, p: dict):
             f"Saved: {p['company']} — {p['trade']} on {', '.join(jobs)}.")
 
 
+#: Brain tools that read one job: the job names the account they act as.
+_DM_BRAIN_ONE_JOB = _DM_BRAIN_JOB_TOOLS + ("headcount", "dot_status", "send_sheet",
+                                           "send_plan_file", "sheet_info")
+
+
 async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
-    """One tool call from the brain. Every result is text for the model."""
+    """One tool call from the brain. Every result is text for the model.
+
+    A read across a person's several companies (ctx["person"]): every call
+    acts as ONE account -- the account whose job it reads; for the subs list
+    and a report, each account in turn, each under its company's name; for
+    a change, the account whose job it names, and when that is not one
+    company (no job, or the same street in two), nothing is written: the
+    numbered "Which company?" / "Which one?" is set up and the model asks
+    it. Their brief and settings are the person's (the first account)."""
+    person = ctx.get("person")
+    if not person:
+        return await _dm_brain_exec_one(ctx, name, args)
+    args = dict(args or {})
+    by_uid = {a["user_id"]: a for a in person}
+    if name in _DM_BRAIN_ONE_JOB or (name in ("list_subs", "find_sub", "set_sub_trade")
+                                     and args.get("job")):
+        job, why = _dm_brain_find_job(ctx, args.get("job"))
+        if not job:
+            return why
+        return await _dm_brain_as(ctx, job["acct"], name, args)
+    if name in ("list_subs", "find_sub"):
+        outs = []
+        for a in person:
+            co = await _company_display_name(a.get("company_id")) or "another company"
+            outs.append(f"{co}:\n{await _dm_brain_as(ctx, a, name, dict(args))}")
+        return "\n\n".join(outs)
+    if name == "send_report":
+        said = [str(x) for x in args.get("jobs") or []]
+        if not said or any(s.lower() == "all" for s in said):
+            picked = list(ctx["jobs"])
+        else:
+            picked = []
+            for s in said:
+                job, why = _dm_brain_find_job(ctx, s)
+                if not job:
+                    return why
+                picked.append(job)
+        outs = []
+        for a in person:
+            mine = [j["id"] for j in picked if j["acct"]["user_id"] == a["user_id"]]
+            if mine:
+                outs.append(await _dm_brain_as(ctx, a, name, dict(args, jobs=mine)))
+        return "\n".join(outs) or "They have no jobs."
+    if name in ("propose_change", "set_sub_trade"):
+        hint = str(args.get("job") or "").strip()
+        named = []
+        if hint:
+            ids = wa_assistant.find_jobs(hint, ctx["jobs"])
+            if not ids:
+                jid = wa_assistant.job_named(hint, ctx["jobs"], in_sentence=True)
+                ids = [jid] if jid else []
+            named = [ctx["by_id"][i] for i in ids if i in ctx["by_id"]]
+        accts = {j["acct"]["user_id"] for j in named}
+        if len(accts) == 1:
+            return await _dm_brain_as(ctx, named[0]["acct"], name, args)
+        # A change with no one company: nothing is written; asked by number.
+        lang = _dm_brain_lang(ctx["text"])
+        lines = wa_dm.ACCOUNT_PICK_LINES.get(lang, wa_dm.ACCOUNT_PICK_LINES["en"])
+        if len(accts) > 1:
+            labels = [_dm_job_with_company(j) for j in named]
+            uids = [j["acct"]["user_id"] for j in named]
+            pids = [j["id"] for j in named]
+            head = lines["which_job"]
+        else:
+            labels = [await _company_display_name(a.get("company_id")) or "another company"
+                      for a in person]
+            uids, pids, head = [a["user_id"] for a in person], [None] * len(person), \
+                lines["which_company"]
+        if not ctx.get("dry_run"):
+            await _dm_state_set(DM_ACCT_PICK_STATE, ctx["dm_chat"], dm_actions.PENDING_SECONDS,
+                                user_ids=uids, labels=labels, project_ids=pids,
+                                held=str(ctx["text"])[:2000])
+        return json.dumps({"status": "dry_run" if ctx.get("dry_run") else "needs_an_answer",
+                           "system_says": [dm_actions.numbered(head, labels)],
+                           "options": labels,
+                           "note": "Nothing has been changed. Their jobs are in more than one "
+                                   "company: ask which one, with the numbered options, before "
+                                   "anything is changed."}, ensure_ascii=False)
+    if name in ("answer_pending_change", "undo_last_change"):
+        st = await _dm_state_get(DM_ACTION_STATE if name == "answer_pending_change"
+                                 else DM_ACTION_LAST, ctx["dm_chat"])
+        acct = by_uid.get(str((st or {}).get("acct") or "")) or person[0]
+        return await _dm_brain_as(ctx, acct, name, args)
+    # Their brief, their settings, a reminder, dropping a question: the
+    # person's own -- answered as their first account.
+    return await _dm_brain_as(ctx, person[0], name, args)
+
+
+async def _dm_brain_as(ctx: dict, acct: dict, name: str, args: dict) -> str:
+    """Run one tool call as this account (one company): its identity, its
+    user id on the questions it leaves open, and as the asker of its
+    records. Put back after."""
+    prev = ctx["ident"]
+    ctx["ident"] = acct
+    asker = _DM_ASKER.get() or {}
+    toks = [(_DM_ACCT, _DM_ACCT.set(acct["user_id"])),
+            (_DM_ASKER, _DM_ASKER.set(dict(asker, user_id=str(acct["user_id"]))))]
+    try:
+        return await _dm_brain_exec_one(ctx, name, args)
+    finally:
+        ctx["ident"] = prev
+        _dm_leave(toks)
+
+
+async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
+    """One tool call from the brain, as ctx["ident"] (one company)."""
     ident, dm_chat = ctx["ident"], ctx["dm_chat"]
     args = dict(args or {})
     dry = bool(ctx.get("dry_run"))
@@ -61839,13 +62341,26 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
                            flows: Optional[List[str]] = None,
                            active: Optional[str] = None,
                            t0: Optional[float] = None,
-                           live: Optional[dict] = None) -> dict:
+                           live: Optional[dict] = None,
+                           person: Optional[List[dict]] = None) -> dict:
     """Build the context and run the brain for one message (the live path
     and the eval). {reply, trace, ...} plus `sent` (what tools sent).
     `t0`: the monotonic clock at the message's receipt (timing offsets).
     `live`: given, live["ctx"] is the turn's context -- what a turn that is
-    given up (_dm_await_budget) had done, and when."""
-    jobs = await _dm_jobs(ident) if ident.get("projects") else []
+    given up (_dm_await_budget) had done, and when.
+
+    `person` (2+ accounts, one per company): a read across all of them. The
+    jobs are every account's, each named with its company; each tool call
+    acts as the account whose job it reads (_dm_brain_exec), so every
+    answer is tied to its own project's company. The history it is given is
+    this scope's only (_dm_history_filter)."""
+    multi = bool(person) and len(person) > 1
+    if multi:
+        jobs = await _dm_person_jobs(person)
+        # Claims are checked against every account's jobs.
+        ident = dict(ident, projects=[p for a in person for p in a.get("projects") or []])
+    else:
+        jobs = await _dm_jobs(ident) if ident.get("projects") else []
     by_id = {j["id"]: j for j in jobs}
     if active is None and not dry_run:
         cur = await _dm_state_get("dm_job", dm_chat)
@@ -61858,19 +62373,34 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
             company = (co or {}).get("name") or ""
         except Exception:
             company = ""
+    role = "admin" if ident.get("role") == "admin" else "project manager"
+    if multi:
+        parts = []
+        for a in person:
+            name = await _company_display_name(a.get("company_id")) or "another company"
+            parts.append(f"{'admin' if a.get('role') == 'admin' else 'project manager'} at {name}")
+        role, company = "; ".join(parts), ""
+    if flows is None:
+        if multi:
+            flows = []
+            for a in person:
+                flows += [f for f in await _dm_brain_flows(a, dm_chat) if f not in flows]
+        else:
+            flows = await _dm_brain_flows(ident, dm_chat)
     context = dm_brain.context_block(
         user={"name": user.get("name") or user.get("full_name") or "",
-              "role": "admin" if ident.get("role") == "admin" else "project manager",
-              "company": company},
-        jobs=[{"id": j["id"], "label": j["label"], "aliases": j.get("aliases") or []} for j in jobs],
-        active_job=by_id.get(active) if active else None,
-        open_flows=flows if flows is not None else await _dm_brain_flows(ident, dm_chat),
+              "role": role, "company": company},
+        jobs=[{"id": j["id"], "label": _dm_job_with_company(j) if multi else j["label"],
+               "aliases": j.get("aliases") or []} for j in jobs],
+        active_job=(dict(by_id[active], label=_dm_job_with_company(by_id[active])) if multi
+                    else by_id.get(active)) if active and active in by_id else None,
+        open_flows=flows,
         now_label=datefmt.strftime(_memory_ny(now), "%a %b %-d %Y, %-I:%M %p"))
     system = dm_brain.SYSTEM_PROMPT + "\n\n" + context
     messages = dm_brain.turn_messages(dm_brain.history_messages(history, now), text)
     ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
            "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
-           "used_job": None, "t0": t0}
+           "used_job": None, "t0": t0, "person": person if multi else None}
     if live is not None:
         live["ctx"] = ctx
     _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phones": [
@@ -61901,7 +62431,8 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
 
 
 async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
-                          heard: Optional[str] = None, quoted: Optional[dict] = None) -> None:
+                          heard: Optional[str] = None, quoted: Optional[dict] = None,
+                          person: Optional[List[dict]] = None) -> None:
     """Answer one DM with the brain (flag on). Exact commands to an open
     flow are answered in code first; everything else is the model's."""
     text = (text or "").strip()
@@ -61965,7 +62496,8 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
     _DM_DEADLINE.set(t0 + DM_GIVE_UP_SECONDS)
     live: dict = {}
     task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history,
-                                                  now=now, t0=t0, live=live))
+                                                  now=now, t0=t0, live=live,
+                                                  **({"person": person} if person else {})))
     # "typing…" in their chat while the brain works, sent again every 8 s --
     # the only "working on it" signal (no 👀 reaction: Oct 27). Until the
     # whole answer is ready, or the budget is spent (_dm_await_budget).
@@ -62020,6 +62552,10 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
         # Logged AFTER the sends, so the row says when the first one went.
         timing = _dm_turn_timing(inbound, received, t0, t_start, brain_done, out, sends,
                                  budget=budget)
+        if person and out.get("used_job"):
+            # A read across companies is logged under the company whose job it used.
+            ident = next((a for a in person if str(out["used_job"]) in
+                          {str(p.get("_id")) for p in a.get("projects") or []}), ident)
         await _dm_log_answer(
             ident, out.get("used_job"), question,
             DM_GAVE_UP_TEXT if budget == "gave_up"
@@ -62190,6 +62726,12 @@ async def send_whatsapp_message(
         }
         if is_dm:
             row["is_dm"] = True
+            # Whose content it is: a proactive send names its company (the
+            # brief names each job's own), a turn's reply its scope.
+            meta = dm_meta or {}
+            scope = meta.get("history_company") or meta.get("company_id") or _DM_SCOPE.get()
+            if scope:
+                row["dm_company"] = str(scope)
         else:
             binding = await _resolve_group_binding(chat_id)
             if binding.get("status") == wa_security.GROUP_OK:
@@ -69411,6 +69953,7 @@ async def _dm_send_sheet(dm_chat: str, page: dict, *, jpeg: Optional[bytes] = No
         await db.whatsapp_messages.insert_one({
             "group_id": dm_chat, "is_dm": True, "sender": "bot", "body": f"[Sheet] {caption}",
             "has_audio": False, "message_id": "", "from_me": True,
+            **({"dm_company": _DM_SCOPE.get()} if _DM_SCOPE.get() else {}),
             "timestamp": now, "created_at": now})
     except Exception as e:
         logger.debug(f"[wa-assistant] sheet bot-log skipped: {type(e).__name__}")
@@ -69623,6 +70166,7 @@ async def _dm_send_document(dm_chat: str, media_url: str, media_name: str, capti
         await db.whatsapp_messages.insert_one({
             "group_id": dm_chat, "is_dm": True, "sender": "bot", "body": f"[File] {caption}",
             "has_audio": False, "message_id": "", "from_me": True,
+            **({"dm_company": _DM_SCOPE.get()} if _DM_SCOPE.get() else {}),
             "timestamp": now, "created_at": now})
     except Exception as e:
         logger.debug(f"[dm-brain] file bot-log skipped: {type(e).__name__}")
@@ -73871,7 +74415,9 @@ async def _facts_tool(name: str, args: dict, *, company_id: str, project_id: str
     if name == "brief_status":
         if not in_dm:
             return "The brief is read in a direct message only."
-        ident = await _dm_assistant_identity(group_id)
+        # The person's account in THIS project's company (they may have one
+        # in several companies, all on this number).
+        ident = await _dm_identity_for_company(group_id, company_id)
         if not ident or str(ident.get("company_id")) != str(company_id):
             return wa_security.BOT_SCOPE_REFUSAL
         return await _brief_status_for(str(ident["user_id"]), args.get("date"), now)
@@ -73902,7 +74448,9 @@ async def _dispatch_agent_tool(
             # DM only, as the person writing: an admin's every job, a PM's own.
             if not group_id or str(group_id).endswith("@g.us"):
                 return "The subs list is read in a direct message only."
-            ident = await _dm_assistant_identity(group_id)
+            # As their account in THIS project's company (one person may
+            # hold one in several companies, all on this number).
+            ident = await _dm_identity_for_company(group_id, company_id)
             if not ident or str(ident.get("company_id")) != str(company_id):
                 return wa_security.BOT_SCOPE_REFUSAL
             # The job agent answers about ITS job: the tools see that job only.
@@ -79624,7 +80172,12 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
         # not opted in — gets the same one line and no data. The old path
         # looked the sender's digits up in whatsapp_contacts, which a @lid
         # sender never matched, checked no role, and picked one project.
-        ident = await _dm_assistant_identity(dm_chat)
+        # ONE PERSON, SEVERAL COMPANIES: every account the number is
+        # connected for, each a one-company identity; which one a message is
+        # for is decided below (_dm_route_accounts), once its words are known.
+        person = await _dm_identities(dm_chat)
+        ident = person[0] if person else None
+        multi = len(person) > 1
         if ident is None:
             # A punch list DM'd to a sub: their "done P-588-1" is answered
             # here, only for an open item sent to THIS number (Codex review
@@ -79641,8 +80194,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
         # Opted in but never welcomed (START before the welcome existed):
         # welcomed now, once, and their message is still answered below.
         await _dm_welcome(ident["user"], dm_chat, "dm_welcomed")
-        # The DM brain answers this person (everyone, unless dm_brain_off).
-        dm_brain_on = await _dm_brain_on(ident)
+        # The DM brain answers this person (everyone, unless dm_brain_off) --
+        # with accounts in several companies, only when it is on for each.
+        dm_brain_on = (all([await _dm_brain_on(a) for a in person]) if multi
+                       else await _dm_brain_on(ident))
 
         # Transcribe audio if present.
         # Phase F1: voice notes go through the orchestration module
@@ -79703,7 +80258,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                     try:
                         await db.whatsapp_voice_events.insert_one({
                             "message_id": voice_message_id,
-                            "company_id": str(ident.get("company_id") or "") or None,
+                            "company_id": None if multi else (str(ident.get("company_id") or "") or None),
                             "where":      "dm",
                             "message_id_serialized": parsed.get("message_id_serialized") or "",
                             "user_id":    str((ident.get("user") or {}).get("_id") or "") or None,
@@ -79764,7 +80319,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                         "message_id":         voice_message_id,
                         # The Voice log lists a DM note under its company and,
                         # once answered, the job it was about (project_id).
-                        "company_id":         str(ident.get("company_id") or "") or None,
+                        # Several companies: stamped once the note is routed.
+                        "company_id":         None if multi else (str(ident.get("company_id") or "") or None),
                         "where":              "dm",
                         "message_id_serialized": parsed.get("message_id_serialized") or "",
                         "user_id":            str((ident.get("user") or {}).get("_id") or "") or None,
@@ -79832,29 +80388,60 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                             "english": body, "lang": vresult.language_detected,
                             "confidence": vresult.confidence}
 
-        # A walkthrough (punch list) turn: photos, their words, the draft,
-        # edits, assigning, the due day, send; and punch questions / "P23 ok".
-        if parsed.get("has_image") or body:
-            try:
-                if await _punch_dm_turn(ident, dm_chat, parsed, body or "", voice=dm_voice,
-                                        brain=dm_brain_on):
-                    return
-            except Exception as e:
-                logger.warning(f"[punch] dm turn failed: {type(e).__name__}")
-
-        if not body:
+        if not (parsed.get("has_image") or body):
             return
+        # Which account this message is for: one company's (everything below
+        # then acts for that company only), or -- the brain only -- a read
+        # across all of the person's companies; or a numbered "Which
+        # company?" was asked and the message is held.
+        cross = False
+        if multi:
+            routed = await _dm_route_accounts(person, dm_chat, body or "", brain=dm_brain_on,
+                                              has_image=bool(parsed.get("has_image")))
+            if routed is None:
+                return
+            body = routed["body"]
+            cross = routed["ident"] is None
+            if not cross:
+                ident = routed["ident"]
+                if parsed.get("has_audio") and parsed.get("message_id"):
+                    try:
+                        await db.whatsapp_voice_events.update_one(
+                            {"message_id": parsed["message_id"], "where": "dm"},
+                            {"$set": {"company_id": str(ident["company_id"])}})
+                    except Exception as e:
+                        logger.warning(f"[voice] dm company stamp failed: {type(e).__name__}")
+            turn = _dm_enter(routed["ident"], routed["scope"], True)
+        else:
+            turn = _dm_enter(ident, str(ident["company_id"]), False)
+        try:
+            # A walkthrough (punch list) turn: photos, their words, the draft,
+            # edits, assigning, the due day, send; and punch questions / "P23 ok".
+            # A walk is one company's: never started from a read across them.
+            if (parsed.get("has_image") or body) and not cross:
+                try:
+                    if await _punch_dm_turn(ident, dm_chat, parsed, body or "", voice=dm_voice,
+                                            brain=dm_brain_on):
+                        return
+                except Exception as e:
+                    logger.warning(f"[punch] dm turn failed: {type(e).__name__}")
 
-        # A voice note's answer starts with what was heard, so a misheard
-        # question is visible (it replaces the old "Reply CORRECT" cue,
-        # which confirmed a write this assistant no longer makes).
-        await _dm_assistant_reply(
-            ident, dm_chat, body, parsed.get("message_id_serialized") or "", brain=dm_brain_on,
-            heard=body if parsed.get("has_audio") else None,
-            quoted={"body": parsed.get("quoted_body") or "",
-                    "type": parsed.get("quoted_type") or "",
-                    "from_bot": bool(parsed.get("quoted_from_me"))}
-            if (parsed.get("quoted_body") or "").strip() or parsed.get("quoted_type") else None)
+            if not body:
+                return
+
+            # A voice note's answer starts with what was heard, so a misheard
+            # question is visible (it replaces the old "Reply CORRECT" cue,
+            # which confirmed a write this assistant no longer makes).
+            await _dm_assistant_reply(
+                ident, dm_chat, body, parsed.get("message_id_serialized") or "", brain=dm_brain_on,
+                heard=body if parsed.get("has_audio") else None,
+                quoted={"body": parsed.get("quoted_body") or "",
+                        "type": parsed.get("quoted_type") or "",
+                        "from_bot": bool(parsed.get("quoted_from_me"))}
+                if (parsed.get("quoted_body") or "").strip() or parsed.get("quoted_type") else None,
+                person=person if cross else None)
+        finally:
+            _dm_leave(turn)
 
     except Exception as e:
         logger.error(f"WhatsApp message processing error: {e}", exc_info=True)
