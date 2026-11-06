@@ -53006,6 +53006,8 @@ async def _dm_start_hint_due(chat: str, raw: Any = None) -> bool:
     acc = await _phone_accounts(phone)
     if acc["dup_company"] or not acc["eligible"]:
         return False
+    if await _dm_state_get(ACCOUNTS_STATE, chat):
+        return False                     # "Reply YES to connect" is open: not "send START"
     digits = wa_dm.phone_digits(chat)
     # The same keys STOP writes: the chat, the phone, and the person.
     keys = [{"phone": phone}] + [{"user_id": str(u.get("_id") or "")} for u in acc["eligible"]]
@@ -53284,29 +53286,107 @@ async def _phone_accounts(phone: str) -> dict:
 
 #: START (or a new account on the number) asked "Reply YES to connect …":
 #: {mode: "start" | "later", user_ids, phone, phone_verified, source, lang,
-#: held}. 30 minutes; any other message clears it (the person moved on, and
-#: a later "yes" is someone else's question's). `held`: the message a
-#: "later" question held back, answered once they reply.
+#: held, asked, asked_at, reminded}. `held`: the message a "later" question
+#: held back, answered once they reply.
 ACCOUNTS_STATE = "dm_accounts"
-#: After a "later" question that got no YES / NO: not asked again for a day.
-ACCOUNTS_SNOOZE_STATE = "dm_accounts_snooze"
+
+# ── OUR OPEN QUESTIONS NEVER DROP A MESSAGE (Roy, 2026-11-06) ──────────────
+#
+# A question of ours that holds something -- the message a "later" account
+# question held, an answer waiting for "Which one?" -- stays open while the
+# person writes about something else: their new message is answered as
+# usual, the question is said again ONCE ("Still open from before:"), and a
+# YES / NO / number answers it later. A yes, a no or a number answers the
+# NEWEST question shown in the chat (ours, the assistant's, a menu), never
+# an older one. A second question of the same kind waits its turn (queued)
+# instead of replacing the first.
+
+#: How long a question that holds something stays open.
+HELD_QUESTION_SECONDS = 7 * 24 * 3600
+#: Every open question a yes / no / number may answer (the newest wins).
+_DM_ANSWERABLE_KINDS = ("dm_action", "dm_menu", "dm_clarify", "upcoming_remind",
+                        "dm_accounts", "dm_setq_pick", "dm_acct_pick")
+#: Sends that go after this message's own answer (_process_whatsapp_message
+#: runs them last): the one reminder of an open question.
+_DM_AFTER: contextvars.ContextVar = contextvars.ContextVar("dm_after", default=None)
+
+
+async def _dm_newest_question(chat: str, kind: str, asked_at: Any) -> bool:
+    """Is this `kind` question the newest one open in the chat?"""
+    mine = _utc(asked_at) or _EPOCH
+    for other in _DM_ANSWERABLE_KINDS:
+        if other == kind:
+            continue
+        st = await _dm_state_get(other, chat)
+        if st and (_utc(st.get("asked_at") or st.get("updated_at")) or _EPOCH) > mine:
+            return False
+    return True
+
+
+async def _dm_remind_once(kind: str, chat: str, st: dict, lang: str) -> None:
+    """Say the open question again -- once, after this message's answer --
+    and make it the newest question shown."""
+    if st.get("reminded") or not st.get("asked"):
+        return
+
+    async def go():
+        await _dm_state_bump(kind, chat, reminded=True, asked_at=datetime.now(timezone.utc))
+        await send_whatsapp_message(chat, wa_dm.still_open_text(lang, str(st["asked"])))
+    after = _DM_AFTER.get()
+    if after is None:
+        await go()
+    else:
+        after.append(go)
+
+
+async def _dm_question_open(kind: str, chat: str, entry: dict, lang: str) -> bool:
+    """Open `entry` ({asked, ...}) as this chat's `kind` question, or -- one
+    is open -- queue it behind that one (and say so). True when it is the
+    open question now (the caller asks it)."""
+    st = await _dm_state_get(kind, chat)
+    if st:
+        await _dm_state_bump(kind, chat, queue=list(st.get("queue") or []) + [entry])
+        await send_whatsapp_message(
+            chat, (wa_dm.PENDING_LINES.get(lang) or wa_dm.PENDING_LINES["en"])["queued"])
+        await _dm_remind_once(kind, chat, st, lang)
+        return False
+    await _dm_state_set(kind, chat, HELD_QUESTION_SECONDS, **entry, queue=[],
+                        asked_at=datetime.now(timezone.utc), reminded=False)
+    return True
+
+
+async def _dm_question_close(kind: str, chat: str) -> Optional[dict]:
+    """Close the open `kind` question; the next queued one becomes the open
+    question and is returned (the caller asks it), else None."""
+    st = await _dm_state_get(kind, chat)
+    await _dm_state_clear(kind, chat)
+    queue = list((st or {}).get("queue") or [])
+    if not queue:
+        return None
+    nxt = queue[0]
+    await _dm_state_set(kind, chat, HELD_QUESTION_SECONDS, **nxt, queue=queue[1:],
+                        asked_at=datetime.now(timezone.utc), reminded=False)
+    return nxt
 
 
 async def _ask_accounts(chat: str, users: List[dict], phone: str, *, mode: str,
                         phone_verified: bool, source: str, lang: str,
                         held: Optional[str] = None) -> None:
-    """Ask before connecting: the real company names, YES / NO."""
+    """Ask before connecting: the real company names, YES / NO. A "later"
+    question holds a message, so it stays open (HELD_QUESTION_SECONDS)."""
     names = [await _company_display_name(u.get("company_id")) or "another company"
              for u in users]
-    await _dm_state_set(ACCOUNTS_STATE, chat, dm_actions.PENDING_SECONDS,
+    asked = wa_dm.accounts_text(lang, "start_confirm" if mode == "start" else "later_confirm",
+                                names)
+    await _dm_state_set(ACCOUNTS_STATE, chat,
+                        HELD_QUESTION_SECONDS if held else dm_actions.PENDING_SECONDS,
                         mode=mode, user_ids=[str(u.get("_id")) for u in users],
                         phone=phone, phone_verified=bool(phone_verified), source=source,
-                        lang=lang, held=held)
+                        lang=lang, held=held, asked=asked,
+                        asked_at=datetime.now(timezone.utc), reminded=False)
     _security_event("whatsapp_optin_confirm_asked", mode=mode, accounts=len(users),
                     jid_kind=wa_dm.jid_kind(chat))
-    await _reply_dm(chat, wa_dm.accounts_text(
-        lang, "start_confirm" if mode == "start" else "later_confirm", names),
-        f"{mode}_accounts_asked")
+    await _reply_dm(chat, asked, f"{mode}_accounts_asked")
 
 
 async def _handle_dm_start(chat_id: str, body: str = "START",
@@ -53487,20 +53567,21 @@ async def _dm_accounts_turn(dm_chat: str, parsed: dict) -> Optional[dict]:
     second account in one company. A new account is asked about once, on
     the person's next plain-text message (held, then answered); a NO is
     remembered ("declined") and not asked again -- START lists everything
-    again. Any other reply clears the question, and a "later" question that
-    was passed over waits a day."""
+    again. Any other message is answered as usual and the question stays
+    open (with the message it holds), said again ONCE; a yes / no answers it
+    only while it is the newest question shown in the chat."""
     body = str(parsed.get("body") or "")
     plain = not parsed.get("has_audio") and not parsed.get("has_image") and body.strip()
     st = await _dm_state_get(ACCOUNTS_STATE, dm_chat)
     if st:
         yn = dm_actions.yes_no(body) if plain else None
-        await _dm_state_clear(ACCOUNTS_STATE, dm_chat)
-        if yn is None:
-            if st.get("mode") == "later":
-                await _dm_state_set(ACCOUNTS_SNOOZE_STATE, dm_chat, 24 * 3600)
-            return None
-        return await _dm_accounts_answer(dm_chat, parsed, st, yn, body)
-    if not plain or await _dm_state_get(ACCOUNTS_SNOOZE_STATE, dm_chat):
+        if yn is not None and await _dm_newest_question(
+                dm_chat, ACCOUNTS_STATE, st.get("asked_at") or st.get("updated_at")):
+            await _dm_state_clear(ACCOUNTS_STATE, dm_chat)
+            return await _dm_accounts_answer(dm_chat, parsed, st, yn, body)
+        await _dm_remind_once(ACCOUNTS_STATE, dm_chat, st, str(st.get("lang") or "en"))
+        return None
+    if not plain:
         return None
     if dm_actions.yes_no(body) is not None or re.fullmatch(r"\s*#?\d{1,2}\s*[.)]?\s*", body):
         # An answer to something else ("yes", "2"): never held behind our
@@ -66431,46 +66512,62 @@ async def _set_q_pick_labels(qs: List[dict]) -> List[str]:
 
 async def _ask_set_q_pick(chat_id: str, code: str, qs: List[dict], *, answer: Optional[str],
                           text: Optional[str], lang: str) -> None:
+    """Ask "Which one?" -- or, with one already open, queue it behind that
+    one: an answer waiting for its pick is never replaced (never dropped)."""
     labels = await _set_q_pick_labels(qs)
-    await _dm_state_set(SET_Q_PICK_STATE, chat_id, wa_assistant.MENU_SECONDS,
-                        code=code, answer=answer, text=text, labels=labels,
-                        qids=[str(q["_id"]) for q in qs])
     head = (wa_dm.SET_Q_PICK_LINES.get(lang) or wa_dm.SET_Q_PICK_LINES["en"]).format(code=code)
-    await send_whatsapp_message(chat_id, dm_actions.numbered(head, labels))
+    asked = dm_actions.numbered(head, labels)
+    if await _dm_question_open(SET_Q_PICK_STATE, chat_id, {
+            "code": code, "answer": answer, "text": text, "labels": labels,
+            "qids": [str(q["_id"]) for q in qs], "asked": asked, "lang": lang}, lang):
+        await send_whatsapp_message(chat_id, asked)
 
 
 async def _handle_set_question_pick(chat_id: str, body: Any) -> bool:
     """The number answering "Q3 is open on more than one job. Which one?":
     the answer (or the words) it held, for the question picked. False when
-    no pick is open or this is not one (the message goes on)."""
+    no pick is open or this is not one (the message goes on): the question
+    stays open, said again once after that message's answer."""
     from lib import plan_set_questions as psq
     st = await _dm_state_get(SET_Q_PICK_STATE, chat_id)
     if not st:
         return False
     labels = list(st.get("labels") or [])
     n = dm_actions.pick(str(body or ""), labels)
-    if n is None:
+    if n is None or not await _dm_newest_question(
+            chat_id, SET_Q_PICK_STATE, st.get("asked_at") or st.get("updated_at")):
+        await _dm_remind_once(SET_Q_PICK_STATE, chat_id, st, str(st.get("lang") or "en"))
         return False
-    await _dm_state_clear(SET_Q_PICK_STATE, chat_id)
+    nxt = await _dm_question_close(SET_Q_PICK_STATE, chat_id)
+    try:
+        await _set_q_pick_apply(chat_id, st, n)
+    finally:
+        if nxt:
+            await send_whatsapp_message(chat_id, str(nxt.get("asked") or ""))
+    return True
+
+
+async def _set_q_pick_apply(chat_id: str, st: dict, n: int) -> None:
+    from lib import plan_set_questions as psq
+    labels = list(st.get("labels") or [])
     qid = (st.get("qids") or [None] * len(labels))[n]
     code = str(st.get("code") or "")
     if st.get("answer"):
         if await _handle_set_question_reply(chat_id, code, str(st["answer"]), qid=qid):
-            return True
+            return
         q = await db[psq.COLLECTION].find_one({"_id": qid})
         if q:
             await send_whatsapp_message(chat_id, psq.status_text(q))
-        return True
+        return
     q = await db[psq.COLLECTION].find_one({"_id": qid})
     if q is None:
-        return True
+        return
     if q.get("status") != psq.OPEN:
         await send_whatsapp_message(chat_id, psq.status_text(q))
-        return True
+        return
     await send_whatsapp_message(chat_id, psq.confirm_text(q))
     await _set_question_note(q, str(st.get("text") or ""), await _phone_optin_user_ids(chat_id),
                              datetime.now(timezone.utc))
-    return True
 
 
 async def _set_question_note(q: dict, words: str, uids: List[str], now: datetime) -> None:
@@ -78758,6 +78855,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
     """Background task to process an inbound WhatsApp message.
     `received_at`: wall seconds the webhook got it (the task may start later)."""
     started = _time.time()
+    # Sends that go after this message's own answer (an open question of
+    # ours, said again once: _dm_remind_once).
+    after: list = []
+    after_tok = _DM_AFTER.set(after)
     try:
         parsed = parse_inbound_message(payload, vendor=WHATSAPP_VENDOR)
         try:
@@ -79858,6 +79959,13 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
 
     except Exception as e:
         logger.error(f"WhatsApp message processing error: {e}", exc_info=True)
+    finally:
+        for send in after:
+            try:
+                await send()
+            except Exception as e:
+                logger.warning(f"[wa-dm] after-send failed: {type(e).__name__}")
+        _DM_AFTER.reset(after_tok)
 
 
 # ---------- group link handler ----------
