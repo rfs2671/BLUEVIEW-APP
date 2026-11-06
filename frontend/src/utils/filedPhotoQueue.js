@@ -3,6 +3,7 @@ import NetInfo from '@react-native-community/netinfo';
 import { AppState } from 'react-native';
 import { appendPhotoToFiledLog } from './logbookDrafts';
 import { isOfflineError } from './offlineState';
+import { ownerForEnqueue, openReplay } from './accountQueues';
 
 /**
  * A PHOTOGRAPH FOR A FILED LOG, HELD ON THE DEVICE UNTIL IT CAN GO.
@@ -51,7 +52,7 @@ import { isOfflineError } from './offlineState';
  * written down: it existed, it was correct, and nothing ever called it.
  */
 
-const QUEUE_KEY = 'logbook_filed_photo_queue';
+const QUEUE_KEY = 'logbook_filed_photo_queue'; // accountQueues.FILED_PHOTO_QUEUE_KEY
 const REJECTED_KEY = 'logbook_filed_photo_rejected';
 
 // How many refusals to remember. Bounded because this is a diagnostic surface,
@@ -128,6 +129,8 @@ export async function queueFiledPhoto({
     logType,
     label,
     queuedAt: Date.now(),
+    // The account that took it. The drain sends it under no other.
+    ownerId: await ownerForEnqueue(),
   });
   return writeList(QUEUE_KEY, next);
 }
@@ -191,7 +194,7 @@ let _draining = false;
  */
 export async function drainFiledPhotoQueue() {
   const out = {
-    attempted: 0, uploaded: 0, remaining: 0, rejected: 0, offline: false,
+    attempted: 0, uploaded: 0, remaining: 0, rejected: 0, offline: false, dropped: 0,
   };
   if (_draining) return out;
   _draining = true;
@@ -199,6 +202,7 @@ export async function drainFiledPhotoQueue() {
     const queue = await readList(QUEUE_KEY);
     if (!queue.length) return out;
 
+    const replay = await openReplay();
     const keep = [];
     let stop = false;
     for (const item of queue) {
@@ -206,7 +210,16 @@ export async function drainFiledPhotoQueue() {
         // Not a queue entry. Dropping it is the only option that terminates.
         continue;
       }
-      if (stop) { keep.push(item); out.remaining += 1; continue; }
+      if (stop || replay.stale()) { keep.push(item); out.remaining += 1; continue; }
+      // ANOTHER ACCOUNT'S PHOTOGRAPH IS NEVER SENT, and not recorded as a
+      // refusal either: that list is shown to whoever is signed in.
+      const owner = await replay.judge(item.ownerId || null);
+      if (owner.drop) {
+        console.warn('[filedPhotoQueue] dropped a photograph queued by another account:', item.photoId);
+        out.dropped += 1;
+        continue;
+      }
+      if (owner.hold) { keep.push(item); out.remaining += 1; stop = true; continue; }
       out.attempted += 1;
       try {
         await appendPhotoToFiledLog({
@@ -232,7 +245,8 @@ export async function drainFiledPhotoQueue() {
         await recordRejection(item, e);
       }
     }
-    await writeList(QUEUE_KEY, keep);
+    // Cleared while this ran (logout): writing back would restore the queue.
+    if (!replay.stale()) await writeList(QUEUE_KEY, keep);
     if (out.uploaded) {
       console.log(`[filedPhotoQueue] uploaded ${out.uploaded} held photograph(s)`);
     }

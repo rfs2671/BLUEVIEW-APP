@@ -33,6 +33,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { loadEsm } = require('./esmHarness.cjs');
 
 const UTILS = __dirname;
 const FRONTEND = path.join(__dirname, '..', '..');
@@ -88,6 +89,13 @@ function loadQueue({ store = new Map(), append, offlineNet = false } = {}) {
     },
     isOfflineError: (e) => Boolean(e && !e.response),
   };
+  // The owner stamp and the replay judgement (accountQueues) — the REAL
+  // module, over this same fake device.
+  const accountQueues = loadEsm('src/utils/accountQueues.js', {
+    stubs: { '@react-native-async-storage/async-storage': env.AsyncStorage },
+  });
+  env.ownerForEnqueue = accountQueues.ownerForEnqueue;
+  env.openReplay = accountQueues.openReplay;
   // eslint-disable-next-line no-new-func
   const mod = new Function('__env', `
     const AsyncStorage = __env.AsyncStorage;
@@ -95,6 +103,8 @@ function loadQueue({ store = new Map(), append, offlineNet = false } = {}) {
     const AppState = __env.AppState;
     const appendPhotoToFiledLog = __env.appendPhotoToFiledLog;
     const isOfflineError = __env.isOfflineError;
+    const ownerForEnqueue = __env.ownerForEnqueue;
+    const openReplay = __env.openReplay;
     ${strip(queueSrc)}
     return {
       shouldQueueError, queueFiledPhoto, getQueuedFiledPhotos,

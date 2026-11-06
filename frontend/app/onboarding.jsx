@@ -65,6 +65,7 @@ import { dateEntryError, toStoredDate } from '../src/utils/dateEntry';
 import GlassButton from '../src/components/GlassButton';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
+import { useLogoutConfirm } from '../src/hooks/useLogoutConfirm';
 import { useTheme } from '../src/context/ThemeContext';
 import { spacing, borderRadius, typography, touchTarget } from '../src/styles/theme';
 import apiClient, { onboardingAPI } from '../src/utils/api';
@@ -115,7 +116,9 @@ const STEP_META = {
 export default function OnboardingScreen() {
   const router = useRouter();
   const toast = useToast();
-  const { user, isAuthenticated, isLoading: authLoading, validateSession, logout } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, validateSession } = useAuth();
+  // Drains what is queued, asks before deleting what could not be sent.
+  const { requestLogout, logoutDialog } = useLogoutConfirm();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => buildStyles(colors, isDark), [colors, isDark]);
   const datePalette = { error: colors.status.error, hint: colors.text.muted };
@@ -737,7 +740,7 @@ export default function OnboardingScreen() {
               absent: step 1 has no skip, and this must not become one. */}
           <View style={styles.signOutRow}>
             <Pressable
-              onPress={logout}
+              onPress={requestLogout}
               hitSlop={8}
               style={styles.signOutBtn}
               accessibilityRole="button"
@@ -755,6 +758,7 @@ export default function OnboardingScreen() {
           </GlassCard>
         </ScrollView>
       </SafeAreaView>
+      {logoutDialog}
     </AnimatedBackground>
   );
 }

@@ -215,4 +215,13 @@ export default {
     matchedByBlock: 'Vinculada por su cuadra',
     lag: 'El DOT publica los permisos en un día, las citaciones en unos 3 días y las inspecciones cada mes.',
   },
+
+  // ── Cerrar sesión con cambios aún en el dispositivo (useLogoutConfirm) ──
+  logout: {
+    unsentTitle: 'Cambios sin enviar',
+    unsentBody: '{n} cambios no se han enviado y se eliminarán si cierra sesión.',
+    unsentBodyOne: '1 cambio no se ha enviado y se eliminará si cierra sesión.',
+    logOutAnyway: 'Cerrar sesión de todos modos',
+    cancel: 'Cancelar',
+  },
 };
