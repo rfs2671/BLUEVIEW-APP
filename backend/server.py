@@ -53502,6 +53502,10 @@ async def _dm_accounts_turn(dm_chat: str, parsed: dict) -> Optional[dict]:
         return await _dm_accounts_answer(dm_chat, parsed, st, yn, body)
     if not plain or await _dm_state_get(ACCOUNTS_SNOOZE_STATE, dm_chat):
         return None
+    if dm_actions.yes_no(body) is not None or re.fullmatch(r"\s*#?\d{1,2}\s*[.)]?\s*", body):
+        # An answer to something else ("yes", "2"): never held behind our
+        # own YES / NO question -- asked on their next message instead.
+        return None
     chat_digits = wa_dm.phone_digits(dm_chat)
     optins = await _active_optins_for_phone(chat_digits)
     phones = {str(o.get("phone") or "") for o in optins}

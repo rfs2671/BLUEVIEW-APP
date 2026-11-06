@@ -269,6 +269,18 @@ class AnAccountAddedLaterIsAskedAboutOnce(unittest.TestCase):
             self.assertEqual([b for _u, b in a.calls], ["who is at 12 main", "and now?"])
             self.assertEqual(len([t for t in _texts(c) if "now also has" in t]), 1)
 
+    def test_a_yes_or_a_number_meant_for_something_else_is_never_held(self):
+        """"yes" may be the answer to the assistant's own question: it goes
+        on, and the new account is asked about on the next message."""
+        a = _Assistant()
+        with _Ctx(self._world()) as c:
+            _say(c, "yes", "m1", a)
+            _say(c, "2", "m2", a)
+            self.assertEqual([b for _u, b in a.calls], ["yes", "2"])
+            self.assertEqual(_texts(c), [])
+            _say(c, "how many on site", "m3", a)
+            self.assertEqual(_texts(c), [wa_dm.accounts_text("en", "later_confirm", [NAME_B])])
+
     def test_an_unproven_number_is_not_offered_more_accounts(self):
         """Opted in by a connect code from a @lid chat with no phone: the
         number was never proven, so no other account is offered on it."""
