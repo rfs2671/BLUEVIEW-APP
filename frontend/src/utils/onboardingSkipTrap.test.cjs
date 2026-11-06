@@ -156,12 +156,24 @@ console.log('\n-- onboarding has a way out of the SESSION --');
   // login.jsx evicts an authenticated user, so the URL bounced
   // /login -> / -> /onboarding. Clearing the session is what makes /login
   // stick, which is why the fix is a control and not a guard change.
-  ok(/logout/.test(ONB_CODE),
-    'the screen takes logout from the context that already exports it');
-  ok(/useAuth\(\)/.test(ONB_CODE) && /,\s*logout\s*}\s*=\s*useAuth/.test(ONB_CODE),
-    'destructured from useAuth, the same way demo.jsx does it');
-  ok(/onPress=\{logout\}/.test(ONB_CODE),
-    'and a control calls it directly - no wrapper that could quietly do more');
+  // THROUGH useLogoutConfirm SINCE THE LOGOUT-QUEUES FIX, like every other
+  // logout control (demo.jsx included). It was `onPress={logout}` directly,
+  // and the rule here was "no wrapper that could quietly do more". The one
+  // wrapper that is allowed does exactly one more thing, and does it in the
+  // open: it drains the device's write queues and asks before deleting what
+  // could not be sent. Left in place, those writes would replay under the next
+  // account. It still ends in AuthContext.logout, which the next block holds
+  // to touching no onboarding field.
+  ok(/logout/i.test(ONB_CODE),
+    'the screen has a logout control');
+  ok(/useLogoutConfirm\(\)/.test(ONB_CODE) && /\{\s*requestLogout,\s*logoutDialog\s*\}\s*=\s*useLogoutConfirm/.test(ONB_CODE),
+    'taken from useLogoutConfirm, the same way demo.jsx does it');
+  ok(/onPress=\{requestLogout\}/.test(ONB_CODE) && /\{logoutDialog\}/.test(ONB_CODE),
+    'a control calls it, and the confirm it may raise is rendered');
+  const HOOK = code(fs.readFileSync(
+    path.join(FRONTEND, 'src', 'hooks', 'useLogoutConfirm.jsx'), 'utf8'));
+  ok(/const \{ prepareLogout, logout \} = useAuth\(\)/.test(HOOK) && !/onboarding/.test(HOOK),
+    'and the wrapper ends in AuthContext.logout, touching no onboarding field');
 
   // logout() must not touch onboarding_step. The step is a fact about the
   // ACCOUNT, not the session: a user at step 3 has a company and a project on

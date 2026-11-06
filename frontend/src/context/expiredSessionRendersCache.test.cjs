@@ -148,6 +148,13 @@ async function mountAuthProvider({ token, storedUser, meAnswers }) {
     registerAuthRejectedHandler: (fn) => { calls.rejectedHandler = fn; },
   };
   const sentry = { setSentryUser() {}, clearSentryUser() {} };
+  const logoutQueues = {
+    drainAccountQueues: async () => ({ attempted: false, outcome: 'empty' }),
+    drainAndClearAccountQueues: async () => ({ drained: null, cleared: {} }),
+  };
+  const accountQueues = {
+    countPendingWrites: async () => ({ offline: 0, drafts: 0, photos: 0, total: 0 }),
+  };
 
   const { React, box } = makeRuntime();
 
@@ -168,6 +175,10 @@ async function mountAuthProvider({ token, storedUser, meAnswers }) {
       if (spec === 'react') return React;
       if (/utils\/api$/.test(spec)) return api;
       if (/lib\/sentry$/.test(spec)) return sentry;
+      // The logout-queues modules pull in NetInfo and the RN packages this
+      // harness cannot load; the session-restore path never calls them.
+      if (/utils\/logoutQueues$/.test(spec)) return logoutQueues;
+      if (/utils\/accountQueues$/.test(spec)) return accountQueues;
       if (!spec.startsWith('.')) return require(spec);
       const target = spec.endsWith('.js') ? spec : `${spec}.js`;
       const abs = path.resolve(path.dirname(fromFile), target);

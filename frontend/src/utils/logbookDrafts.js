@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import apiClient from './api';
 import { isOfflineError } from './offlineState';
+import { stampDraftOwner } from './accountQueues';
 
 // ── Persistent photos for offline drafts ────────────────────────────────────
 // Captured photos land in the OS cache dir (ImageManipulator / picker), which
@@ -125,7 +126,7 @@ export async function persistActivityPhotos(activities) {
  */
 
 const PREFIX = 'logbook_draft:';
-const PENDING_KEY = 'logbook_pending_push';
+const PENDING_KEY = 'logbook_pending_push'; // accountQueues.DRAFT_PENDING_KEY
 
 export function draftKey({ projectId, logType, date, workerId }) {
   const base = `${PREFIX}${projectId}:${logType}:${date}`;
@@ -286,6 +287,8 @@ export async function markPending(key) {
       await AsyncStorage.setItem(PENDING_KEY, JSON.stringify(list));
     }
   } catch (_e) { /* non-fatal — the draft itself is already safe locally */ }
+  // WHO queued this push. The reconnect drain sends it under nobody else.
+  await stampDraftOwner(key);
 }
 
 export async function clearPending(key) {

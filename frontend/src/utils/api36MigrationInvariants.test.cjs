@@ -223,7 +223,22 @@ console.log('\n-- expo-file-system: the import path moves with the SDK --');
   };
   const src = [...walk(path.join(FRONTEND, 'app')), ...walk(path.join(FRONTEND, 'src'))]
     .map((p) => fs.readFileSync(p, 'utf8')).join('\n');
-  const classic = (src.match(/['"]expo-file-system['"]/g) || []).length;
+  // A bare import is a CLASSIC caller unless it takes only the new api's
+  // classes by name (saveToDownloads.js: `import { File } from
+  // 'expo-file-system'`). `* as FileSystem`, a default import, or any classic
+  // name (documentDirectory, readAsStringAsync, ...) on the bare path counts.
+  const NEW_API = new Set(['File', 'Directory', 'Paths']);
+  const bare = [...src.matchAll(/import\s+([^;]*?)\s+from\s+['"]expo-file-system['"]/g)];
+  const newApiOnly = (clause) => {
+    const m = /^\{([^}]*)\}$/.exec(clause.trim());
+    return !!m && m[1].split(',').map((n) => n.trim().split(/\s+as\s+/)[0]).filter(Boolean)
+      .every((n) => NEW_API.has(n));
+  };
+  const classic = bare.filter((m) => !newApiOnly(m[1])).length
+    + ((src.match(/['"]expo-file-system['"]/g) || []).length - bare.length);
+  ok(!newApiOnly('* as FileSystem') && !newApiOnly('{ documentDirectory }')
+    && newApiOnly('{ File }') && newApiOnly('{ File, Directory }'),
+    'CONTROL: the new-api exemption admits only File/Directory/Paths');
   const legacy = (src.match(/['"]expo-file-system\/legacy['"]/g) || []).length;
   ok(classic + legacy > 0, 'ANCHOR: expo-file-system is imported somewhere');
   if (major(DEPS.expo) >= 54) {

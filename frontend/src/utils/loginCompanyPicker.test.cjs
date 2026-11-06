@@ -127,6 +127,7 @@ function apiWith(answers) {
       removeItem: async (k) => { delete store[k]; },
     },
     './cpProfileCache': { clearAllCpProfiles: async () => {} },
+    './accountQueues': { clearAccountQueues: async () => {} },
     'expo-constants': { expoConfig: { version: '9.9.9' } },
     './sessionSurvival': session,
   });

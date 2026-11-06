@@ -76,7 +76,6 @@ from lib import wa_security  # noqa: E402
 from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import dob_penalty  # noqa: E402
-from lib import memberships as memberships_lib  # noqa: E402
 from lib import model_outage  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
@@ -9211,48 +9210,6 @@ async def run_user_email_index_migration() -> str:
         logger.warning(f"run_user_email_index_migration failed: {e!r}")
         return "error"
 
-
-async def ensure_membership_indexes() -> None:
-    """One membership per (person, company); a company's members by status."""
-    coll = db[memberships_lib.COLLECTION]
-    await _ensure_index_resilient(coll, keys=[("user_id", 1), ("company_id", 1)],
-                                  name="memberships_by_user_company", unique=True)
-    await _ensure_index_resilient(coll, keys=[("company_id", 1), ("status", 1)],
-                                  name="memberships_by_company_status")
-
-
-async def run_membership_mirror() -> dict:
-    """Copy every user's company, role and project scope into `memberships`.
-
-    The users document stays the source of truth and nothing reads this
-    collection yet (lib/memberships.py says why). Idempotent: a re-run over
-    unchanged users writes nothing. Runs at startup and hourly, so a role
-    changed on the users document reaches its membership within the hour.
-    Never raises; startup must not depend on it.
-    """
-    out = {"inserted": 0, "updated": 0, "missing": None, "stale": None}
-    try:
-        coll = db[memberships_lib.COLLECTION]
-        projection = {f: 1 for f in memberships_lib.USER_FIELDS}
-        users = await db.users.find({}, projection).to_list(None)
-        have = await coll.find({}).to_list(None)
-        now = datetime.now(timezone.utc)
-        for w in memberships_lib.plan_mirror(users, have):
-            await coll.update_one(
-                w["key"],
-                {"$set": {**w["set"], "updated_at": now},
-                 "$setOnInsert": {"created_at": now}},
-                upsert=True)
-            out["inserted" if w["insert"] else "updated"] += 1
-        # Read back: what the collection holds now, against the same users.
-        out.update(memberships_lib.parity(users, await coll.find({}).to_list(None)))
-        if out["missing"] or out["stale"]:
-            logger.error(f"[memberships] mirror did not converge: {out}")
-        elif out["inserted"] or out["updated"]:
-            logger.info(f"[memberships] mirror: {out}")
-    except Exception as e:
-        logger.warning(f"run_membership_mirror failed: {e!r}")
-    return out
 	
 def get_user_company_id(current_user):
     """Get the company_id from current user"""
@@ -88370,16 +88327,6 @@ async def startup_event():
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=11),
     )
-    # Memberships mirror the users documents; startup runs it once below.
-    scheduler.add_job(
-        run_membership_mirror,
-        IntervalTrigger(hours=1),
-        id='membership_mirror',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=23),
-    )
 
     # WhatsApp startup migrations — bot_config backfill, indexes, TTL
     await run_whatsapp_startup_migrations()
@@ -88398,9 +88345,6 @@ async def startup_event():
     # new pending-by-default gate never locks out current accounts.
     await run_account_status_startup_migration()
     await run_pm_access_startup_migration()
-    # Memberships: after the pm_access backfill, so the copy carries it.
-    await ensure_membership_indexes()
-    await run_membership_mirror()
     
     # DOB collection indexes
     await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])
