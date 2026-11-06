@@ -101,13 +101,15 @@ class _Assistant:
     async def no_punch(self, *a, **k):
         return False
 
-    async def off(self, *a, **k):
-        return False
+    async def brain(self, *a, **k):
+        # The brain path (the default for everyone): with two connected
+        # accounts it reads across them rather than asking which company.
+        return True
 
     def patches(self):
         return [patch.object(server, "_dm_assistant_reply", self.reply),
                 patch.object(server, "_punch_dm_turn", self.no_punch),
-                patch.object(server, "_dm_brain_on", self.off)]
+                patch.object(server, "_dm_brain_on", self.brain)]
 
 
 def _say(c, body, msg_id, assistant=None):
