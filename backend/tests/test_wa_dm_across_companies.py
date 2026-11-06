@@ -239,6 +239,15 @@ class EachMessageGoesToTheRightAccount(unittest.TestCase):
             self.assertEqual(t.calls, [])
             self.assertTrue(_texts(c)[-1].startswith("Which company is this for?"))
 
+    def test_thanks_or_ok_is_never_asked_which_company(self):
+        t = _Turn(brain=False)
+        with _Ctx(_db()) as c:
+            t.say(c, "thanks", "m1")
+            t.say(c, "ok", "m2")
+            self.assertEqual(_texts(c), [])
+        self.assertEqual([(x["as"], x["scope"]) for x in t.calls],
+                         [("u_a", server.DM_SCOPE_NEUTRAL)] * 2)
+
     def test_one_account_is_answered_exactly_as_before(self):
         t = _Turn()
 

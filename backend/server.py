@@ -54170,6 +54170,10 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
             return one(by_id[str(cur["project_id"])]["acct"])
     if brain and not write and not has_image:
         return {"ident": None, "body": text, "scope": DM_SCOPE_MULTI}
+    if not has_image and (short or wa_react.social_reaction(text)):
+        # "thanks", "ok", "never mind" with nothing open: no company's, and
+        # never worth a "Which company?".
+        return {"ident": person[0], "body": text, "scope": DM_SCOPE_NEUTRAL}
     await _dm_ask_account(dm_chat, person, text, lang, photo=has_image)
     return None
 
