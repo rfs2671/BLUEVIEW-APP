@@ -238,4 +238,9 @@ export default {
     logOutAnyway: 'Cerrar sesión de todos modos',
     cancel: 'Cancelar',
   },
+
+  adminUserReadd: {
+    title: 'Cuenta restaurada',
+    body: 'Esta persona tenía una cuenta eliminada en su empresa. Ya está de vuelta, con el rol y los datos que ingresó y con su historial.',
+  },
 };

@@ -2316,4 +2316,10 @@ export default {
     logOutAnyway: 'Log out anyway',
     cancel: 'Cancel',
   },
+
+  // ── app/admin/users.jsx — Add user found a removed account and restored it ─
+  adminUserReadd: {
+    title: 'Account restored',
+    body: 'This person had a removed account in your company. It is back, with the role and details you entered and its history kept.',
+  },
 };

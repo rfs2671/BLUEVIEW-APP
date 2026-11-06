@@ -217,18 +217,27 @@ class AddAdminTest(unittest.TestCase):
                 operator=OPERATOR))
         self.assertTrue(out["created"])
 
-    def test_deleted_account_is_refused_not_duplicated(self):
+    def test_deleted_account_is_restored_not_duplicated(self):
+        """WAS refused (ACCOUNT_DELETED). Roy, 2026-11-06: re-adding a removed
+        person in the same company restores the old account -- same id."""
         db = _db()
-        db.users.rows.append({"_id": ObjectId(), "email": "Gone@acme.test",
+        gone = ObjectId()
+        db.users.rows.append({"_id": gone, "email": "Gone@acme.test",
                               "company_id": CID, "role": "pm",
                               "is_deleted": True})
         with patch.object(server, "db", db):
-            with self.assertRaises(HTTPException) as ctx:
-                run(server.owner_add_company_admin(
-                    CID, server.OwnerAddAdmin(email="gone@acme.test", name="G",
-                                              password=STRONG),
-                    operator=OPERATOR))
-        self.assertEqual(_err(ctx)[1]["code"], "ACCOUNT_DELETED")
+            out = run(server.owner_add_company_admin(
+                CID, server.OwnerAddAdmin(email="gone@acme.test", name="G",
+                                          password=STRONG),
+                operator=OPERATOR))
+        self.assertEqual((out["created"], out["restored"]), (False, True))
+        rows = [u for u in db.users.rows
+                if (u.get("email") or "").lower() == "gone@acme.test"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["_id"], rows[0]["is_deleted"], rows[0]["role"]),
+                         (gone, False, "admin"))
+        self.assertEqual(_audit(db, "owner_admin_add")[0]["details"]["mode"],
+                         "restored")
 
     def test_new_account_needs_a_name(self):
         with patch.object(server, "db", _db()):

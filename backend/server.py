@@ -3307,6 +3307,10 @@ class UserResponse(BaseModel):
     # lapsed while nobody opened the screen still reads as expired -- a stored
     # verdict would be the state of the world on the day it was written.
     licence: Optional[Dict[str, Any]] = None
+    # POST /admin/users only: True when the add RESTORED this company's
+    # removed account with the email (same id, history kept) instead of
+    # creating one. Absent everywhere else.
+    restored: Optional[bool] = None
 
 class TokenResponse(BaseModel):
     token: str
@@ -9999,10 +10003,10 @@ EMAIL_IN_USE_HERE = (
     "That email is already used by an account in this company.\n"
     "Ese correo electrónico ya lo usa una cuenta de esta empresa.")
 EMAIL_HELD_BY_REMOVED_ACCOUNT = (
-    "That email belongs to a removed account in this company. Ask Levelog "
-    "support to restore that account instead.\n"
+    "That email belongs to a removed account in this company. Add the person "
+    "again with that email to restore the account.\n"
     "Ese correo electrónico pertenece a una cuenta eliminada de esta empresa. "
-    "Pida al soporte de Levelog que restaure esa cuenta.")
+    "Agregue a la persona otra vez con ese correo para restaurar la cuenta.")
 EMAIL_IN_USE_NO_COMPANY = (
     "An account with that email already exists. Sign in instead.\n"
     "Ya existe una cuenta con ese correo electrónico. Inicie sesión.")
@@ -10067,6 +10071,60 @@ async def _assert_email_free_in_company(email, company_id, *, actor=None,
     if clash:
         raise _email_in_use(company_id, removed=clash.get("is_deleted") is True)
     return norm
+
+
+async def _email_free_or_removed(email, company_id, *, actor=None):
+    """For an ADD: (folded email, the removed account to restore or None).
+
+    ROY, 2026-11-06: re-adding a removed person in the same company RESTORES
+    the old account -- same _id, same history, signatures still resolving to
+    it -- rather than refusing. A LIVE account with the email is still a 409.
+    The most recently removed row wins if there is more than one spelling.
+    """
+    norm = _email_norm(email)
+    if not norm or "@" not in norm:
+        raise HTTPException(status_code=422, detail=EMAIL_REQUIRED)
+    if norm in PLATFORM_OPERATOR_EMAILS and not is_platform_operator(actor):
+        raise _email_in_use(company_id)
+    if await _email_account_in_company(norm, company_id, live_only=True):
+        raise _email_in_use(company_id)
+    removed = await db.users.find(
+        {**_company_scope(company_id), "email": _email_ci(norm),
+         "is_deleted": True}).to_list(10)
+    if not removed:
+        return norm, None
+    removed.sort(key=lambda u: u.get("deleted_at") or datetime.min.replace(
+        tzinfo=timezone.utc), reverse=True)
+    return norm, removed[0]
+
+
+async def _restore_removed_account(row: dict, fields: dict, by) -> Any:
+    """Un-delete `row` and apply what the add request says.
+
+    KEPT: _id, created_at, registration_source (written once, at creation;
+    test_registration_source holds every other path to that), and every record
+    that points at the id. REPLACED: whatever the add request sets -- role,
+    name, phone, password, projects, status. Fields of a role the account no
+    longer holds (a PM's level, a superintendent's licence, chase escalation)
+    go, as they would on a role change. The deletion stamps go, as on an owner
+    restore. Returns the row's _id.
+    """
+    now = datetime.now(timezone.utc)
+    keep = {"_id", "id", "created_at", "registration_source"}
+    set_ = {k: v for k, v in fields.items() if k not in keep}
+    set_.update(owner_portal.restore_set(now, str(by or "")))
+    unset = {f: "" for f in owner_portal.RESTORE_UNSET["user"]}
+    for f in (*SUPERINTENDENT_LICENCE_FIELDS, "pm_access", CHASE_ESCALATION_FIELD):
+        if f not in set_ and row.get(f) is not None:
+            unset[f] = ""
+    await db.users.update_one({"_id": row["_id"], "is_deleted": True},
+                              {"$set": set_, "$unset": unset})
+    await audit_log("user_restored_by_readd", str(by or ""), "user", str(row["_id"]), {
+        "company_id": str(row.get("company_id") or ""),
+        "email": set_.get("email", row.get("email")),
+        "role_before": row.get("role"), "role_after": set_.get("role", row.get("role")),
+    })
+    return row["_id"]
 
 
 # ── Login with an email that has accounts in several companies ─────────────
@@ -10233,9 +10291,13 @@ async def register(user_data: UserCreate, request: Request = None, _rate=Depends
     # no query and no bcrypt round.
     pwd = assert_password_complexity(user_data.password)
 
-    # ONE PER COMPANY, AND A SIGNUP HAS NO COMPANY YET: the email may already
-    # hold accounts in companies; it may not hold a second company-less one.
+    # SELF-SIGNUP IS REFUSED FOR AN EMAIL THAT HAS ANY ACCOUNT -- any company,
+    # any case, removed accounts included (Roy, 2026-11-06). Only a company
+    # admin or the owner portal creates a second account under one email, in
+    # another company. A stranger signing up must not mint one.
     email = await _assert_email_free_in_company(user_data.email, None)
+    if await db.users.find_one({"email": _email_ci(email)}, {"_id": 1}):
+        raise _email_in_use(None)
 
     user_dict = user_data.model_dump()
     user_dict["email"] = email
@@ -12227,8 +12289,11 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admi
     pwd = assert_password_complexity(user_data.password)
 
     # ONE ACCOUNT PER EMAIL IN THIS ADMIN'S COMPANY, which is the company the
-    # account is created in (below). Another company's account is no bar.
-    email = await _assert_email_free_in_company(
+    # account is created in (below). Another company's account is no bar. A
+    # REMOVED account here with this email is restored, not duplicated or
+    # refused (Roy, 2026-11-06): same _id, the request's role, name, phone,
+    # password and projects.
+    email, _removed = await _email_free_or_removed(
         user_data.email, admin.get("company_id"), actor=admin)
 
     user_dict = user_data.model_dump()
@@ -12342,10 +12407,14 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admi
 
     from pymongo.errors import DuplicateKeyError
     try:
-        result = await db.users.insert_one(user_dict)
+        if _removed:
+            _new_id = await _restore_removed_account(_removed, user_dict, actor_id(admin))
+            user_dict["restored"] = True
+        else:
+            _new_id = (await db.users.insert_one(user_dict)).inserted_id
     except DuplicateKeyError:
         raise _email_in_use(user_dict.get("company_id"))
-    user_dict["id"] = str(result.inserted_id)
+    user_dict["id"] = str(_new_id)
 
     # ── THE CARD, AFTER THE DOCUMENT EXISTS ─────────────────────────────────
     #
@@ -12361,7 +12430,7 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admi
             user_dict["id"], _card_image)
         if _card_fields:
             await db.users.update_one(
-                {"_id": result.inserted_id}, {"$set": _card_fields})
+                {"_id": _new_id}, {"$set": _card_fields})
             user_dict.update(_card_fields)
 
     if user_dict["role"] == ROLE_SUPERINTENDENT:
@@ -12375,13 +12444,13 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admi
                 {"$set": {
                     "company_id": user_dict["company_id"],
                     "phone": user_dict["phone"],
-                    "user_id": str(result.inserted_id),
+                    "user_id": str(_new_id),
                     "display_name": user_dict.get("name", ""),
                 }},
                 upsert=True,
             )
         except Exception as e:
-            logger.warning(f"whatsapp_contacts upsert failed for user {result.inserted_id}: {e}")
+            logger.warning(f"whatsapp_contacts upsert failed for user {_new_id}: {e}")
 
     del user_dict["password"]
 
@@ -16078,8 +16147,11 @@ async def create_admin_with_company(admin_data: CreateAdminRequest, current_user
     # checked live accounts in ALL companies, so a deleted row's email passed
     # and hit the unique index as a 500. A company created below is new and
     # has no accounts to clash with.
+    _removed = None
     if existing_company:
-        email = await _assert_email_free_in_company(
+        # A removed account in that company with this email is restored as
+        # its admin (Roy, 2026-11-06), not refused and not duplicated.
+        email, _removed = await _email_free_or_removed(
             admin_data.email, str(existing_company["_id"]), actor=current_user)
     else:
         email = _email_norm(admin_data.email)
@@ -16135,10 +16207,14 @@ async def create_admin_with_company(admin_data: CreateAdminRequest, current_user
 
     from pymongo.errors import DuplicateKeyError
     try:
-        user_result = await db.users.insert_one(user_doc)
+        if _removed:
+            new_user_id = str(await _restore_removed_account(
+                _removed, {**user_doc, "account_status": "approved"},
+                actor_id(current_user)))
+        else:
+            new_user_id = str((await db.users.insert_one(user_doc)).inserted_id)
     except DuplicateKeyError:
         raise _email_in_use(company_id)
-    new_user_id = str(user_result.inserted_id)
 
     # If company WhatsApp is active, upsert the new admin into whatsapp_contacts.
     # If not active, whatsapp_activate's auto-population sweep will pick them up later.
@@ -16167,7 +16243,9 @@ async def create_admin_with_company(admin_data: CreateAdminRequest, current_user
         "company_id": company_id,
         "company_name": company_name,
         "role": "admin",
-        "message": "Admin account created successfully"
+        "restored": bool(_removed),
+        "message": ("Removed admin account restored" if _removed
+                    else "Admin account created successfully"),
     }
 
 @api_router.get("/owner/admins", dependencies=[Depends(require_operator_404)])
@@ -16359,11 +16437,25 @@ async def owner_add_company_admin(company_id: str, body: OwnerAddAdmin,
     ).to_list(10)
     live = [u for u in matches if u.get("is_deleted") is not True]
     if not live and matches:
-        raise HTTPException(status_code=409, detail={
-            "code": "ACCOUNT_DELETED",
-            "message": "That email belongs to a deleted account in this "
-                       "company. Restore it from Deleted items instead.",
+        # A REMOVED ACCOUNT HERE IS RESTORED AS AN ADMIN (Roy, 2026-11-06):
+        # same id and history. A name or password given replaces the old one.
+        row = max(matches, key=lambda u: u.get("deleted_at") or datetime.min.replace(
+            tzinfo=timezone.utc))
+        fields = {"email": email.lower(), "role": "admin",
+                  "account_status": "approved", "company_name": company.get("name")}
+        if (body.name or "").strip():
+            fields["name"] = body.name.strip()
+        if body.password:
+            fields["password"] = hash_password(assert_password_complexity(body.password))
+        uid = str(await _restore_removed_account(row, fields, op))
+        await audit_log("owner_admin_add", op, "user", uid, {
+            "company_id": company_id, "email": fields["email"],
+            "mode": "restored", "from_role": row.get("role"),
         })
+        restored = {**row, **fields, "is_deleted": False}
+        restored.pop("password", None)
+        return {"created": False, "restored": True,
+                "user": owner_portal.user_row(restored)}
     existing = live[0] if live else None
     if existing:
         if owner_portal.is_admin(existing):

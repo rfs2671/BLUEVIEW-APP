@@ -154,6 +154,7 @@ BOB_A, BOB_B, BOB_C = ObjectId(), ObjectId(), ObjectId()
 ADMIN_A, ADMIN_B, OPS = ObjectId(), ObjectId(), ObjectId()
 AMY_A, GONE_A, PEND = ObjectId(), ObjectId(), ObjectId()
 OPS_EMAIL = "ops@levelog.example"
+T_CREATED = datetime(2026, 3, 1, tzinfo=timezone.utc)
 
 # THE INDEX THE MIGRATION LEAVES IN PRODUCTION: unique per (company, email).
 PER_COMPANY = {"key": [("company_id", 1), ("email", 1)], "unique": True}
@@ -183,7 +184,11 @@ def _seed(indexes=None):
         _user(ADMIN_A, "admin@acme.example", A, role="admin", password=STRONG),
         _user(ADMIN_B, "admin@bravo.example", B, role="admin", password=STRONG),
         _user(AMY_A, "amy@acme.example", A),
-        _user(GONE_A, "gone@acme.example", A, is_deleted=True),
+        _user(GONE_A, "Gone@acme.example", A, role="pm", is_deleted=True,
+              name="Gary Gone", phone="+15550001111", pm_access="full",
+              assigned_projects=["old-proj"], registration_source="admin",
+              created_at=T_CREATED, deleted_at=T_CREATED, deleted_by=str(ADMIN_A),
+              delete_batch_id="batch-1", deleted_user_ref="Deleted user 1a2b"),
         _user(OPS, OPS_EMAIL, None, role="admin", password=STRONG,
               is_platform_operator=True),
     ]
@@ -392,12 +397,59 @@ class AdminAddUser(unittest.TestCase):
         self.assertIn("this company", text)
         self.assertIn("esta empresa", text)
 
-    def test_a_deleted_accounts_email_in_this_company_is_refused(self):
-        """DELETED ROWS COUNT within their company, so a restore can never
-        produce two accounts with one email in one company."""
-        (status, text), _ = self._create("gone@acme.example")
+    def test_re_adding_a_removed_person_restores_the_old_account(self):
+        """ROY, 2026-11-06: same _id and history; the add request's role,
+        name, phone, password and projects; never a second row."""
+        async def s(c, db):
+            r = await c.post("/api/admin/users",
+                             headers=_bearer(ADMIN_A, "admin@acme.example", "admin", A),
+                             json={"email": "GONE@acme.example", "password": STRONG,
+                                   "name": "Gary Back", "role": "cp",
+                                   "phone": "(555) 000-2222"})
+            login = await c.post("/api/auth/login", json={
+                "email": "gone@acme.example", "password": STRONG, "company_picker": True})
+            return r.status_code, r.json(), login.status_code, login.json()
+        (status, body, lstatus, lbody), db = _run(s)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body.get("restored"), True)
+        self.assertEqual(body["id"], str(GONE_A))
+        rows = [u for u in db.users.docs
+                if u["email"].lower() == "gone@acme.example" and str(u["company_id"]) == A]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["_id"], GONE_A)
+        self.assertFalse(row["is_deleted"])
+        self.assertEqual((row["role"], row["name"], row["account_status"]),
+                         ("cp", "Gary Back", "approved"))
+        self.assertTrue(row["phone"].endswith("5550002222"), row["phone"])
+        self.assertEqual(row["assigned_projects"], [])
+        # History kept, deletion stamps gone, the old role's level gone.
+        self.assertEqual((row["created_at"], row["registration_source"]),
+                         (T_CREATED, "admin"))
+        for gone in ("deleted_at", "deleted_by", "delete_batch_id",
+                     "deleted_user_ref", "pm_access"):
+            self.assertNotIn(gone, row)
+        self.assertEqual(row["restored_by"], str(ADMIN_A))
+        # The admin's new password is the one that works.
+        self.assertEqual(lstatus, 200, lbody)
+        self.assertEqual(_sub(lbody["token"]), str(GONE_A))
+        self.assertTrue(any(a.get("action") == "user_restored_by_readd"
+                            for a in db.audit_logs.docs))
+
+    def test_a_live_account_with_the_email_is_still_a_409(self):
+        (status, text), _ = self._create("amy@acme.example")
         self.assertEqual(status, 409, text)
-        self.assertIn("restore", text.lower())
+
+    def test_editing_to_a_removed_accounts_email_is_refused_and_says_re_add(self):
+        async def s(c, db):
+            r = await c.put(f"/api/admin/users/{AMY_A}",
+                            headers=_bearer(ADMIN_A, "admin@acme.example", "admin", A),
+                            json={"email": "gone@acme.example"})
+            return r.status_code, r.text
+        (status, text), _ = _run(s)
+        self.assertEqual(status, 409, text)
+        self.assertIn("Add the person again", text)
+        self.assertIn("Agregue a la persona", text)
 
     def test_the_operators_email_is_not_available_to_a_company_admin(self):
         """is_platform_operator() admits by email (PLATFORM_OPERATOR_EMAILS).
@@ -432,18 +484,40 @@ class AdminEditUser(unittest.TestCase):
 
 class SelfSignup(unittest.TestCase):
 
-    def test_signup_with_an_email_in_a_company_creates_a_no_company_account(self):
+    def test_signup_with_an_email_any_company_holds_is_refused_in_any_case(self):
+        """ROY, 2026-11-06: public signup never makes a second account under
+        an email. Only a company admin or the owner portal does that."""
         async def s(c, db):
-            r1 = await c.post("/api/auth/register", json={
-                "email": "bob@x.example", "password": STRONG, "name": "Bob"})
-            r2 = await c.post("/api/auth/register", json={
-                "email": "BOB@x.example", "password": STRONG, "name": "Bob again"})
-            return r1.status_code, r2.status_code, r2.text
-        (s1, s2, text2), db = _run(s)
-        self.assertEqual(s1, 200)
-        # A second company-less account with the same email is the duplicate.
-        self.assertEqual(s2, 409, text2)
-        self.assertIn("Ya existe", text2)
+            before = len(db.users.docs)
+            out = {}
+            for email in ("bob@x.example", "BOB@X.example", "admin@bravo.example"):
+                r = await c.post("/api/auth/register", json={
+                    "email": email, "password": STRONG, "name": "Bob"})
+                out[email] = (r.status_code, r.text)
+            return out, len(db.users.docs) - before
+        (out, added), _ = _run(s)
+        for email, (status, text) in out.items():
+            with self.subTest(email):
+                self.assertEqual(status, 409, text)
+                self.assertIn("already exists", text)
+                self.assertIn("Ya existe", text)
+        self.assertEqual(added, 0)
+
+    def test_signup_with_a_removed_accounts_email_is_refused(self):
+        async def s(c, db):
+            r = await c.post("/api/auth/register", json={
+                "email": "gone@acme.example", "password": STRONG, "name": "G"})
+            return r.status_code
+        status, _ = _run(s)
+        self.assertEqual(status, 409)
+
+    def test_signup_with_a_new_email_still_works(self):
+        async def s(c, db):
+            r = await c.post("/api/auth/register", json={
+                "email": "fresh@x.example", "password": STRONG, "name": "Fresh"})
+            return r.status_code, r.text
+        (status, text), _ = _run(s)
+        self.assertEqual(status, 200, text)
 
     def test_a_case_variant_of_the_operators_email_cannot_sign_up(self):
         """ON MAIN THIS SUCCEEDED, AND THE STRANGER REACHED AN OPERATOR ROUTE.
@@ -491,14 +565,31 @@ class OwnerPortalPaths(unittest.TestCase):
         (status, text), _ = _run(s)
         self.assertEqual(status, 409, text)
 
-    def test_owner_create_admin_reusing_a_deleted_email_in_that_company_is_409_not_500(self):
+    def test_owner_create_admin_reusing_a_removed_email_restores_that_account(self):
+        """Was a 500 on main (the deleted row hit the unique index)."""
         async def s(c, db):
             r = await c.post("/api/owner/admins", headers=self._ops(), json={
                 "name": "G", "email": "gone@acme.example", "password": STRONG,
                 "company_name": "Acme GC"})
-            return r.status_code, r.text
-        (status, text), _ = _run(s)
-        self.assertEqual(status, 409, text)
+            return r.status_code, r.json()
+        (status, body), db = _run(s)
+        self.assertEqual(status, 200, body)
+        self.assertEqual((body["id"], body["restored"]), (str(GONE_A), True))
+        row = next(u for u in db.users.docs if u["_id"] == GONE_A)
+        self.assertEqual((row["is_deleted"], row["role"]), (False, "admin"))
+
+    def test_owner_add_company_admin_restores_a_removed_account(self):
+        async def s(c, db):
+            r = await c.post(f"/api/owner/companies/{A}/admins", headers=self._ops(),
+                             json={"email": "GONE@acme.example"})
+            return r.status_code, r.json()
+        (status, body), db = _run(s)
+        self.assertEqual(status, 200, body)
+        self.assertEqual((body["created"], body.get("restored")), (False, True))
+        row = next(u for u in db.users.docs if u["_id"] == GONE_A)
+        self.assertEqual((row["is_deleted"], row["role"], row["name"]),
+                         (False, "admin", "Gary Gone"))
+        self.assertNotIn("pm_access", row)
 
     def test_owner_create_admin_with_an_email_from_another_company_is_allowed(self):
         async def s(c, db):
