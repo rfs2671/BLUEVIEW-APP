@@ -7781,8 +7781,8 @@ async def require_operator_404(
     get 404 -- not 403, not 401 -- so the routes do not tell anyone they exist.
 
     THE OPERATOR FLAG IS THE ONLY TEST. `is_platform_operator` (the
-    `is_platform_operator` field no API path can write, or the
-    PLATFORM_OPERATOR_EMAILS bootstrap). Never `role`: "owner" is a retired
+    `is_platform_operator` field no API path can write; since 2026-11-06 never
+    an email match). Never `role`: "owner" is a retired
     role string every self-serve signup used to receive.
 
     THERE IS NO SHADOW MODE. The old `require_platform_operator` logged and let
@@ -9289,13 +9289,88 @@ PLATFORM_OPERATOR_EMAILS = frozenset(
 )
 
 def is_platform_operator(user: dict) -> bool:
-    """True for the platform operator. Never inferred from `role`."""
+    """True for the platform operator: the DB flag, and nothing else.
+
+    NEVER FROM AN EMAIL MATCH (operator ruling, 2026-11-06). This used to also
+    answer True for any account whose email, lowercased, was in
+    PLATFORM_OPERATOR_EMAILS, while signup's duplicate check was an exact,
+    case-sensitive match. So a public signup as a capitalised copy of the
+    operator's address ("Ops@..." for "ops@...") became a SECOND, distinct
+    account -- and that account was the operator: every require_operator_404
+    route opened for it. A string anyone can type is not a trust anchor.
+
+    The flag is in no field allow-list, so no API path can set it. The one
+    remaining use of PLATFORM_OPERATOR_EMAILS for identity is
+    run_operator_flag_startup_migration, which converts the old bootstrap to
+    the flag exactly once, and only when exactly one account claims the
+    address. Never inferred from `role` either.
+    """
     if not user:
         return False
-    if user.get("is_platform_operator") is True:
-        return True
-    email = (user.get("email") or "").strip().lower()
-    return bool(email) and email in PLATFORM_OPERATOR_EMAILS
+    return user.get("is_platform_operator") is True
+
+
+async def run_operator_flag_startup_migration() -> dict:
+    """THE BOOTSTRAP, CONVERTED TO THE FLAG -- ONCE, AND ONLY WHEN UNAMBIGUOUS.
+
+    Before 2026-11-06 the operator could be recognised by PLATFORM_OPERATOR_EMAILS
+    alone (the seeded operator row carries no flag). is_platform_operator no
+    longer reads the email, so without this the real operator would lose the
+    owner portal on deploy.
+
+    For each address in PLATFORM_OPERATOR_EMAILS: if any live account with that
+    address (any case) already carries the flag, nothing is done. Otherwise, if
+    EXACTLY ONE live account has that address (any case), the flag is set on
+    it. Two or more means a case-variant copy exists -- the signup hole may
+    have been used -- so NOTHING is written and the ids are logged as an
+    error: a human decides which row is the operator. Never raises.
+    """
+    out = {"flagged": [], "ambiguous": {}, "already": []}
+    try:
+        for email in sorted(PLATFORM_OPERATOR_EMAILS):
+            q = {"email": {"$regex": f"(?i)^{re.escape(email)}$"},
+                 "is_deleted": {"$ne": True}}
+            rows = await db.users.find(q, {"_id": 1, "is_platform_operator": 1}).to_list(10)
+            if any(r.get("is_platform_operator") is True for r in rows):
+                out["already"].append(email)
+                continue
+            if len(rows) == 1:
+                await db.users.update_one(
+                    {"_id": rows[0]["_id"]},
+                    {"$set": {"is_platform_operator": True,
+                              "updated_at": datetime.now(timezone.utc)}})
+                out["flagged"].append(str(rows[0]["_id"]))
+                logger.warning(f"[operator] flag set on the one account for a "
+                               f"PLATFORM_OPERATOR_EMAILS address (user {rows[0]['_id']})")
+            elif len(rows) > 1:
+                ids = [str(r["_id"]) for r in rows]
+                out["ambiguous"][email] = ids
+                logger.error(f"[operator] {len(rows)} live accounts share a "
+                             f"PLATFORM_OPERATOR_EMAILS address in different case; "
+                             f"NO flag written. Accounts: {ids}")
+    except Exception as e:
+        logger.error(f"[operator] flag migration failed: {type(e).__name__}: {e!r}")
+    return out
+
+
+async def email_in_use(email, exclude_id=None) -> bool:
+    """Is this address taken by any account, in ANY case, deleted or not?
+
+    Case-insensitive because people treat "Bob@x" and "bob@x" as one address,
+    and deleted rows count because the users.email unique index covers them
+    too (a duplicate there is a 500, not a refusal). `exclude_id` is the
+    account being edited.
+    """
+    e = (email or "").strip()
+    if not e:
+        return False
+    q = {"email": {"$regex": f"(?i)^{re.escape(e)}$"}}
+    if exclude_id is not None:
+        try:
+            q["_id"] = {"$ne": ObjectId(str(exclude_id))}
+        except Exception:
+            q["_id"] = {"$ne": exclude_id}
+    return (await db.users.find_one(q, {"_id": 1})) is not None
 
 
 # ── RANK, WITH THE OPERATOR ALWAYS ADMITTED ─────────────────────────────────
@@ -9990,12 +10065,12 @@ async def validate_assignable_projects(actor: dict, project_ids) -> List[str]:
 # onboarding makes or joins one: two company-less accounts may not share an
 # email, and joining a company is checked like any other write.
 #
-# THE OPERATOR'S ADDRESS IS RESERVED. is_platform_operator() admits by
-# PLATFORM_OPERATOR_EMAILS, case-folded. While email was globally unique the
-# operator's own row held that address; with one account per company, any
-# admin could otherwise create it in his company, set its password, and sign
-# in as the platform operator. A case variant (OPS@ vs ops@) already got past
-# the exact-match index and the exact-match signup check.
+# NO ADDRESS IS RESERVED FOR THE OPERATOR. The first draft of this change
+# reserved PLATFORM_OPERATOR_EMAILS, because is_platform_operator() admitted
+# by email and one account per company would have let an admin mint the
+# address. Since #962 the operator is the DB flag only, so an account with
+# that address in some company is just an account. `actor` is still taken by
+# the helpers below for callers that pass it; nothing reads it.
 
 USERS_COMPANY_EMAIL_INDEX = "users_company_email_unique"
 
@@ -10050,10 +10125,12 @@ async def _email_account_in_company(email, company_id, *, exclude_id=None,
 
 
 def _email_in_use(company_id, *, removed: bool = False) -> HTTPException:
+    # 400, the status "Email already registered" has always had and the one
+    # email_in_use's callers (#962) answer, so every writer refuses alike.
     if not str(company_id or "").strip():
-        return HTTPException(status_code=409, detail=EMAIL_IN_USE_NO_COMPANY)
+        return HTTPException(status_code=400, detail=EMAIL_IN_USE_NO_COMPANY)
     return HTTPException(
-        status_code=409,
+        status_code=400,
         detail=EMAIL_HELD_BY_REMOVED_ACCOUNT if removed else EMAIL_IN_USE_HERE)
 
 
@@ -10065,8 +10142,6 @@ async def _assert_email_free_in_company(email, company_id, *, actor=None,
     norm = _email_norm(email)
     if not norm or "@" not in norm:
         raise HTTPException(status_code=422, detail=EMAIL_REQUIRED)
-    if norm in PLATFORM_OPERATOR_EMAILS and not is_platform_operator(actor):
-        raise _email_in_use(company_id)
     clash = await _email_account_in_company(norm, company_id, exclude_id=exclude_id)
     if clash:
         raise _email_in_use(company_id, removed=clash.get("is_deleted") is True)
@@ -10084,8 +10159,6 @@ async def _email_free_or_removed(email, company_id, *, actor=None):
     norm = _email_norm(email)
     if not norm or "@" not in norm:
         raise HTTPException(status_code=422, detail=EMAIL_REQUIRED)
-    if norm in PLATFORM_OPERATOR_EMAILS and not is_platform_operator(actor):
-        raise _email_in_use(company_id)
     if await _email_account_in_company(norm, company_id, live_only=True):
         raise _email_in_use(company_id)
     removed = await db.users.find(
@@ -10292,12 +10365,12 @@ async def register(user_data: UserCreate, request: Request = None, _rate=Depends
     pwd = assert_password_complexity(user_data.password)
 
     # SELF-SIGNUP IS REFUSED FOR AN EMAIL THAT HAS ANY ACCOUNT -- any company,
-    # any case, removed accounts included (Roy, 2026-11-06). Only a company
-    # admin or the owner portal creates a second account under one email, in
-    # another company. A stranger signing up must not mint one.
-    email = await _assert_email_free_in_company(user_data.email, None)
-    if await db.users.find_one({"email": _email_ci(email)}, {"_id": 1}):
-        raise _email_in_use(None)
+    # any case, removed accounts included (email_in_use; Roy, 2026-11-06).
+    # Only a company admin or the owner portal creates a second account under
+    # one email, in another company. A stranger signing up must not mint one.
+    if await email_in_use(user_data.email):
+        raise HTTPException(status_code=400, detail=EMAIL_IN_USE_NO_COMPANY)
+    email = _email_norm(user_data.email)
 
     user_dict = user_data.model_dump()
     user_dict["email"] = email
@@ -12608,6 +12681,10 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     update_data = {k: v for k, v in user_data.items() if v is not None and k in ALLOWED_USER_FIELDS and k != "password"}
     if "password" in user_data and user_data["password"]:
         update_data["password"] = hash_password(user_data["password"])
+    # The email is checked further down, against THIS ACCOUNT'S COMPANY only
+    # (one account per email per company, Roy 2026-11-06), case-insensitively:
+    # see "THE EMAIL: ONE ACCOUNT PER EMAIL IN THIS ACCOUNT'S COMPANY". A global
+    # email_in_use here would refuse the ruling's second account elsewhere.
 
     # ── THE ROLE ALLOW-LIST, ON THE EDIT PATH TOO ───────────────────────────
     #
@@ -16277,6 +16354,8 @@ async def update_admin_account(admin_id: str, admin_data: dict, current_user = D
     if "name" in admin_data:
         update_fields["name"] = admin_data["name"]
     if "email" in admin_data:
+        # Checked below against the company the account is in AFTER the edit
+        # (one account per email per company), case-insensitively.
         update_fields["email"] = admin_data["email"]
     if "company_id" in admin_data:
         update_fields["company_id"] = admin_data["company_id"]
@@ -88437,6 +88516,9 @@ async def startup_event():
     # new pending-by-default gate never locks out current accounts.
     await run_account_status_startup_migration()
     await run_pm_access_startup_migration()
+    # Operator ruling 2026-11-06: the operator is the DB flag only; convert the
+    # PLATFORM_OPERATOR_EMAILS bootstrap to the flag when unambiguous.
+    await run_operator_flag_startup_migration()
     
     # DOB collection indexes
     await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])

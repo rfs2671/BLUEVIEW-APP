@@ -391,9 +391,9 @@ class AdminAddUser(unittest.TestCase):
         rows = [u for u in db.users.docs if u["email"].lower() == "admin@bravo.example"]
         self.assertEqual(sorted(str(u["company_id"]) for u in rows), sorted([A, B]))
 
-    def test_an_email_used_in_this_company_is_a_409_in_any_case(self):
+    def test_an_email_used_in_this_company_is_a_400_in_any_case(self):
         (status, text), db = self._create("  AMY@Acme.EXAMPLE ")
-        self.assertEqual(status, 409, text)
+        self.assertEqual(status, 400, text)
         self.assertIn("this company", text)
         self.assertIn("esta empresa", text)
 
@@ -436,9 +436,9 @@ class AdminAddUser(unittest.TestCase):
         self.assertTrue(any(a.get("action") == "user_restored_by_readd"
                             for a in db.audit_logs.docs))
 
-    def test_a_live_account_with_the_email_is_still_a_409(self):
+    def test_a_live_account_with_the_email_is_still_a_400(self):
         (status, text), _ = self._create("amy@acme.example")
-        self.assertEqual(status, 409, text)
+        self.assertEqual(status, 400, text)
 
     def test_editing_to_a_removed_accounts_email_is_refused_and_says_re_add(self):
         async def s(c, db):
@@ -447,18 +447,30 @@ class AdminAddUser(unittest.TestCase):
                             json={"email": "gone@acme.example"})
             return r.status_code, r.text
         (status, text), _ = _run(s)
-        self.assertEqual(status, 409, text)
+        self.assertEqual(status, 400, text)
         self.assertIn("Add the person again", text)
         self.assertIn("Agregue a la persona", text)
 
-    def test_the_operators_email_is_not_available_to_a_company_admin(self):
-        """is_platform_operator() admits by email (PLATFORM_OPERATOR_EMAILS).
-        With email no longer globally unique, an admin who could create that
-        address in his own company would mint an operator account."""
-        (status, text), db = self._create("OPS@levelog.example")
-        self.assertEqual(status, 409, text)
-        self.assertEqual(sum(1 for u in db.users.docs
-                             if u["email"].lower() == OPS_EMAIL), 1)
+    def test_an_account_with_the_operators_address_is_not_the_operator(self):
+        """WAS: the address was reserved, because is_platform_operator()
+        admitted by PLATFORM_OPERATOR_EMAILS. Since #962 the operator is the
+        DB flag only, so a company may hold an account with that address (one
+        per company) and it is just an account: operator routes answer 404."""
+        async def s(c, db):
+            r = await c.post("/api/admin/users",
+                             headers=_bearer(ADMIN_A, "admin@acme.example", "admin", A),
+                             json={"email": "OPS@levelog.example", "password": STRONG,
+                                   "name": "Not Roy", "role": "cp"})
+            uid = r.json().get("id")
+            owner = await c.get("/api/owner/admins",
+                                headers=_bearer(uid, OPS_EMAIL, "cp", A))
+            return r.status_code, r.text, owner.status_code
+        (status, text, owner), db = _run(s)
+        self.assertEqual(status, 200, text)
+        self.assertEqual(owner, 404)
+        made = next(u for u in db.users.docs
+                    if u["email"] == OPS_EMAIL and str(u["company_id"]) == A)
+        self.assertNotIn("is_platform_operator", made)
 
 
 class AdminEditUser(unittest.TestCase):
@@ -471,9 +483,9 @@ class AdminEditUser(unittest.TestCase):
             return r.status_code, r.text
         return _run(s)
 
-    def test_editing_to_an_email_in_this_company_is_a_409_not_a_500(self):
+    def test_editing_to_an_email_in_this_company_is_a_400_not_a_500(self):
         (status, text), _ = self._edit(AMY_A, "bob@x.example")
-        self.assertEqual(status, 409, text)
+        self.assertEqual(status, 400, text)
 
     def test_editing_to_an_email_used_only_in_another_company_is_allowed(self):
         (status, text), db = self._edit(AMY_A, "admin@bravo.example")
@@ -498,7 +510,7 @@ class SelfSignup(unittest.TestCase):
         (out, added), _ = _run(s)
         for email, (status, text) in out.items():
             with self.subTest(email):
-                self.assertEqual(status, 409, text)
+                self.assertEqual(status, 400, text)
                 self.assertIn("already exists", text)
                 self.assertIn("Ya existe", text)
         self.assertEqual(added, 0)
@@ -509,7 +521,7 @@ class SelfSignup(unittest.TestCase):
                 "email": "gone@acme.example", "password": STRONG, "name": "G"})
             return r.status_code
         status, _ = _run(s)
-        self.assertEqual(status, 409)
+        self.assertEqual(status, 400)
 
     def test_signup_with_a_new_email_still_works(self):
         async def s(c, db):
@@ -537,7 +549,7 @@ class SelfSignup(unittest.TestCase):
             out["owner_route"] = r.status_code
             return out
         out, db = _run(s)
-        self.assertEqual(out["register"], 409)
+        self.assertEqual(out["register"], 400)
         self.assertEqual(sum(1 for u in db.users.docs
                              if u["email"].lower() == OPS_EMAIL), 1)
         self.assertEqual(out["owner_route"], 404)
@@ -548,22 +560,22 @@ class OwnerPortalPaths(unittest.TestCase):
     def _ops(self):
         return _bearer(OPS, OPS_EMAIL, "admin", None)
 
-    def test_owner_edit_admin_email_to_one_in_its_company_is_a_409_not_a_500(self):
+    def test_owner_edit_admin_email_to_one_in_its_company_is_a_400_not_a_500(self):
         async def s(c, db):
             r = await c.put(f"/api/owner/admins/{ADMIN_A}", headers=self._ops(),
                             json={"email": "amy@acme.example"})
             return r.status_code, r.text
         (status, text), _ = _run(s)
-        self.assertEqual(status, 409, text)
+        self.assertEqual(status, 400, text)
 
-    def test_owner_moving_an_admin_into_a_company_that_has_the_email_is_a_409(self):
+    def test_owner_moving_an_admin_into_a_company_that_has_the_email_is_a_400(self):
         async def s(c, db):
             db.users.docs.append(_user(ObjectId(), "admin@acme.example", B, role="pm"))
             r = await c.put(f"/api/owner/admins/{ADMIN_A}", headers=self._ops(),
                             json={"company_id": B})
             return r.status_code, r.text
         (status, text), _ = _run(s)
-        self.assertEqual(status, 409, text)
+        self.assertEqual(status, 400, text)
 
     def test_owner_create_admin_reusing_a_removed_email_restores_that_account(self):
         """Was a 500 on main (the deleted row hit the unique index)."""
@@ -632,7 +644,7 @@ class OwnerPortalPaths(unittest.TestCase):
 
 class OnboardingJoinsAnExistingCompany(unittest.TestCase):
 
-    def test_joining_a_company_that_already_has_this_email_is_a_409(self):
+    def test_joining_a_company_that_already_has_this_email_is_a_400(self):
         async def s(c, db):
             uid = ObjectId()
             db.users.docs.append(_user(uid, "amy@acme.example", None, role="admin",
@@ -642,7 +654,7 @@ class OnboardingJoinsAnExistingCompany(unittest.TestCase):
                              json={"name": "Acme GC"})
             return r.status_code, r.text, uid
         (status, text, uid), db = _run(s)
-        self.assertEqual(status, 409, text)
+        self.assertEqual(status, 400, text)
         self.assertIsNone(next(u for u in db.users.docs if u["_id"] == uid)["company_id"])
 
 
