@@ -1,9 +1,10 @@
-"""Which people have more than one account -- READ ONLY (memberships, ruling 4).
+"""Which people have more than one account -- READ ONLY.
 
     railway run --service Blueview2 --environment production python backend/scripts/duplicate_accounts_census.py
 
-Ruling 1 (2026-11-05) is one account per person. Before anything is merged the
-operator rules on each case, and this lists the cases:
+Ruling (Roy, 2026-11-06): accounts are company-owned, one per company, and the
+same phone may sit on several accounts. This lists where that is already true,
+and where one company holds two accounts for one person:
 
   * EMAIL: accounts whose emails are equal once case and surrounding spaces are
     ignored. The unique index on users.email is case-sensitive, so "Bob@x" and
@@ -13,7 +14,7 @@ operator rules on each case, and this lists the cases:
 
 Each group says whether its accounts are in ONE company (an accidental second
 account) or SEVERAL (the same person working for two companies -- the case
-memberships exist for), and shows each account's company, role, status and
+the same-phone work is for), and shows each account's company, role, status and
 whether it is soft-deleted, so a ruling can be made from the printout alone.
 Also printed: accounts per company and accounts with no company, by role.
 

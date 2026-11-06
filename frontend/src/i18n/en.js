@@ -2065,6 +2065,17 @@ export default {
     shareUnavailable: 'This device has no share option for files.',
     offlineTitle: 'Not available offline',
     offlineBody: 'This file is not saved on this device. Reconnect and try again.',
+    // Android saves into Downloads; iPhone's button says Save (share sheet).
+    savedTitle: 'Saved to Downloads',
+    savedBody: '{name} is in {folder}.',
+    notSavedTitle: 'Not saved',
+    noFolder: 'Choose a folder in Downloads to save files there.',
+    saveFailed: 'Could not save to Downloads. Use the share options instead.',
+    pickTitle: 'Choose where to save',
+    pickBody: 'Android asks once. Downloads opens next: create or pick a folder (for example "LeveLog") and tap "Use this folder". Files are saved there from now on.',
+    pickGo: 'Continue',
+    saveLabel: 'Save',
+    downloadLabel: 'Download',
   },
 
   // ── app/projects/[id]/schedule.jsx — import and confirm the project schedule ─
