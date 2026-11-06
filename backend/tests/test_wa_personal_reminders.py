@@ -94,9 +94,9 @@ class SavedAsThePersons(unittest.TestCase):
 
 class SentOnceToThePerson(unittest.TestCase):
 
-    def _saved(self, c):
-        _ask(c, _ident(c, "u_b"), "remind me friday to call the inspector")
-        _ask(c, _ident(c, "u_b"), "yes")
+    def _saved(self, c, uid="u_b"):
+        _ask(c, _ident(c, uid), "remind me friday to call the inspector")
+        _ask(c, _ident(c, uid), "yes")
         c.wire.calls.clear()
 
     def test_once_on_its_morning_neutral_in_the_history(self):
@@ -114,7 +114,7 @@ class SentOnceToThePerson(unittest.TestCase):
         async def quiet(company_id, project_id=None, now=None):
             return (now + timedelta(hours=10)) if str(company_id) == CO_B else None
         with _Ctx(_db()) as c:
-            self._saved(c)
+            self._saved(c, "u_a")              # asked as Acme; Brick keeps Shabbos
             with patch.object(server, "_shabbos_quiet", quiet):
                 r = _run(server._upcoming_notify_tick(now=FRI_8))
             sent = [t for t in _texts(c) if t.startswith("Reminder")]
