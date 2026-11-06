@@ -2273,4 +2273,18 @@ export default {
     matchedByBlock: 'Matched by your block',
     lag: 'DOT publishes permits within a day, summonses in about 3 days, inspections monthly.',
   },
+
+  // ── Log out with writes still on the device (src/hooks/useLogoutConfirm) ──
+  //
+  // Shown only when a logout's drain could not send everything (offline, or
+  // the server refused some). What is left is DELETED at logout, so it never
+  // replays under the next account to sign in on this device; the copy says
+  // so plainly. {n} is the count of queued writes.
+  logout: {
+    unsentTitle: 'Unsent changes',
+    unsentBody: "{n} changes haven't been sent and will be deleted if you log out.",
+    unsentBodyOne: "1 change hasn't been sent and will be deleted if you log out.",
+    logOutAnyway: 'Log out anyway',
+    cancel: 'Cancel',
+  },
 };

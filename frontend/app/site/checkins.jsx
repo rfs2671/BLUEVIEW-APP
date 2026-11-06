@@ -23,6 +23,7 @@ import { GlassSkeleton, StatCardSkeleton } from '../../src/components/GlassSkele
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { useLogoutConfirm } from '../../src/hooks/useLogoutConfirm';
 import { checkinsAPI } from '../../src/utils/api';
 import { settleFetch, isOfflineError, failureDetail } from '../../src/utils/offlineState';
 import { checkinCompany, checkinProject, checkinWorker } from '../../src/utils/checkinFields';
@@ -102,13 +103,13 @@ export default function SiteCheckInsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
+  // Drains what is queued, asks before deleting what could not be sent.
+  const { requestLogout: handleLogout, logoutDialog } = useLogoutConfirm({
+    onLoggedOut: () => router.replace('/login'),
+  });
 
   const { isOnline } = useNetworkStatus();
 
@@ -649,6 +650,7 @@ export default function SiteCheckInsScreen() {
         </ScrollView>
 
       </SafeAreaView>
+      {logoutDialog}
     </AnimatedBackground>
   );
 }

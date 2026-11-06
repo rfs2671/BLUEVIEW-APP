@@ -14,6 +14,7 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import { useAuth } from '../../src/context/AuthContext';
+import { useLogoutConfirm } from '../../src/hooks/useLogoutConfirm';
 import { useInspectorLock } from '../../src/context/InspectorLockContext';
 import { dailyLogsAPI, checkinsAPI } from '../../src/utils/api';
 import OfflineNotice from '../../src/components/OfflineNotice';
@@ -28,7 +29,7 @@ export default function SiteDeviceHomeScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const { isLocked, lock } = useInspectorLock();
 
   const [todayLogsCount, setTodayLogsCount] = useState(0);
@@ -107,10 +108,10 @@ export default function SiteDeviceHomeScreen() {
     router.push(path);
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
+  // Drains what is queued, asks before deleting what could not be sent.
+  const { requestLogout: handleLogout, logoutDialog } = useLogoutConfirm({
+    onLoggedOut: () => router.replace('/login'),
+  });
 
   // Tier 1 ③ Inspector Mode — hand the device to an inspector. A plain
   // toggle: no PIN, no prerequisites. The tablet's own device lock is
@@ -252,6 +253,7 @@ export default function SiteDeviceHomeScreen() {
           </View>
         </View>
       </SafeAreaView>
+      {logoutDialog}
     </AnimatedBackground>
   );
 }

@@ -1,8 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import { getToken, newRequestId, REQUEST_ID_HEADER } from './api';
+import { ownerForEnqueue, openReplay } from './accountQueues';
 
-const QUEUE_KEY = 'blueview_offline_queue';
+const QUEUE_KEY = 'blueview_offline_queue'; // accountQueues.OFFLINE_QUEUE_KEY
 const MAX_RETRIES = 3;
 
 /**
@@ -58,6 +59,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || process.env.EXPO_PUBLIC_API_U
  *   method: string,      // HTTP verb for a `path` item (default POST)
  *   dedupeKey: string,   // replaces an earlier queued item with the same key
  *   meta: object,        // client-only; never sent to the API
+ *   ownerId: string,     // the account that queued it (accountQueues); an
+ *                        // item is only ever sent under that account
  * }
  */
 
@@ -115,6 +118,10 @@ export async function addToQueue(item) {
     requestId: item.requestId || newRequestId(),
     timestamp: Date.now(),
     retries: 0,
+    // WHOSE WRITE THIS IS, stamped now and checked at replay: the queue
+    // outlives a logout that fails to clear it, and a drain must never send
+    // it under the next account. After the spread so a caller cannot set it.
+    ownerId: await ownerForEnqueue(),
   });
   await saveQueue(queue);
   console.log(`📋 Added to offline queue: ${item.type} ${item.table}`);
@@ -236,6 +243,10 @@ export async function processQueue() {
       return { success: false, processed: 0, error: 'no_token' };
     }
 
+    // WHOSE TOKEN THIS IS. Judged against the token this drain sends with,
+    // not the cached user: see accountQueues for why those can differ.
+    const replay = await openReplay(token);
+
     // ── THE DISK IS BROUGHT UP TO DATE AFTER EVERY ITEM ────────────────────
     //
     // It used to be written ONCE, on the way out, which made the entire drain
@@ -257,6 +268,9 @@ export async function processQueue() {
     // unchanged, so the replay is identifiable AS a replay of one write.
     const settled = new Map(); // item.id -> null (landed) | replacement item
     const persist = async () => {
+      // The account was cleared while this drain ran (logout). Writing the
+      // queue back now would restore it for the next account.
+      if (replay.stale()) return;
       const next = [];
       for (const q of queue) {
         if (!settled.has(q.id)) { next.push(q); continue; }
@@ -268,8 +282,23 @@ export async function processQueue() {
 
     let processedCount = 0;
     let failedCount = 0;
+    let droppedCount = 0;
 
     for (const item of queue) {
+      if (replay.stale()) break;
+
+      // ANOTHER ACCOUNT'S WRITE IS NEVER SENT. It leaves the queue unsent;
+      // there is no account on this device it may still go under.
+      const owner = await replay.judge(item.ownerId || null);
+      if (owner.drop) {
+        console.warn(`Dropped queued ${item.type} ${item.table} ${item.id}: queued by another account`);
+        settled.set(item.id, null);
+        droppedCount += 1;
+        await persist();
+        continue;
+      }
+      if (owner.hold) break;
+
       if (item.retries >= MAX_RETRIES) {
         console.log(`⚠️ Max retries reached for item ${item.id}`);
         settled.set(item.id, { ...item, error: 'max_retries' });
@@ -288,6 +317,7 @@ export async function processQueue() {
           ...item,
           retries: item.retries + 1,
           lastError: error.message,
+          ownerId: item.ownerId || owner.me || null,
         });
         failedCount += 1;
       }
@@ -298,6 +328,7 @@ export async function processQueue() {
       success: failedCount === 0,
       processed: processedCount,
       failed: failedCount,
+      dropped: droppedCount,
     };
   } finally {
     _processing = false;

@@ -8,6 +8,7 @@ import { GlassCard } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
 import HeaderBrand from '../src/components/HeaderBrand';
 import { useAuth } from '../src/context/AuthContext';
+import { useLogoutConfirm } from '../src/hooks/useLogoutConfirm';
 import { useTheme } from '../src/context/ThemeContext';
 import { demoAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
@@ -22,7 +23,9 @@ export default function DemoScreen() {
   const router = useRouter();
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
-  const { user, isAuthenticated, isPending, isLoading: authLoading, logout } = useAuth();
+  const { user, isAuthenticated, isPending, isLoading: authLoading } = useAuth();
+  // Drains what is queued, asks before deleting what could not be sent.
+  const { requestLogout, logoutDialog } = useLogoutConfirm();
 
   const [demo, setDemo] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -59,7 +62,7 @@ export default function DemoScreen() {
       <SafeAreaView style={s.container} edges={['top']}>
         <View style={s.header}>
           <HeaderBrand />
-          <Pressable onPress={logout} hitSlop={8}><Text style={s.logout}>Log out</Text></Pressable>
+          <Pressable onPress={requestLogout} hitSlop={8}><Text style={s.logout}>Log out</Text></Pressable>
         </View>
 
         <ScrollView style={s.scroll} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
@@ -133,6 +136,7 @@ export default function DemoScreen() {
           )}
         </ScrollView>
       </SafeAreaView>
+      {logoutDialog}
     </AnimatedBackground>
   );
 }
