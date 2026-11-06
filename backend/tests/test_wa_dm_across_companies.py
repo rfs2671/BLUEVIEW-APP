@@ -427,6 +427,21 @@ class OneBriefPerPerson(unittest.TestCase):
         self.assertIn("40 Oak Ave", body)
         self.assertNotIn("12 Main St", body)
 
+    def test_each_accounts_own_reminders_are_in_the_one_brief(self):
+        db = self._world()
+        for uid, co, title in (("u_a", CO_A, "call Acme's inspector"),
+                               ("u_b", CO_B, "order Brick's rebar")):
+            db.upcoming_events.rows.append(
+                {"_id": f"r_{uid}", "company_id": co, "project_id": None, "user_id": uid,
+                 "source": "dm", "kind": "reminder", "title": title, "date": "2026-10-08",
+                 "status": "open", "history": []})
+        with _Ctx(db) as c:
+            r = _run(server._morning_brief_tick(now=self.THU_7))
+            body = "\n".join(_texts(c))
+        self.assertEqual(r["sent"], 1)
+        self.assertEqual((body.count("call Acme's inspector"), body.count("order Brick's rebar")),
+                         (1, 1))
+
     def test_send_me_my_brief_from_either_account_is_the_one_brief(self):
         with _Ctx(self._world()) as c:
             _run(server._open_dm_reply_window(ADMIN_PHONE))

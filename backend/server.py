@@ -54353,13 +54353,14 @@ async def _brief_for_accounts(users: List[dict], now: datetime, every_job: bool 
             if co:
                 job["label"] = f"{job['label']} ({co})"
             job["company_id"] = company_id
+        # Their own reminders (no job): each line once, whichever account
+        # it was read through.
         t, later = by_job.get(None, ([], []))
-        for ev in list(t) + list(later):
-            key = str(ev.get("id") or id(ev))
-            if key in seen_own:
-                continue
-            seen_own.add(key)
-            (own_today if ev in t else own_later).append(ev)
+        for bucket, lines in ((own_today, t), (own_later, later)):
+            for line in lines:
+                if line not in seen_own:
+                    seen_own.add(line)
+                    bucket.append(line)
         jobs += mine
     if not jobs:
         return []
