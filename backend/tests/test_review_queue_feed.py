@@ -310,18 +310,24 @@ class Registration(unittest.TestCase):
         self.assertEqual(_rows(c.db), [])
 
     def test_a_shared_number_queues_once_per_company(self):
+        """Refused: two accounts on the number in ONE company (co_a). The
+        same number also has an account in co_b -- the same person, which
+        alone is not refused (Roy, 2026-11-06) -- and each company's item
+        names only its own people."""
         db = _db()
-        db.users.rows.append({"_id": "u_dup", "company_id": CO_B,
+        db.users.rows.append({"_id": "u_dup", "company_id": CO_A,
+                              "role": "pm", "phone": ADMIN_PHONE})
+        db.users.rows.append({"_id": "u_other", "company_id": CO_B,
                               "role": "admin", "phone": ADMIN_PHONE})
         with _Ctx(db) as c:
             self._start(c, ADMIN_PHONE)
         rows = _rows(c.db)
         self.assertEqual(sorted((r["company_id"], r["evidence"]["user_id"]) for r in rows),
-                         [(CO_A, "u_admin"), (CO_B, "u_dup")])
+                         [(CO_A, "u_admin"), (CO_A, "u_dup"), (CO_B, "u_other")])
         self.assertEqual({r["evidence"]["reason"] for r in rows}, {"ambiguous"})
         # Each company's item names only its own person.
         b = [r for r in rows if r["company_id"] == CO_B]
-        self.assertEqual([r["evidence"]["user_id"] for r in b], ["u_dup"])
+        self.assertEqual([r["evidence"]["user_id"] for r in b], ["u_other"])
         _no_full_phone(self, rows, ADMIN_PHONE)
 
     def test_an_eligible_start_queues_nothing(self):
