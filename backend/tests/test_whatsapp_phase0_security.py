@@ -870,15 +870,15 @@ class DebugEndpointsAreOperatorOnly(unittest.TestCase):
     def test_the_debug_routes_use_the_one_operator_rule(self):
         """These used their own check (`is_platform_operator is True`, no
         PLATFORM_OPERATOR_EMAILS bootstrap). They now carry the same
-        `require_operator_404` as every other operator route, so the
-        bootstrap email is the operator here too -- and an ordinary admin
-        email is not."""
+        `require_operator_404` as every other operator route. Since the
+        2026-11-06 ruling that gate is the DB flag ONLY: the bootstrap email
+        without the flag is refused here like any admin email."""
         db = _Db(projects=[PROJ_A])
         with patch.object(server, "PLATFORM_OPERATOR_EMAILS",
                           frozenset({"ops@levelog.com"})):
             r = _call(db, "get", "/api/whatsapp/debug/recent-messages",
                       user=_user(CO_A, "admin", email="ops@levelog.com"))
-            self.assertNotEqual(r.status_code, 404)
+            self.assertEqual(r.status_code, 404)
             r = _call(db, "get", "/api/whatsapp/debug/recent-messages",
                       user=_user(CO_A, "admin", email="someone@acme.test"))
             self.assertEqual(r.status_code, 404)
