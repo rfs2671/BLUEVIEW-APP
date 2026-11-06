@@ -42,6 +42,7 @@ import { spacing, borderRadius, typography, touchTarget } from '../../src/styles
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../../src/utils/retentionCopy';
 import { useTheme } from '../../src/context/ThemeContext';
+import { useT } from '../../src/i18n';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import {
   ROLE_SUPERINTENDENT, ROLE_PM, roleHasLicence, userCardRoleLabel,
@@ -60,6 +61,7 @@ export default function AdminUsersScreen() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
+  const tReadd = useT('adminUserReadd');
 
   // The floor this deploy supports, so a row can say whether an install is
   // below it. Null until it answers, and null means say nothing.
@@ -265,11 +267,19 @@ export default function AdminUsersScreen() {
         // and only here — when Save is pressed.
         if (toStoredDate(formDobExpiry)) payload.dob_registration_expiry = toStoredDate(formDobExpiry);
       }
-      await adminUsersAPI.create(payload);
+      const created = await adminUsersAPI.create(payload);
 
       resetForm();
       setShowAddModal(false);
-      toast.success('Added', 'User created successfully');
+      // RE-ADDING A REMOVED PERSON RESTORES HIS OLD ACCOUNT (Roy, 2026-11-06):
+      // same account, history kept, the role and details just entered. The
+      // server says so; the toast says so too, so nobody goes looking for a
+      // second row.
+      if (created && created.restored === true) {
+        toast.success(tReadd('title'), tReadd('body'));
+      } else {
+        toast.success('Added', 'User created successfully');
+      }
       // THE LIST IS RE-READ RATHER THAN APPENDED TO, for the reason the edit
       // path gives: `licence` is derived by the server and a row built from
       // the create response would carry a badge nobody computed. It is also

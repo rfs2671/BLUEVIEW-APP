@@ -71,9 +71,14 @@ NON_SAFE = ("POST", "PUT", "PATCH", "DELETE")
 # So the population is read off the app and the exclusions are written down
 # here by hand. Widening the product's list turns this file red twice: once in
 # the census, because a route it still expects to be refused is not, and once
-# in the equality test that names the same two paths.
+# in the equality test that names the same paths.
+#
+# THREE SINCE 2026-11-06: /api/auth/login/choose is the second half of a login
+# when one email has accounts in several companies, and a stale demo token on
+# the phone must not refuse it any more than it may refuse login itself.
 EXPECTED_EXEMPT = frozenset({
     "/api/auth/login",
+    "/api/auth/login/choose",
     "/api/auth/register",
 })
 

@@ -158,14 +158,26 @@ class EveryUniquenessCheckIgnoresCase(unittest.TestCase):
             self.assertFalse(_run(server.email_in_use("")))
 
     def test_the_writers_call_it(self):
+        """CHANGED BY THE SAME-EMAIL RULING (Roy, 2026-11-06, #958): one
+        account per email PER COMPANY. Signup still asks email_in_use (any
+        account anywhere refuses it). The four admin/owner writers ask the
+        per-company check instead -- case-insensitive and deleted rows
+        included, like email_in_use, but scoped to the target company, since a
+        second account in ANOTHER company is what the ruling allows."""
         src = (_HERE.parent / "server.py").read_text(encoding="utf-8")
+        per_company = ("await _assert_email_free_in_company(",
+                       "await _email_free_or_removed(")
         for fn in ("async def register(", "async def create_admin_user(",
                    "async def create_admin_with_company(", "async def update_admin_account(",
                    "async def update_admin_user("):
             with self.subTest(fn=fn):
                 body = src[src.index(fn):]
                 body = body[:body.index("\n@api_router.", 1)]
-                self.assertIn("await email_in_use(", body)
+                if fn == "async def register(":
+                    self.assertIn("await email_in_use(", body)
+                else:
+                    self.assertTrue(any(h in body for h in per_company),
+                                    f"{fn} has no per-company email check")
                 self.assertNotIn('find_one({"email": user_data.email})', body)
 
     def test_an_admin_edit_to_a_variant_is_400_not_500(self):

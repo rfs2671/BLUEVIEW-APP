@@ -95,7 +95,12 @@ const IDENTITY_PATH = '/api/auth/me';
 // Endpoints that do not carry a session judgement at all. A wrong password at
 // the login form answers 401 (server.py:5769) and used to wipe whatever was
 // stored — which on a shared tablet is somebody else's live session.
-const UNAUTHENTICATED_PATHS = ['/api/auth/login', '/api/auth/register'];
+// `/login/choose` is the second half of a login when one email has accounts
+// in several companies: a 401 there means the five-minute choice expired, and
+// says nothing about any session already on the device.
+const UNAUTHENTICATED_PATHS = [
+  '/api/auth/login', '/api/auth/login/choose', '/api/auth/register',
+];
 
 const pathOf = (url) => String(url || '').split('?')[0];
 

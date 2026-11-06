@@ -174,6 +174,11 @@ DEMO_REFUSAL_STATUS = 403
 # `/api/auth/me/deletion-request`, which are three real writes.
 EXEMPT_PATHS = frozenset({
     "/api/auth/login",
+    # The second half of a login when one email has accounts in several
+    # companies (2026-11-06): the person picks a company and this exchanges
+    # the choice for a session. Exempt for the same reason as login itself --
+    # a stale demo token on the phone must not refuse a real account's login.
+    "/api/auth/login/choose",
     "/api/auth/register",
 })
 
