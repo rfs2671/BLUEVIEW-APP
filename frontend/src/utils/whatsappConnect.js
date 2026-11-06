@@ -55,11 +55,29 @@ export function needsFreshLink(link, now = Date.now()) {
 }
 
 /**
+ * "Phone shared": START refuses a number that a second account OF THE SAME
+ * COMPANY also carries. The same number on an account in ANOTHER company is
+ * the same person (one account per company, Roy 2026-11-06): START lists
+ * both and they confirm once, so the server does not report that.
+ */
+export const PHONE_SHARED = {
+  en: {
+    chip: 'Phone shared',
+    line: 'This number is also on another Levelog account in your company. Change your number in Settings, or ask your admin to change it on the other account.',
+  },
+  es: {
+    chip: 'Teléfono compartido',
+    line: 'Este número también está en otra cuenta de Levelog de su compañía. Cambie su número en Configuración, o pida a su administrador que lo cambie en la otra cuenta.',
+  },
+};
+
+/**
  * The "Levelog Assistant" section for a GET /whatsapp/me reading, or null.
  * `connectUrl` is the single-use coded link from POST /whatsapp/connect-link;
  * the plain-START `me.connect_url` is the fallback when none could be had.
+ * `lang`: 'en' (the app's language today) or 'es'.
  */
-export function alertsView(me, connectUrl = null) {
+export function alertsView(me, connectUrl = null, lang = 'en') {
   const state = me && me.state;
   if (!me || !me.eligible || !state || state === 'not_eligible') return null;
   const onUrl = me.connect_url ? (connectUrl || me.connect_url) : null;
@@ -83,12 +101,10 @@ export function alertsView(me, connectUrl = null) {
         line: 'Add your mobile number in Settings, then turn on Levelog Assistant.',
         button: null,
       };
-    case 'phone_shared':
-      return {
-        chip: chip('Phone shared', 'warn'),
-        line: 'This number is also on another Levelog account. Change your number in Settings, or ask Levelog support to remove it from the other account.',
-        button: null,
-      };
+    case 'phone_shared': {
+      const t = PHONE_SHARED[lang === 'es' ? 'es' : 'en'];
+      return { chip: chip(t.chip, 'warn'), line: t.line, button: null };
+    }
     case 'unavailable':
       return {
         chip: chip('Not available', 'warn'),

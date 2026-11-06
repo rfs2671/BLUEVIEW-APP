@@ -47,7 +47,7 @@ def _db():
         if u["_id"] == "u_pm":
             u["assigned_projects"] = [THOMAS]
     return FakeDb(
-        unique={server.WA_OPTINS: ("phone",)},
+        unique={server.WA_OPTINS: (("phone", "user_id"),)},
         users=users,
         projects=[
             {"_id": THOMAS, "company_id": CO_A, "name": "Thomas",

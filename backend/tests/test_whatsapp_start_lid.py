@@ -189,8 +189,9 @@ class EveryStartGetsAPlainReply(unittest.TestCase):
         self.assertEqual(c.db[server.WA_OPTINS].rows, [])
 
     def test_a_shared_number(self):
+        """Two accounts on the number in the admin's own company."""
         db = _db()
-        db.users.rows.append({"_id": "u_dup", "company_id": "co_b",
+        db.users.rows.append({"_id": "u_dup", "company_id": CO_A,
                               "role": "pm", "phone": "+" + ADMIN_PHONE})
         msg, _ = self._reply(f"{ADMIN_PHONE}@c.us", "START", db=db)
         self.assertEqual(msg, wa_dm.PHONE_SHARED_TEXT)
