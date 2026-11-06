@@ -349,8 +349,9 @@ class NoBareUniqueBuildsLeft(unittest.TestCase):
         # users.email moved into run_user_email_index_migration (2026-11-06):
         # unique PER COMPANY now, and `email_1` kept by name as a plain index.
         # startup_event must still call it.
-        self.assertIn("await run_user_email_index_migration()",
-                      ast.unparse(_fn("startup_event")))
+        self.assertTrue(
+            "await run_user_email_index_migration()" in ast.unparse(_fn("startup_event")),
+            "startup_event no longer runs run_user_email_index_migration")
         body = (ast.unparse(_fn("startup_event"))
                 + ast.unparse(_fn("run_user_email_index_migration")))
         for coll, key in self.EIGHT:

@@ -10718,9 +10718,10 @@ async def onboarding_create_company(
         company_id = str(existing["_id"])
         # ONE ACCOUNT PER EMAIL PER COMPANY: joining is a write of this
         # account's email into that company.
-        await _assert_email_free_in_company(
-            current_user.get("email"), company_id, actor=current_user,
-            exclude_id=current_user.get("id"))
+        if _email_norm(current_user.get("email")):
+            await _assert_email_free_in_company(
+                current_user.get("email"), company_id, actor=current_user,
+                exclude_id=current_user.get("id"))
     else:
         now = datetime.now(timezone.utc)
         company_doc = {
