@@ -7759,8 +7759,8 @@ async def require_operator_404(
     get 404 -- not 403, not 401 -- so the routes do not tell anyone they exist.
 
     THE OPERATOR FLAG IS THE ONLY TEST. `is_platform_operator` (the
-    `is_platform_operator` field no API path can write, or the
-    PLATFORM_OPERATOR_EMAILS bootstrap). Never `role`: "owner" is a retired
+    `is_platform_operator` field no API path can write; since 2026-11-06 never
+    an email match). Never `role`: "owner" is a retired
     role string every self-serve signup used to receive.
 
     THERE IS NO SHADOW MODE. The old `require_platform_operator` logged and let
@@ -9208,13 +9208,88 @@ PLATFORM_OPERATOR_EMAILS = frozenset(
 )
 
 def is_platform_operator(user: dict) -> bool:
-    """True for the platform operator. Never inferred from `role`."""
+    """True for the platform operator: the DB flag, and nothing else.
+
+    NEVER FROM AN EMAIL MATCH (operator ruling, 2026-11-06). This used to also
+    answer True for any account whose email, lowercased, was in
+    PLATFORM_OPERATOR_EMAILS, while signup's duplicate check was an exact,
+    case-sensitive match. So a public signup as a capitalised copy of the
+    operator's address ("Ops@..." for "ops@...") became a SECOND, distinct
+    account -- and that account was the operator: every require_operator_404
+    route opened for it. A string anyone can type is not a trust anchor.
+
+    The flag is in no field allow-list, so no API path can set it. The one
+    remaining use of PLATFORM_OPERATOR_EMAILS for identity is
+    run_operator_flag_startup_migration, which converts the old bootstrap to
+    the flag exactly once, and only when exactly one account claims the
+    address. Never inferred from `role` either.
+    """
     if not user:
         return False
-    if user.get("is_platform_operator") is True:
-        return True
-    email = (user.get("email") or "").strip().lower()
-    return bool(email) and email in PLATFORM_OPERATOR_EMAILS
+    return user.get("is_platform_operator") is True
+
+
+async def run_operator_flag_startup_migration() -> dict:
+    """THE BOOTSTRAP, CONVERTED TO THE FLAG -- ONCE, AND ONLY WHEN UNAMBIGUOUS.
+
+    Before 2026-11-06 the operator could be recognised by PLATFORM_OPERATOR_EMAILS
+    alone (the seeded operator row carries no flag). is_platform_operator no
+    longer reads the email, so without this the real operator would lose the
+    owner portal on deploy.
+
+    For each address in PLATFORM_OPERATOR_EMAILS: if any live account with that
+    address (any case) already carries the flag, nothing is done. Otherwise, if
+    EXACTLY ONE live account has that address (any case), the flag is set on
+    it. Two or more means a case-variant copy exists -- the signup hole may
+    have been used -- so NOTHING is written and the ids are logged as an
+    error: a human decides which row is the operator. Never raises.
+    """
+    out = {"flagged": [], "ambiguous": {}, "already": []}
+    try:
+        for email in sorted(PLATFORM_OPERATOR_EMAILS):
+            q = {"email": {"$regex": f"(?i)^{re.escape(email)}$"},
+                 "is_deleted": {"$ne": True}}
+            rows = await db.users.find(q, {"_id": 1, "is_platform_operator": 1}).to_list(10)
+            if any(r.get("is_platform_operator") is True for r in rows):
+                out["already"].append(email)
+                continue
+            if len(rows) == 1:
+                await db.users.update_one(
+                    {"_id": rows[0]["_id"]},
+                    {"$set": {"is_platform_operator": True,
+                              "updated_at": datetime.now(timezone.utc)}})
+                out["flagged"].append(str(rows[0]["_id"]))
+                logger.warning(f"[operator] flag set on the one account for a "
+                               f"PLATFORM_OPERATOR_EMAILS address (user {rows[0]['_id']})")
+            elif len(rows) > 1:
+                ids = [str(r["_id"]) for r in rows]
+                out["ambiguous"][email] = ids
+                logger.error(f"[operator] {len(rows)} live accounts share a "
+                             f"PLATFORM_OPERATOR_EMAILS address in different case; "
+                             f"NO flag written. Accounts: {ids}")
+    except Exception as e:
+        logger.error(f"[operator] flag migration failed: {type(e).__name__}: {e!r}")
+    return out
+
+
+async def email_in_use(email, exclude_id=None) -> bool:
+    """Is this address taken by any account, in ANY case, deleted or not?
+
+    Case-insensitive because people treat "Bob@x" and "bob@x" as one address,
+    and deleted rows count because the users.email unique index covers them
+    too (a duplicate there is a 500, not a refusal). `exclude_id` is the
+    account being edited.
+    """
+    e = (email or "").strip()
+    if not e:
+        return False
+    q = {"email": {"$regex": f"(?i)^{re.escape(e)}$"}}
+    if exclude_id is not None:
+        try:
+            q["_id"] = {"$ne": ObjectId(str(exclude_id))}
+        except Exception:
+            q["_id"] = {"$ne": exclude_id}
+    return (await db.users.find_one(q, {"_id": 1})) is not None
 
 
 # ── RANK, WITH THE OPERATOR ALWAYS ADMITTED ─────────────────────────────────
@@ -9935,9 +10010,8 @@ async def register(user_data: UserCreate, request: Request = None, _rate=Depends
     # no query and no bcrypt round.
     pwd = assert_password_complexity(user_data.password)
 
-    # Check if email exists
-    existing = await db.users.find_one({"email": user_data.email})
-    if existing:
+    # Check if email exists -- IN ANY CASE (email_in_use).
+    if await email_in_use(user_data.email):
         raise HTTPException(status_code=400, detail="Email already registered")
 
     user_dict = user_data.model_dump()
@@ -11914,8 +11988,7 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admi
     # person it belongs to may never change it.
     pwd = assert_password_complexity(user_data.password)
 
-    existing = await db.users.find_one({"email": user_data.email})
-    if existing:
+    if await email_in_use(user_data.email):
         raise HTTPException(status_code=400, detail="Email already registered")
 
     user_dict = user_data.model_dump()
@@ -12221,6 +12294,10 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     update_data = {k: v for k, v in user_data.items() if v is not None and k in ALLOWED_USER_FIELDS and k != "password"}
     if "password" in user_data and user_data["password"]:
         update_data["password"] = hash_password(user_data["password"])
+    # Another account's address, in any case, is a refusal -- not a 500 from
+    # the unique index, and not a case-variant twin (email_in_use).
+    if "email" in update_data and await email_in_use(update_data["email"], exclude_id=user_id):
+        raise HTTPException(status_code=400, detail="Email already registered")
 
     # ── THE ROLE ALLOW-LIST, ON THE EDIT PATH TOO ───────────────────────────
     #
@@ -15738,9 +15815,8 @@ class CreateAdminRequest(BaseModel):
 async def create_admin_with_company(admin_data: CreateAdminRequest, current_user = Depends(get_current_user)):
     """Create admin account with company (owner only)"""
     
-    # Check if email exists
-    existing_user = await db.users.find_one({"email": admin_data.email, "is_deleted": {"$ne": True}})
-    if existing_user:
+    # Check if email exists -- in any case, deleted rows included (email_in_use).
+    if await email_in_use(admin_data.email):
         raise HTTPException(status_code=400, detail="Email already registered")
     
     # Create company first
@@ -15856,6 +15932,8 @@ async def update_admin_account(admin_id: str, admin_data: dict, current_user = D
     if "name" in admin_data:
         update_fields["name"] = admin_data["name"]
     if "email" in admin_data:
+        if await email_in_use(admin_data["email"], exclude_id=admin_id):
+            raise HTTPException(status_code=400, detail="Email already registered")
         update_fields["email"] = admin_data["email"]
     if "company_id" in admin_data:
         update_fields["company_id"] = admin_data["company_id"]
@@ -63484,7 +63562,8 @@ def _contact_phone_variants(phone: str) -> list:
     return [p for p in out if not (p in seen or seen.add(p))]
 
 
-async def _find_whatsapp_contact(phone: str, *, all_rows: bool = False):
+async def _find_whatsapp_contact(phone: str, *, all_rows: bool = False,
+                                 company_id: Any = None):
     """A contact row for this number in any format a writer here can produce.
 
     `user_id: {$ne: None}` is carried from the original queries and matters:
@@ -63494,11 +63573,19 @@ async def _find_whatsapp_contact(phone: str, *, all_rows: bool = False):
     `all_rows=True` returns every live row (a list) instead of one, for the
     callers that must know whether the number belongs to more than one
     company. It raises on a failed read so that caller can fail closed; the
-    single-row form keeps its old log-and-None behaviour."""
+    single-row form keeps its old log-and-None behaviour.
+
+    `company_id`: only that company's row. One person can hold an account in
+    several companies with the same phone, so a lookup made FOR a company
+    (a group's sender) must not take another company's row first."""
     variants = _contact_phone_variants(phone)
     if not variants:
         return [] if all_rows else None
     query = {"phone": {"$in": variants}, "user_id": {"$ne": None}}
+    if company_id is not None:
+        if not str(company_id or "").strip():
+            return [] if all_rows else None
+        query["company_id"] = _company_id_filter(company_id)
     if all_rows:
         return await db.whatsapp_contacts.find(
             query, {"company_id": 1}).to_list(20)
@@ -80207,7 +80294,11 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                     # The retired "owner" is gone from the tuple; the operator
                     # is admitted by `is_company_admin` on the user document,
                     # because his role string is still the retired one.
-                    contact = await _find_whatsapp_contact(sender)
+                    # THIS group's company only: the same phone can be a
+                    # contact in several companies, and the first row found
+                    # (another company's) refused an admin of this one.
+                    contact = await _find_whatsapp_contact(
+                        sender, company_id=msg_company_id)
                     sender_role = None
                     user_doc = None
                     if contact and contact.get("user_id"):
@@ -89301,6 +89392,9 @@ async def startup_event():
     # new pending-by-default gate never locks out current accounts.
     await run_account_status_startup_migration()
     await run_pm_access_startup_migration()
+    # Operator ruling 2026-11-06: the operator is the DB flag only; convert the
+    # PLATFORM_OPERATOR_EMAILS bootstrap to the flag when unambiguous.
+    await run_operator_flag_startup_migration()
     
     # DOB collection indexes
     await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])
