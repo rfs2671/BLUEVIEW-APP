@@ -181,9 +181,10 @@ async def recipient_is_field_role(db, recipient: str):
     # string of `wilson@Cp.com`. That is the same gap `login` has, on the same
     # field, and closing it belongs with a decision to fold emails on write --
     # not here, on the hot path, behind a scan.
+    terms = list({address, address.lower()})
     try:
         user = await db.users.find_one(
-            {"email": {"$in": list({address, address.lower()})}},
+            {"email": {"$in": terms}},
             {"role": 1},
         )
     except Exception as e:  # pragma: no cover — defensive
@@ -191,7 +192,29 @@ async def recipient_is_field_role(db, recipient: str):
             "[notifications] role lookup failed for %s: %r", address, e)
         return None
     role = str((user or {}).get("role") or "").strip().lower()
-    return role if role in EMAIL_EXCLUDED_ROLES else None
+    if role not in EMAIL_EXCLUDED_ROLES:
+        return None
+    # ONE ADDRESS, SEVERAL ACCOUNTS. Since 2026-11-06 an email may hold one
+    # account per company, and the row above is whichever came first. A person
+    # who is a CP at one company and an admin at another is still mailed as
+    # that admin -- his permit reminders have a deadline -- so the address is
+    # excluded only when no LIVE account at it may be emailed. Asked only
+    # after a field role was found, so an ordinary send still costs one read.
+    try:
+        other = await db.users.find_one(
+            {"email": {"$in": terms},
+             "role": {"$nin": sorted(EMAIL_EXCLUDED_ROLES)},
+             "is_deleted": {"$ne": True}},
+            {"role": 1},
+        )
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            "[notifications] second role lookup failed for %s: %r", address, e)
+        return None
+    other_role = str((other or {}).get("role") or "").strip().lower()
+    if other and other_role not in EMAIL_EXCLUDED_ROLES:
+        return None
+    return role
 # Phase B1a — per-user preferences statuses. The preferences pipeline
 # only fires when the caller passes `signal_kind` in metadata AND
 # the recipient resolves to a users.{_id}; otherwise the legacy path

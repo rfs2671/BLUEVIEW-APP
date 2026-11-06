@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Image, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react-native';
+import { Mail, Lock, Eye, EyeOff, ArrowRight, Building2 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard } from '../src/components/GlassCard';
 import GlassInput from '../src/components/GlassInput';
@@ -12,6 +12,8 @@ import { useAuth } from '../src/context/AuthContext';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { semantic } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
+import { useT } from '../src/i18n';
+import { readLoginAnswer, companyLabel, roleLabel } from '../src/utils/loginChoice';
 
 // WHERE A ROLE LANDS AFTER LOGIN.
 //
@@ -44,6 +46,10 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // ONE EMAIL, SEVERAL COMPANIES. Non-null while the person picks which
+  // company to sign in to: [{ companyName, role, choiceToken }].
+  const [choices, setChoices] = useState(null);
+  const t = useT('loginPicker');
 
   const pwdRef = useRef(null);
 
@@ -77,16 +83,16 @@ export default function LoginScreen() {
     setError('');
 
     try {
-      const userData = await login(email, password);
-      const dest = getRedirectPath(userData);
-
-      if (userData.site_mode) {
-        toast.success('Site Mode', `Connected to ${userData.project_name || 'project'}`);
-      } else {
-        toast.success('Welcome back!', `Logged in as ${userData.full_name || userData.name || userData.email}`);
+      const result = await login(email, password);
+      // The password opened accounts in more than one company: no session
+      // yet. Show the picker; a choice finishes in handleChoose.
+      if (result && result.choose_company === true) {
+        const answer = readLoginAnswer(result);
+        if (answer.kind !== 'choose') throw new Error(t('failed'));
+        setChoices(answer.accounts);
+        return;
       }
-
-      router.replace(dest);
+      finishLogin(result);
     } catch (err) {
       const errorMessage = err.response?.data?.detail || err.message || 'Invalid credentials';
       setError(errorMessage);
@@ -94,6 +100,42 @@ export default function LoginScreen() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const finishLogin = (userData) => {
+    const dest = getRedirectPath(userData);
+
+    if (userData.site_mode) {
+      toast.success('Site Mode', `Connected to ${userData.project_name || 'project'}`);
+    } else {
+      toast.success('Welcome back!', `Logged in as ${userData.full_name || userData.name || userData.email}`);
+    }
+
+    router.replace(dest);
+  };
+
+  const handleChoose = async (account) => {
+    if (loading) return;
+    setLoading(true);
+    setError('');
+    try {
+      const userData = await login(email, password, account.choiceToken);
+      finishLogin(userData);
+    } catch (err) {
+      // A choice lives five minutes. Whatever went wrong, the way on is a
+      // fresh sign-in, so the form comes back with the reason under it.
+      const errorMessage = err.response?.data?.detail || err.message || t('failed');
+      setChoices(null);
+      setError(errorMessage);
+      toast.error(t('failedTitle'), errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const backToForm = () => {
+    setChoices(null);
+    setError('');
   };
 
   // FIX: branded splash instead of bare white View
@@ -148,7 +190,44 @@ export default function LoginScreen() {
               <Text style={s.welcomeTitle}>LeveLog</Text>
             </View>
 
-            {(() => {
+            {choices ? (
+              <View style={s.form}>
+                <Text style={s.pickerTitle}>{t('title')}</Text>
+                <Text style={s.pickerHint}>{t('hint')}</Text>
+                {choices.map((account) => (
+                  <Pressable
+                    key={account.choiceToken}
+                    onPress={() => handleChoose(account)}
+                    disabled={loading}
+                    style={({ pressed }) => [s.choiceRow, (pressed || loading) && s.choiceRowDim]}
+                    accessibilityRole="button"
+                    accessibilityLabel={companyLabel(account, t)}
+                  >
+                    <Building2 size={20} strokeWidth={1.5} color={colors.text.subtle} />
+                    <View style={s.choiceText}>
+                      <Text style={s.choiceName}>{companyLabel(account, t)}</Text>
+                      {roleLabel(account.role, t) ? (
+                        <Text style={s.choiceRole}>{roleLabel(account.role, t)}</Text>
+                      ) : null}
+                    </View>
+                    <ArrowRight size={18} strokeWidth={1.5} color={colors.text.subtle} />
+                  </Pressable>
+                ))}
+                {loading ? <ActivityIndicator color={colors.primary} /> : null}
+                {error ? (
+                  <Text style={s.errorText}>{error}</Text>
+                ) : null}
+                <Pressable
+                  onPress={backToForm}
+                  disabled={loading}
+                  style={s.backRow}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('back')}
+                >
+                  <Text style={s.backText}>{t('back')}</Text>
+                </Pressable>
+              </View>
+            ) : (() => {
               const formContent = (
                 <View style={s.form}>
                   <View style={s.inputGroup}>
@@ -292,6 +371,49 @@ function buildStyles(colors, isDark) {
   },
   submitBtn: {
     marginTop: spacing.sm,
+  },
+  pickerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text.primary,
+  },
+  pickerHint: {
+    fontSize: 14,
+    color: colors.text.muted,
+  },
+  choiceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    backgroundColor: colors.glass.background,
+  },
+  choiceRowDim: {
+    opacity: 0.5, // tokens.opacity.o50, the disabled/busy dim
+  },
+  choiceText: { flex: 1 },
+  choiceName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text.primary,
+  },
+  choiceRole: {
+    fontSize: 13,
+    color: colors.text.muted,
+    marginTop: 2,
+  },
+  backRow: {
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+  },
+  backText: {
+    fontSize: 14,
+    color: colors.primary,
+    fontWeight: '600',
   },
   signupRow: {
     marginTop: spacing.lg,

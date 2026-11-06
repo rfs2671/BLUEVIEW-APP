@@ -183,8 +183,20 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const login = async (email, password) => {
-    await authAPI.login(email, password);
+  // `choiceToken`: the company the person picked when one email has accounts
+  // in several companies. Without it this is the ordinary sign-in; with it,
+  // the picked account's choice is exchanged for its session.
+  const login = async (email, password, choiceToken) => {
+    const answer = choiceToken
+      ? await authAPI.chooseLoginCompany(choiceToken)
+      : await authAPI.login(email, password);
+
+    // SEVERAL COMPANIES: there is no session yet, so there is nothing to ask
+    // /auth/me about. The login screen shows the picker and calls back here
+    // with the choice.
+    if (answer && answer.choose_company === true) {
+      return { choose_company: true, accounts: answer.accounts || [] };
+    }
 
     const userData = await authAPI.getMe();
     const normalizedUser = {

@@ -398,13 +398,31 @@ export const authAPI = {
     const response = await apiClient.post('/api/auth/login', {
       email,
       password,
+      // THIS APP CAN SHOW A COMPANY PICKER. One email may hold an account in
+      // several companies; when the password opens more than one, the server
+      // answers { choose_company, accounts } and NO token (see loginChoice.js).
+      // An app without this flag gets a 409 asking the person to update.
+      company_picker: true,
     });
 
-    // Store token (API returns 'token' not 'access_token')
+    // Store token (API returns 'token' not 'access_token'). A picker answer
+    // carries none, so nothing is stored until a company is chosen.
     if (response.data.token) {
       await setToken(response.data.token);
     }
 
+    return response.data;
+  },
+
+  // The second half of a login with a company picker: the chosen account's
+  // five-minute choice, exchanged for its session.
+  chooseLoginCompany: async (choiceToken) => {
+    const response = await apiClient.post('/api/auth/login/choose', {
+      choice_token: choiceToken,
+    });
+    if (response.data.token) {
+      await setToken(response.data.token);
+    }
     return response.data;
   },
 

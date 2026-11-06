@@ -4,7 +4,9 @@ Pinned here:
   * every new /owner route answers 404 to anyone who is not the platform
     operator -- a signed-in admin, and a missing or bad token alike;
   * add admin: promotes a user of this company, creates a new admin when the
-    email has no account, refuses an account in another company;
+    email has no account IN THIS COMPANY -- an account in another company is
+    left alone and does not block it (one account per email per company,
+    Roy 2026-11-06);
   * change role and remove: refused when it would leave the company with no
     admin; every change writes one audit row;
   * Deleted items lists deleted companies, users and BOTH kinds of deleted
@@ -193,19 +195,18 @@ class AddAdminTest(unittest.TestCase):
                          "created")
 
     def test_email_match_ignores_case_both_ways(self):
-        """A stored mixed-case email is found by any spelling, so an account
-        in another company is refused rather than duplicated."""
+        """A stored mixed-case email IN THIS COMPANY is found by any spelling,
+        so it is promoted rather than duplicated."""
         db = _db()
-        next(u for u in db.users.rows if u["_id"] == OTHER)["email"] = "Oz@Other.test"
+        next(u for u in db.users.rows if u["_id"] == PM1)["email"] = "Pat@Acme.test"
         with patch.object(server, "db", db):
-            with self.assertRaises(HTTPException) as ctx:
-                run(server.owner_add_company_admin(
-                    CID, server.OwnerAddAdmin(email="OZ@OTHER.TEST", name="Oz",
-                                              password=STRONG),
-                    operator=OPERATOR))
-        self.assertEqual(_err(ctx)[1]["code"], "OTHER_COMPANY")
+            out = run(server.owner_add_company_admin(
+                CID, server.OwnerAddAdmin(email="PAT@ACME.TEST", name="Pat",
+                                          password=STRONG),
+                operator=OPERATOR))
+        self.assertFalse(out["created"])
         self.assertEqual(sum(1 for u in db.users.rows
-                             if (u.get("email") or "").lower() == "oz@other.test"), 1)
+                             if (u.get("email") or "").lower() == "pat@acme.test"), 1)
 
     def test_email_with_regex_characters_is_matched_literally(self):
         db = _db()
@@ -246,7 +247,10 @@ class AddAdminTest(unittest.TestCase):
                                               password="short"),
                     operator=OPERATOR))
 
-    def test_account_in_another_company_is_refused(self):
+    def test_account_in_another_company_is_not_moved_or_promoted(self):
+        """WAS "refused" (OTHER_COMPANY). One account per email per company
+        now: the other company's account is untouched, and with no name and
+        password there is nothing to create here."""
         db = _db()
         with patch.object(server, "db", db):
             with self.assertRaises(HTTPException) as ctx:
@@ -254,8 +258,22 @@ class AddAdminTest(unittest.TestCase):
                     CID, server.OwnerAddAdmin(email="o@other.test"),
                     operator=OPERATOR))
         code, detail = _err(ctx)
-        self.assertEqual((code, detail["code"]), (409, "OTHER_COMPANY"))
+        self.assertEqual((code, detail["code"]), (422, "NEW_ACCOUNT_NEEDS_NAME"))
         self.assertEqual(_audit(db, "owner_admin_add"), [])
+        oz = next(u for u in db.users.rows if u["_id"] == OTHER)
+        self.assertEqual((oz["company_id"], oz["role"]), (CID2, "admin"))
+
+    def test_account_in_another_company_gets_a_second_account_here(self):
+        db = _db()
+        with patch.object(server, "db", db):
+            out = run(server.owner_add_company_admin(
+                CID, server.OwnerAddAdmin(email="O@Other.test", name="Oz",
+                                          password=STRONG),
+                operator=OPERATOR))
+        self.assertTrue(out["created"])
+        rows = [u for u in db.users.rows
+                if (u.get("email") or "").lower() == "o@other.test"]
+        self.assertEqual(sorted(u["company_id"] for u in rows), sorted([CID, CID2]))
 
     def test_already_admin_is_refused(self):
         with patch.object(server, "db", _db()):

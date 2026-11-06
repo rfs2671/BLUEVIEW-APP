@@ -345,14 +345,22 @@ class NoBareUniqueBuildsLeft(unittest.TestCase):
         # Not merely deleted. Each must still be created, by the resilient
         # helper, under the name Mongo would have generated -- a rename would
         # build a SECOND index beside the live one.
-        body = ast.unparse(_fn("startup_event"))
+        #
+        # users.email moved into run_user_email_index_migration (2026-11-06):
+        # unique PER COMPANY now, and `email_1` kept by name as a plain index.
+        # startup_event must still call it.
+        self.assertIn("await run_user_email_index_migration()",
+                      ast.unparse(_fn("startup_event")))
+        body = (ast.unparse(_fn("startup_event"))
+                + ast.unparse(_fn("run_user_email_index_migration")))
         for coll, key in self.EIGHT:
             with self.subTest(coll=coll):
                 self.assertIn(f"db.{coll}" if coll != "project_files" else "db.project_files", body)
                 self.assertIn(f"'{key}'", body)
 
     def test_default_index_names_are_preserved(self):
-        body = ast.unparse(_fn("startup_event"))
+        body = (ast.unparse(_fn("startup_event"))
+                + ast.unparse(_fn("run_user_email_index_migration")))
         for name in (
             "email_1", "phone_1", "tag_id_1", "name_1",
             "project_id_1_date_1", "company_id_1_phone_1",

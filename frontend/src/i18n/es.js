@@ -205,4 +205,18 @@ export default {
     matchedByBlock: 'Vinculada por su cuadra',
     lag: 'El DOT publica los permisos en un día, las citaciones en unos 3 días y las inspecciones cada mes.',
   },
+
+  loginPicker: {
+    title: 'Elija una empresa',
+    hint: 'Este correo electrónico tiene una cuenta en más de una empresa. Elija en cuál iniciar sesión.',
+    noCompany: 'Todavía sin empresa (registro nuevo)',
+    back: 'Usar otro correo electrónico',
+    failed: 'No se completó el inicio de sesión. Inténtelo de nuevo.',
+    failedTitle: 'Falló el inicio de sesión',
+    role_admin: 'Administrador',
+    role_pm: 'Gerente de proyecto',
+    role_cp: 'Persona competente',
+    role_superintendent: 'Superintendente',
+    role_demo: 'Cuenta de demostración',
+  },
 };
