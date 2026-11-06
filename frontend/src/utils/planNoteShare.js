@@ -13,6 +13,7 @@ export const IMAGE_WIDTH = 1080;
 export const MAX_SECTION_HEIGHT = 1080; // plan crop / photo are scaled to the width, then capped
 export const CAPTION_PAD = 36;
 export const CAPTION_FONT_PX = 34;
+export const CAPTION_FONT = `${CAPTION_FONT_PX}px sans-serif`; // measured AND drawn with this (the phone app measures in a WebView)
 export const CAPTION_LINE_PX = 46;
 export const CAPTION_MAX_CONTEXT_LINES = 8;
 export const MARKER_RADIUS_FRACTION = 0.035; // of the plan section width
@@ -99,7 +100,7 @@ export function composeShareImage({
 
   // Measure with a scratch context so the real canvas is sized once.
   const scratch = createCanvas(width, 10).getContext('2d');
-  scratch.font = `${CAPTION_FONT_PX}px sans-serif`;
+  scratch.font = CAPTION_FONT;
   const measure = (s) => scratch.measureText(s).width;
   const textWidth = width - CAPTION_PAD * 2;
   let ctxLines = wrapLines(measure, fields.context, textWidth);
@@ -153,7 +154,7 @@ export function composeShareImage({
     ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, y, width, captionH);
     ctx.fillStyle = '#ffffff';
-    ctx.font = `${CAPTION_FONT_PX}px sans-serif`;
+    ctx.font = CAPTION_FONT;
     ctx.textBaseline = 'top';
     captionLines.forEach((ln, i) => {
       if (i === ctxLines.length) ctx.fillStyle = '#E3C27A'; // meta lines in the accent colour
