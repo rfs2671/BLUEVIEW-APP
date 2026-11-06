@@ -2285,6 +2285,24 @@ export default {
     lag: 'DOT publishes permits within a day, summonses in about 3 days, inspections monthly.',
   },
 
+  // ── app/login.jsx — the company picker ─────────────────────────────────
+  //
+  // One email may hold one account per company (2026-11-06). When the
+  // password opens more than one, the login screen asks which company.
+  loginPicker: {
+    title: 'Choose a company',
+    hint: 'This email has an account in more than one company. Pick the one to sign in to.',
+    noCompany: 'No company yet (new signup)',
+    back: 'Use a different email',
+    failed: 'Sign-in did not finish. Try again.',
+    failedTitle: 'Sign-in failed',
+    role_admin: 'Admin',
+    role_pm: 'Project manager',
+    role_cp: 'Competent person',
+    role_superintendent: 'Superintendent',
+    role_demo: 'Demo account',
+  },
+
   // ── Log out with writes still on the device (src/hooks/useLogoutConfirm) ──
   //
   // Shown only when a logout's drain could not send everything (offline, or
@@ -2297,5 +2315,11 @@ export default {
     unsentBodyOne: "1 change hasn't been sent and will be deleted if you log out.",
     logOutAnyway: 'Log out anyway',
     cancel: 'Cancel',
+  },
+
+  // ── app/admin/users.jsx — Add user found a removed account and restored it ─
+  adminUserReadd: {
+    title: 'Account restored',
+    body: 'This person had a removed account in your company. It is back, with the role and details you entered and its history kept.',
   },
 };

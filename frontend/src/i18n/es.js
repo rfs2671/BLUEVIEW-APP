@@ -216,6 +216,20 @@ export default {
     lag: 'El DOT publica los permisos en un día, las citaciones en unos 3 días y las inspecciones cada mes.',
   },
 
+  loginPicker: {
+    title: 'Elija una empresa',
+    hint: 'Este correo electrónico tiene una cuenta en más de una empresa. Elija en cuál iniciar sesión.',
+    noCompany: 'Todavía sin empresa (registro nuevo)',
+    back: 'Usar otro correo electrónico',
+    failed: 'No se completó el inicio de sesión. Inténtelo de nuevo.',
+    failedTitle: 'Falló el inicio de sesión',
+    role_admin: 'Administrador',
+    role_pm: 'Gerente de proyecto',
+    role_cp: 'Persona competente',
+    role_superintendent: 'Superintendente',
+    role_demo: 'Cuenta de demostración',
+  },
+
   // ── Cerrar sesión con cambios aún en el dispositivo (useLogoutConfirm) ──
   logout: {
     unsentTitle: 'Cambios sin enviar',
@@ -223,5 +237,10 @@ export default {
     unsentBodyOne: '1 cambio no se ha enviado y se eliminará si cierra sesión.',
     logOutAnyway: 'Cerrar sesión de todos modos',
     cancel: 'Cancelar',
+  },
+
+  adminUserReadd: {
+    title: 'Cuenta restaurada',
+    body: 'Esta persona tenía una cuenta eliminada en su empresa. Ya está de vuelta, con el rol y los datos que ingresó y con su historial.',
   },
 };
