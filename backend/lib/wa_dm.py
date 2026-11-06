@@ -203,6 +203,24 @@ ACCOUNT_PICK_LINES = {
            "which_job": "¿Cuál?",
            "send_again": "Luego mande la foto otra vez."},
 }
+
+# A question of ours left open while the person wrote about something else
+# (Roy, 2026-11-06): their new message is answered as usual, the question
+# stays open (and what it holds stays pending), and it is said again ONCE.
+PENDING_LINES = {
+    "en": {"still_open": "Still open from before:",
+           "queued": "Noted. I'll ask about that one right after this."},
+    "es": {"still_open": "Sigue pendiente:",
+           "queued": "Anotado. Le pregunto por ese justo después de esto."},
+}
+
+
+def still_open_text(lang: str, asked: str) -> str:
+    """"Still open from before:" and the question as it was asked."""
+    head = (PENDING_LINES.get(lang) or PENDING_LINES["en"])["still_open"]
+    return f"{head}\n{asked}"
+
+
 # "Q3 YES" from a person whose two companies each asked a Q3 (codes are
 # unique per company): which one, by number.
 SET_Q_PICK_LINES = {

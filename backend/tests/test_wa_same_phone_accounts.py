@@ -101,13 +101,15 @@ class _Assistant:
     async def no_punch(self, *a, **k):
         return False
 
-    async def off(self, *a, **k):
-        return False
+    async def brain(self, *a, **k):
+        # The brain path (the default for everyone): with two connected
+        # accounts it reads across them rather than asking which company.
+        return True
 
     def patches(self):
         return [patch.object(server, "_dm_assistant_reply", self.reply),
                 patch.object(server, "_punch_dm_turn", self.no_punch),
-                patch.object(server, "_dm_brain_on", self.off)]
+                patch.object(server, "_dm_brain_on", self.brain)]
 
 
 def _say(c, body, msg_id, assistant=None):
@@ -173,12 +175,17 @@ class StartListsEveryCompanyAndAsksOnce(unittest.TestCase):
             self.assertEqual(_texts(c)[-1],
                              wa_dm.accounts_text("en", "declined_start", [NAME_A, NAME_B]))
 
-    def test_another_message_clears_the_question_and_a_later_yes_connects_nothing(self):
+    def test_another_message_keeps_the_question_open_and_reminds_once(self):
+        """Roy, 2026-11-06: never dropped. Another message is answered as
+        usual; the question stays open, said again ONCE; YES still answers."""
         with _Ctx(_db()) as c:
             _say(c, "START", "m1")
             _say(c, "what is this", "m2")
-            _say(c, "yes", "m3")
+            _say(c, "and this?", "m3")
             self.assertEqual(_active(c), [])
+            self.assertEqual(_texts(c), [START_Q, wa_dm.still_open_text("en", START_Q)])
+            _say(c, "yes", "m4")
+            self.assertEqual(_active(c), ["u_admin", "u_b"])
 
     def test_stop_clears_the_question(self):
         with _Ctx(_db()) as c:
@@ -259,15 +266,35 @@ class AnAccountAddedLaterIsAskedAboutOnce(unittest.TestCase):
             self.assertEqual(len(_texts(c)), n, "never asked again")
             self.assertEqual([b for _u, b in a.calls][-1], "and at 12 main?")
 
-    def test_passed_over_it_waits_a_day(self):
+    def test_passed_over_the_held_message_is_never_dropped(self):
+        """Roy, 2026-11-06: the new messages are answered as usual, the
+        question stays open with the message it holds, said again ONCE
+        (after the answer), and YES later connects and answers the held one."""
         a = _Assistant()
+        later_q = wa_dm.accounts_text("en", "later_confirm", [NAME_B])
         with _Ctx(self._world()) as c:
             _say(c, "how many on site", "m1", a)
             _say(c, "who is at 12 main", "m2", a)
             _say(c, "and now?", "m3", a)
             self.assertEqual(_active(c), ["u_admin"])
             self.assertEqual([b for _u, b in a.calls], ["who is at 12 main", "and now?"])
-            self.assertEqual(len([t for t in _texts(c) if "now also has" in t]), 1)
+            self.assertEqual(_texts(c), [later_q, wa_dm.still_open_text("en", later_q)])
+            _say(c, "yes", "m4", a)
+            self.assertEqual(_active(c), ["u_admin", "u_b"])
+            self.assertEqual([b for _u, b in a.calls][-1], "how many on site")
+
+    def test_a_newer_question_of_the_assistant_takes_the_yes(self):
+        """The assistant asked "Add Arkon?" after our question: "yes" is its,
+        and ours stays open."""
+        a = _Assistant()
+        with _Ctx(self._world()) as c:
+            _say(c, "how many on site", "m1", a)
+            _run(server._dm_state_set("dm_action", CHAT, 600, step="confirm",
+                                      p={"action": "add_sub"}))
+            _say(c, "yes", "m2", a)
+            self.assertEqual(_active(c), ["u_admin"])
+            self.assertEqual([b for _u, b in a.calls], ["yes"])
+            self.assertIsNotNone(_run(server._dm_state_get(server.ACCOUNTS_STATE, CHAT)))
 
     def test_a_yes_or_a_number_meant_for_something_else_is_never_held(self):
         """"yes" may be the answer to the assistant's own question: it goes
@@ -370,7 +397,8 @@ class TheLines(unittest.TestCase):
     def test_english_and_spanish_for_every_line(self):
         en, es = wa_dm.ACCOUNTS_LINES["en"], wa_dm.ACCOUNTS_LINES["es"]
         self.assertEqual(set(en), set(es))
-        for lines in (wa_dm.GC_TWO_OPEN_LINES, wa_dm.SET_Q_PICK_LINES):
+        self.assertEqual(set(wa_dm.PENDING_LINES["en"]), set(wa_dm.PENDING_LINES["es"]))
+        for lines in (wa_dm.GC_TWO_OPEN_LINES, wa_dm.SET_Q_PICK_LINES, wa_dm.PENDING_LINES):
             self.assertEqual(set(lines), {"en", "es"})
         for key in ("start_confirm", "later_confirm", "connected", "declined_start",
                     "declined_later"):
@@ -482,6 +510,38 @@ class SetQuestionCodesAcrossCompanies(unittest.TestCase):
         self.assertEqual(qs["q_a"]["status"], psq.OPEN)
         self.assertEqual((qs["q_b"]["status"], qs["q_b"]["answer"], qs["q_b"]["answered_by"]),
                          (psq.ANSWERED, psq.INCLUDE, "u_b"))
+
+    def test_another_message_keeps_the_pick_open_and_reminds_once(self):
+        from lib import plan_set_questions as psq
+        with _Ctx(self._world()) as c:
+            _say(c, "Q1 YES", "m1")
+            asked = _texts(c)[0]
+            _say(c, "thanks", "m2")
+            _say(c, "ok", "m3")
+            self.assertEqual(_texts(c).count(wa_dm.still_open_text("en", asked)), 1)
+            _say(c, "2", "m4")
+            qs = {q["_id"]: q for q in c.db[psq.COLLECTION].rows}
+        self.assertEqual((qs["q_a"]["status"], qs["q_b"]["status"]), (psq.OPEN, psq.ANSWERED))
+
+    def test_a_second_pick_waits_its_turn_and_neither_is_dropped(self):
+        from lib import plan_set_questions as psq
+        db = self._world()
+        db[psq.COLLECTION].rows += [
+            {"_id": "q_a2", "project_id": "proj_a", "code": "Q2", "status": psq.OPEN,
+             "asked_user_ids": ["u_admin"], "short": "A.4", "label": "A.4"},
+            {"_id": "q_b2", "project_id": "proj_b", "code": "Q2", "status": psq.OPEN,
+             "asked_user_ids": ["u_b"], "short": "S.3", "label": "S.3"}]
+        with _Ctx(db) as c:
+            _say(c, "Q1 YES", "m1")
+            _say(c, "Q2 NO", "m2")
+            self.assertIn(wa_dm.PENDING_LINES["en"]["queued"], _texts(c))
+            _say(c, "1", "m3")                         # Q1 -> Acme's
+            self.assertTrue(_texts(c)[-1].startswith("Q2 is open on more than one job."))
+            _say(c, "2", "m4")                         # Q2 -> Brick's
+            qs = {q["_id"]: q for q in c.db[psq.COLLECTION].rows}
+        self.assertEqual({k: (q["status"], q.get("answer")) for k, q in qs.items()},
+                         {"q_a": (psq.ANSWERED, psq.INCLUDE), "q_b": (psq.OPEN, None),
+                          "q_a2": (psq.OPEN, None), "q_b2": (psq.ANSWERED, psq.EXCLUDE)})
 
     def test_a_code_in_one_company_only_is_answered_for_the_right_account(self):
         """Brick's Q1 alone: answered as Ada's Brick account (before: only

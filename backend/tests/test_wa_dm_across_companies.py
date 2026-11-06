@@ -175,16 +175,49 @@ class EachMessageGoesToTheRightAccount(unittest.TestCase):
             t.say(c, "agrega un trabajo nuevo en 9 Menahan St para la compañía", "m1")
             self.assertTrue(_texts(c)[-1].startswith("¿Para qué compañía es?"))
 
-    def test_a_new_message_instead_of_a_pick_is_routed_as_new(self):
+    def test_a_new_message_while_a_pick_is_open_never_drops_the_held_one(self):
+        """Roy, 2026-11-06: the new message is answered as usual, the
+        question stays open (the held change with it), said again ONCE, and
+        the number still resolves it."""
         t = _Turn()
+        which = f"Which company is this for?\n1) {NAME_A}\n2) {NAME_B}"
         with _Ctx(_db()) as c:
             t.say(c, "add a new job at 9 Menahan St", "m1")
             t.say(c, "how many at 40 oak", "m2")
-            t.say(c, "1", "m3")
-        self.assertEqual((t.calls[0]["as"], t.calls[0]["body"]), ("u_b", "how many at 40 oak"))
-        self.assertEqual(len(t.calls), 2)
-        self.assertNotIn("add a new job at 9 Menahan St", [x["body"] for x in t.calls],
-                         "the held change is dropped once they moved on: never done later")
+            t.say(c, "and at 12 main?", "m3")
+            self.assertEqual(_texts(c), [which, wa_dm.still_open_text("en", which)])
+            t.say(c, "1", "m4")
+        self.assertEqual([(x["as"], x["body"]) for x in t.calls],
+                         [("u_b", "how many at 40 oak"), ("u_a", "and at 12 main?"),
+                          ("u_a", "add a new job at 9 Menahan St")])
+
+    def test_a_second_change_waits_its_turn_behind_the_first(self):
+        t = _Turn()
+        with _Ctx(_db()) as c:
+            t.say(c, "add a new job at 9 Menahan St", "m1")
+            t.say(c, "add a new job at 77 Kent Ave", "m2")
+            self.assertIn(wa_dm.PENDING_LINES["en"]["queued"], _texts(c))
+            t.say(c, "2", "m3")
+            self.assertTrue(_texts(c)[-1].startswith("Which company is this for?"))
+            t.say(c, "1", "m4")
+        self.assertEqual([(x["as"], x["body"]) for x in t.calls],
+                         [("u_b", "add a new job at 9 Menahan St"),
+                          ("u_a", "add a new job at 77 Kent Ave")])
+
+    def test_a_newer_menu_takes_the_number_and_the_pick_stays_open(self):
+        t = _Turn()
+        with _Ctx(_db()) as c:
+            t.say(c, "add a new job at 9 Menahan St", "m1")
+            brick = next(a for a in _run(server._dm_identities(CHAT)) if a["user_id"] == "u_b")
+            toks = server._dm_enter(brick, CO_B, True)
+            try:
+                _run(server._dm_state_set("dm_menu", CHAT, 600, options=[OAK], question="x"))
+            finally:
+                server._dm_leave(toks)
+            t.say(c, "1", "m2")
+            pick = _run(server._dm_state_get(server.DM_ACCT_PICK_STATE, CHAT))
+        self.assertEqual([(x["as"], x["body"]) for x in t.calls], [("u_b", "1")])
+        self.assertEqual(pick["held"], "add a new job at 9 Menahan St")
 
     def test_the_answer_to_an_open_question_goes_to_the_account_that_asked(self):
         t = _Turn()
@@ -205,6 +238,15 @@ class EachMessageGoesToTheRightAccount(unittest.TestCase):
             t.say(c, "what's open across all my jobs?", "m1")
             self.assertEqual(t.calls, [])
             self.assertTrue(_texts(c)[-1].startswith("Which company is this for?"))
+
+    def test_thanks_or_ok_is_never_asked_which_company(self):
+        t = _Turn(brain=False)
+        with _Ctx(_db()) as c:
+            t.say(c, "thanks", "m1")
+            t.say(c, "ok", "m2")
+            self.assertEqual(_texts(c), [])
+        self.assertEqual([(x["as"], x["scope"]) for x in t.calls],
+                         [("u_a", server.DM_SCOPE_NEUTRAL)] * 2)
 
     def test_one_account_is_answered_exactly_as_before(self):
         t = _Turn()
@@ -455,3 +497,57 @@ class OneBriefPerPerson(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OneTomorrowPerPerson(unittest.TestCase):
+    """Upcoming's 5 PM "Tomorrow, …" DM: one per PERSON (Roy, 2026-11-06),
+    the morning brief's rules -- every connected account's jobs, each named
+    with its company, sent once, a company keeping Shabbos left out."""
+    THU_5PM = datetime(2026, 10, 8, 21, 5, tzinfo=timezone.utc)   # Thu 5:05 PM New York
+
+    def _world(self):
+        db = _db()
+        for pid, co, title in ((MAIN, CO_A, "Con Ed meter set"), (OAK, CO_B, "crane delivery")):
+            db.upcoming_events.rows.append(
+                {"_id": f"e_{pid}", "company_id": co, "project_id": pid, "source": "chat",
+                 "kind": "delivery", "title": title, "date": "2026-10-09", "time": "09:00",
+                 "status": "open", "history": []})
+        return db
+
+    def _tomorrows(self, c):
+        return [t for t in _texts(c) if t.startswith("Tomorrow,")]
+
+    def test_one_dm_with_both_companies_and_no_double_send(self):
+        with _Ctx(self._world()) as c:
+            r1 = _run(server._upcoming_notify_tick(now=self.THU_5PM))
+            r2 = _run(server._upcoming_notify_tick(now=self.THU_5PM + timedelta(minutes=30)))
+            sent = self._tomorrows(c)
+            ledger = sorted(row["_id"] for row in c.db[server.WA_LEDGER].rows)
+        self.assertEqual(len(sent), 1, sent)
+        self.assertIn(f"Con Ed meter set · 12 Main St ({NAME_A})", sent[0])
+        self.assertIn(f"crane delivery · 40 Oak Ave ({NAME_B})", sent[0])
+        self.assertEqual((r1["day_before_sent"], r1.get("merged"), r2["day_before_sent"]),
+                         (1, 1, 0))
+        self.assertEqual(ledger, ["u_a:-:upcoming_day_before:2026-10-09"])
+
+    def test_a_company_keeping_shabbos_is_left_out(self):
+        async def quiet(company_id, project_id=None, now=None):
+            return now + timedelta(hours=10) if str(company_id) == CO_A else None
+        with _Ctx(self._world()) as c, patch.object(server, "_shabbos_quiet", quiet):
+            _run(server._upcoming_notify_tick(now=self.THU_5PM))
+            sent = self._tomorrows(c)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("crane delivery", sent[0])
+        self.assertNotIn("Con Ed meter set", sent[0])
+
+    def test_an_account_with_tomorrow_off_is_left_out(self):
+        db = self._world()
+        db.notification_preferences.rows.append(
+            {"_id": "np_b", "user_id": "u_b", "project_id": None,
+             "whatsapp": {"upcoming_reminders": False}})
+        with _Ctx(db) as c:
+            _run(server._upcoming_notify_tick(now=self.THU_5PM))
+            sent = self._tomorrows(c)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Con Ed meter set", sent[0])
+        self.assertNotIn("crane delivery", sent[0])
