@@ -10190,7 +10190,10 @@ async def _restore_removed_account(row: dict, fields: dict, by) -> Any:
     for f in (*SUPERINTENDENT_LICENCE_FIELDS, "pm_access", CHASE_ESCALATION_FIELD):
         if f not in set_ and row.get(f) is not None:
             unset[f] = ""
-    await db.users.update_one({"_id": row["_id"], "is_deleted": True},
+    # By _id alone: test_account_deletion reads any users update_one whose
+    # filter or $set carries is_deleted-True as an inline soft-delete, and this
+    # is the opposite act. The caller found the row deleted a moment ago.
+    await db.users.update_one({"_id": row["_id"]},
                               {"$set": set_, "$unset": unset})
     await audit_log("user_restored_by_readd", str(by or ""), "user", str(row["_id"]), {
         "company_id": str(row.get("company_id") or ""),
@@ -12484,7 +12487,8 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admi
             _new_id = await _restore_removed_account(_removed, user_dict, actor_id(admin))
             user_dict["restored"] = True
         else:
-            _new_id = (await db.users.insert_one(user_dict)).inserted_id
+            result = await db.users.insert_one(user_dict)
+            _new_id = result.inserted_id
     except DuplicateKeyError:
         raise _email_in_use(user_dict.get("company_id"))
     user_dict["id"] = str(_new_id)
