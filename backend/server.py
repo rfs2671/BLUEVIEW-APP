@@ -54630,6 +54630,14 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
             # That account is gone: the held message is routed as a new one.
             text = str(pick.get("held") or text)
 
+    # "remind me ..." (no job), and the YES / NO to one: the PERSON's, not a
+    # company's (Roy, 2026-11-06) -- saved under their phone, and neutral
+    # in the chat's history.
+    remind = await _dm_state_get(UPCOMING_REMIND_STATE, dm_chat)
+    if upcoming.is_remind_request(text) or (
+            remind and (upcoming.is_yes(text) or upcoming.is_no(text))):
+        return {"ident": person[0], "body": text, "scope": DM_SCOPE_NEUTRAL}
+
     async def open_flow() -> Optional[dict]:
         for kind in _DM_ACCT_FLOW_KINDS:
             st = await _dm_state_get(kind, dm_chat)
@@ -57582,11 +57590,54 @@ def _upcoming_view(r: dict, names: Optional[Dict[str, str]] = None) -> dict:
             "can_edit": r.get("source") in ("chat", "dm") and r.get("status") == "open"}
 
 
+def _upcoming_person_keys(phone: Any) -> List[str]:
+    """A phone in every digit spelling a personal reminder may be keyed by
+    (the opt-in's phone: with or without the country code)."""
+    return list(dict.fromkeys(d for d in (wa_dm.phone_digits(v) for v in
+                                          _contact_phone_variants(str(phone or ""))) if d))
+
+
+async def _upcoming_person_key(ident: dict, dm_chat: str) -> str:
+    """The person a personal reminder belongs to: the phone their opt-in
+    for this chat matched (one number, every account on it), else the
+    profile phone's digits."""
+    rows = await _active_optins_for_phone(wa_dm.phone_digits(dm_chat),
+                                          user_id=ident.get("user_id"))
+    if rows and rows[0].get("phone"):
+        return str(rows[0]["phone"])
+    return wa_dm.phone_digits((ident.get("user") or {}).get("phone") or "")
+
+
+async def _upcoming_person_account(person: str) -> Tuple[Optional[dict], List[str]]:
+    """(the account a personal reminder is sent as -- the first connected
+    on that number that still checks out -- and the company of every
+    account connected on it), or (None, [])."""
+    try:
+        rows = await db[WA_OPTINS].find({"phone": str(person), "status": "active"}).to_list(20)
+    except Exception:
+        return None, []
+    rows.sort(key=lambda o: (_utc(o.get("opted_in_at")) or _EPOCH, str(o.get("user_id"))))
+    lead, companies = None, []
+    for o in rows:
+        ident = await _dm_identity_of_optin(o)
+        if not ident:
+            continue
+        lead = lead or ident
+        if ident["company_id"] not in companies:
+            companies.append(ident["company_id"])
+    return lead, companies
+
+
 async def _upcoming_for(user: dict, company_id: str, role: str, start: _Date, end: _Date,
                         include_reminders: bool = True) -> list:
     """Open events on this person's jobs (an admin's every live company job,
     a PM's assigned ones) from `start` to `end`, plus their own reminders,
-    date-sorted, each with its job's street label."""
+    date-sorted, each with its job's street label.
+
+    Their own reminders: the PERSONAL ones (a "remind me" with no job is the
+    person's, keyed by their phone -- `person` -- and no company; Roy,
+    2026-11-06), so each of their accounts on that number sees the same
+    ones; and those saved before that, under this account's company."""
     projects = await _dm_assistant_projects(user, company_id, role)
     names = {str(p["_id"]): wa_assistant.street_label(p) for p in projects}
     rows = await db.upcoming_events.find({
@@ -57603,6 +57654,14 @@ async def _upcoming_for(user: dict, company_id: str, role: str, start: _Date, en
             "status": "open",
             "date": {"$gte": start.isoformat(), "$lte": end.isoformat()},
         }).to_list(500)
+        keys = _upcoming_person_keys(user.get("phone"))
+        if keys:
+            rows += await db.upcoming_events.find({
+                "person": {"$in": keys},
+                "source": "dm",
+                "status": "open",
+                "date": {"$gte": start.isoformat(), "$lte": end.isoformat()},
+            }).to_list(500)
     seen, out = set(), []
     for r in rows:
         if str(r["_id"]) in seen:
@@ -57754,15 +57813,34 @@ async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
             due = []
         for r in due:
             uid = str(r.get("user_id") or "")
+            person = str(r.get("person") or "")
+            companies: List[str] = []
+            if person and not r.get("company_id"):
+                # A PERSONAL reminder: to the person's number, once, as the
+                # first account still connected on it (any of them).
+                lead, companies = await _upcoming_person_account(person)
+                if lead is None:
+                    report["refused"] += 1
+                    continue
+                uid = str(lead["user_id"])
             if not uid or await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(
                     uid, None, UPCOMING_REMINDER_KIND, str(r["_id"]))}, {"_id": 1}):
                 continue
             t = f" ({upcoming.time_label(r.get('time'))})" if r.get("time") else ""
             cid = r.get("company_id")
-            if not cid:
-                owner = await db.users.find_one({"_id": to_query_id(uid)}, {"company_id": 1})
-                cid = (owner or {}).get("company_id")
-            until = await _shabbos_quiet(cid, None, now)
+            if companies:
+                # Held while ANY of the person's companies keeps Shabbos /
+                # Yom Tov now: until the latest of them ends.
+                until, cid = None, companies[0]
+                for c in companies:
+                    q = await _shabbos_quiet(c, None, now)
+                    if q and (until is None or q > until):
+                        until, cid = q, c
+            else:
+                if not cid:
+                    owner = await db.users.find_one({"_id": to_query_id(uid)}, {"company_id": 1})
+                    cid = (owner or {}).get("company_id")
+                until = await _shabbos_quiet(cid, None, now)
             if until:
                 await _quiet_dm(uid, f"Reminder{t}: {r.get('title')}", company_id=cid,
                                 kind=UPCOMING_REMINDER_KIND, window=str(r["_id"]),
@@ -57770,7 +57848,9 @@ async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
                 report["shabbos_queued"] += 1
                 continue
             sent = await send_whatsapp_dm(uid, f"Reminder{t}: {r.get('title')}",
-                                          kind=UPCOMING_REMINDER_KIND, window=str(r["_id"]))
+                                          kind=UPCOMING_REMINDER_KIND, window=str(r["_id"]),
+                                          # The person's own: no company's history.
+                                          history_company=DM_SCOPE_NEUTRAL if companies else None)
             if not sent and await _dm_retry_if_failed(
                     uid, f"Reminder{t}: {r.get('title')}", kind=UPCOMING_REMINDER_KIND,
                     window=str(r["_id"]), company_id=cid, deadline=_ny_day_end(now), now=now):
@@ -57793,10 +57873,16 @@ async def _upcoming_dm_turn(ident: dict, dm_chat: str, text: str, now: datetime)
         if upcoming.is_no(text):
             await send_whatsapp_message(dm_chat, "OK, not saved.")
             return True
+        # PERSONAL (Roy, 2026-11-06): a reminder with no job is the
+        # person's, tied to their phone -- not to a company -- so every
+        # account they have on the number sees it, and it goes out once.
+        # (No phone to key it by: the account's, as before.)
+        person = await _upcoming_person_key(ident, dm_chat)
         row = {
-            "company_id": ident["company_id"],
+            "company_id": None if person else ident["company_id"],
             "project_id": None,
             "user_id": ident["user_id"],
+            "person": person or None,
             "source": "dm",
             "kind": "reminder",
             "agency": None,
