@@ -53898,14 +53898,13 @@ DM_ACCT_PICK_STATE = "dm_acct_pick"
 _DM_ACCT_FLOW_KINDS = ("dm_action", "dm_menu", "dm_clarify", "upcoming_remind", "dm_more")
 
 
-def _dm_history_filter(q: dict) -> dict:
-    """A history query, narrowed for a person with accounts in several
-    companies to this turn's scope (and neutral rows). Rows written before
-    a row carried its scope are not read for such a person."""
+def _dm_history_narrow(q: dict) -> None:
+    """Narrow a history query, in place, for a person with accounts in
+    several companies: this turn's scope (and neutral rows) only. Rows
+    written before a row carried its scope are not read for such a person."""
     scope = _DM_HISTORY_SCOPE.get()
     if scope:
-        q = dict(q, dm_company={"$in": [str(scope), DM_SCOPE_NEUTRAL]})
-    return q
+        q["dm_company"] = {"$in": [str(scope), DM_SCOPE_NEUTRAL]}
 
 
 def _dm_enter(ident: Optional[dict], scope: str, multi: bool) -> list:
@@ -53995,7 +53994,7 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
 
     def one(acct: dict, body: Optional[str] = None) -> dict:
         return {"ident": acct, "body": text if body is None else body,
-                "scope": str(acct["company_id"])}
+                "scope": str(acct.get("company_id"))}
 
     pick = await _dm_state_get(DM_ACCT_PICK_STATE, dm_chat)
     if pick:
@@ -54007,7 +54006,7 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
             if acct:
                 pid = (pick.get("project_ids") or [None] * len(labels))[k]
                 if pid:
-                    toks = _dm_enter(acct, str(acct["company_id"]), True)
+                    toks = _dm_enter(acct, str(acct.get("company_id")), True)
                     try:
                         await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
                                             project_id=str(pid))
@@ -59143,10 +59142,11 @@ async def _dm_history(dm_chat: str, now: datetime) -> list:
     guard pairs an answer with the wrong question. An ObjectId grows with
     insertion; tests/test_history_ties.py injects the tie."""
     try:
-        rows = await db.whatsapp_messages.find(_dm_history_filter(
-            {"group_id": {"$in": _dm_chat_ids(dm_chat)}, "is_dm": True,
-             "created_at": {"$gte": now - timedelta(hours=wa_assistant.HISTORY_HOURS)}})
-        ).sort([("created_at", -1), ("_id", -1)]).to_list(wa_assistant.HISTORY_MAX)
+        q: Dict[str, Any] = {"group_id": {"$in": _dm_chat_ids(dm_chat)}, "is_dm": True,
+                             "created_at": {"$gte": now - timedelta(hours=wa_assistant.HISTORY_HOURS)}}
+        _dm_history_narrow(q)
+        rows = await db.whatsapp_messages.find(q).sort(
+            [("created_at", -1), ("_id", -1)]).to_list(wa_assistant.HISTORY_MAX)
     except Exception as e:
         logger.warning(f"[wa-assistant] history read failed: {type(e).__name__}")
         return []
@@ -61554,7 +61554,8 @@ async def _dm_brain_history(dm_chat: str, now: datetime, before: Optional[dateti
     if before:
         q["created_at"]["$lt"] = before
     try:
-        rows = await db.whatsapp_messages.find(_dm_history_filter(q)).sort(
+        _dm_history_narrow(q)
+        rows = await db.whatsapp_messages.find(q).sort(
             [("created_at", -1), ("_id", -1)]).to_list(dm_brain.HISTORY_TURNS)
     except Exception as e:
         logger.warning(f"[dm-brain] history read failed: {type(e).__name__}")
@@ -62354,7 +62355,7 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
     jobs are every account's, each named with its company; each tool call
     acts as the account whose job it reads (_dm_brain_exec), so every
     answer is tied to its own project's company. The history it is given is
-    this scope's only (_dm_history_filter)."""
+    this scope's only (_dm_history_narrow)."""
     multi = bool(person) and len(person) > 1
     if multi:
         jobs = await _dm_person_jobs(person)
@@ -80409,12 +80410,12 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                     try:
                         await db.whatsapp_voice_events.update_one(
                             {"message_id": parsed["message_id"], "where": "dm"},
-                            {"$set": {"company_id": str(ident["company_id"])}})
+                            {"$set": {"company_id": str(ident.get("company_id"))}})
                     except Exception as e:
                         logger.warning(f"[voice] dm company stamp failed: {type(e).__name__}")
             turn = _dm_enter(routed["ident"], routed["scope"], True)
         else:
-            turn = _dm_enter(ident, str(ident["company_id"]), False)
+            turn = _dm_enter(ident, str(ident.get("company_id")), False)
         try:
             # A walkthrough (punch list) turn: photos, their words, the draft,
             # edits, assigning, the due day, send; and punch questions / "P23 ok".
