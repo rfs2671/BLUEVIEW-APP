@@ -11,6 +11,7 @@ import { isAffirmedSignature } from './signatureAffirmed';
 // never happen: sweep_stale_end_of_day_logs excludes VISIT_LOG_TYPES, so a
 // visit log nobody finalizes is finalized by nothing.
 import { isVisitLog } from './logbookTiming';
+import { openReplay } from './accountQueues';
 
 /**
  * RECONNECT DRAIN for logbook drafts — the missing half of "draft + sync".
@@ -672,7 +673,22 @@ export async function syncPendingDrafts() {
 
     let synced = 0;
     let refused = 0;
+    let dropped = 0;
+    const replay = await openReplay();
     for (const key of keys) {
+      // Logout cleared the queue under this drain: what is left is not ours.
+      if (replay.stale()) break;
+      // ANOTHER ACCOUNT'S PUSH IS NEVER SENT. apiClient reads the token on
+      // disk, so judged per key against that token: a sign-in mid-drain is
+      // caught at the next key.
+      const owner = await replay.judgeDraft(key);
+      if (owner.drop) {
+        console.warn(`[draftSync] dropped ${key}: queued by another account`);
+        await replay.dropDraft(key);
+        dropped += 1;
+        continue;
+      }
+      if (owner.hold) break;
       const r = await pushOne(key);
       if (r.ok) synced += 1;
       // `freeze-unclaimed` and `no-record-returned` join this list rather than
@@ -689,7 +705,9 @@ export async function syncPendingDrafts() {
       }
     }
     if (synced) console.log(`[draftSync] pushed ${synced}/${keys.length} pending draft(s)`);
-    return { attempted: keys.length, synced, finalizeRefused: refused };
+    return {
+      attempted: keys.length, synced, finalizeRefused: refused, dropped,
+    };
   } finally {
     _syncing = false;
   }

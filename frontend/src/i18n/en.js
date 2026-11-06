@@ -2065,6 +2065,17 @@ export default {
     shareUnavailable: 'This device has no share option for files.',
     offlineTitle: 'Not available offline',
     offlineBody: 'This file is not saved on this device. Reconnect and try again.',
+    // Android saves into Downloads; iPhone's button says Save (share sheet).
+    savedTitle: 'Saved to Downloads',
+    savedBody: '{name} is in {folder}.',
+    notSavedTitle: 'Not saved',
+    noFolder: 'Choose a folder in Downloads to save files there.',
+    saveFailed: 'Could not save to Downloads. Use the share options instead.',
+    pickTitle: 'Choose where to save',
+    pickBody: 'Android asks once. Downloads opens next: create or pick a folder (for example "LeveLog") and tap "Use this folder". Files are saved there from now on.',
+    pickGo: 'Continue',
+    saveLabel: 'Save',
+    downloadLabel: 'Download',
   },
 
   // ── app/projects/[id]/schedule.jsx — import and confirm the project schedule ─
@@ -2272,5 +2283,19 @@ export default {
     matchedByPermit: 'Matched by permit {permit}',
     matchedByBlock: 'Matched by your block',
     lag: 'DOT publishes permits within a day, summonses in about 3 days, inspections monthly.',
+  },
+
+  // ── Log out with writes still on the device (src/hooks/useLogoutConfirm) ──
+  //
+  // Shown only when a logout's drain could not send everything (offline, or
+  // the server refused some). What is left is DELETED at logout, so it never
+  // replays under the next account to sign in on this device; the copy says
+  // so plainly. {n} is the count of queued writes.
+  logout: {
+    unsentTitle: 'Unsent changes',
+    unsentBody: "{n} changes haven't been sent and will be deleted if you log out.",
+    unsentBodyOne: "1 change hasn't been sent and will be deleted if you log out.",
+    logOutAnyway: 'Log out anyway',
+    cancel: 'Cancel',
   },
 };
