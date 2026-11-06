@@ -77,11 +77,14 @@ class TestPlatformOperatorHelper(unittest.TestCase):
         self.assertFalse(server.is_platform_operator(
             {"role": "owner", "email": "someone@example.com"}))
 
-    def test_email_allowlist_grants(self):
+    def test_email_allowlist_grants_nothing(self):
+        """Operator ruling 2026-11-06: the DB flag only. The email list used to
+        grant, and a capitalised signup of the operator's address was the
+        operator (test_operator_is_the_flag_only.py)."""
         import server
         with patch.object(server, "PLATFORM_OPERATOR_EMAILS",
                           frozenset({"boot@levelog.test"})):
-            self.assertTrue(server.is_platform_operator(
+            self.assertFalse(server.is_platform_operator(
                 {"role": "worker", "email": "Boot@LeveLog.test"}))
 
     def test_empty_email_never_matches(self):
