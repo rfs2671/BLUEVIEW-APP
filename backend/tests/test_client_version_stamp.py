@@ -68,6 +68,16 @@ class _Coll:
     async def find_one(self, *a, **k):
         return self.doc
 
+    def find(self, *a, **k):
+        # login reads EVERY live account with the email (one per company,
+        # 2026-11-06), not the first one.
+        doc = self.doc
+
+        class _Cursor:
+            async def to_list(self, n=None):
+                return [doc] if doc else []
+        return _Cursor()
+
     async def update_one(self, *a, **k):
         return MagicMock(matched_count=1, modified_count=1)
 
