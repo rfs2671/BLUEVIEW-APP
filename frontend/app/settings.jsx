@@ -52,6 +52,7 @@ import OfflineNotice from '../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { useToast, ToastHost } from '../src/components/Toast';
 import { useAuth, isCompanyAdmin, isAccountAdmin, isPlatformOperator } from '../src/context/AuthContext';
+import { useLogoutConfirm } from '../src/hooks/useLogoutConfirm';
 import { useTheme } from '../src/context/ThemeContext';
 import { useT } from '../src/i18n';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../src/utils/retentionCopy';
@@ -125,7 +126,7 @@ const formatDate = (dateStr) => {
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, updateUser } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, updateUser } = useAuth();
   const { isDark, toggleTheme, themeForced, colors } = useTheme();
   const datePalette = { error: colors.status.error, hint: colors.text.muted };
   const toast = useToast();
@@ -603,10 +604,10 @@ export default function SettingsScreen() {
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
+  // Drains what is queued, asks before deleting what could not be sent.
+  const { requestLogout: handleLogout, logoutDialog } = useLogoutConfirm({
+    onLoggedOut: () => router.replace('/login'),
+  });
 
   const s = buildStyles(colors);
 
@@ -1411,6 +1412,7 @@ export default function SettingsScreen() {
         {isCp ? <CpNav /> : <FloatingNav />}
 
       </SafeAreaView>
+      {logoutDialog}
     </AnimatedBackground>
   );
 }

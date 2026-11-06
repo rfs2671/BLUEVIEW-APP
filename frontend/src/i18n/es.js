@@ -97,6 +97,16 @@ export default {
     shareUnavailable: 'Este dispositivo no tiene opción para compartir archivos.',
     offlineTitle: 'No disponible sin conexión',
     offlineBody: 'Este archivo no está guardado en este dispositivo. Vuelva a conectarse e inténtelo de nuevo.',
+    savedTitle: 'Guardado en Descargas',
+    savedBody: '{name} está en {folder}.',
+    notSavedTitle: 'No se guardó',
+    noFolder: 'Elija una carpeta en Descargas para guardar los archivos allí.',
+    saveFailed: 'No se pudo guardar en Descargas. Use las opciones para compartir.',
+    pickTitle: 'Elija dónde guardar',
+    pickBody: 'Android lo pregunta una sola vez. Se abrirá Descargas: cree o elija una carpeta (por ejemplo "LeveLog") y toque "Usar esta carpeta". Desde entonces los archivos se guardarán allí.',
+    pickGo: 'Continuar',
+    saveLabel: 'Guardar',
+    downloadLabel: 'Descargar',
   },
 
   // ── La etiqueta de Cumplimiento (ver en.js: una etiqueta, un espacio) ─────
@@ -204,5 +214,14 @@ export default {
     matchedByPermit: 'Vinculada por el permiso {permit}',
     matchedByBlock: 'Vinculada por su cuadra',
     lag: 'El DOT publica los permisos en un día, las citaciones en unos 3 días y las inspecciones cada mes.',
+  },
+
+  // ── Cerrar sesión con cambios aún en el dispositivo (useLogoutConfirm) ──
+  logout: {
+    unsentTitle: 'Cambios sin enviar',
+    unsentBody: '{n} cambios no se han enviado y se eliminarán si cierra sesión.',
+    unsentBodyOne: '1 cambio no se ha enviado y se eliminará si cierra sesión.',
+    logOutAnyway: 'Cerrar sesión de todos modos',
+    cancel: 'Cancelar',
   },
 };
