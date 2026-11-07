@@ -53814,8 +53814,20 @@ ACCOUNTS_STATE = "dm_accounts"
 # an older one. A second question of the same kind waits its turn (queued)
 # instead of replacing the first.
 
-#: How long a question that holds something stays open.
-HELD_QUESTION_SECONDS = 7 * 24 * 3600
+#: How long a question that holds something stays open: 24 hours (Roy,
+#: 2026-11-06; it was 7 days). When it lapses the person is told what was not
+#: saved ("Your message "..." wasn't saved. Send it again.") -- by the sweep
+#: (_dm_held_sweep_tick), or at once if they write first and the question
+#: would be replaced (_dm_held_lapse). Never dropped in silence.
+HELD_QUESTION_SECONDS = 24 * 3600
+#: The row outlives its question by this much (the TTL index on expires_at
+#: deletes it after), so the sweep can still read what it held -- and a notice
+#: held over Shabbos / Yom Tov is pushed past the quiet the same way.
+HELD_GRACE_SECONDS = 6 * 3600
+#: The questions that hold something (a message, or an answer to a Q-code).
+_DM_HELD_KINDS = ("dm_accounts", "dm_acct_pick", "dm_setq_pick")
+#: How often the sweep looks for lapsed held questions.
+HELD_SWEEP_MINUTES = 5
 #: Every open question a yes / no / number may answer (the newest wins).
 _DM_ANSWERABLE_KINDS = ("dm_action", "dm_menu", "dm_clarify", "upcoming_remind",
                         "dm_accounts", "dm_setq_pick", "dm_acct_pick")
@@ -53868,7 +53880,7 @@ async def _dm_question_open(kind: str, chat: str, entry: dict, lang: str) -> boo
             chat, (wa_dm.PENDING_LINES.get(lang) or wa_dm.PENDING_LINES["en"])["queued"])
         await _dm_remind_once(kind, chat, st, lang)
         return False
-    await _dm_state_set(kind, chat, HELD_QUESTION_SECONDS, **entry, queue=[],
+    await _dm_state_set(kind, chat, HELD_QUESTION_SECONDS, _hold=True, **entry, queue=[],
                         asked_at=datetime.now(timezone.utc), reminded=False)
     return True
 
@@ -53882,9 +53894,140 @@ async def _dm_question_close(kind: str, chat: str) -> Optional[dict]:
     if not queue:
         return None
     nxt = queue[0]
-    await _dm_state_set(kind, chat, HELD_QUESTION_SECONDS, **nxt, queue=queue[1:],
-                        asked_at=datetime.now(timezone.utc), reminded=False)
+    await _dm_state_set(kind, chat, HELD_QUESTION_SECONDS, _hold=True, **nxt,
+                        queue=queue[1:], asked_at=datetime.now(timezone.utc), reminded=False)
     return nxt
+
+
+async def _dm_held_lapse(kind: str, chat: str, *, now: Optional[datetime] = None) -> bool:
+    """This chat's `kind` question lapsed holding something and nobody was
+    told yet: tell them now, before it is replaced or cleared. Only reached
+    while the person is writing to us (an answer, Shabbos or not)."""
+    if kind not in _DM_HELD_KINDS or _DM_DRY.get():
+        return False
+    now = now or datetime.now(timezone.utc)
+    try:
+        row = await db[_DM_STATE].find_one(
+            {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": "",
+             "hold_until": {"$lte": now}, "lapse_sent": {"$ne": True}})
+    except Exception:
+        return False
+    return bool(row) and await _dm_held_lapse_row(row, chat=chat)
+
+
+async def _dm_held_lapse_row(row: dict, *, chat: Optional[str] = None) -> bool:
+    """Claim one lapsed held question (once, across replicas), delete it, and
+    send "Your <item> wasn't saved. Send it again." for each thing it held."""
+    try:
+        claimed = await db[_DM_STATE].find_one_and_update(
+            {"_id": row["_id"], "lapse_sent": {"$ne": True}}, {"$set": {"lapse_sent": True}})
+    except Exception as e:
+        logger.warning(f"[wa-dm] held-question claim failed: {type(e).__name__}")
+        return False
+    if not claimed:
+        return False                     # another replica, or this turn, told them
+    kind = str(row.get("kind") or "")
+    items = wa_dm.held_items(kind, claimed)
+    try:
+        await db[_DM_STATE].delete_one({"_id": row["_id"], "lapse_sent": True})
+    except Exception:
+        pass
+    if not items:
+        return False
+    to = chat or claimed.get("hold_chat") or wa_dm.dm_chat_id(str(claimed.get("group_id") or ""))
+    try:
+        await send_whatsapp_message(to, wa_dm.held_expired_text(items))
+    except Exception as e:
+        logger.warning(f"[wa-dm] held-question notice failed: {type(e).__name__}")
+        return False
+    logger.info(f"[wa-dm] held question lapsed: {kind}, {len(items)} item(s), told")
+    return True
+
+
+async def _dm_held_quiet_until(row: dict, now: datetime) -> Optional[datetime]:
+    """When the Shabbos / Yom Tov quiet ends for this person, if any of their
+    companies keeps it and it is on now; else None. The notice is the bot
+    writing first, so it waits like any other alert."""
+    ids = [str(i) for i in (row.get("user_ids") or []) if i]
+    for q in row.get("queue") or []:
+        if isinstance(q, dict):
+            ids += [str(i) for i in (q.get("user_ids") or []) if i]
+    if row.get("acct"):
+        ids.append(str(row["acct"]))
+    users = []
+    if ids:
+        try:
+            users = await db.users.find(
+                {"_id": {"$in": [to_query_id(i) for i in dict.fromkeys(ids)]}},
+                {"company_id": 1}).to_list(50)
+        except Exception:
+            users = []
+    try:
+        users = users + (await _phone_accounts(str(row.get("group_id") or "")))["users"]
+    except Exception:
+        pass
+    until = None
+    for cid in dict.fromkeys(str(u.get("company_id") or "") for u in users):
+        if not cid:
+            continue
+        u = await _shabbos_quiet(cid, now=now)
+        if u and (until is None or u > until):
+            until = u
+    return until
+
+
+async def _dm_held_sweep_tick(now: Optional[datetime] = None) -> int:
+    """Every HELD_SWEEP_MINUTES: each held question past its 24 hours is
+    told to the person and closed. Over Shabbos / Yom Tov (their company
+    keeps it) the notice waits for the quiet to end. Returns how many were
+    told."""
+    now = now or datetime.now(timezone.utc)
+    held = {"kind": {"$in": list(_DM_HELD_KINDS)}}
+    # A question asked before the 24-hour rule carries a 7-day expiry and no
+    # hold_until: give it its 24 hours from when it was asked.
+    try:
+        old = await db[_DM_STATE].find(
+            dict(held, hold_until={"$exists": False},
+                 expires_at={"$gt": now + timedelta(seconds=HELD_QUESTION_SECONDS
+                                                    + HELD_GRACE_SECONDS)})).to_list(200)
+        for r in old:
+            exp = r.get("expires_at")
+            if not isinstance(exp, datetime):
+                continue
+            exp = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
+            hold = exp - timedelta(days=7) + timedelta(seconds=HELD_QUESTION_SECONDS)
+            await db[_DM_STATE].update_one(
+                {"_id": r["_id"]},
+                {"$set": {"hold_until": hold,
+                          "expires_at": hold + timedelta(seconds=HELD_GRACE_SECONDS)}})
+    except Exception as e:
+        logger.warning(f"[wa-dm] held-question conversion failed: {type(e).__name__}")
+    try:
+        rows = await db[_DM_STATE].find(
+            dict(held, hold_until={"$lte": now}, lapse_sent={"$ne": True})).to_list(200)
+    except Exception:
+        return 0
+    n = 0
+    for row in rows:
+        try:
+            until = await _dm_held_quiet_until(row, now)
+            if until:
+                await db[_DM_STATE].update_one(
+                    {"_id": row["_id"], "lapse_sent": {"$ne": True}},
+                    {"$set": {"expires_at": until + timedelta(seconds=HELD_GRACE_SECONDS)}})
+                continue
+            if await _dm_held_lapse_row(row):
+                n += 1
+        except Exception as e:
+            logger.warning(f"[wa-dm] held-question sweep: {type(e).__name__}")
+    return n
+
+
+async def _dm_held_sweep_job() -> None:
+    try:
+        await _dm_held_sweep_tick()
+    except Exception as e:
+        logger.warning(f"[wa-dm] held-question sweep job failed: {type(e).__name__}")
 
 
 async def _ask_accounts(chat: str, users: List[dict], phone: str, *, mode: str,
@@ -53898,7 +54041,7 @@ async def _ask_accounts(chat: str, users: List[dict], phone: str, *, mode: str,
                                 names)
     await _dm_state_set(ACCOUNTS_STATE, chat,
                         HELD_QUESTION_SECONDS if held else dm_actions.PENDING_SECONDS,
-                        mode=mode, user_ids=[str(u.get("_id")) for u in users],
+                        _hold=bool(held), mode=mode, user_ids=[str(u.get("_id")) for u in users],
                         phone=phone, phone_verified=bool(phone_verified), source=source,
                         lang=lang, held=held, asked=asked,
                         asked_at=datetime.now(timezone.utc), reminded=False)
@@ -54486,7 +54629,8 @@ _DM_HISTORY_SCOPE: contextvars.ContextVar = contextvars.ContextVar("dm_history_s
 DM_SCOPE_MULTI = "multi"
 DM_SCOPE_NEUTRAL = "none"
 #: "Which company?" / "Which one?" asked by the router: {user_ids, labels,
-#: project_ids, held}; 30 minutes; any other message clears it.
+#: project_ids, held}; open HELD_QUESTION_SECONDS (24 hours), then the person
+#: is told the held message was not saved. Another message leaves it open.
 DM_ACCT_PICK_STATE = "dm_acct_pick"
 #: The open questions an answer belongs to the account that asked them.
 _DM_ACCT_FLOW_KINDS = ("dm_action", "dm_menu", "dm_clarify", "upcoming_remind", "dm_more")
@@ -57977,10 +58121,21 @@ async def _dm_state_get(kind: str, chat: str) -> Optional[dict]:
         exp = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
         if exp <= datetime.now(timezone.utc):
             return None
+    # A held question past its 24 hours is closed, though its row is kept a
+    # while for the notice (HELD_GRACE_SECONDS).
+    hold = row.get("hold_until")
+    if isinstance(hold, datetime):
+        hold = hold if hold.tzinfo else hold.replace(tzinfo=timezone.utc)
+        if hold <= datetime.now(timezone.utc):
+            return None
     return row
 
 
-async def _dm_state_set(kind: str, chat: str, seconds: int, **fields) -> None:
+async def _dm_state_set(kind: str, chat: str, seconds: int, *, _hold: bool = False,
+                        **fields) -> None:
+    """Open (or replace) this chat's `kind` question for `seconds`. `_hold`:
+    it holds something, so it is closed at `seconds` (hold_until) but the
+    row is kept HELD_GRACE_SECONDS longer, for the "wasn't saved" notice."""
     if _DM_DRY.get():
         return
     now = datetime.now(timezone.utc)
@@ -57988,11 +58143,20 @@ async def _dm_state_set(kind: str, chat: str, seconds: int, **fields) -> None:
     # (_dm_route_accounts), whatever company the next message seems to name.
     if _DM_ACCT.get() and "acct" not in fields:
         fields["acct"] = _DM_ACCT.get()
+    # One that lapsed holding something is told before it is replaced.
+    await _dm_held_lapse(kind, chat, now=now)
+    expires = now + timedelta(seconds=seconds)
+    if _hold:
+        fields.update(hold_until=expires, hold_chat=chat)
+        expires += timedelta(seconds=HELD_GRACE_SECONDS)
+        unset = {"lapse_sent": ""}
+    else:
+        unset = {"hold_until": "", "hold_chat": "", "lapse_sent": ""}
     try:
         await db[_DM_STATE].update_one(
             {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": ""},
-            {"$set": {**fields, "updated_at": now,
-                      "expires_at": now + timedelta(seconds=seconds)}},
+            {"$set": {**fields, "updated_at": now, "expires_at": expires},
+             "$unset": unset},
             upsert=True)
     except Exception as e:
         logger.warning(f"[wa-assistant] state write failed: {type(e).__name__}")
@@ -58030,6 +58194,8 @@ async def _dm_drop_pending(chat: str) -> bool:
 async def _dm_state_clear(kind: str, chat: str) -> None:
     if _DM_DRY.get():
         return
+    # One that lapsed holding something is told before it is cleared.
+    await _dm_held_lapse(kind, chat)
     try:
         await db[_DM_STATE].delete_one(
             {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": ""})
@@ -67721,7 +67887,8 @@ async def _handle_set_question_reply(chat_id: str, code: str, answer: str, *,
     return True
 
 
-#: "Q3 is open on more than one job. Which one?": the numbered pick, 10 min.
+#: "Q3 is open on more than one job. Which one?": the numbered pick; holds
+#: the answer, so it stays open HELD_QUESTION_SECONDS (24 hours).
 SET_Q_PICK_STATE = "dm_setq_pick"
 
 
@@ -89631,6 +89798,18 @@ async def startup_event():
     logger.info("🔍 Nightly compliance check scheduled (10 PM)")
     logger.info("💬 WhatsApp daily summary scheduled (every 30 min, per-group config)")
     logger.info("✅ WhatsApp checklist extraction scheduled (every 30 min, per-group config)")
+
+    # A "Which company?" (or other held) question unanswered for 24 hours:
+    # the person is told what was not saved (Roy, 2026-11-06).
+    scheduler.add_job(
+        _dm_held_sweep_job,
+        IntervalTrigger(minutes=HELD_SWEEP_MINUTES),
+        id='whatsapp_dm_held_sweep',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+    )
 
     # WaAPI disconnect monitor — one reading per 15 min across replicas
     # (leased like every job), operator emailed once per incident.
