@@ -221,6 +221,42 @@ def still_open_text(lang: str, asked: str) -> str:
     return f"{head}\n{asked}"
 
 
+# A question of ours that held something lapsed unanswered (Roy, 2026-11-06:
+# after 24 hours). The person is told what was not saved -- never dropped in
+# silence. English only: the bot's replies stay English.
+HELD_EXPIRED_LINE = "Your {item} wasn't saved. Send it again."
+
+
+def held_snippet(text: Optional[str], limit: int = 60) -> str:
+    """The held message, on one line, cut to `limit` characters."""
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= limit else t[:limit - 1].rstrip() + "\u2026"
+
+
+def held_item(kind: str, entry: dict) -> Optional[str]:
+    """What one open question held, as the person would name it: 'answer to
+    Q3', or 'message "<its words>"'. None when it held nothing."""
+    if kind == "dm_setq_pick" and entry.get("answer") and entry.get("code"):
+        return f"answer to {entry['code']}"
+    t = held_snippet(entry.get("held") or entry.get("text") or "")
+    return f'message "{t}"' if t else None
+
+
+def held_items(kind: str, row: dict) -> list:
+    """Everything a lapsed question row held: its own, then each queued one."""
+    out = []
+    for e in [row] + [q for q in (row.get("queue") or []) if isinstance(q, dict)]:
+        item = held_item(kind, e)
+        if item:
+            out.append(item)
+    return out
+
+
+def held_expired_text(items: Iterable[str]) -> str:
+    """"Your message "..." wasn't saved. Send it again." -- a line each."""
+    return "\n".join(HELD_EXPIRED_LINE.format(item=i) for i in items)
+
+
 # "Q3 YES" from a person whose two companies each asked a Q3 (codes are
 # unique per company): which one, by number.
 SET_Q_PICK_LINES = {
