@@ -10,7 +10,7 @@ back), so the same tests read the code before the change: there the row
 carries a 7-day expiry, a 25-hour-old question is still open, and nothing
 tells the person anything.
 
-CONTROL: against origin/main's server.py and lib/wa_dm.py (ed 2002f3b2),
+CONTROL: against origin/main's server.py and lib/wa_dm.py (at 2002f3b2),
 10 of 11 fail; the START 30-minute test passes there, as it must.
 """
 
