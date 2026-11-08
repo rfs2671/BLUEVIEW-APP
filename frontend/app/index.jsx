@@ -1040,6 +1040,7 @@ export default function DashboardScreen() {
                   <Text style={s.dayName}>{dayName}</Text>
                   <Text style={s.dateDivider}>•</Text>
                   <Text style={s.fullDate}>{fullDate}</Text>
+                  <SyncButton onSyncComplete={fetchData} style={s.dateSync} />
                 </View>
                 {!isDark && getUserEmail() ? (
                   <Text style={[s.heroEmailInline, { color: colors.text.muted, marginTop: spacing.xs }]} numberOfLines={1}>
@@ -1058,8 +1059,6 @@ export default function DashboardScreen() {
 
               {/* B3: empty state when no projects */}
               {renderProjectsEmptyState()}
-
-              <SyncButton onSyncComplete={fetchData} />
 
               {renderAdminTools()}
             </>
@@ -1168,6 +1167,9 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
+  },
+  dateSync: {
+    marginLeft: spacing.xs,
   },
   dayName: {
     fontFamily: typography.medium,
