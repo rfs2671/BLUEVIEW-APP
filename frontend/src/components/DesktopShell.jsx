@@ -174,10 +174,14 @@ export default function DesktopShell({ children }) {
               onBlur={closeRail}
               accessibilityRole="link"
               accessibilityLabel={item.label}
-              style={({ hovered, pressed }) => [
+              style={({ hovered, pressed, focused }) => [
                 styles.railItem,
                 active && { backgroundColor: withAlpha(colors.onBar, 0.10) },
                 !active && hovered && { backgroundColor: withAlpha(colors.onBar, 0.06) },
+                // The browser's own focus ring is a separate box that stays after a
+                // click and lags behind the rail as it widens. Keyboard focus is shown
+                // as a highlight on the item itself instead.
+                focused && { backgroundColor: withAlpha(colors.onBar, 0.14) },
                 pressed && { opacity: 0.8 },
               ]}
             >
@@ -247,6 +251,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     borderRadius: borderRadius.md,
+    ...(Platform.OS === 'web' ? { outlineStyle: 'none' } : null),
   },
   // The active destination's tick: a short brass bar on the rail's inner edge.
   railTick: { position: 'absolute', left: 0, top: 9, bottom: 9, width: 3, borderRadius: 2 },
