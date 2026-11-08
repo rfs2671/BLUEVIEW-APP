@@ -51,6 +51,7 @@ const RAIL_WIDTH = 240;
 // rail opens OVER the page (the page does not move), and it closes shortly after
 // the cursor leaves.
 const RAIL_COLLAPSED = 72;
+const RAIL_PAD = 12;
 const RAIL_CLOSE_DELAY_MS = 80;
 
 /**
@@ -223,8 +224,8 @@ export default function DesktopShell({ children }) {
         })}
 
         {/* Bottom of the rail: the light/dark switch, and Settings as an icon. */}
-        <View style={styles.railFoot}>
-          <ThemeSwitch />
+        <View style={[styles.railFoot, { borderTopColor: withAlpha(colors.onBar, 0.14) }]}>
+          <View style={styles.switchSlot}><ThemeSwitch /></View>
           <Pressable
             onPress={() => router.push('/settings')}
             accessibilityRole="link"
@@ -266,6 +267,10 @@ const styles = StyleSheet.create({
     // Above anything a page lays over its left edge.
     zIndex: 1000,
   },
+  // ONE AXIS. At rest the rail is 72 wide with 12 of padding, leaving 48 for every
+  // control; each is 48 wide with its icon dead centre, so icons, the switch and
+  // the settings gear all sit on the same vertical line (x = 36). Opening the
+  // rail only adds room on the right, so nothing moves sideways as it opens.
   rail: {
     position: 'absolute',
     left: 0,
@@ -276,34 +281,43 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 6, height: 0 },
     shadowRadius: 18,
     paddingTop: spacing.lg,
-    paddingHorizontal: spacing.sm,
-    gap: spacing.xs,
+    paddingHorizontal: RAIL_PAD,
+    gap: 4,
   },
   railItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderRadius: borderRadius.md,
+    height: 44,
+    paddingHorizontal: 14,
+    borderRadius: 12,
     ...(Platform.OS === 'web' ? { outlineStyle: 'none' } : null),
   },
-  // The active destination's tick: a short brass bar on the rail's inner edge.
-  railTick: { position: 'absolute', left: 0, top: 9, bottom: 9, width: 3, borderRadius: 2 },
+  // The active destination's tick: a short brass bar flush with the rail's left
+  // edge (the item sits RAIL_PAD in from it).
+  railTick: { position: 'absolute', left: -RAIL_PAD, top: 12, bottom: 12, width: 3, borderTopRightRadius: 2, borderBottomRightRadius: 2 },
+  // Footer: the switch and settings, set apart from the destinations by a hairline.
   railFoot: {
     marginTop: 'auto',
-    paddingBottom: spacing.lg,
-    gap: spacing.sm,
+    marginBottom: spacing.lg,
+    paddingTop: 14,
+    gap: 10,
     alignItems: 'flex-start',
-    paddingLeft: spacing.xs,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   footIcon: {
     width: 48,
-    height: 40,
-    borderRadius: borderRadius.md,
+    height: 44,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
     ...(Platform.OS === 'web' ? { outlineStyle: 'none' } : null),
+  },
+  switchSlot: {
+    width: 48,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   railIcon: {
     width: 20,
@@ -312,7 +326,7 @@ const styles = StyleSheet.create({
   },
   railLabelWrap: {
     flexShrink: 0,
-    width: RAIL_WIDTH - spacing.sm * 2 - spacing.md * 2 - 20 - spacing.sm,
+    width: RAIL_WIDTH - RAIL_PAD * 2 - 14 * 2 - 20 - spacing.sm,
   },
   railLabel: {
     fontSize: typography.sizes.sm,
