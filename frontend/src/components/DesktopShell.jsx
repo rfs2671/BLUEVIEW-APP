@@ -12,6 +12,7 @@ import {
 } from 'lucide-react-native';
 import { withAlpha } from '../styles/semanticColors';
 import { useTheme } from '../context/ThemeContext';
+import ThemeSwitch from './ThemeSwitch';
 import { spacing, borderRadius, typography } from '../styles/theme';
 
 /**
@@ -38,7 +39,6 @@ const RAIL_ITEMS = [
   { path: '/projects', icon: FolderKanban, label: 'Projects' },
   { path: '/workers', icon: Users, label: 'Workers' },
   { path: '/reports', icon: FileText, label: 'Reports' },
-  { path: '/settings', icon: Settings, label: 'Settings' },
   // Admin points at /admin/users, not /admin — there is no app/admin/index.jsx
   // and this PR deliberately does not create one. /admin/users is the natural
   // landing screen for the admin group.
@@ -51,7 +51,7 @@ const RAIL_WIDTH = 240;
 // rail opens OVER the page (the page does not move), and it closes shortly after
 // the cursor leaves.
 const RAIL_COLLAPSED = 72;
-const RAIL_CLOSE_DELAY_MS = 350;
+const RAIL_CLOSE_DELAY_MS = 80;
 
 /**
  * Routes that must render WITHOUT the shell even on desktop.
@@ -107,38 +107,48 @@ export default function DesktopShell({ children }) {
 
   useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
+  // Is the rail open? A ref, because the mouse handler below runs on every move.
+  const expandedRef = useRef(false);
+  const bareRef = useRef(false);
+
   const openRail = () => {
     if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
+    if (expandedRef.current) return;
+    expandedRef.current = true;
     open.value = withTiming(1, { duration: 200, easing: Easing.out(Easing.cubic) });
   };
   const closeRail = () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
+    if (!expandedRef.current || closeTimer.current) return;
     closeTimer.current = setTimeout(() => {
-      open.value = withTiming(0, { duration: 200, easing: Easing.inOut(Easing.cubic) });
+      closeTimer.current = null;
+      expandedRef.current = false;
+      open.value = withTiming(0, { duration: 150, easing: Easing.out(Easing.quad) });
     }, RAIL_CLOSE_DELAY_MS);
   };
 
-  // HOVER IS LISTENED FOR ON THE DOM ELEMENT, not through Pressable's onHoverIn/
-  // onHoverOut. Those can report "left" when the cursor moves between items
-  // inside the rail, which closed it under the user's hand. mouseenter and
-  // mouseleave fire only when the cursor crosses the outer edge of the element
-  // and everything inside it (including the opened rail, which hangs outside
-  // the slot's own box), so moving between items never counts as leaving.
-  // A callback ref, not an effect: the slot only exists on shell routes, so on a
-  // first load at /login there is no element yet, and an effect that ran once
-  // would never attach after the user signs in.
-  const detachRef = useRef(null);
-  const setSlot = (node) => {
-    if (detachRef.current) { detachRef.current(); detachRef.current = null; }
-    if (node && Platform.OS === 'web' && typeof node.addEventListener === 'function') {
-      node.addEventListener('mouseenter', openRail);
-      node.addEventListener('mouseleave', closeRail);
-      detachRef.current = () => {
-        node.removeEventListener('mouseenter', openRail);
-        node.removeEventListener('mouseleave', closeRail);
-      };
-    }
-  };
+  // WHERE THE CURSOR IS, NOT WHAT IT IS OVER. The rail opens when the cursor is in
+  // its strip and stays open while the cursor is within its opened width, judged
+  // by the cursor's x position on the screen. Asking the browser which element is
+  // under the cursor (mouseenter/leave, hover events) breaks whenever something on
+  // the page sits above the opened rail: the cursor then "leaves" the rail while
+  // still visibly inside it, the rail closes, reopens, and flickers.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return undefined;
+    const onMove = (e) => {
+      if (bareRef.current) return;
+      const edge = expandedRef.current ? RAIL_WIDTH + 2 : RAIL_COLLAPSED;
+      if (e.clientX <= edge) openRail(); else closeRail();
+    };
+    const onLeaveWindow = (e) => { if (!e.relatedTarget) closeRail(); };
+    document.addEventListener('mousemove', onMove, { passive: true });
+    document.addEventListener('mouseout', onLeaveWindow);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseout', onLeaveWindow);
+    };
+    // openRail / closeRail only touch refs and a shared value
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const railStyle = useAnimatedStyle(() => ({
     width: RAIL_COLLAPSED + (RAIL_WIDTH - RAIL_COLLAPSED) * open.value,
@@ -148,7 +158,8 @@ export default function DesktopShell({ children }) {
     opacity: Math.max(0, (open.value - 0.35) / 0.65),
   }), [open]);
 
-  if (isBareRoute(pathname)) return children;
+  bareRef.current = isBareRoute(pathname);
+  if (bareRef.current) return children;
 
   // The rail is its own plane, anchored apart from the page: the bar navy of the phone's bottom bar in both themes
   // (theme.js `bar`), with the active destination marked by a brass tick. Its text is the bar's own ink.
@@ -158,7 +169,7 @@ export default function DesktopShell({ children }) {
   return (
     <View style={styles.root}>
       {/* A fixed-width slot keeps the page where it is; the rail itself grows over it. */}
-      <View ref={setSlot} style={styles.railSlot}>
+      <View style={styles.railSlot}>
       <Animated.View style={[styles.rail, { backgroundColor: colors.bar }, railStyle]}>
         {RAIL_ITEMS.map((item) => {
           // Exact-match active state, mirroring FloatingNav so the rail and
@@ -174,10 +185,14 @@ export default function DesktopShell({ children }) {
               onBlur={closeRail}
               accessibilityRole="link"
               accessibilityLabel={item.label}
-              style={({ hovered, pressed }) => [
+              style={({ hovered, pressed, focused }) => [
                 styles.railItem,
                 active && { backgroundColor: withAlpha(colors.onBar, 0.10) },
                 !active && hovered && { backgroundColor: withAlpha(colors.onBar, 0.06) },
+                // The browser's own focus ring is a separate box that stays after a
+                // click and lags behind the rail as it widens. Keyboard focus is shown
+                // as a highlight on the item itself instead.
+                focused && { backgroundColor: withAlpha(colors.onBar, 0.14) },
                 pressed && { opacity: 0.8 },
               ]}
             >
@@ -206,6 +221,29 @@ export default function DesktopShell({ children }) {
             </Pressable>
           );
         })}
+
+        {/* Bottom of the rail: the light/dark switch, and Settings as an icon. */}
+        <View style={styles.railFoot}>
+          <ThemeSwitch />
+          <Pressable
+            onPress={() => router.push('/settings')}
+            accessibilityRole="link"
+            accessibilityLabel="Settings"
+            style={({ hovered, pressed, focused }) => [
+              styles.footIcon,
+              pathname === '/settings' && { backgroundColor: withAlpha(colors.onBar, 0.10) },
+              pathname !== '/settings' && hovered && { backgroundColor: withAlpha(colors.onBar, 0.06) },
+              focused && { backgroundColor: withAlpha(colors.onBar, 0.14) },
+              pressed && { opacity: 0.8 },
+            ]}
+          >
+            <Settings
+              size={20}
+              strokeWidth={1.5}
+              color={pathname === '/settings' ? railActive : railIdle}
+            />
+          </Pressable>
+        </View>
       </Animated.View>
       </View>
 
@@ -225,7 +263,8 @@ const styles = StyleSheet.create({
   railSlot: {
     width: RAIL_COLLAPSED,
     flexShrink: 0,
-    zIndex: 30,
+    // Above anything a page lays over its left edge.
+    zIndex: 1000,
   },
   rail: {
     position: 'absolute',
@@ -247,9 +286,25 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     borderRadius: borderRadius.md,
+    ...(Platform.OS === 'web' ? { outlineStyle: 'none' } : null),
   },
   // The active destination's tick: a short brass bar on the rail's inner edge.
   railTick: { position: 'absolute', left: 0, top: 9, bottom: 9, width: 3, borderRadius: 2 },
+  railFoot: {
+    marginTop: 'auto',
+    paddingBottom: spacing.lg,
+    gap: spacing.sm,
+    alignItems: 'flex-start',
+    paddingLeft: spacing.xs,
+  },
+  footIcon: {
+    width: 48,
+    height: 40,
+    borderRadius: borderRadius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...(Platform.OS === 'web' ? { outlineStyle: 'none' } : null),
+  },
   railIcon: {
     width: 20,
     height: 20,

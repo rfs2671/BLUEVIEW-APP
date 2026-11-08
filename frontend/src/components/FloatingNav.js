@@ -377,6 +377,8 @@ const ThemeToggle = () => {
   const { colors, isDark, toggleThemeAnimated } = useTheme();
   const ref = React.useRef(null);
   const spin = useSharedValue(lastShownDark === null || lastShownDark === isDark ? 1 : 0);
+  const squash = useSharedValue(0);   // 0 at rest, 1 fully pressed
+  const ring = useSharedValue(1);     // 0 -> 1 one ripple, 1 = finished/invisible
 
   useEffect(() => {
     lastShownDark = isDark;
@@ -386,15 +388,27 @@ const ThemeToggle = () => {
 
   const iconStyle = useAnimatedStyle(() => ({
     opacity: spin.value,
-    transform: [{ rotate: `${(1 - spin.value) * -140}deg` }, { scale: 0.5 + 0.5 * spin.value }],
-  }));
+    transform: [
+      { rotate: `${(1 - spin.value) * -140}deg` },
+      { scaleX: (0.5 + 0.5 * spin.value) * (1 + 0.25 * squash.value) },
+      { scaleY: (0.5 + 0.5 * spin.value) * (1 - 0.2 * squash.value) },
+    ],
+  }), [spin, squash]);
+  const ringStyle = useAnimatedStyle(() => ({
+    opacity: 0.55 * (1 - ring.value),
+    transform: [{ scale: 1 + 1.4 * ring.value }],
+  }), [ring]);
 
   const onPress = () => {
-    const go = (x, y) => toggleThemeAnimated({ x, y });
+    // The ripple and squash play first; the spread of the new theme follows a
+    // beat later so the button is seen to cause it.
+    ring.value = 0;
+    ring.value = withTiming(1, { duration: 380 });
+    const go = (x, y) => setTimeout(() => toggleThemeAnimated({ x, y }), 90);
     if (ref.current && ref.current.measureInWindow) {
       ref.current.measureInWindow((x, y, w, h) => go(x + w / 2, y + h / 2));
     } else {
-      toggleThemeAnimated();
+      go(undefined, undefined);
     }
   };
 
@@ -402,8 +416,14 @@ const ThemeToggle = () => {
   return (
     <View ref={ref} collapsable={false} style={{ width: TOGGLE_W, alignItems: 'center', justifyContent: 'flex-start', paddingTop: 11 }}>
       <View style={{ position: 'absolute', left: 0, top: 12, width: 1, height: 28, backgroundColor: withAlpha(colors.onBar, 0.22) }} />
+      <Animated.View
+        pointerEvents="none"
+        style={[{ position: 'absolute', top: 11, width: 34, height: 34, borderRadius: 17, borderWidth: 1.5, borderColor: colors.onBar }, ringStyle]}
+      />
       <Pressable
         onPress={onPress}
+        onPressIn={() => { squash.value = withTiming(1, { duration: 80 }); }}
+        onPressOut={() => { squash.value = withSpring(0, { damping: 8, stiffness: 220 }); }}
         accessibilityRole="button"
         accessibilityLabel={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
         hitSlop={6}
