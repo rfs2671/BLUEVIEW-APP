@@ -43,6 +43,7 @@ import {
   ChevronRight,
   Unlink,
   X,
+  MoreHorizontal,
 } from 'lucide-react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
@@ -219,6 +220,8 @@ export default function ProjectFilesScreen() {
 
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  // Folder link + site-device visibility live in a sheet, not on the page.
+  const [showSettings, setShowSettings] = useState(false);
   const [project, setProject] = useState(null);
   const [files, setFiles] = useState([]);
   // WHAT IS ACTUALLY ON THE DISK. Re-read rather than remembered: a stored
@@ -568,6 +571,13 @@ export default function ProjectFilesScreen() {
   const openFolderPicker = () => {
     setShowFolderPicker(true);
     fetchFolders(linkedFolder || '');
+  };
+
+  // The settings sheet is a Modal, and iOS will not stack a second Modal on a
+  // closing first one: let the sheet go, then open the next thing.
+  const afterClosingSettings = (fn) => {
+    setShowSettings(false);
+    setTimeout(fn, 280);
   };
 
   /**
@@ -1009,10 +1019,67 @@ export default function ProjectFilesScreen() {
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Title */}
+          {/* Title row: name, count, and the three everyday actions. */}
           <View style={s.titleSection}>
-            <Text style={s.titleLabel}>{project?.name || 'PROJECT'}</Text>
-            <Text style={s.titleText}>Files</Text>
+            <View style={s.titleRow}>
+              <View style={s.titleCol}>
+                <View style={s.titleLine}>
+                  <Text style={s.titleText}>Files</Text>
+                  {!loading && files.length > 0 && (
+                    <Text style={s.titleCount}>{files.length}</Text>
+                  )}
+                </View>
+                <Text style={s.titleLabel} numberOfLines={1}>{project?.name || 'PROJECT'}</Text>
+              </View>
+              {!loading && (
+                <View style={s.titleActions}>
+                  {isAdmin && (
+                    <Pressable
+                      onPress={handleUploadFile}
+                      disabled={uploading}
+                      accessibilityRole="button"
+                      accessibilityLabel="Upload PDF"
+                      style={({ pressed }) => [
+                        s.iconAction, s.iconActionPrimary,
+                        pressed && { opacity: 0.7 }, uploading && { opacity: 0.5 },
+                      ]}
+                    >
+                      {uploading
+                        ? <ActivityIndicator size="small" color={colors.primary} />
+                        : <Upload size={18} strokeWidth={1.6} color={colors.primary} />}
+                    </Pressable>
+                  )}
+                  {isAdmin && (project?.dropbox_folder_path ? (
+                    <Pressable
+                      onPress={handleSync}
+                      disabled={syncing}
+                      accessibilityRole="button"
+                      accessibilityLabel="Sync Dropbox"
+                      style={({ pressed }) => [s.iconAction, pressed && { opacity: 0.7 }, syncing && { opacity: 0.5 }]}
+                    >
+                      <RefreshCw size={18} strokeWidth={1.6} color={colors.text.secondary} />
+                    </Pressable>
+                  ) : (
+                    <Pressable
+                      onPress={openFolderPicker}
+                      accessibilityRole="button"
+                      accessibilityLabel="Link a Dropbox folder"
+                      style={({ pressed }) => [s.iconAction, pressed && { opacity: 0.7 }]}
+                    >
+                      <Folder size={18} strokeWidth={1.6} color={colors.text.secondary} />
+                    </Pressable>
+                  ))}
+                  <Pressable
+                    onPress={() => setShowSettings(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Folder and site device settings"
+                    style={({ pressed }) => [s.iconAction, pressed && { opacity: 0.7 }]}
+                  >
+                    <MoreHorizontal size={18} strokeWidth={1.6} color={colors.text.secondary} />
+                  </Pressable>
+                </View>
+              )}
+            </View>
           </View>
 
           {loading ? (
@@ -1024,145 +1091,6 @@ export default function ProjectFilesScreen() {
             </View>
           ) : (
             <>
-              {/* Action bar */}
-              {isAdmin && (
-                <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
-                  <Pressable
-                    onPress={handleUploadFile}
-                    disabled={uploading}
-                    style={({ pressed }) => [
-                      { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                        paddingVertical: 14, borderRadius: 12, backgroundColor: withAlpha(colors.primary, 0.15),
-                        borderWidth: 1, borderColor: withAlpha(colors.primary, 0.3) },
-                      pressed && { opacity: 0.7 },
-                      uploading && { opacity: 0.5 },
-                    ]}
-                  >
-                    <Upload size={18} strokeWidth={1.5} color={colors.primary} />
-                    <Text style={{ color: colors.primary, fontSize: 14, fontWeight: '600' }}>
-                      {uploading ? 'Uploading...' : 'Upload PDF'}
-                    </Text>
-                  </Pressable>
-                  {project?.dropbox_folder_path ? (
-                    <Pressable
-                      onPress={handleSync}
-                      disabled={syncing}
-                      style={({ pressed }) => [
-                        { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                          paddingVertical: 14, borderRadius: 12, backgroundColor: withAlpha('#ffffff', 0.05),
-                          borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1) },
-                        pressed && { opacity: 0.7 },
-                        syncing && { opacity: 0.5 },
-                      ]}
-                    >
-                      <RefreshCw size={18} strokeWidth={1.5} color={colors.text.secondary} />
-                      <Text style={{ color: colors.text.secondary, fontSize: 14, fontWeight: '600' }}>
-                        {syncing ? 'Syncing...' : 'Sync Dropbox'}
-                      </Text>
-                    </Pressable>
-                  ) : (
-                    <Pressable
-                      onPress={openFolderPicker}
-                      style={({ pressed }) => [
-                        { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                          paddingVertical: 14, borderRadius: 12, backgroundColor: withAlpha('#ffffff', 0.05),
-                          borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1) },
-                        pressed && { opacity: 0.7 },
-                      ]}
-                    >
-                      <Folder size={18} strokeWidth={1.5} color={colors.text.muted} />
-                      <Text style={{ color: colors.text.muted, fontSize: 14, fontWeight: '600' }}>
-                        Link Dropbox Folder
-                      </Text>
-                    </Pressable>
-                  )}
-                </View>
-              )}
-
-              {/* ── LINKED FOLDER ────────────────────────────────────────
-                  One row, one field. Linked-ness is bool(dropbox_folder_path),
-                  so there is nothing here to fall out of step with the server. */}
-              <GlassCard style={s.linkCard}>
-                <Text style={s.cardLabel}>DROPBOX FOLDER</Text>
-                {linkedFolder ? (
-                  <>
-                    <Pressable
-                      onPress={isAdmin ? openFolderPicker : undefined}
-                      disabled={!isAdmin}
-                      style={({ pressed }) => [
-                        s.linkedRow, pressed && isAdmin && { opacity: 0.7 },
-                      ]}
-                    >
-                      <FolderOpen size={20} strokeWidth={1.5} color={isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE} />
-                      <Text style={s.linkedPath} numberOfLines={2}>{linkedFolder}</Text>
-                      {isAdmin && (
-                        <ChevronRight size={18} strokeWidth={1.5} color={colors.text.muted} />
-                      )}
-                    </Pressable>
-                    {isAdmin && (
-                      <Pressable
-                        onPress={() => setConfirmUnlink(true)}
-                        accessibilityRole="button"
-                        style={({ pressed }) => [s.unlinkBtn, pressed && { opacity: 0.7 }]}
-                      >
-                        <Unlink size={16} strokeWidth={1.5} color={semantic.neutral} />
-                        <Text style={s.unlinkText}>Unlink this folder</Text>
-                      </Pressable>
-                    )}
-                  </>
-                ) : (
-                  <View style={s.notLinkedRow}>
-                    <Text style={s.notLinkedInline}>Not linked</Text>
-                    {isAdmin && (
-                      <GlassButton
-                        title="Choose a folder"
-                        icon={<Folder size={16} strokeWidth={1.5} color={colors.text.primary} />}
-                        onPress={openFolderPicker}
-                      />
-                    )}
-                  </View>
-                )}
-              </GlassCard>
-
-              {/* Site-device visibility. Lives beside the folder it scopes. */}
-              {/* NOT gated on linkedFolder. A project whose files all arrived
-                  through the app has no Dropbox folder, and the server now
-                  offers those files a folder to be ticked by — gating the card
-                  on a Dropbox link left that the one project where nothing
-                  could ever be made visible. The card renders whenever the
-                  server offers something selectable. */}
-              {isAdmin && siteDeviceSubfolders.length > 0 && (
-                <GlassCard style={s.linkCard}>
-                  <Text style={s.cardLabel}>VISIBLE ON SITE DEVICES</Text>
-                  <Text style={s.siteHint}>
-                    Kiosks see only the folders ticked here. With none ticked they
-                    see no files from this project. Files uploaded in the app are
-                    ticked as "Uploaded in App".
-                  </Text>
-                  {siteDeviceSubfolders.map((name) => {
-                    const on = siteDeviceSelected.some(
-                      (x) => x.toLowerCase() === name.toLowerCase());
-                    return (
-                      <Pressable
-                        key={name}
-                        onPress={() => toggleSiteSubfolder(name)}
-                        style={({ pressed }) => [s.siteRow, pressed && { opacity: 0.7 }]}
-                      >
-                        {on
-                          ? <CheckCircle size={18} strokeWidth={1.5} color={semantic.verified} />
-                          : <Folder size={18} strokeWidth={1.5} color={colors.text.subtle} />}
-                        <Text style={s.siteName}>{name}</Text>
-                      </Pressable>
-                    );
-                  })}
-                  <GlassButton
-                    title={savingSiteVisibility ? 'Saving…' : 'Save visibility'}
-                    onPress={handleSaveSiteVisibility}
-                    loading={savingSiteVisibility}
-                  />
-                </GlassCard>
-              )}
-
               {/* A failed load is not an empty project. Disclose which it was,
                   above the list (or the absence of one) it describes. */}
               {fetchState !== 'ok' && (
@@ -1337,6 +1265,8 @@ export default function ProjectFilesScreen() {
                           pressed && s.fileItemPressed,
                         ]}
                         onPress={() => handleViewFile(file)}
+                        onLongPress={isAdmin ? () => handleDeleteFile(file) : undefined}
+                        delayLongPress={500}
                       >
                         {/* File Icon — or page one of the plan, when we have
                             it. Only PDFs have pages; everything else keeps the
@@ -1441,17 +1371,6 @@ export default function ProjectFilesScreen() {
                               <Text style={s.fileActionLabel}>{tDl('saveLabel')}</Text>
                             )}
                           </Pressable>
-                          {isAdmin && (
-                            <Pressable
-                              onPress={(e) => {
-                                e.stopPropagation();
-                                handleDeleteFile(file);
-                              }}
-                              style={s.fileActionBtn}
-                            >
-                              <Trash2 size={18} strokeWidth={1.5} color={semantic.neutral} />
-                            </Pressable>
-                          )}
                         </View>
                       </Pressable>
                     );
@@ -1518,6 +1437,121 @@ export default function ProjectFilesScreen() {
                 accessibilityLabel={tDl('cancel')}
               />
             </GlassCard>
+          </View>
+        </Modal>
+
+        {/* ── PROJECT FILES SETTINGS ────────────────────────────────────
+            The Dropbox link, its unlink, and which folders site devices see.
+            Set once and rarely touched, so they live behind the ... button
+            instead of taking the top of the page above the plans. */}
+        <Modal
+          visible={showSettings}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowSettings(false)}
+        >
+          <View style={s.sheetOverlay}>
+            <Pressable style={s.modalBackdrop} onPress={() => setShowSettings(false)} />
+            <View style={[s.sheet, { backgroundColor: isDark ? '#243749' : '#FFFFFF' }]}>
+              <View style={s.sheetGrab} />
+              <View style={s.pickerHeader}>
+                <Text style={s.pickerTitle}>Project files settings</Text>
+                <Pressable
+                  onPress={() => setShowSettings(false)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close"
+                  hitSlop={8}
+                >
+                  <X size={20} strokeWidth={1.5} color={colors.text.muted} />
+                </Pressable>
+              </View>
+              <ScrollView showsVerticalScrollIndicator={false}>
+              {/* ── LINKED FOLDER ────────────────────────────────────────
+                  One row, one field. Linked-ness is bool(dropbox_folder_path),
+                  so there is nothing here to fall out of step with the server. */}
+              <GlassCard style={s.linkCard}>
+                <Text style={s.cardLabel}>DROPBOX FOLDER</Text>
+                {linkedFolder ? (
+                  <>
+                    <Pressable
+                      onPress={isAdmin ? () => afterClosingSettings(openFolderPicker) : undefined}
+                      disabled={!isAdmin}
+                      style={({ pressed }) => [
+                        s.linkedRow, pressed && isAdmin && { opacity: 0.7 },
+                      ]}
+                    >
+                      <FolderOpen size={20} strokeWidth={1.5} color={isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE} />
+                      <Text style={s.linkedPath} numberOfLines={2}>{linkedFolder}</Text>
+                      {isAdmin && (
+                        <ChevronRight size={18} strokeWidth={1.5} color={colors.text.muted} />
+                      )}
+                    </Pressable>
+                    {isAdmin && (
+                      <Pressable
+                        onPress={() => afterClosingSettings(() => setConfirmUnlink(true))}
+                        accessibilityRole="button"
+                        style={({ pressed }) => [s.unlinkBtn, pressed && { opacity: 0.7 }]}
+                      >
+                        <Unlink size={16} strokeWidth={1.5} color={semantic.neutral} />
+                        <Text style={s.unlinkText}>Unlink this folder</Text>
+                      </Pressable>
+                    )}
+                  </>
+                ) : (
+                  <View style={s.notLinkedRow}>
+                    <Text style={s.notLinkedInline}>Not linked</Text>
+                    {isAdmin && (
+                      <GlassButton
+                        title="Choose a folder"
+                        icon={<Folder size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                        onPress={() => afterClosingSettings(openFolderPicker)}
+                      />
+                    )}
+                  </View>
+                )}
+              </GlassCard>
+
+              {/* Site-device visibility. Lives beside the folder it scopes. */}
+              {/* NOT gated on linkedFolder. A project whose files all arrived
+                  through the app has no Dropbox folder, and the server now
+                  offers those files a folder to be ticked by — gating the card
+                  on a Dropbox link left that the one project where nothing
+                  could ever be made visible. The card renders whenever the
+                  server offers something selectable. */}
+              {isAdmin && siteDeviceSubfolders.length > 0 && (
+                <GlassCard style={s.linkCard}>
+                  <Text style={s.cardLabel}>VISIBLE ON SITE DEVICES</Text>
+                  <Text style={s.siteHint}>
+                    Kiosks see only the folders ticked here. With none ticked they
+                    see no files from this project. Files uploaded in the app are
+                    ticked as "Uploaded in App".
+                  </Text>
+                  {siteDeviceSubfolders.map((name) => {
+                    const on = siteDeviceSelected.some(
+                      (x) => x.toLowerCase() === name.toLowerCase());
+                    return (
+                      <Pressable
+                        key={name}
+                        onPress={() => toggleSiteSubfolder(name)}
+                        style={({ pressed }) => [s.siteRow, pressed && { opacity: 0.7 }]}
+                      >
+                        {on
+                          ? <CheckCircle size={18} strokeWidth={1.5} color={semantic.verified} />
+                          : <Folder size={18} strokeWidth={1.5} color={colors.text.subtle} />}
+                        <Text style={s.siteName}>{name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                  <GlassButton
+                    title={savingSiteVisibility ? 'Saving…' : 'Save visibility'}
+                    onPress={handleSaveSiteVisibility}
+                    loading={savingSiteVisibility}
+                  />
+                </GlassCard>
+              )}
+
+              </ScrollView>
+            </View>
           </View>
         </Modal>
 
@@ -1898,12 +1932,68 @@ function buildStyles(colors, isDark) {
     paddingBottom: 120,
   },
   titleSection: {
-    marginBottom: spacing.lg,
+    marginBottom: spacing.md,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  titleCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  titleLine: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: spacing.sm,
+  },
+  titleCount: {
+    fontSize: 14,
+    color: colors.text.subtle,
+  },
+  titleActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  iconAction: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.glass.background,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+  },
+  iconActionPrimary: {
+    backgroundColor: withAlpha(colors.primary, 0.15),
+    borderColor: withAlpha(colors.primary, 0.3),
+  },
+  sheetOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    maxHeight: '85%',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.lg,
+  },
+  sheetGrab: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border.medium,
+    alignSelf: 'center',
+    marginBottom: spacing.md,
   },
   titleLabel: {
     ...typography.label,
     color: colors.text.muted,
-    marginBottom: spacing.sm,
+    marginTop: 2,
   },
   titleText: {
     fontSize: 30,
@@ -2014,9 +2104,9 @@ function buildStyles(colors, isDark) {
     color: colors.text.primary,
   },
   filesCount: {
-    fontSize: 13,
+    fontSize: 12,
     color: colors.text.muted,
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
   },
 
   // ── Offline readiness strip ────────────────────────────────────────────

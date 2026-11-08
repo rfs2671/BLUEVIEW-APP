@@ -24,6 +24,7 @@ import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
 import DesktopShell from '../src/components/DesktopShell';
 import UnfiledDailyLogNotice from '../src/components/UnfiledDailyLogNotice';
+import CornerSettings from '../src/components/CornerSettings';
 
 // Phase C1: initialize Sentry at module top-level so any error
 // during AuthProvider / ThemeProvider / DatabaseProvider mounting
@@ -468,6 +469,7 @@ function AppShell() {
           question can be asked. Headless until it has something to say. */}
       <UnfiledDailyLogNotice />
       {isDesktop ? <DesktopShell>{stack}</DesktopShell> : stack}
+      <CornerSettings />
     </View>
   );
 }
