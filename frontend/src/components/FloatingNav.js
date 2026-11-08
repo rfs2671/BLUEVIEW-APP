@@ -31,6 +31,8 @@ import {
   FileText,
   FolderOpen,
   Settings,
+  Moon as MoonIcon,
+  Sun as SunIcon,
   X,
   Sun,
   Moon,
@@ -39,6 +41,7 @@ import {
   Check,
 } from 'lucide-react-native';
 import { colors, spacing } from '../styles/theme';
+import { registerNavChrome } from '../utils/navChromeStore';
 import { useAuth, isCompanyAdmin, isAccountAdmin } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useIsDesktop } from '../hooks/useIsDesktop';
@@ -362,11 +365,57 @@ const NavItem = ({ item, isActive, onPress }) => (
   <NavTab icon={item.icon} label={item.label} isActive={isActive} onPress={onPress} />
 );
 
-// ─── SettingsNavItem ──────────────────────────────────────────────────────────
+// ─── ThemeToggle ──────────────────────────────────────────────────────────────
 
-const SettingsNavItem = ({ onPress, isActive }) => (
-  <NavTab icon={Settings} label="Settings" isActive={isActive} onPress={onPress} />
-);
+// Sits after a divider at the end of the bar. Tapping floods the screen with the
+// other theme from this button (see ThemeContext.toggleThemeAnimated). The app
+// remounts on a switch, so the icon turns in on mount when the mode changed.
+let lastShownDark = null;
+const TOGGLE_W = 54;
+
+const ThemeToggle = () => {
+  const { colors, isDark, toggleThemeAnimated } = useTheme();
+  const ref = React.useRef(null);
+  const spin = useSharedValue(lastShownDark === null || lastShownDark === isDark ? 1 : 0);
+
+  useEffect(() => {
+    lastShownDark = isDark;
+    spin.value = withSpring(1, { damping: 11, stiffness: 120 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDark]);
+
+  const iconStyle = useAnimatedStyle(() => ({
+    opacity: spin.value,
+    transform: [{ rotate: `${(1 - spin.value) * -140}deg` }, { scale: 0.5 + 0.5 * spin.value }],
+  }));
+
+  const onPress = () => {
+    const go = (x, y) => toggleThemeAnimated({ x, y });
+    if (ref.current && ref.current.measureInWindow) {
+      ref.current.measureInWindow((x, y, w, h) => go(x + w / 2, y + h / 2));
+    } else {
+      toggleThemeAnimated();
+    }
+  };
+
+  const Icon = isDark ? MoonIcon : SunIcon;
+  return (
+    <View ref={ref} collapsable={false} style={{ width: TOGGLE_W, alignItems: 'center', justifyContent: 'flex-start', paddingTop: 11 }}>
+      <View style={{ position: 'absolute', left: 0, top: 12, width: 1, height: 28, backgroundColor: withAlpha(colors.onBar, 0.22) }} />
+      <Pressable
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+        hitSlop={6}
+        style={({ pressed }) => [{ width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' }, pressed && { backgroundColor: withAlpha(colors.onBar, 0.12) }]}
+      >
+        <Animated.View style={iconStyle}>
+          <Icon size={18} strokeWidth={1.8} color={colors.onBar} />
+        </Animated.View>
+      </Pressable>
+    </View>
+  );
+};
 
 // Path of the bar with a scoop wrapped around the bubble. The scoop's bottom is a
 // circular arc concentric with the bubble (so the gap is even all the way round),
@@ -412,13 +461,15 @@ const FloatingNav = () => {
   const styles = buildStyles(colors, isDark);
   const isDesktop = useIsDesktop();
   const { width } = useWindowDimensions();
+  const { themeForced } = useTheme();
+  const toggleW = themeForced ? 0 : TOGGLE_W;
 
-  const tabs = [...navItems, { path: '/settings', icon: Settings, label: 'Settings' }];
+  const tabs = navItems;
   const activeIndex = tabs.findIndex((t) => t.path === pathname);
   const hasActive = activeIndex >= 0;
 
   const padX = spacing.sm;
-  const tabW = (width - padX * 2) / tabs.length;
+  const tabW = (width - padX * 2 - toggleW) / tabs.length;
   const centerOf = (i) => padX + tabW * (i + 0.5);
   const barBottom = insets.bottom + NAV_BOTTOM_PADDING;
   const height = TOP + BAR_H + barBottom;
@@ -477,6 +528,12 @@ const FloatingNav = () => {
     transform: [{ scale: 1 - 0.4 * iconT.value }],
   }));
 
+  // Tell the app root the bar is on screen so the corner settings button shows.
+  useEffect(() => {
+    if (isDesktop) return undefined;
+    return registerNavChrome();
+  }, [isDesktop]);
+
   // Desktop (RN-Web >= 1024) navigates via DesktopShell's left rail, so the
   // floating tab bar must not render. Suppressed here rather than in each
   // screen: FloatingNav is mounted by 19 separate screens, and this PR is
@@ -512,6 +569,7 @@ const FloatingNav = () => {
             onPress={() => router.push(item.path)}
           />
         ))}
+        {!themeForced && <ThemeToggle />}
       </View>
     </View>
   );

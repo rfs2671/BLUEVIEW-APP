@@ -6,12 +6,17 @@ import { useDatabaseContext as useDatabase } from '../context/DatabaseContext';
 import { colors, spacing, typography } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
 import { semantic } from '../styles/semanticColors';
+import { useNavChromeVisible, CORNER_BUTTON_SPACE } from '../utils/navChromeStore';
+import { useIsDesktop } from '../hooks/useIsDesktop';
 
 export default function OfflineIndicator() {
   const { colors, isDark } = useTheme();
   const styles = buildStyles(colors, isDark);
   const { isOnline } = useNetworkStatus();
   const { queueStatus } = useDatabase();
+  const navChrome = useNavChromeVisible();
+  const isDesktop = useIsDesktop();
+  const cornerShown = navChrome && !isDesktop;
 
   // Don't show anything if online and queue is empty
   if (isOnline && queueStatus.size === 0) {
@@ -21,7 +26,8 @@ export default function OfflineIndicator() {
   return (
     <View style={[
       styles.container,
-      isOnline ? styles.containerOnline : styles.containerOffline
+      isOnline ? styles.containerOnline : styles.containerOffline,
+      cornerShown && { marginRight: CORNER_BUTTON_SPACE },
     ]}>
       {isOnline ? (
         <Wifi size={16} color={colors.success} strokeWidth={2} />
