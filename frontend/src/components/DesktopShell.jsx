@@ -12,6 +12,7 @@ import {
 } from 'lucide-react-native';
 import { withAlpha } from '../styles/semanticColors';
 import { useTheme } from '../context/ThemeContext';
+import ThemeSwitch from './ThemeSwitch';
 import { spacing, borderRadius, typography } from '../styles/theme';
 
 /**
@@ -38,7 +39,6 @@ const RAIL_ITEMS = [
   { path: '/projects', icon: FolderKanban, label: 'Projects' },
   { path: '/workers', icon: Users, label: 'Workers' },
   { path: '/reports', icon: FileText, label: 'Reports' },
-  { path: '/settings', icon: Settings, label: 'Settings' },
   // Admin points at /admin/users, not /admin — there is no app/admin/index.jsx
   // and this PR deliberately does not create one. /admin/users is the natural
   // landing screen for the admin group.
@@ -221,6 +221,29 @@ export default function DesktopShell({ children }) {
             </Pressable>
           );
         })}
+
+        {/* Bottom of the rail: the light/dark switch, and Settings as an icon. */}
+        <View style={styles.railFoot}>
+          <ThemeSwitch />
+          <Pressable
+            onPress={() => router.push('/settings')}
+            accessibilityRole="link"
+            accessibilityLabel="Settings"
+            style={({ hovered, pressed, focused }) => [
+              styles.footIcon,
+              pathname === '/settings' && { backgroundColor: withAlpha(colors.onBar, 0.10) },
+              pathname !== '/settings' && hovered && { backgroundColor: withAlpha(colors.onBar, 0.06) },
+              focused && { backgroundColor: withAlpha(colors.onBar, 0.14) },
+              pressed && { opacity: 0.8 },
+            ]}
+          >
+            <Settings
+              size={20}
+              strokeWidth={1.5}
+              color={pathname === '/settings' ? railActive : railIdle}
+            />
+          </Pressable>
+        </View>
       </Animated.View>
       </View>
 
@@ -267,6 +290,21 @@ const styles = StyleSheet.create({
   },
   // The active destination's tick: a short brass bar on the rail's inner edge.
   railTick: { position: 'absolute', left: 0, top: 9, bottom: 9, width: 3, borderRadius: 2 },
+  railFoot: {
+    marginTop: 'auto',
+    paddingBottom: spacing.lg,
+    gap: spacing.sm,
+    alignItems: 'flex-start',
+    paddingLeft: spacing.xs,
+  },
+  footIcon: {
+    width: 48,
+    height: 40,
+    borderRadius: borderRadius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...(Platform.OS === 'web' ? { outlineStyle: 'none' } : null),
+  },
   railIcon: {
     width: 20,
     height: 20,
