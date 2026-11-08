@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -10,7 +10,15 @@ import {
   Modal,
   ActivityIndicator,
   KeyboardAvoidingView,
+  useWindowDimensions,
 } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
+import Animated, {
+  useSharedValue,
+  useAnimatedProps,
+  useAnimatedStyle,
+  withSpring,
+} from 'react-native-reanimated';
 import { useRouter, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
@@ -48,6 +56,18 @@ const navItems = [
 // exists. The inset clears the system navigation bar; this constant is the
 // small breathing room under the labels on top of it.
 export const NAV_BOTTOM_PADDING = 8;
+
+// Notch geometry. The bar's top edge is scooped out under the active tab and a
+// raised circle holding the active icon sits in the scoop; both slide to the
+// tapped tab on a spring. TOP is the bar's top edge inside the container (the
+// headroom above it is where the circle rises).
+const BAR_H = 52;          // tab row height, excluding the bottom inset
+const CIRCLE = 46;         // active bubble diameter
+const NOTCH_DEPTH = 26;    // how far the scoop dips below the bar's top edge
+const TOP = CIRCLE / 2 + 4; // headroom above the bar line
+const SPRING = { damping: 16, stiffness: 190, mass: 0.8 };
+
+const AnimatedPath = Animated.createAnimatedComponent(Path);
 
 /**
  * SettingsModal
@@ -298,7 +318,8 @@ const modalStyles = StyleSheet.create({
 // ─── NavItem ─────────────────────────────────────────────────────────────────
 
 // One tab: icon stacked above a one-line label. Inactive tabs sit at 72%
-// opacity, the active tab at full opacity with a brass rule across its top.
+// opacity. The active tab's icon is drawn in the raised circle instead (see
+// FloatingNav), so here it is hidden and only the label remains under the notch.
 const NavTab = ({ icon: Icon, label, isActive, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
   const { colors, isDark } = useTheme();
@@ -315,7 +336,9 @@ const NavTab = ({ icon: Icon, label, isActive, onPress }) => {
         isHovered && !isActive && styles.navItemHover,
       ]}
     >
-      <Icon size={18} strokeWidth={1.8} color={colors.onBar} />
+      <View style={{ opacity: isActive ? 0 : 1 }}>
+        <Icon size={18} strokeWidth={1.8} color={colors.onBar} />
+      </View>
       {/* numberOfLines IS LOAD-BEARING: five equal columns share the width, and
           a squeezed label must ellipsize rather than wrap into a taller bar. */}
       <Text style={styles.navLabel} numberOfLines={1}>
@@ -335,13 +358,28 @@ const SettingsNavItem = ({ onPress, isActive }) => (
   <NavTab icon={Settings} label="Settings" isActive={isActive} onPress={onPress} />
 );
 
+// Path of the bar with a scoop centred on cx. depth 0 = flat top (no tab active).
+function buildBarPath(width, height, cx, depth) {
+  'worklet';
+  const d = NOTCH_DEPTH * depth;
+  const half = 36; // half-width of the scoop's shoulders
+  const k = 22;    // curve tension
+  return (
+    `M0,${TOP} L${cx - half},${TOP} ` +
+    `C${cx - half + k},${TOP} ${cx - k},${TOP + d} ${cx},${TOP + d} ` +
+    `C${cx + k},${TOP + d} ${cx + half - k},${TOP} ${cx + half},${TOP} ` +
+    `L${width},${TOP} L${width},${height} L0,${height} Z`
+  );
+}
+
 // ─── FloatingNav ──────────────────────────────────────────────────────────────
 
 /**
  * Nav bar spec:
  *   solid colors.bar strip, full width, flush to the bottom edge
- *   equal-width columns, icon over a one-line 11pt label
- *   inactive 72% opacity; active full opacity + 3pt colors.barActive top rule
+ *   scooped notch in the top edge under the active tab, with a raised
+ *   colors.barActive circle carrying the active icon; both spring-slide
+ *   between tabs. Inactive tabs: icon over a one-line 11pt label at 72%.
  */
 const FloatingNav = () => {
   const router = useRouter();
@@ -350,6 +388,48 @@ const FloatingNav = () => {
   const { colors, isDark } = useTheme();
   const styles = buildStyles(colors, isDark);
   const isDesktop = useIsDesktop();
+  const { width } = useWindowDimensions();
+
+  const tabs = [...navItems, { path: '/settings', icon: Settings, label: 'Settings' }];
+  const activeIndex = tabs.findIndex((t) => t.path === pathname);
+  const hasActive = activeIndex >= 0;
+
+  const padX = spacing.sm;
+  const tabW = (width - padX * 2) / tabs.length;
+  const centerOf = (i) => padX + tabW * (i + 0.5);
+  const barBottom = insets.bottom + NAV_BOTTOM_PADDING;
+  const height = TOP + BAR_H + barBottom;
+
+  const cx = useSharedValue(centerOf(Math.max(activeIndex, 0)));
+  const depth = useSharedValue(hasActive ? 1 : 0);
+  const pop = useSharedValue(1);
+  const [shownIndex, setShownIndex] = useState(Math.max(activeIndex, 0));
+
+  useEffect(() => {
+    if (hasActive) {
+      cx.value = withSpring(centerOf(activeIndex), SPRING);
+      depth.value = withSpring(1, SPRING);
+      setShownIndex(activeIndex);
+      pop.value = 0.82;
+      pop.value = withSpring(1, SPRING);
+    } else {
+      depth.value = withSpring(0, SPRING);
+    }
+    // centerOf depends on width; re-snap on resize/rotation as well.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndex, width]);
+
+  const pathProps = useAnimatedProps(() => ({
+    d: buildBarPath(width, height, cx.value, depth.value),
+  }));
+
+  const circleStyle = useAnimatedStyle(() => ({
+    opacity: depth.value,
+    transform: [
+      { translateX: cx.value - CIRCLE / 2 },
+      { scale: pop.value * (0.4 + 0.6 * depth.value) },
+    ],
+  }));
 
   // Desktop (RN-Web >= 1024) navigates via DesktopShell's left rail, so the
   // floating tab bar must not render. Suppressed here rather than in each
@@ -358,54 +438,62 @@ const FloatingNav = () => {
   // this early return is hook-order safe. Native/web <1024 are unaffected.
   if (isDesktop) return null;
 
-  return (
-    <>
-      <View style={[styles.container, { paddingBottom: insets.bottom + NAV_BOTTOM_PADDING }]}>
-        {navItems.map((item) => {
-          const isActive = pathname === item.path;
-          return (
-            <NavItem
-              key={item.path}
-              item={item}
-              isActive={isActive}
-              onPress={() => router.push(item.path)}
-            />
-          );
-        })}
+  const ActiveIcon = tabs[shownIndex].icon;
 
-        {/* Settings button — navigates to /settings */}
-        <SettingsNavItem
-          isActive={pathname === '/settings'}
-          onPress={() => router.push('/settings')}
-        />
+  return (
+    <View style={[styles.container, { height }]} pointerEvents="box-none">
+      <Svg width={width} height={height} style={StyleSheet.absoluteFill} pointerEvents="none">
+        <AnimatedPath animatedProps={pathProps} fill={colors.bar} />
+      </Svg>
+
+      {/* Raised active bubble, nested in the scoop */}
+      <Animated.View pointerEvents="none" style={[styles.circle, circleStyle]}>
+        <ActiveIcon size={20} strokeWidth={1.9} color={colors.bar} />
+      </Animated.View>
+
+      <View style={[styles.row, { top: TOP, paddingBottom: barBottom, paddingHorizontal: padX }]}>
+        {tabs.map((item, i) => (
+          <NavItem
+            key={item.path}
+            item={item}
+            isActive={i === activeIndex}
+            onPress={() => router.push(item.path)}
+          />
+        ))}
       </View>
-    </>
+    </View>
   );
 };
 
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
+  // Height and bottom inset are applied inline at render (a StyleSheet is built
+  // before any inset exists). Absolute positioning puts the bar outside the
+  // inset flow, so the inset is added to the tab row's padding there; the bar
+  // stays flush to the bottom edge and its fill runs under the system bar.
   container: {
-    // OVERRIDDEN AT RENDER. The component passes
-    // { paddingBottom: insets.bottom + NAV_BOTTOM_PADDING } inline, which
-    // REPLACES the fallback below — it does not add to it.
-    //
-    // It has to be done inline: a StyleSheet is built once at module load,
-    // before any inset exists. And it has to be done at all because
-    // absolute positioning puts this outside the inset flow — neither the
-    // screen's SafeAreaView nor its paddingBottom: 120 reaches it, so a
-    // hardcoded padding leaves the labels under the buttons on 3-button
-    // navigation. The bar is flush to the bottom edge (bottom: 0) and grows
-    // upward by the inset, so its background runs under the system bar.
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
+  },
+  row: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
     flexDirection: 'row',
-    paddingTop: spacing.sm,
-    paddingHorizontal: spacing.sm,
-    paddingBottom: NAV_BOTTOM_PADDING,
-    backgroundColor: colors.bar,
+  },
+  circle: {
+    position: 'absolute',
+    top: TOP + NOTCH_DEPTH - CIRCLE - 4,
+    left: 0,
+    width: CIRCLE,
+    height: CIRCLE,
+    borderRadius: CIRCLE / 2,
+    backgroundColor: colors.barActive,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   // Equal-width columns. minWidth: 0 lets a flex child shrink below its
   // content so the label ellipsizes instead of widening its column.
@@ -414,15 +502,11 @@ function buildStyles(colors, isDark) {
     minWidth: 0,
     alignItems: 'center',
     gap: 3,
-    paddingTop: 6,
-    paddingBottom: 5,
-    borderTopWidth: 3,
-    borderTopColor: 'transparent',
+    paddingTop: 8,
     opacity: 0.72,
   },
   navItemActive: {
     opacity: 1,
-    borderTopColor: colors.barActive,
   },
   navItemHover: {
     opacity: 1,
