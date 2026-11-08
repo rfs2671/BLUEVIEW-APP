@@ -18,6 +18,8 @@ import Animated, {
   useAnimatedProps,
   useAnimatedStyle,
   withSpring,
+  withTiming,
+  withSequence,
 } from 'react-native-reanimated';
 import { useRouter, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -62,10 +64,16 @@ export const NAV_BOTTOM_PADDING = 8;
 // tapped tab on a spring. TOP is the bar's top edge inside the container (the
 // headroom above it is where the circle rises).
 const BAR_H = 52;          // tab row height, excluding the bottom inset
-const CIRCLE = 46;         // active bubble diameter
-const NOTCH_DEPTH = 26;    // how far the scoop dips below the bar's top edge
-const TOP = CIRCLE / 2 + 4; // headroom above the bar line
-const SPRING = { damping: 16, stiffness: 190, mass: 0.8 };
+const CIRCLE = 48;         // active bubble diameter
+const NOTCH_DEPTH = 27;    // how far the scoop dips below the bar's top edge
+const TOP = CIRCLE / 2 + 14; // headroom above the bar line (room for the lift)
+const SPRING = { damping: 13, stiffness: 150, mass: 0.9 };
+
+// Every screen mounts its own FloatingNav, so component state is lost on each
+// navigation and a new instance would start AT the destination (no slide). This
+// module-level value carries the previously active tab across remounts so the
+// new instance can start there and visibly glide to its own tab.
+let lastNavIndex = -1;
 
 const AnimatedPath = Animated.createAnimatedComponent(Path);
 
@@ -362,8 +370,8 @@ const SettingsNavItem = ({ onPress, isActive }) => (
 function buildBarPath(width, height, cx, depth) {
   'worklet';
   const d = NOTCH_DEPTH * depth;
-  const half = 36; // half-width of the scoop's shoulders
-  const k = 22;    // curve tension
+  const half = 44; // half-width of the scoop's shoulders
+  const k = 28;    // curve tension
   return (
     `M0,${TOP} L${cx - half},${TOP} ` +
     `C${cx - half + k},${TOP} ${cx - k},${TOP + d} ${cx},${TOP + d} ` +
@@ -400,20 +408,34 @@ const FloatingNav = () => {
   const barBottom = insets.bottom + NAV_BOTTOM_PADDING;
   const height = TOP + BAR_H + barBottom;
 
-  const cx = useSharedValue(centerOf(Math.max(activeIndex, 0)));
-  const depth = useSharedValue(hasActive ? 1 : 0);
-  const pop = useSharedValue(1);
-  const [shownIndex, setShownIndex] = useState(Math.max(activeIndex, 0));
+  // Where the bubble starts: the tab active before this screen mounted (so it
+  // slides in), else straight at the current tab.
+  const fromIndex = lastNavIndex >= 0 ? lastNavIndex : activeIndex;
+  const cx = useSharedValue(centerOf(Math.max(fromIndex, 0)));
+  const depth = useSharedValue(fromIndex >= 0 ? 1 : 0);
+  const lift = useSharedValue(0);   // bubble rises mid-move, then settles
+  const iconT = useSharedValue(1);  // 0 -> 1 crossfade outgoing -> incoming icon
+  const shownRef = React.useRef(fromIndex);
+  const [prevIdx, setPrevIdx] = useState(fromIndex);
 
   useEffect(() => {
     if (hasActive) {
       cx.value = withSpring(centerOf(activeIndex), SPRING);
       depth.value = withSpring(1, SPRING);
-      setShownIndex(activeIndex);
-      pop.value = 0.82;
-      pop.value = withSpring(1, SPRING);
+      if (shownRef.current !== activeIndex && shownRef.current >= 0) {
+        setPrevIdx(shownRef.current);
+        iconT.value = 0;
+        iconT.value = withTiming(1, { duration: 300 });
+        lift.value = withSequence(
+          withTiming(1, { duration: 150 }),
+          withSpring(0, { damping: 9, stiffness: 140 }),
+        );
+      }
+      shownRef.current = activeIndex;
+      lastNavIndex = activeIndex;
     } else {
       depth.value = withSpring(0, SPRING);
+      lastNavIndex = -1;
     }
     // centerOf depends on width; re-snap on resize/rotation as well.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -427,8 +449,17 @@ const FloatingNav = () => {
     opacity: depth.value,
     transform: [
       { translateX: cx.value - CIRCLE / 2 },
-      { scale: pop.value * (0.4 + 0.6 * depth.value) },
+      { translateY: -10 * lift.value },
+      { scale: (0.4 + 0.6 * depth.value) * (1 + 0.1 * lift.value) },
     ],
+  }));
+  const inIconStyle = useAnimatedStyle(() => ({
+    opacity: iconT.value,
+    transform: [{ scale: 0.5 + 0.5 * iconT.value }],
+  }));
+  const outIconStyle = useAnimatedStyle(() => ({
+    opacity: Math.max(0, 1 - iconT.value * 2.2),
+    transform: [{ scale: 1 - 0.4 * iconT.value }],
   }));
 
   // Desktop (RN-Web >= 1024) navigates via DesktopShell's left rail, so the
@@ -438,7 +469,8 @@ const FloatingNav = () => {
   // this early return is hook-order safe. Native/web <1024 are unaffected.
   if (isDesktop) return null;
 
-  const ActiveIcon = tabs[shownIndex].icon;
+  const ActiveIcon = tabs[Math.max(activeIndex, 0)].icon;
+  const PrevIcon = tabs[Math.max(prevIdx, 0)].icon;
 
   return (
     <View style={[styles.container, { height }]} pointerEvents="box-none">
@@ -448,7 +480,12 @@ const FloatingNav = () => {
 
       {/* Raised active bubble, nested in the scoop */}
       <Animated.View pointerEvents="none" style={[styles.circle, circleStyle]}>
-        <ActiveIcon size={20} strokeWidth={1.9} color={colors.bar} />
+        <Animated.View style={[styles.circleIcon, outIconStyle]}>
+          <PrevIcon size={21} strokeWidth={1.9} color={colors.bar} />
+        </Animated.View>
+        <Animated.View style={[styles.circleIcon, inIconStyle]}>
+          <ActiveIcon size={21} strokeWidth={1.9} color={colors.bar} />
+        </Animated.View>
       </Animated.View>
 
       <View style={[styles.row, { top: TOP, paddingBottom: barBottom, paddingHorizontal: padX }]}>
@@ -492,6 +529,16 @@ function buildStyles(colors, isDark) {
     height: CIRCLE,
     borderRadius: CIRCLE / 2,
     backgroundColor: colors.barActive,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: colors.barActive,
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
+  },
+  circleIcon: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
   },
