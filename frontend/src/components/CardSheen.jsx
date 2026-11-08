@@ -56,6 +56,19 @@ function useReduceMotion() {
   return reduce;
 }
 
+// A device with a real pointer (a desktop browser) has hover, so its cards light up
+// under the cursor and need no intro. Playing the intro there lit each card at a
+// random moment, so at any instant some cards looked thick and others thin.
+function hasHover() {
+  if (Platform.OS !== 'web') return false;
+  try {
+    return typeof window !== 'undefined' && !!window.matchMedia
+      && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+  } catch (_e) {
+    return false;
+  }
+}
+
 export default function CardSheen({ radius = 14, depth = 46, active = false, intro = false }) {
   const { colors } = useTheme();
   const reduce = useReduceMotion();
@@ -98,7 +111,7 @@ export default function CardSheen({ radius = 14, depth = 46, active = false, int
 
   // The intro: once, a beat after the card appears.
   useEffect(() => {
-    if (!intro || reduce) return undefined;
+    if (!intro || reduce || hasHover()) return undefined;
     const run = Animated.sequence([
       Animated.delay(120 + introDelay),
       Animated.parallel([
