@@ -1720,6 +1720,9 @@ function buildStyles(colors, isDark) {
   },
   folderGroup: {
     marginBottom: spacing.lg,
+    // The cards sit inside the group, not directly in filesList, so the list's
+    // own gap never reached them and they touched. Space them here.
+    gap: spacing.sm,
   },
   folderGroupHeader: {
     flexDirection: 'row',
