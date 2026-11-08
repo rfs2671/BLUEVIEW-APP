@@ -400,12 +400,19 @@ function AppShell() {
   // RN-Web desktop presentation layer. False on native and on web < 1024,
   // where the tree below is byte-identical to what it was before this hook.
   const isDesktop = useIsDesktop();
+  const lastRateToastAt = useRef(0);
 
   // Phase C2 — bridge 429 responses from api.js's response
   // interceptor to the user-visible toast system. Re-registers
   // every render so the latest toast handle is always live.
   useEffect(() => {
     registerRateLimitToast(({ message }) => {
+      // ONE NOTICE PER WINDOW. When the server starts refusing, every request in
+      // flight is refused too, and a toast for each stacked six deep down the
+      // side of the screen. The first one says all there is to say.
+      const now = Date.now();
+      if (now - lastRateToastAt.current < 20000) return;
+      lastRateToastAt.current = now;
       if (toast && typeof toast.error === 'function') {
         toast.error('Slow down', message);
       }
@@ -456,20 +463,28 @@ function AppShell() {
     />
   );
 
+  // THE THEME KEY SITS ON THE VISIBLE TREE ONLY. A theme change remounts what is
+  // keyed so every screen redraws in the new palette. These headless workers
+  // used to be inside it, so each switch restarted them: the plan prefetch walked
+  // every assigned project again and the screens refetched on top of it, which
+  // is how a few quick theme switches could trip the server's rate limit and
+  // leave the dashboard full of "Could not load". They run once, outside it.
   return (
-    <View key={themeKey} style={[styles.container, { backgroundColor: bg }]}>
-      <StatusBar style={isDark ? 'light' : 'dark'} />
+    <View style={[styles.container, { backgroundColor: bg }]}>
       <RouteGuard />
       <SiteDeviceLightMode />
       <SiteManifestSync />
       <AdminPlanPrefetch />
-      {/* Tells a man ONCE that a daily log saved on this device was never
-          filed. The retired editors left those drafts behind and there is no
-          server-side trace of one, so the device is the only place the
-          question can be asked. Headless until it has something to say. */}
-      <UnfiledDailyLogNotice />
-      {isDesktop ? <DesktopShell>{stack}</DesktopShell> : stack}
-      <CornerSettings />
+      <View key={themeKey} style={styles.themed}>
+        <StatusBar style={isDark ? 'light' : 'dark'} />
+        {/* Tells a man ONCE that a daily log saved on this device was never
+            filed. The retired editors left those drafts behind and there is no
+            server-side trace of one, so the device is the only place the
+            question can be asked. Headless until it has something to say. */}
+        <UnfiledDailyLogNotice />
+        {isDesktop ? <DesktopShell>{stack}</DesktopShell> : stack}
+        <CornerSettings />
+      </View>
     </View>
   );
 }
@@ -498,4 +513,5 @@ export default function RootLayout() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, overflow: 'hidden' },
+  themed: { flex: 1 },
 });

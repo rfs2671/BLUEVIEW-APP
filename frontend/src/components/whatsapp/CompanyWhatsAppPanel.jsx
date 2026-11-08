@@ -61,8 +61,8 @@ export default function CompanyWhatsAppPanel() {
             disabled={!!busy}
             onValueChange={(v) => change(sw, v)}
             accessibilityLabel={sw.label}
-            trackColor={{ false: colors.glass.border, true: colors.primary }}
-            thumbColor={colors.white}
+            trackColor={{ false: colors.glass.border, true: colors.switchOn }}
+            thumbColor={colors.switchThumb}
           />
         </View>
       ))}

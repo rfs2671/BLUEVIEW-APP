@@ -673,8 +673,8 @@ export default function SettingsScreen() {
                 value={isDark}
                 onValueChange={toggleTheme}
                 disabled={themeForced}
-                trackColor={{ false: colors.glass.border, true: colors.primary }}
-                thumbColor={colors.white}
+                trackColor={{ false: colors.glass.border, true: colors.switchOn }}
+                thumbColor={colors.switchThumb}
               />
             </View>
           </GlassCard>

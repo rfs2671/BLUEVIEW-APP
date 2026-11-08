@@ -20,9 +20,9 @@ import { withAlpha } from '../styles/semanticColors';
  * The app remounts when the theme changes, so the knob is set to its final spot
  * here and the new copy simply starts there.
  */
-const W = 56;
-const H = 30;
-const K = 22;
+const W = 48;
+const H = 26;
+const K = 18;
 const PAD = 4;
 const TRAVEL = W - PAD * 2 - K;
 
@@ -72,12 +72,12 @@ export default function ThemeSwitch() {
         ]}
       >
         <Animated.View style={[styles.slot, { left: PAD }, moonStyle]} pointerEvents="none">
-          <Moon size={13} strokeWidth={1.8} color={colors.onBar} />
+          <Moon size={11} strokeWidth={1.9} color={colors.onBar} />
         </Animated.View>
         <Animated.View style={[styles.slot, { right: PAD }, sunStyle]} pointerEvents="none">
-          <Sun size={13} strokeWidth={1.8} color={colors.onBar} />
+          <Sun size={11} strokeWidth={1.9} color={colors.onBar} />
         </Animated.View>
-        <Animated.View style={[styles.knob, { left: PAD, backgroundColor: colors.barActive }, knob]} />
+        <Animated.View style={[styles.knob, { left: PAD, backgroundColor: '#ECEDE9' }, knob]} />
       </Pressable>
     </View>
   );

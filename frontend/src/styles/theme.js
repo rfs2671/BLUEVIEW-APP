@@ -9,6 +9,9 @@ const _dark = {
   selected: '#E3C27A',
   onSelected: '#141A1F',
   chip: '#243746',
+  // The ON track of a switch. Paper, not brass: brass is the active-tab and primary-button colour and read as a warning light on a switch.
+  switchOn: 'rgba(236, 237, 233, 0.46)',
+  switchThumb: '#ECEDE9',
   bar: '#131E27',
   onBar: '#ECEDE9',
   barActive: '#E3C27A',
@@ -137,6 +140,8 @@ const _light = {
   selected: '#D8A044',
   onSelected: '#151A1D',
   chip: '#F2F3F0',
+  switchOn: '#243746',
+  switchThumb: '#FFFFFF',
   bar: '#243746',
   onBar: '#FFFFFF',
   barActive: '#E3C27A',
