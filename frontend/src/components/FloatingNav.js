@@ -63,9 +63,11 @@ export const NAV_BOTTOM_PADDING = 8;
 // raised circle holding the active icon sits in the scoop; both slide to the
 // tapped tab on a spring. TOP is the bar's top edge inside the container (the
 // headroom above it is where the circle rises).
-const BAR_H = 52;          // tab row height, excluding the bottom inset
-const CIRCLE = 48;         // active bubble diameter
-const NOTCH_DEPTH = 27;    // how far the scoop dips below the bar's top edge
+const BAR_H = 54;          // tab row height, excluding the bottom inset
+const CIRCLE = 44;         // active bubble diameter
+const GAP = 6;             // even clearance between bubble and the bar edge around it
+const NOTCH_R = CIRCLE / 2 + GAP; // radius of the scoop (concentric with the bubble)
+const BUBBLE_CY = 1;       // bubble centre, px below the bar's top edge
 const TOP = CIRCLE / 2 + 14; // headroom above the bar line (room for the lift)
 const SPRING = { damping: 13, stiffness: 150, mass: 0.9 };
 
@@ -366,16 +368,29 @@ const SettingsNavItem = ({ onPress, isActive }) => (
   <NavTab icon={Settings} label="Settings" isActive={isActive} onPress={onPress} />
 );
 
-// Path of the bar with a scoop centred on cx. depth 0 = flat top (no tab active).
+// Path of the bar with a scoop wrapped around the bubble. The scoop's bottom is a
+// circular arc concentric with the bubble (so the gap is even all the way round),
+// blended into the flat top edge with S-curve shoulders so the bar "bends" around
+// it. depth 0 = flat top (no tab active); the arc slides up out of the bar.
 function buildBarPath(width, height, cx, depth) {
   'worklet';
-  const d = NOTCH_DEPTH * depth;
-  const half = 44; // half-width of the scoop's shoulders
-  const k = 28;    // curve tension
+  if (depth < 0.04) {
+    return `M0,${TOP} L${width},${TOP} L${width},${height} L0,${height} Z`;
+  }
+  const cy = TOP + BUBBLE_CY - (1 - depth) * (NOTCH_R + 14);
+  const phi = 1.08;                       // arc half-span from straight down (rad)
+  const sn = Math.sin(phi);
+  const cs = Math.cos(phi);
+  const lx = cx - NOTCH_R * sn;           // arc ends (left / right)
+  const rx = cx + NOTCH_R * sn;
+  const ly = cy + NOTCH_R * cs;
+  const sh = 26;                          // shoulder run
+  const k = 14;                           // shoulder tension
   return (
-    `M0,${TOP} L${cx - half},${TOP} ` +
-    `C${cx - half + k},${TOP} ${cx - k},${TOP + d} ${cx},${TOP + d} ` +
-    `C${cx + k},${TOP + d} ${cx + half - k},${TOP} ${cx + half},${TOP} ` +
+    `M0,${TOP} L${lx - sh},${TOP} ` +
+    `C${lx - sh + k},${TOP} ${lx - cs * k},${ly - sn * k} ${lx},${ly} ` +
+    `A${NOTCH_R},${NOTCH_R} 0 0 0 ${rx},${ly} ` +
+    `C${rx + cs * k},${ly - sn * k} ${rx + sh - k},${TOP} ${rx + sh},${TOP} ` +
     `L${width},${TOP} L${width},${height} L0,${height} Z`
   );
 }
@@ -523,7 +538,7 @@ function buildStyles(colors, isDark) {
   },
   circle: {
     position: 'absolute',
-    top: TOP + NOTCH_DEPTH - CIRCLE - 4,
+    top: TOP + BUBBLE_CY - CIRCLE / 2,
     left: 0,
     width: CIRCLE,
     height: CIRCLE,
@@ -549,7 +564,7 @@ function buildStyles(colors, isDark) {
     minWidth: 0,
     alignItems: 'center',
     gap: 3,
-    paddingTop: 8,
+    paddingTop: 11,
     opacity: 0.72,
   },
   navItemActive: {
