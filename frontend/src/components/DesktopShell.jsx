@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing } from 'react-native-reanimated';
 import {
@@ -51,7 +51,7 @@ const RAIL_WIDTH = 240;
 // rail opens OVER the page (the page does not move), and it closes shortly after
 // the cursor leaves.
 const RAIL_COLLAPSED = 72;
-const RAIL_CLOSE_DELAY_MS = 160;
+const RAIL_CLOSE_DELAY_MS = 350;
 
 /**
  * Routes that must render WITHOUT the shell even on desktop.
@@ -104,21 +104,40 @@ export default function DesktopShell({ children }) {
   const { colors, isDark } = useTheme();
   const open = useSharedValue(0);
   const closeTimer = useRef(null);
-  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
   const openRail = () => {
     if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
-    setExpanded(true);
     open.value = withTiming(1, { duration: 200, easing: Easing.out(Easing.cubic) });
   };
   const closeRail = () => {
     if (closeTimer.current) clearTimeout(closeTimer.current);
     closeTimer.current = setTimeout(() => {
       open.value = withTiming(0, { duration: 200, easing: Easing.inOut(Easing.cubic) });
-      setExpanded(false);
     }, RAIL_CLOSE_DELAY_MS);
+  };
+
+  // HOVER IS LISTENED FOR ON THE DOM ELEMENT, not through Pressable's onHoverIn/
+  // onHoverOut. Those can report "left" when the cursor moves between items
+  // inside the rail, which closed it under the user's hand. mouseenter and
+  // mouseleave fire only when the cursor crosses the outer edge of the element
+  // and everything inside it (including the opened rail, which hangs outside
+  // the slot's own box), so moving between items never counts as leaving.
+  // A callback ref, not an effect: the slot only exists on shell routes, so on a
+  // first load at /login there is no element yet, and an effect that ran once
+  // would never attach after the user signs in.
+  const detachRef = useRef(null);
+  const setSlot = (node) => {
+    if (detachRef.current) { detachRef.current(); detachRef.current = null; }
+    if (node && Platform.OS === 'web' && typeof node.addEventListener === 'function') {
+      node.addEventListener('mouseenter', openRail);
+      node.addEventListener('mouseleave', closeRail);
+      detachRef.current = () => {
+        node.removeEventListener('mouseenter', openRail);
+        node.removeEventListener('mouseleave', closeRail);
+      };
+    }
   };
 
   const railStyle = useAnimatedStyle(() => ({
@@ -139,15 +158,7 @@ export default function DesktopShell({ children }) {
   return (
     <View style={styles.root}>
       {/* A fixed-width slot keeps the page where it is; the rail itself grows over it. */}
-      <Pressable
-        onHoverIn={openRail}
-        onHoverOut={closeRail}
-        onFocus={openRail}
-        onBlur={closeRail}
-        accessible={false}
-        focusable={false}
-        style={styles.railSlot}
-      >
+      <View ref={setSlot} style={styles.railSlot}>
       <Animated.View style={[styles.rail, { backgroundColor: colors.bar }, railStyle]}>
         {RAIL_ITEMS.map((item) => {
           // Exact-match active state, mirroring FloatingNav so the rail and
@@ -159,6 +170,8 @@ export default function DesktopShell({ children }) {
             <Pressable
               key={item.path}
               onPress={() => router.push(item.path)}
+              onFocus={openRail}
+              onBlur={closeRail}
               accessibilityRole="link"
               accessibilityLabel={item.label}
               style={({ hovered, pressed }) => [
@@ -194,7 +207,7 @@ export default function DesktopShell({ children }) {
           );
         })}
       </Animated.View>
-      </Pressable>
+      </View>
 
       <View style={styles.contentOuter}>
         <View style={styles.contentInner}>{children}</View>
