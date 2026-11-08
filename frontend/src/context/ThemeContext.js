@@ -7,6 +7,7 @@ import Animated, {
     runOnJS,
   Easing,
 } from 'react-native-reanimated';
+import { runThemeViewTransition } from '../utils/viewTransition';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { applyTheme, getActiveMode, colors as themeColors } from '../styles/theme';
 import { effectiveIsDark } from '../utils/themeMode';
@@ -78,6 +79,9 @@ export const ThemeProvider = ({ children }) => {
     const goingDark = !userIsDark;
     const { width, height } = Dimensions.get('window');
     const o = origin || { x: width / 2, y: height / 2 };
+    // On the web the browser can do a real transformation (old page kept, new page
+    // revealed live from the control). Only where it cannot, use the overlay below.
+    if (runThemeViewTransition({ x: o.x, y: o.y, commit: commitSwitch })) return;
     const R = Math.hypot(Math.max(o.x, width - o.x), Math.max(o.y, height - o.y));
     setFlood({ x: o.x, y: o.y, R, color: goingDark ? '#1C2B38' : '#ECEDE9' });
     expand.value = 0;
