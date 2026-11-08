@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
+import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing } from 'react-native-reanimated';
 import {
   LayoutDashboard,
   FolderKanban,
@@ -46,6 +47,11 @@ const RAIL_ITEMS = [
 
 export const CONTENT_MAX_WIDTH = 1280;
 const RAIL_WIDTH = 240;
+// The rail rests as a narrow strip of icons. When the cursor reaches it the full
+// rail opens OVER the page (the page does not move), and it closes shortly after
+// the cursor leaves.
+const RAIL_COLLAPSED = 72;
+const RAIL_CLOSE_DELAY_MS = 160;
 
 /**
  * Routes that must render WITHOUT the shell even on desktop.
@@ -96,6 +102,32 @@ export default function DesktopShell({ children }) {
   const router = useRouter();
   const pathname = usePathname();
   const { colors, isDark } = useTheme();
+  const open = useSharedValue(0);
+  const closeTimer = useRef(null);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
+
+  const openRail = () => {
+    if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
+    setExpanded(true);
+    open.value = withTiming(1, { duration: 200, easing: Easing.out(Easing.cubic) });
+  };
+  const closeRail = () => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = setTimeout(() => {
+      open.value = withTiming(0, { duration: 200, easing: Easing.inOut(Easing.cubic) });
+      setExpanded(false);
+    }, RAIL_CLOSE_DELAY_MS);
+  };
+
+  const railStyle = useAnimatedStyle(() => ({
+    width: RAIL_COLLAPSED + (RAIL_WIDTH - RAIL_COLLAPSED) * open.value,
+    shadowOpacity: 0.28 * open.value,
+  }), [open]);
+  const labelStyle = useAnimatedStyle(() => ({
+    opacity: Math.max(0, (open.value - 0.35) / 0.65),
+  }), [open]);
 
   if (isBareRoute(pathname)) return children;
 
@@ -106,7 +138,17 @@ export default function DesktopShell({ children }) {
 
   return (
     <View style={styles.root}>
-      <View style={[styles.rail, { backgroundColor: colors.bar }]}>
+      {/* A fixed-width slot keeps the page where it is; the rail itself grows over it. */}
+      <Pressable
+        onHoverIn={openRail}
+        onHoverOut={closeRail}
+        onFocus={openRail}
+        onBlur={closeRail}
+        accessible={false}
+        focusable={false}
+        style={styles.railSlot}
+      >
+      <Animated.View style={[styles.rail, { backgroundColor: colors.bar }, railStyle]}>
         {RAIL_ITEMS.map((item) => {
           // Exact-match active state, mirroring FloatingNav so the rail and
           // the tab bar agree. Detail routes (e.g. /projects/123) highlight
@@ -127,25 +169,32 @@ export default function DesktopShell({ children }) {
               ]}
             >
               {active ? <View style={[styles.railTick, { backgroundColor: colors.barActive }]} /> : null}
-              <Icon
-                size={20}
-                strokeWidth={1.5}
-                color={active ? railActive : railIdle}
-              />
-              <Text
-                style={[
-                  styles.railLabel,
-                  { color: active ? railActive : railIdle },
-                  active && styles.railLabelActive,
-                ]}
-                numberOfLines={1}
-              >
-                {item.label}
-              </Text>
+              {/* flexShrink 0: in the narrow resting rail the label's fixed width
+                  would otherwise squeeze the icon down to nothing. */}
+              <View style={styles.railIcon}>
+                <Icon
+                  size={20}
+                  strokeWidth={1.5}
+                  color={active ? railActive : railIdle}
+                />
+              </View>
+              <Animated.View style={[styles.railLabelWrap, labelStyle]} pointerEvents="none">
+                <Text
+                  style={[
+                    styles.railLabel,
+                    { color: active ? railActive : railIdle },
+                    active && styles.railLabelActive,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {item.label}
+                </Text>
+              </Animated.View>
             </Pressable>
           );
         })}
-      </View>
+      </Animated.View>
+      </Pressable>
 
       <View style={styles.contentOuter}>
         <View style={styles.contentInner}>{children}</View>
@@ -159,9 +208,21 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row',
   },
-  rail: {
-    width: RAIL_WIDTH,
+  // Holds the collapsed width in the layout so the page never shifts.
+  railSlot: {
+    width: RAIL_COLLAPSED,
     flexShrink: 0,
+    zIndex: 30,
+  },
+  rail: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 6, height: 0 },
+    shadowRadius: 18,
     paddingTop: spacing.lg,
     paddingHorizontal: spacing.sm,
     gap: spacing.xs,
@@ -176,6 +237,15 @@ const styles = StyleSheet.create({
   },
   // The active destination's tick: a short brass bar on the rail's inner edge.
   railTick: { position: 'absolute', left: 0, top: 9, bottom: 9, width: 3, borderRadius: 2 },
+  railIcon: {
+    width: 20,
+    height: 20,
+    flexShrink: 0,
+  },
+  railLabelWrap: {
+    flexShrink: 0,
+    width: RAIL_WIDTH - spacing.sm * 2 - spacing.md * 2 - 20 - spacing.sm,
+  },
   railLabel: {
     fontSize: typography.sizes.sm,
     fontWeight: '500',

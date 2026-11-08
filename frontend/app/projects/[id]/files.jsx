@@ -50,6 +50,7 @@ import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
 import GlassInput from '../../../src/components/GlassInput';
+import SyncIconButton from '../../../src/components/SyncIconButton';
 import { GlassSkeleton } from '../../../src/components/GlassSkeleton';
 import OfflineNotice from '../../../src/components/OfflineNotice';
 import { useToast } from '../../../src/components/Toast';
@@ -527,7 +528,7 @@ export default function ProjectFilesScreen() {
       // carries the recursive Dropbox count with it. The list read below is
       // therefore a MID-SYNC read: it is what we hold right now, not the result
       // of the sync. Say the target rather than implying the copy is complete.
-      const res = await dropboxAPI.syncProject(projectId);
+      await dropboxAPI.syncProject(projectId);
       const filesData = await dropboxAPI.getProjectFiles(projectId);
       // NOT CACHED, AND NO RECORD NEEDS CONSULTING: we started the sync one
       // line ago, so this read is mid-sync by construction. Asking the server
@@ -535,13 +536,9 @@ export default function ProjectFilesScreen() {
       adoptFiles(filesData, { mayCache: false });
       setLastSynced(new Date().toISOString());
       setSyncStatus('success');
-      const target = Number.isFinite(res?.file_count) ? res.file_count : null;
-      toast.success(
-        'Sync started',
-        target === null
-          ? 'Files are being copied from Dropbox.'
-          : `Copying ${target} file${target === 1 ? '' : 's'} from Dropbox. This list fills in as they arrive.`,
-      );
+      // No pop-up: the sync button spins while this runs and turns green when it
+      // is done. (The copy from Dropbox carries on in the background and the list
+      // fills in as files arrive.)
     } catch (error) {
       console.error('Failed to sync:', error);
       setSyncStatus('error');
@@ -1050,15 +1047,12 @@ export default function ProjectFilesScreen() {
                     </Pressable>
                   )}
                   {isAdmin && (project?.dropbox_folder_path ? (
-                    <Pressable
+                    <SyncIconButton
+                      status={syncStatus === 'syncing' ? 'syncing' : syncStatus === 'success' ? 'success' : syncStatus === 'error' ? 'error' : 'idle'}
                       onPress={handleSync}
                       disabled={syncing}
-                      accessibilityRole="button"
                       accessibilityLabel="Sync Dropbox"
-                      style={({ pressed }) => [s.iconAction, pressed && { opacity: 0.7 }, syncing && { opacity: 0.5 }]}
-                    >
-                      <RefreshCw size={18} strokeWidth={1.6} color={colors.text.secondary} />
-                    </Pressable>
+                    />
                   ) : (
                     <Pressable
                       onPress={openFolderPicker}

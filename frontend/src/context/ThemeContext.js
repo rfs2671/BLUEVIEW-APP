@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
-import { Dimensions, StyleSheet } from 'react-native';
-import Svg, { Defs, RadialGradient, Stop, Circle } from 'react-native-svg';
+import { View, StyleSheet } from 'react-native';
+import { BlurView } from 'expo-blur';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -61,31 +61,27 @@ export const ThemeProvider = ({ children }) => {
 
   // ── Animated switch ──────────────────────────────────────────────────────
   // The whole app is keyed on themeKey and remounts on a switch, so the change
-  // itself cannot be animated in place. Instead a flood of the TARGET theme's
-  // background grows out of the tapped button until it covers the screen, the
-  // switch happens underneath it, and the flood then fades away to reveal the
-  // new theme. Site-device (forced) accounts have no toggle at all.
+  // itself cannot be animated in place. Instead the screen blurs and washes to
+  // the TARGET theme's background (fast), the switch happens underneath, and the
+  // wash clears to reveal the new theme sharp. About 0.45s end to end.
+  // Site-device (forced) accounts have no toggle at all.
   const toggleRef = useRef(toggleTheme);
   toggleRef.current = toggleTheme;
-  const expand = useSharedValue(0);
   const fade = useSharedValue(0);
   const [flood, setFlood] = useState(null);
 
   const commitSwitch = () => { toggleRef.current(); };
   const clearFlood = () => setFlood(null);
 
-  const toggleThemeAnimated = (origin) => {
+  const toggleThemeAnimated = () => {
     if (forced || flood) return;
-    const { width, height } = Dimensions.get('window');
-    const o = origin || { x: width - 40, y: height - 40 };
-    const R = Math.hypot(Math.max(o.x, width - o.x), Math.max(o.y, height - o.y));
-    setFlood({ x: o.x, y: o.y, R, color: userIsDark ? '#ECEDE9' : '#1C2B38', ring: userIsDark ? '#1C2B38' : '#ECEDE9' });
-    expand.value = 0;
-    fade.value = 1;
-    expand.value = withTiming(1, { duration: 520, easing: Easing.bezier(0.22, 0.7, 0.2, 1) }, (done) => {
+    const goingDark = !userIsDark;
+    setFlood({ dark: goingDark, color: goingDark ? '#1C2B38' : '#ECEDE9' });
+    fade.value = 0;
+    fade.value = withTiming(1, { duration: 170, easing: Easing.out(Easing.quad) }, (done) => {
       if (!done) return;
       runOnJS(commitSwitch)();
-      fade.value = withTiming(0, { duration: 640, easing: Easing.bezier(0.4, 0, 0.2, 1) }, (fin) => {
+      fade.value = withTiming(0, { duration: 300, easing: Easing.inOut(Easing.quad) }, (fin) => {
         if (fin) runOnJS(clearFlood)();
       });
     });
@@ -97,40 +93,19 @@ export const ThemeProvider = ({ children }) => {
   return (
     <ThemeContext.Provider value={{ isDark, themeKey, colors, toggleTheme, toggleThemeAnimated, forceTheme: setForced, themeForced: !!forced }}>
       {children}
-      {flood && <ThemeFlood flood={flood} expand={expand} fade={fade} />}
+      {flood && <ThemeFlood flood={flood} fade={fade} />}
     </ThemeContext.Provider>
   );
 };
 
-// A soft wave, not a disc: the flood is a radial gradient whose opaque core is
-// just big enough to cover the screen at full scale and whose edge feathers to
-// nothing, so there is no hard line sweeping across the UI.
-//
-// THE GRADIENT IS DRAWN SMALL AND SCALED UP. Drawing it at screen size (a
-// ~3000px square once the feather is allowed for) makes the phone rasterise a
-// bitmap of tens of megabytes, which can run it out of memory and close the
-// app. A 128px picture stretched by a transform costs nothing and looks the same
-// because the gradient is smooth.
-const CORE = 0.55;
-const TILE = 128;
-const ThemeFlood = ({ flood, expand, fade }) => {
-  const wrap = useAnimatedStyle(() => ({ opacity: fade.value }));
-  const full = (flood.R / CORE) * 2 / TILE; // scale at which the tile covers the screen
-  const disc = useAnimatedStyle(() => ({ transform: [{ scale: full * (0.04 + 0.96 * expand.value) }] }), [expand]);
+// A blur-and-wash dissolve. No large bitmaps: one blur layer and one flat tint,
+// both faded together by a single opacity.
+const ThemeFlood = ({ flood, fade }) => {
+  const wrap = useAnimatedStyle(() => ({ opacity: fade.value }), [fade]);
   return (
     <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { zIndex: 9999, elevation: 24 }, wrap]}>
-      <Animated.View style={[{ position: 'absolute', left: flood.x - TILE / 2, top: flood.y - TILE / 2, width: TILE, height: TILE }, disc]}>
-        <Svg width={TILE} height={TILE} viewBox={`0 0 ${TILE} ${TILE}`}>
-          <Defs>
-            <RadialGradient id="themeFlood" cx="50%" cy="50%" r="50%">
-              <Stop offset="0" stopColor={flood.color} stopOpacity="1" />
-              <Stop offset={String(CORE)} stopColor={flood.color} stopOpacity="1" />
-              <Stop offset="1" stopColor={flood.color} stopOpacity="0" />
-            </RadialGradient>
-          </Defs>
-          <Circle cx={TILE / 2} cy={TILE / 2} r={TILE / 2} fill="url(#themeFlood)" />
-        </Svg>
-      </Animated.View>
+      <BlurView intensity={45} tint={flood.dark ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: flood.color, opacity: 0.72 }]} />
     </Animated.View>
   );
 };
