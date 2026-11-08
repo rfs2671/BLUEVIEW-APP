@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { readSiteReadiness } from '../../../src/utils/siteDeviceReadiness';
+import { readSiteReadiness, SITE_READY_STALE } from '../../../src/utils/siteDeviceReadiness';
 import SiteReadinessNotice from '../../../src/components/SiteReadinessNotice';
 import { noteProjectOpened } from '../../../src/utils/adminPlanPrefetch';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -1139,7 +1139,19 @@ export default function ProjectFilesScreen() {
                   in, not at the bottom of a scroll. Renders nothing at all
                   when the set is complete and current — a banner that is
                   always there is furniture. */}
-              <SiteReadinessNotice readiness={held.readiness} />
+              {/* "May be out of date" is a claim that this device could not pick up
+                  newer records. Right after the server has just answered this
+                  screen's own request, that claim is false, and there is nothing
+                  for the user to do about it. Show it only when the server could
+                  not be reached. The other states (never ready, no space,
+                  still saving) are unaffected. */}
+              <SiteReadinessNotice
+                readiness={
+                  held.readiness && held.readiness.state === SITE_READY_STALE && fetchState === 'ok'
+                    ? null
+                    : held.readiness
+                }
+              />
 
               {/* Filter Tabs */}
               <ScrollView
