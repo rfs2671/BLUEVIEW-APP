@@ -77,7 +77,7 @@ export default function ThemeSwitch() {
         <Animated.View style={[styles.slot, { right: PAD }, sunStyle]} pointerEvents="none">
           <Sun size={11} strokeWidth={1.9} color={colors.onBar} />
         </Animated.View>
-        <Animated.View style={[styles.knob, { left: PAD, backgroundColor: colors.barActive }, knob]} />
+        <Animated.View style={[styles.knob, { left: PAD, backgroundColor: '#ECEDE9' }, knob]} />
       </Pressable>
     </View>
   );

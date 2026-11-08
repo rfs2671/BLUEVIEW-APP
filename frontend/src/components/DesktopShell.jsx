@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
-import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing } from 'react-native-reanimated';
+import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, interpolateColor } from 'react-native-reanimated';
 import {
   LayoutDashboard,
   FolderKanban,
@@ -13,6 +13,8 @@ import {
 import { withAlpha } from '../styles/semanticColors';
 import { useTheme } from '../context/ThemeContext';
 import ThemeSwitch from './ThemeSwitch';
+import { useAuth } from '../context/AuthContext';
+import { brandLabel } from '../utils/brandLabel';
 import { spacing, borderRadius, typography } from '../styles/theme';
 
 /**
@@ -99,11 +101,90 @@ function isBareRoute(pathname) {
   return BARE_ROUTES.some((r) => pathname === r || pathname.startsWith(`${r}/`));
 }
 
+// ── Who is signed in ────────────────────────────────────────────────────────
+// First letter of the first and last name; the first two letters of a single
+// name. Never empty.
+export function initialsOf(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '–';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+const ROLE_LABEL = {
+  admin: 'Admin',
+  owner: 'Owner',
+  pm: 'Project manager',
+  superintendent: 'Superintendent',
+  cp: 'Competent person',
+};
+function roleLabel(role) {
+  const r = String(role || '').trim().toLowerCase();
+  if (!r) return '';
+  return ROLE_LABEL[r] || r.charAt(0).toUpperCase() + r.slice(1);
+}
+
+const ID_CLOSED = 48;                                   // the seal
+const ID_OPEN_W = RAIL_WIDTH - RAIL_PAD * 2;            // the title block
+const ID_OPEN_H = 64;
+const ID_NAME_H = 36;
+
+/**
+ * The signed-in person, at the top of the rail. At rest it is a round brass-ringed
+ * seal with their initials. As the rail opens the seal grows into a drawing-sheet
+ * title block (name in the top cell; role and company in the cells below): the
+ * ring squares off, the initials fade out and the name fades in on the same
+ * piece of surface, so the initials read as turning into the name.
+ */
+function RailIdentity({ open, name, role, company, colors }) {
+  const box = useAnimatedStyle(() => ({
+    width: ID_CLOSED + (ID_OPEN_W - ID_CLOSED) * open.value,
+    height: ID_CLOSED + (ID_OPEN_H - ID_CLOSED) * open.value,
+    borderRadius: 24 - 20 * open.value,
+    borderColor: interpolateColor(open.value, [0, 1], ['rgba(227,194,122,0.6)', 'rgba(236,237,233,0.28)']),
+    backgroundColor: interpolateColor(open.value, [0, 1], ['rgba(236,237,233,0.10)', 'rgba(236,237,233,0.04)']),
+  }), [open]);
+  const initialsStyle = useAnimatedStyle(() => ({
+    opacity: Math.max(0, 1 - open.value * 2.4),
+    transform: [{ scale: 1 - 0.3 * open.value }],
+  }), [open]);
+  const cellsStyle = useAnimatedStyle(() => ({
+    opacity: Math.max(0, (open.value - 0.45) / 0.55),
+    transform: [{ translateY: 5 * (1 - open.value) }],
+  }), [open]);
+  const edgeStyle = useAnimatedStyle(() => ({ opacity: Math.max(0, (open.value - 0.3) / 0.7) }), [open]);
+
+  return (
+    <Animated.View style={[styles.idBox, box]} accessible accessibilityLabel={`Signed in as ${name}`}>
+      <Animated.View style={[styles.idEdge, { backgroundColor: colors.barActive }, edgeStyle]} />
+      <Animated.View style={[styles.idInitials, initialsStyle]} pointerEvents="none">
+        <Text style={[styles.idInitialsText, { color: colors.onBar }]}>{initialsOf(name)}</Text>
+      </Animated.View>
+      <Animated.View style={[styles.idCells, cellsStyle]} pointerEvents="none">
+        <View style={[styles.idNameCell, { borderBottomColor: withAlpha(colors.onBar, 0.2) }]}>
+          <Text style={[styles.idName, { color: colors.onBar }]} numberOfLines={1}>{name}</Text>
+        </View>
+        <View style={styles.idSubRow}>
+          {role ? (
+            <Text style={[styles.idSub, { color: withAlpha(colors.onBar, 0.62) }]} numberOfLines={1}>{role}</Text>
+          ) : null}
+          {role && company ? <View style={[styles.idDivider, { backgroundColor: withAlpha(colors.onBar, 0.2) }]} /> : null}
+          {company ? (
+            <Text style={[styles.idSub, styles.idSubCompany, { color: withAlpha(colors.onBar, 0.62) }]} numberOfLines={1}>{company}</Text>
+          ) : null}
+        </View>
+      </Animated.View>
+    </Animated.View>
+  );
+}
+
 export default function DesktopShell({ children }) {
   const router = useRouter();
   const pathname = usePathname();
   const { colors, isDark } = useTheme();
+  const { user } = useAuth();
   const open = useSharedValue(0);
+  const [isOpen, setIsOpen] = useState(false);
   const closeTimer = useRef(null);
 
   useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
@@ -116,6 +197,7 @@ export default function DesktopShell({ children }) {
     if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
     if (expandedRef.current) return;
     expandedRef.current = true;
+    setIsOpen(true);
     open.value = withTiming(1, { duration: 200, easing: Easing.out(Easing.cubic) });
   };
   const closeRail = () => {
@@ -123,6 +205,7 @@ export default function DesktopShell({ children }) {
     closeTimer.current = setTimeout(() => {
       closeTimer.current = null;
       expandedRef.current = false;
+      setIsOpen(false);
       open.value = withTiming(0, { duration: 150, easing: Easing.out(Easing.quad) });
     }, RAIL_CLOSE_DELAY_MS);
   };
@@ -155,6 +238,9 @@ export default function DesktopShell({ children }) {
     width: RAIL_COLLAPSED + (RAIL_WIDTH - RAIL_COLLAPSED) * open.value,
     shadowOpacity: 0.28 * open.value,
   }), [open]);
+  const footStyle = useAnimatedStyle(() => ({
+    opacity: Math.max(0, (open.value - 0.5) / 0.5),
+  }), [open]);
   const labelStyle = useAnimatedStyle(() => ({
     opacity: Math.max(0, (open.value - 0.35) / 0.65),
   }), [open]);
@@ -164,6 +250,10 @@ export default function DesktopShell({ children }) {
 
   // The rail is its own plane, anchored apart from the page: the bar navy of the phone's bottom bar in both themes
   // (theme.js `bar`), with the active destination marked by a brass tick. Its text is the bar's own ink.
+  const personName = (user && (user.full_name || user.name || user.display_name))
+    || (user && user.email ? String(user.email).split('@')[0] : '') || 'Account';
+  const personRole = roleLabel(user && user.role);
+  const personCompany = user && (user.gc_business_name || user.company_name) ? brandLabel(user) : '';
   const railIdle = withAlpha(colors.onBar, 0.78);
   const railActive = isDark ? colors.barActive : colors.onBar;
 
@@ -172,6 +262,9 @@ export default function DesktopShell({ children }) {
       {/* A fixed-width slot keeps the page where it is; the rail itself grows over it. */}
       <View style={styles.railSlot}>
       <Animated.View style={[styles.rail, { backgroundColor: colors.bar }, railStyle]}>
+        <View style={styles.idWrap}>
+          <RailIdentity open={open} name={personName} role={personRole} company={personCompany} colors={colors} />
+        </View>
         {RAIL_ITEMS.map((item) => {
           // Exact-match active state, mirroring FloatingNav so the rail and
           // the tab bar agree. Detail routes (e.g. /projects/123) highlight
@@ -223,28 +316,38 @@ export default function DesktopShell({ children }) {
           );
         })}
 
-        {/* Bottom of the rail: the light/dark switch, and Settings as an icon. */}
-        <View style={[styles.railFoot, { borderTopColor: withAlpha(colors.onBar, 0.14) }]}>
-          <View style={styles.switchSlot}><ThemeSwitch /></View>
+        {/* Bottom of the rail. The switch and Settings only exist while the rail is
+            open: they fade in with the labels and cannot be hit while it rests. */}
+        <Animated.View
+          style={[styles.railFoot, { borderTopColor: withAlpha(colors.onBar, 0.14) }, footStyle]}
+          pointerEvents={isOpen ? 'auto' : 'none'}
+          accessibilityElementsHidden={!isOpen}
+          importantForAccessibility={isOpen ? 'auto' : 'no-hide-descendants'}
+        >
+          <View style={styles.footRow}>
+            <View style={styles.switchSlot}><ThemeSwitch /></View>
+            <Text style={[styles.footLabel, { color: railIdle }]} numberOfLines={1}>{isDark ? 'Dark mode' : 'Light mode'}</Text>
+          </View>
           <Pressable
             onPress={() => router.push('/settings')}
+            onFocus={openRail}
+            onBlur={closeRail}
             accessibilityRole="link"
             accessibilityLabel="Settings"
             style={({ hovered, pressed, focused }) => [
-              styles.footIcon,
+              styles.railItem,
               pathname === '/settings' && { backgroundColor: withAlpha(colors.onBar, 0.10) },
               pathname !== '/settings' && hovered && { backgroundColor: withAlpha(colors.onBar, 0.06) },
               focused && { backgroundColor: withAlpha(colors.onBar, 0.14) },
               pressed && { opacity: 0.8 },
             ]}
           >
-            <Settings
-              size={20}
-              strokeWidth={1.5}
-              color={pathname === '/settings' ? railActive : railIdle}
-            />
+            <View style={styles.railIcon}>
+              <Settings size={20} strokeWidth={1.5} color={pathname === '/settings' ? railActive : railIdle} />
+            </View>
+            <Text style={[styles.railLabel, { color: pathname === '/settings' ? railActive : railIdle }]} numberOfLines={1}>Settings</Text>
           </Pressable>
-        </View>
+        </Animated.View>
       </Animated.View>
       </View>
 
@@ -297,14 +400,28 @@ const styles = StyleSheet.create({
   // edge (the item sits RAIL_PAD in from it).
   railTick: { position: 'absolute', left: -RAIL_PAD, top: 12, bottom: 12, width: 3, borderTopRightRadius: 2, borderBottomRightRadius: 2 },
   // Footer: the switch and settings, set apart from the destinations by a hairline.
+  idWrap: { marginBottom: 14, minHeight: ID_OPEN_H },
+  idBox: { overflow: 'hidden', borderWidth: 1 },
+  idEdge: { position: 'absolute', top: 0, left: 0, right: 0, height: 3 },
+  idInitials: { position: 'absolute', top: 0, left: 0, width: ID_CLOSED - 2, height: ID_CLOSED - 2, alignItems: 'center', justifyContent: 'center' },
+  idInitialsText: { fontSize: 15, fontWeight: '600', letterSpacing: 0.6 },
+  idCells: { position: 'absolute', top: 0, left: 0, width: ID_OPEN_W - 2 },
+  idNameCell: { height: ID_NAME_H, paddingHorizontal: 12, justifyContent: 'center', borderBottomWidth: StyleSheet.hairlineWidth },
+  idName: { fontSize: 14.5, fontWeight: '600', letterSpacing: -0.1 },
+  idSubRow: { flexDirection: 'row', alignItems: 'center', height: ID_OPEN_H - ID_NAME_H - 2, paddingHorizontal: 12, gap: 10 },
+  idSub: { fontSize: 11.5, flexShrink: 0 },
+  idSubCompany: { flexShrink: 1 },
+  idDivider: { width: 1, height: 12 },
   railFoot: {
     marginTop: 'auto',
     marginBottom: spacing.lg,
     paddingTop: 14,
-    gap: 10,
-    alignItems: 'flex-start',
+    gap: 6,
+    alignItems: 'stretch',
     borderTopWidth: StyleSheet.hairlineWidth,
   },
+  footRow: { flexDirection: 'row', alignItems: 'center', gap: 12, height: 40 },
+  footLabel: { fontSize: typography.sizes.sm, fontWeight: '500', flexShrink: 1 },
   footIcon: {
     width: 48,
     height: 44,

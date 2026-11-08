@@ -50,8 +50,8 @@ export default function ChaseEscalationToggle({ userRow, onSaved }) {
         disabled={saving || !id}
         onValueChange={change}
         accessibilityLabel={CHASE_ESCALATION_LABEL}
-        trackColor={{ false: colors.glass.border, true: colors.primary }}
-        thumbColor={colors.white}
+        trackColor={{ false: colors.glass.border, true: colors.switchOn }}
+        thumbColor={colors.switchThumb}
       />
     </View>
   );

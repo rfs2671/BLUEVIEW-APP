@@ -158,8 +158,8 @@ export default function LevelogAssistantCard({ projectId }) {
                   disabled={!!busy}
                   onValueChange={(v) => patch(sw.key, { [sw.key]: v })}
                   accessibilityLabel={sw.label}
-                  trackColor={{ false: colors.glass.border, true: colors.primary }}
-                  thumbColor={colors.white}
+                  trackColor={{ false: colors.glass.border, true: colors.switchOn }}
+                  thumbColor={colors.switchThumb}
                 />
               </View>
             ))}
@@ -218,8 +218,8 @@ export default function LevelogAssistantCard({ projectId }) {
                   disabled={!!busy}
                   onValueChange={(v) => patch(sw.key, { [sw.key]: v })}
                   accessibilityLabel={sw.label}
-                  trackColor={{ false: colors.glass.border, true: colors.primary }}
-                  thumbColor={colors.white}
+                  trackColor={{ false: colors.glass.border, true: colors.switchOn }}
+                  thumbColor={colors.switchThumb}
                 />
               </View>
             ))}

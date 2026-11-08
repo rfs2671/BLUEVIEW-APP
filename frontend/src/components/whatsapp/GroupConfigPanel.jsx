@@ -132,8 +132,8 @@ function SettingRow({ setting, value, onChange, colors, disabled }) {
         onValueChange={onChange}
         disabled={disabled}
         accessibilityLabel={setting.label}
-        trackColor={{ false: colors.glass.border, true: colors.primary }}
-        thumbColor={colors.white}
+        trackColor={{ false: colors.glass.border, true: colors.switchOn }}
+        thumbColor={colors.switchThumb}
       />
     </View>
   );
