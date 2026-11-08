@@ -105,15 +105,22 @@ export const ThemeProvider = ({ children }) => {
 // A soft wave, not a disc: the flood is a radial gradient whose opaque core is
 // just big enough to cover the screen at full scale and whose edge feathers to
 // nothing, so there is no hard line sweeping across the UI.
+//
+// THE GRADIENT IS DRAWN SMALL AND SCALED UP. Drawing it at screen size (a
+// ~3000px square once the feather is allowed for) makes the phone rasterise a
+// bitmap of tens of megabytes, which can run it out of memory and close the
+// app. A 128px picture stretched by a transform costs nothing and looks the same
+// because the gradient is smooth.
 const CORE = 0.55;
+const TILE = 128;
 const ThemeFlood = ({ flood, expand, fade }) => {
   const wrap = useAnimatedStyle(() => ({ opacity: fade.value }));
-  const disc = useAnimatedStyle(() => ({ transform: [{ scale: 0.04 + 0.96 * expand.value }] }));
-  const D = flood.R / CORE;
+  const full = (flood.R / CORE) * 2 / TILE; // scale at which the tile covers the screen
+  const disc = useAnimatedStyle(() => ({ transform: [{ scale: full * (0.04 + 0.96 * expand.value) }] }), [expand]);
   return (
-    <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { zIndex: 9999, elevation: 9999 }, wrap]}>
-      <Animated.View style={[{ position: 'absolute', left: flood.x - D, top: flood.y - D, width: D * 2, height: D * 2 }, disc]}>
-        <Svg width={D * 2} height={D * 2}>
+    <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { zIndex: 9999, elevation: 24 }, wrap]}>
+      <Animated.View style={[{ position: 'absolute', left: flood.x - TILE / 2, top: flood.y - TILE / 2, width: TILE, height: TILE }, disc]}>
+        <Svg width={TILE} height={TILE} viewBox={`0 0 ${TILE} ${TILE}`}>
           <Defs>
             <RadialGradient id="themeFlood" cx="50%" cy="50%" r="50%">
               <Stop offset="0" stopColor={flood.color} stopOpacity="1" />
@@ -121,7 +128,7 @@ const ThemeFlood = ({ flood, expand, fade }) => {
               <Stop offset="1" stopColor={flood.color} stopOpacity="0" />
             </RadialGradient>
           </Defs>
-          <Circle cx={D} cy={D} r={D} fill="url(#themeFlood)" />
+          <Circle cx={TILE / 2} cy={TILE / 2} r={TILE / 2} fill="url(#themeFlood)" />
         </Svg>
       </Animated.View>
     </Animated.View>
