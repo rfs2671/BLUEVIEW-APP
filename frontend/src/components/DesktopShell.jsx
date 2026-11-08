@@ -51,7 +51,7 @@ const RAIL_WIDTH = 240;
 // rail opens OVER the page (the page does not move), and it closes shortly after
 // the cursor leaves.
 const RAIL_COLLAPSED = 72;
-const RAIL_CLOSE_DELAY_MS = 350;
+const RAIL_CLOSE_DELAY_MS = 80;
 
 /**
  * Routes that must render WITHOUT the shell even on desktop.
@@ -122,7 +122,7 @@ export default function DesktopShell({ children }) {
     closeTimer.current = setTimeout(() => {
       closeTimer.current = null;
       expandedRef.current = false;
-      open.value = withTiming(0, { duration: 200, easing: Easing.inOut(Easing.cubic) });
+      open.value = withTiming(0, { duration: 150, easing: Easing.out(Easing.quad) });
     }, RAIL_CLOSE_DELAY_MS);
   };
 
@@ -136,7 +136,7 @@ export default function DesktopShell({ children }) {
     if (Platform.OS !== 'web' || typeof document === 'undefined') return undefined;
     const onMove = (e) => {
       if (bareRef.current) return;
-      const edge = expandedRef.current ? RAIL_WIDTH + 12 : RAIL_COLLAPSED;
+      const edge = expandedRef.current ? RAIL_WIDTH + 2 : RAIL_COLLAPSED;
       if (e.clientX <= edge) openRail(); else closeRail();
     };
     const onLeaveWindow = (e) => { if (!e.relatedTarget) closeRail(); };
