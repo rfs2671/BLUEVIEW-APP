@@ -935,7 +935,7 @@ export default function ProjectDetailScreen() {
 
           {/* Stats Row */}
           <View style={s.statsRow}>
-            <StatCard style={[s.statCard, { borderTopColor: colors.accent }]}>
+            <StatCard style={s.statCard}>
               {/* "—" when the check-in read failed: unknown, never a 0 that
                   claims the site is empty. */}
               <Text style={s.statValue}>{onSiteState === 'ok' ? stats.onSiteWorkers : '—'}</Text>
@@ -1804,8 +1804,6 @@ function buildStyles(colors, isDark) {
   },
   statCard: {
     flex: 1,
-    borderTopWidth: 3,
-    borderTopColor: colors.glass.border,
   },
   statIcon: {
     marginBottom: spacing.sm,
