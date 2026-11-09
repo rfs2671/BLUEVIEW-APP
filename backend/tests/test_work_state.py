@@ -145,6 +145,18 @@ class TheStateOfAPackage(unittest.TestCase):
         self.assertEqual([r["log_id"] for r in rows], ["head"])
 
 
+class Coverage(unittest.TestCase):
+
+    def test_it_counts_what_can_be_used_and_lists_what_cannot(self):
+        rows = W.evidence_rows([_act("Domestic water rough"), _act("Plumbing", where="floor 3"), _act("Stucco", where="outer bldg")])
+        c = W.coverage(rows, W.photo_rows([_pic("a"), _pic("b", where=F1_4)]))
+        self.assertEqual((c["phrases"], c["name_a_level"], c["name_one_level"], c["match_sequence"], c["generic_only"]),
+                         (3, 2, 1, 2, 1))
+        self.assertEqual(c["not_matched"], [("Stucco", 1)])
+        self.assertEqual(c["not_placed"], [("outer bldg", 1)])
+        self.assertEqual((c["photos"], c["photos_one_level"]), (2, 1))
+
+
 class TheQuestion(unittest.TestCase):
 
     def test_the_gates_before_drywall_are_unknown(self):

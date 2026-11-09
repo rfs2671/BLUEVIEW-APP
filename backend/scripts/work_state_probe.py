@@ -10,7 +10,6 @@ Mongo, calls no vision model, and writes nothing.
 
 import asyncio
 import sys
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -34,22 +33,18 @@ async def main(job: str, work: str, level: str) -> None:
     start = today - timedelta(days=server.WORK_STATE_DAYS - 1)
     src = await server._report_rows(project, company, start, today, now)
     acts = progress_report._log_activities(src["logbooks"], start, today)
-    ev = W.evidence_rows(acts)
-    placed = [r for r in ev if r["levels"]]
-    single = [r for r in placed if len(r["levels"]) == 1]
-    known = [r for r in ev if r["nodes"]]
-    print(f"Job: {project.get('name')}  ({start} to {today})")
-    print(f"Filed logs: {len(src['logbooks'])}   work phrases: {len(ev)}")
-    print(f"  name a level: {len(placed)}   name exactly one level: {len(single)}")
-    print(f"  match the sequence: {len(known)}   generic only: {sum(1 for r in known if r['generic'])}")
-    print("  levels:", dict(Counter(lv for r in placed for lv in r["levels"]).most_common(20)))
-    print("  phrases NOT matched:", Counter(r["work"] for r in ev if not r["nodes"]).most_common(25))
-    print("  locations NOT placed:", Counter(r["where"] for r in ev if not r["levels"]).most_common(15))
     pid = str(project["_id"])
     idx = await server.db[server.PHOTO_INDEX].find({"project_id": pid, "kind": "photo"}).to_list(20000)
-    photos = W.photo_rows(idx)
-    print(f"Photos read: {len(photos)}   filed for exactly one level: {sum(1 for p in photos if len(p['levels']) == 1)}")
-    print("  views:", dict(Counter(p.get("view") for p in photos)))
+    c = W.coverage(W.evidence_rows(acts), W.photo_rows(idx))
+    print(f"Job: {project.get('name')}  ({start} to {today})")
+    print(f"Filed logs: {len(src['logbooks'])}   work phrases: {c['phrases']}")
+    print(f"  name a level: {c['name_a_level']}   name exactly one level: {c['name_one_level']}")
+    print(f"  match the sequence: {c['match_sequence']}   generic only: {c['generic_only']}")
+    print("  levels:", c["levels"])
+    print("  phrases NOT matched:", c["not_matched"])
+    print("  locations NOT placed:", c["not_placed"])
+    print(f"Photos read: {c['photos']}   filed for exactly one level: {c['photos_one_level']}")
+    print("  views:", c["photo_views"])
     print(f"Confirmed schedule on file: {bool(src.get('schedule'))}")
     print("-" * 70)
     got = await server._work_state_answer(project, company, work, level, today=today)

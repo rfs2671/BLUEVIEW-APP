@@ -36,6 +36,7 @@ match read "Blocking" as masonry and "Vapour barrier" as concrete.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from datetime import date
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -174,6 +175,23 @@ def photo_rows(index_rows: Iterable[Dict[str, Any]], log_ids: Optional[set] = No
         seen, _ = classify(f"{r.get('description') or ''} {' '.join(r.get('tags') or [])}", crew)
         out.append({**r, "levels": place["levels"], "nodes": sorted(set(nodes)), "seen_nodes": seen})
     return out
+
+
+def coverage(rows: Sequence[Dict[str, Any]], photos: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """How much of the record the engine can use, for a job. What decides
+    whether a floor-by-floor view is honest there."""
+    placed = [r for r in rows if r["levels"]]
+    known = [r for r in rows if r["nodes"]]
+    return {
+        "phrases": len(rows), "name_a_level": len(placed),
+        "name_one_level": sum(1 for r in placed if len(r["levels"]) == 1),
+        "match_sequence": len(known), "generic_only": sum(1 for r in known if r["generic"]),
+        "levels": dict(Counter(lv for r in placed for lv in r["levels"]).most_common(20)),
+        "not_matched": Counter(r["work"] for r in rows if not r["nodes"]).most_common(25),
+        "not_placed": Counter(r["where"] for r in rows if not r["levels"]).most_common(15),
+        "photos": len(photos), "photos_one_level": sum(1 for p in photos if len(p["levels"]) == 1),
+        "photo_views": dict(Counter(str(p.get("view")) for p in photos)),
+    }
 
 
 # ── THE STATE OF ONE PACKAGE ───────────────────────────────────────────────
