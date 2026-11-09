@@ -38,7 +38,7 @@ ok(/<CardSheen radius=\{borderRadius\.xxl\} active=\{isHovered && hoverEffect\} 
 ok(/export const StatCard[\s\S]*?translateY: -3[\s\S]*?<PanelSurface kind="card" anim=\{anim\} \/>/.test(glass), 'StatCard is a soft panel and lifts when hovered (the sheen is retired on soft surfaces)');
 ok(/export const GlassListItem[\s\S]*?translateY: -2[\s\S]*?<PanelSurface kind="card" anim=\{anim\} \/>/.test(glass), 'GlassListItem is a soft panel and lifts when hovered');
 const dash = read('app/index.jsx');
-ok(/<CardSheen radius=\{borderRadius\.lg\} active=\{isHovered\} intro \/>/.test(dash), 'the dashboard tool tile (phone)');
+ok(/const ActionTile[\s\S]*?isHovered && !fingerDown && \{ transform: \[\{ translateY: -2 \}\] \}[\s\S]*?<PanelSurface kind="card" anim=\{anim\} \/>/.test(dash), 'the dashboard tool tile (phone) is a soft raised tile that lifts when lit');
 ok(/body = \(active, pressedNow\) =>/.test(dash) && /\{\(\{ hovered, pressed \}\) => body\(!!hovered, !!pressed\)\}/.test(dash) && /\{body\(false, false\)\}/.test(dash), 'the portfolio exposure cards (a zero card has nothing to press)');
 ok(/<PillSurface anim=\{anim\} \/>/.test(dash) && /adminRowInner, hovered && !pressed && \{ transform: \[\{ translateY: -2 \}\] \}\]/.test(dash), 'the desktop tool buttons are soft pills that lift when lit');
 ok((dash.match(/translateY: -2/g) || []).length === 3, 'the three dashboard tile kinds lift 2px when lit');

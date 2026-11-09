@@ -56,3 +56,10 @@ export const SOFT_PILL = {
   darkp: { L: require('../../assets/soft/pillp_dark_L.png'), M: require('../../assets/soft/pillp_dark_M.png'), R: require('../../assets/soft/pillp_dark_R.png') },
 };
 export const SOFT_PILL_DIMS = { body: 44, margin: 32, capW: 76, imgH: 108 };
+
+// The whole picture of each surface, for iPhone: one image stretched with fixed corners (cap insets).
+// Pieces drawn separately faded at their joins there; a single image has no joins.
+export const SOFT_FULL = {
+  light: { key: require('../../assets/soft/key_light_full.png'), keyp: require('../../assets/soft/keyp_light_full.png'), field: require('../../assets/soft/field_light_full.png'), pill: require('../../assets/soft/pill_light_full.png'), pillp: require('../../assets/soft/pillp_light_full.png'), card: require('../../assets/soft/card_light_full.png'), cardp: require('../../assets/soft/cardp_light_full.png'), well: require('../../assets/soft/well_light_full.png') },
+  dark: { key: require('../../assets/soft/key_dark_full.png'), keyp: require('../../assets/soft/keyp_dark_full.png'), field: require('../../assets/soft/field_dark_full.png'), pill: require('../../assets/soft/pill_dark_full.png'), pillp: require('../../assets/soft/pillp_dark_full.png'), card: require('../../assets/soft/card_dark_full.png'), cardp: require('../../assets/soft/cardp_dark_full.png'), well: require('../../assets/soft/well_dark_full.png') },
+};

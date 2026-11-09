@@ -2,7 +2,7 @@ import React, { useEffect } from 'react';
 import { View, Text, TextInput, Pressable, Image, StyleSheet, ActivityIndicator, Platform } from 'react-native';
 import { Eye, EyeOff } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
-import { SOFT, SOFT_DIMS } from './softAssets';
+import { SOFT, SOFT_DIMS, SOFT_FULL } from './softAssets';
 
 /**
  * Soft-silicone controls for the login and register screens: a field that is a
@@ -42,6 +42,18 @@ function injectAutofillCSS() {
 function Surface({ kind, isDark }) {
   const d = SOFT_DIMS[kind];
   const set = SOFT[isDark ? 'dark' : 'light'][kind];
+  if (Platform.OS === 'ios') {
+    // one image with fixed ends (cap insets): no joins to fade (see SoftPanel.jsx)
+    return (
+      <Image
+        pointerEvents="none"
+        source={SOFT_FULL[isDark ? 'dark' : 'light'][kind]}
+        style={{ position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, height: d.imgH }}
+        capInsets={{ top: 0, left: d.capW, bottom: 0, right: d.capW }}
+        resizeMode="stretch"
+      />
+    );
+  }
   return (
     <View
       pointerEvents="none"
