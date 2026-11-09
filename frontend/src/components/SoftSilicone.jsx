@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet, Platform, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Eye, EyeOff } from 'lucide-react-native';
@@ -42,6 +42,28 @@ function palette(isDark, colors) {
       };
 }
 
+// Chrome paints autofilled inputs with its own pale-blue background, which shows
+// as a blue bar across the soft dish. Make it transparent; currentColor keeps the
+// text colour following the theme (see GlassInput for the history).
+let autofillCSSInjected = false;
+function injectAutofillCSS() {
+  if (autofillCSSInjected || Platform.OS !== 'web' || typeof document === 'undefined') return;
+  autofillCSSInjected = true;
+  const style = document.createElement('style');
+  style.textContent = `
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover,
+    input:-webkit-autofill:focus,
+    input:-webkit-autofill:active {
+      -webkit-box-shadow: 0 0 0 1000px transparent inset !important;
+      -webkit-text-fill-color: currentColor !important;
+      background-color: transparent !important;
+      transition: background-color 5000s ease-in-out 0s !important;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 export const SoftField = React.forwardRef(({
   value, onChangeText, placeholder, secureTextEntry, keyboardType = 'default', autoCapitalize = 'none',
   leftIcon, rightIcon, style, ...props
@@ -49,6 +71,7 @@ export const SoftField = React.forwardRef(({
   const { colors, isDark } = useTheme();
   const p = palette(isDark, colors);
   const [focused, setFocused] = useState(false);
+  useEffect(() => { injectAutofillCSS(); }, []);
   const R = 24;
 
   const webShadow = CSS_SHADOWS
