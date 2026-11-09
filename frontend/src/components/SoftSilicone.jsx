@@ -72,13 +72,13 @@ export const SoftField = React.forwardRef(({
   const p = palette(isDark, colors);
   const [focused, setFocused] = useState(false);
   useEffect(() => { injectAutofillCSS(); }, []);
-  const R = 24;
+  const R = 28; // half the 56 field height: a true pill, so rings and edges follow it
 
   const webShadow = CSS_SHADOWS
     ? {
         boxShadow: isDark
-          ? `inset 7px 8px 14px rgba(2,8,12,0.72), inset -6px -7px 13px rgba(255,255,255,0.05), 0 1px 0 rgba(255,255,255,0.04)${focused ? `, 0 0 0 3px ${p.focus}` : ''}`
-          : `inset 7px 8px 14px rgba(124,128,114,0.40), inset -7px -8px 14px rgba(255,255,255,0.95), 0 1px 0 rgba(255,255,255,0.7)${focused ? `, 0 0 0 3px ${p.focus}` : ''}`,
+          ? `inset 7px 8px 14px rgba(2,8,12,0.72), inset -6px -7px 13px rgba(255,255,255,0.05), 0 1px 0 rgba(255,255,255,0.04)`
+          : `inset 7px 8px 14px rgba(124,128,114,0.40), inset -7px -8px 14px rgba(255,255,255,0.95), 0 1px 0 rgba(255,255,255,0.7)`,
       }
     : null;
 
@@ -87,8 +87,6 @@ export const SoftField = React.forwardRef(({
       style={[
         styles.fieldWrap,
         { borderRadius: R },
-        // native focus ring: a soft line outside the dish
-        !CSS_SHADOWS && focused && { borderWidth: 2, borderColor: p.focus },
         style,
       ]}
     >
