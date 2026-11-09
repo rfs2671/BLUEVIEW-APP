@@ -176,7 +176,8 @@ const LegacyGlassCard = ({
 const TINT_KEYS = ['backgroundColor', 'borderColor', 'borderWidth'];
 function splitTint(inner) {
   const rest = {}; const tint = {};
-  Object.keys(inner).forEach((k) => { (TINT_KEYS.includes(k) ? tint : rest)[k] = inner[k]; });
+  // `overflow` is dropped: the soft surface draws its shadow outside the card, and a clip would cut it off.
+  Object.keys(inner).forEach((k) => { if (k === 'overflow') return; (TINT_KEYS.includes(k) ? tint : rest)[k] = inner[k]; });
   return { rest, tint };
 }
 
