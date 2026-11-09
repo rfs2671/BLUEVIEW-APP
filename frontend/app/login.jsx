@@ -5,9 +5,7 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Mail, Lock, Eye, EyeOff, ArrowRight, Building2 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
-import { GlassCard } from '../src/components/GlassCard';
-import GlassInput from '../src/components/GlassInput';
-import GlassButton from '../src/components/GlassButton';
+import { SoftField, SoftKey } from '../src/components/SoftSilicone';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
@@ -295,7 +293,7 @@ export default function LoginScreen() {
           </View>
 
           <Animated.View style={[{ alignSelf: 'stretch' }, uiStyle]}>
-          <GlassCard style={s.card}>
+          <View style={s.plate}>
             <View style={s.welcomeSection}>
               <Text style={s.welcomeLabel}>WELCOME TO</Text>
               <Text style={s.welcomeTitle}>LeveLog</Text>
@@ -343,7 +341,7 @@ export default function LoginScreen() {
                 <View style={s.form}>
                   <View style={s.inputGroup}>
                     <Text style={s.inputLabel}>EMAIL</Text>
-                    <GlassInput
+                    <SoftField
                       value={email}
                       onChangeText={setEmail}
                       placeholder="Enter your email"
@@ -357,7 +355,7 @@ export default function LoginScreen() {
 
                   <View style={s.inputGroup}>
                     <Text style={s.inputLabel}>PASSWORD</Text>
-                    <GlassInput
+                    <SoftField
                       ref={pwdRef}
                       value={password}
                       onChangeText={setPassword}
@@ -382,7 +380,7 @@ export default function LoginScreen() {
                     <Text style={s.errorText}>{error}</Text>
                   ) : null}
 
-                  <GlassButton
+                  <SoftKey
                     title={loading ? 'Signing in...' : 'Sign In'}
                     icon={!loading ? <ArrowRight size={18} strokeWidth={1.5} color={colors.text.primary} /> : null}
                     onPress={handleSubmit}
@@ -400,7 +398,7 @@ export default function LoginScreen() {
                 </form>
               ) : formContent;
             })()}
-          </GlassCard>
+          </View>
 
           {/* Signup affordance — a first-time, unauthenticated visitor must be
               able to reach registration on first paint (App Store reviewers
@@ -486,6 +484,8 @@ function buildStyles(colors, isDark) {
     alignSelf: 'center',
   },
   card: { padding: spacing.xl },
+  // The form sits directly on the screen (no card): the soft fields and key carry the depth.
+  plate: { paddingHorizontal: spacing.sm, paddingTop: spacing.lg, paddingBottom: spacing.sm },
   welcomeSection: { marginBottom: spacing.xl },
   welcomeLabel: {
     ...typography.label,
