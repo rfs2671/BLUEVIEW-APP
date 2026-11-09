@@ -99,6 +99,7 @@ import { SIGNAL_KIND_HELP } from '../../src/utils/signalKindHelp';
 import InfoTooltip from '../../src/components/InfoTooltip';
 
 import SectionLabel from '../../src/components/SectionLabel';
+import { SoftBox } from '../../src/components/SoftPanel';
 import CardSheen from '../../src/components/CardSheen';
 // ── Static select options ────────────────────────────────────────
 
@@ -277,17 +278,14 @@ const PresetRadioCard = ({
   styles,
   colors,
 }) => (
-  <Pressable
+  <SoftBox
+    kind="card"
+    selected={!!selected}
     onPress={() => onSelect(preset.key)}
-    style={({ pressed }) => [
-      styles.presetCard,
-      selected && styles.presetCardSelected,
-      pressed && { opacity: 0.85 },
-    ]}
+    contentStyle={styles.presetCard}
+    accessibilityRole="radio"
+    accessibilityState={{ selected: !!selected }}
   >
-{({ hovered, pressed }) => (
-<>
-<CardSheen radius={borderRadius.lg} active={!!(hovered || pressed)} intro />
     <View
       style={[
         styles.presetRadio,
@@ -314,8 +312,7 @@ const PresetRadioCard = ({
       <Text style={styles.presetSubtitle}>{preset.subtitle}</Text>
       <Text style={styles.presetBodyHelp}>{preset.bodyHelp}</Text>
     </View>
-  </>)}
-</Pressable>
+  </SoftBox>
 );
 
 // ── Main page ────────────────────────────────────────────────────
@@ -1304,19 +1301,12 @@ function buildStyles(colors) {
 
     // ── Preset radio cards ──
     presetGroup: { gap: spacing.sm },
+    // a soft card; the CHOSEN preset stays dented (SoftBox `selected`), so no coloured border is needed
     presetCard: {
       flexDirection: 'row',
       gap: spacing.md,
       padding: spacing.md,
-      borderRadius: borderRadius.lg,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-      backgroundColor: colors.glass.background,
       alignItems: 'flex-start',
-    },
-    presetCardSelected: {
-      borderColor: colors.primary,
-      backgroundColor: withAlpha(colors.primary, 0.08),
     },
     presetRadio: {
       width: 18, height: 18,

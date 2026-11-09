@@ -66,6 +66,7 @@ import apiClient from '../../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../../src/styles/theme';
 import { semantic, withAlpha } from '../../../../src/styles/semanticColors';
 import SectionLabel from '../../../../src/components/SectionLabel';
+import { SoftBox } from '../../../../src/components/SoftPanel';
 import CardSheen from '../../../../src/components/CardSheen';
 import {
   SIGNAL_FAMILIES,
@@ -212,17 +213,14 @@ const SeverityBadge = ({ severity, styles }) => {
 };
 
 const PresetRadioCard = ({ preset, selected, onSelect, styles }) => (
-  <Pressable
+  <SoftBox
+    kind="card"
+    selected={!!selected}
     onPress={() => onSelect(preset.key)}
-    style={({ pressed }) => [
-      styles.presetCard,
-      selected && styles.presetCardSelected,
-      pressed && { opacity: 0.85 },
-    ]}
+    contentStyle={styles.presetCard}
+    accessibilityRole="radio"
+    accessibilityState={{ selected: !!selected }}
   >
-{({ hovered, pressed }) => (
-<>
-<CardSheen radius={borderRadius.lg} active={!!(hovered || pressed)} intro />
     <View style={[styles.presetRadio, selected && styles.presetRadioSelected]}>
       {selected && <View style={styles.presetRadioInner} />}
     </View>
@@ -234,8 +232,7 @@ const PresetRadioCard = ({ preset, selected, onSelect, styles }) => (
       <Text style={styles.presetSubtitle}>{preset.subtitle}</Text>
       <Text style={styles.presetBodyHelp}>{preset.bodyHelp}</Text>
     </View>
-  </>)}
-</Pressable>
+  </SoftBox>
 );
 
 // ── Page ─────────────────────────────────────────────────────────
@@ -1030,19 +1027,12 @@ function buildStyles(colors) {
     },
 
     presetGroup: { gap: spacing.sm },
+    // a soft card; the CHOSEN preset stays dented (SoftBox `selected`), so no coloured border is needed
     presetCard: {
       flexDirection: 'row',
       gap: spacing.md,
       padding: spacing.md,
-      borderRadius: borderRadius.lg,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-      backgroundColor: colors.glass.background,
       alignItems: 'flex-start',
-    },
-    presetCardSelected: {
-      borderColor: colors.primary,
-      backgroundColor: withAlpha(colors.primary, 0.08),
     },
     presetRadio: {
       width: 18, height: 18, borderRadius: 9,
