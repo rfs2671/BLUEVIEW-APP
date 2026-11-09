@@ -31,8 +31,9 @@ OUT = os.path.join(os.path.dirname(__file__), '..', 'assets', 'soft')
 
 # ---------------------------------------------------------------- geometry
 KEY_H, KEY_M = 60, 52      # key height and the room around it for its shadow (dp)
-FIELD_H, FIELD_M = 56, 6
-KEY_EXTRA, FIELD_EXTRA = 48, 16   # straight run kept in each cap beyond the semicircle (the key's long shadow needs more)
+FIELD_H, FIELD_M = 62, 30     # the field is a raised silicone wall around a deep dish
+WALL = 8                       # thickness of that wall (dp)
+KEY_EXTRA, FIELD_EXTRA = 48, 24   # straight run kept in each cap beyond the semicircle (the key's long shadow needs more)
 
 
 def blur(a, sigma_px):
@@ -127,9 +128,12 @@ THEMES = {
         key_outer=[(-12, -12, 13, 'hi', 0.95), (14, 18, 16, 'lo', 0.46)],
         key_in=[(1, 1, 1, 'hi', 0.95), (-3, -4, 3.5, 'lo', 0.22)],
         keyp_in=[(6, 7, 6.5, 'lo', 0.40), (-5, -6, 5.5, 'hi', 0.90)],
-        well=((124, 128, 114, 0.18), (255, 255, 255, 0.34)),
-        well_in=[(7, 8, 7, (124, 128, 114), 0.40), (-7, -8, 7, (255, 255, 255), 0.95)],
-        lip=((255, 255, 255), 0.70),
+        f_outer=[(-5, -5, 6, (255, 255, 255), 0.90), (7, 9, 9, (124, 128, 114), 0.40)],
+        f_wall=((247, 248, 245), (222, 224, 218)),
+        f_wall_in=[(1.5, 1.5, 1.5, (255, 255, 255), 0.95), (-3, -4, 4, (124, 128, 114), 0.22)],
+        f_edge=((255, 255, 255), 0.90),
+        f_floor=((206, 209, 201), (238, 239, 235)),
+        f_dish_in=[(9, 10, 10, (124, 128, 114), 0.46), (-6, -7, 7, (255, 255, 255), 0.92), (0, 0, 6, (124, 128, 114), 0.09), (1, 1, 1.2, (110, 114, 102), 0.24)],
     ),
     'dark': dict(
         key_top='#2C4050', key_bottom='#1F2F3C',
@@ -138,9 +142,12 @@ THEMES = {
         key_outer=[(-9, -9, 10, 'hi', 0.05), (14, 18, 15, 'lo', 0.80)],
         key_in=[(1, 1, 0.5, 'hi', 0.13), (-3, -4, 3.5, (0, 0, 0), 0.34)],
         keyp_in=[(6, 7, 6.5, 'lo', 0.72), (-5, -6, 5.5, 'hi', 0.05)],
-        well=((0, 0, 0, 0.32), (255, 255, 255, 0.02)),
-        well_in=[(7, 8, 7, (2, 8, 12), 0.72), (-6, -7, 6.5, (255, 255, 255), 0.05)],
-        lip=((255, 255, 255), 0.04),
+        f_outer=[(-5, -5, 6, (255, 255, 255), 0.05), (7, 9, 9, (2, 8, 12), 0.78)],
+        f_wall=((46, 66, 82), (35, 54, 68)),
+        f_wall_in=[(1.5, 1.5, 1, (255, 255, 255), 0.13), (-3, -4, 4, (0, 0, 0), 0.32)],
+        f_edge=((255, 255, 255), 0.12),
+        f_floor=((13, 21, 28), (33, 48, 60)),
+        f_dish_in=[(9, 10, 9, (0, 0, 0), 0.85), (-6, -7, 7, (255, 255, 255), 0.07), (0, 0, 6, (0, 0, 0), 0.20), (1, 1, 1.2, (0, 0, 0), 0.40)],
     ),
 }
 
@@ -171,25 +178,32 @@ def render_key(th, pressed):
 
 
 def render_field(th):
+    """A raised silicone wall around a deep dish: thick, plush, like a keywave key pressed in."""
     cap = FIELD_H / 2 + FIELD_EXTRA
     w = 2 * cap + 40
-    mask, d, x, y = capsule(w, FIELD_H, FIELD_M, FIELD_H)
-    img = np.zeros(mask.shape + (4,))
-    # the thin light lip under the lower edge, outside the dish
-    lip = np.clip(shift(mask, 0, S) - mask, 0, 1)
-    img = over(img, th['lip'][0], lip * th['lip'][1])
-    # body: light falls from the top left, but only inside the caps so the stretched middle stays seamless
+    outer_mask, d_o, x, y = capsule(w, FIELD_H, FIELD_M, FIELD_H)
+    inner_mask, d_i, _, _ = capsule(w - 2 * WALL, FIELD_H - 2 * WALL, FIELD_M + WALL, FIELD_H - 2 * WALL)
+    img = np.zeros(outer_mask.shape + (4,))
+    # 1. the wall casts its own soft shadows
+    for dx, dy, sg, c, a in th['f_outer']:
+        img = outer(outer_mask, dx, dy, sg, c, a, img)
+    # 2. the wall itself, lit from the top left
+    ty = np.clip((y - FIELD_M) / FIELD_H, 0, 1)
+    img = over_img(img, lerp(th['f_wall'][0], th['f_wall'][1], ty), outer_mask)
+    for dx, dy, sg, c, a in th['f_wall_in']:
+        img = inset(outer_mask, dx, dy, sg, c, a, img)
+    img = ring(d_o, th['f_edge'][0], th['f_edge'][1], img)
+    # 3. the dish floor: darker at the top left, easing toward the bottom right; kept constant in the
+    #    straight middle so the stretched slice joins the caps without a seam
     xs = x - FIELD_M
     tx = np.where(xs < cap, np.clip(xs / cap, 0, 1) * 0.5,
                   np.where(xs > w - cap, 0.5 + np.clip((xs - (w - cap)) / cap, 0, 1) * 0.5, 0.5))
-    ty = np.clip((y - FIELD_M) / FIELD_H, 0, 1)
-    t = 0.6 * tx + 0.4 * ty
-    (ar, ag, ab, aa), (br, bg, bb, ba) = th['well']
-    rgb = lerp((ar, ag, ab), (br, bg, bb), t)
-    alpha = (aa + (ba - aa) * t) * mask
-    img = over_img(img, rgb, alpha)
-    for dx, dy, sg, c, a in th['well_in']:
-        img = inset(mask, dx, dy, sg, c, a, img)
+    tyi = np.clip((y - FIELD_M - WALL) / (FIELD_H - 2 * WALL), 0, 1)
+    t = 0.6 * tx + 0.4 * tyi
+    img = over_img(img, lerp(th['f_floor'][0], th['f_floor'][1], t), inner_mask)
+    # 4. the dish's inner shadows: this is where the depth comes from
+    for dx, dy, sg, c, a in th['f_dish_in']:
+        img = inset(inner_mask, dx, dy, sg, c, a, img)
     return img, w, FIELD_M, FIELD_H
 
 

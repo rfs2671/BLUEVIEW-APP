@@ -123,7 +123,7 @@ export function SoftKey({ title, icon, onPress, loading = false, disabled = fals
 }
 
 const styles = StyleSheet.create({
-  fieldRow: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 22 },
+  fieldRow: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 28 },
   input: { flex: 1, minWidth: 0, fontSize: 16, paddingVertical: 0, backgroundColor: 'transparent', outlineStyle: 'none' },
   iconL: { marginRight: 8, flexShrink: 0 },
   iconR: { marginLeft: 4, marginRight: -10, flexShrink: 0 },

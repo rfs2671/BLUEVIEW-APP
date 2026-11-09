@@ -19,5 +19,5 @@ export const SOFT = {
 export const SOFT_DIMS = {
   key:   { body: 60, margin: 52, capW: 130, imgH: 164 },
   keyp:  { body: 60, margin: 52, capW: 130, imgH: 164 },
-  field: { body: 56, margin: 6,  capW: 50,  imgH: 68 },
+  field: { body: 62, margin: 30, capW: 85,  imgH: 122 },
 };
