@@ -37,8 +37,8 @@ export function useTileCount() {
  * The press state of a soft surface, as ONE number (0 = raised, 1 = pressed in) plus an optional second number for
  * "selected" (0 = not, 1 = stays dented, like the text fields).
  *
- *  - pressing eases in over about a tenth of a second;
- *  - letting go SPRINGS back: it overshoots a little and settles, so the button bounces up out of the dent;
+ *  - pressing eases in gently (about 150ms);
+ *  - letting go SPRINGS back softly: a slow, small overshoot that settles, like silicone, not a rubber ball;
  *  - choosing something (selected = true) dents it and holds it there; choosing something ELSE releases it with the
  *    same spring, so the old choice bounces back up as the new one sinks.
  *
@@ -50,17 +50,17 @@ export function usePressAnim(pressed, selected) {
   const sel = useRef(new Animated.Value(selected ? 1 : 0)).current;
   useEffect(() => {
     if (pressed) {
-      Animated.timing(v, { toValue: 1, duration: 110, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+      Animated.timing(v, { toValue: 1, duration: 150, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
     } else {
-      Animated.spring(v, { toValue: 0, speed: 20, bounciness: 15, useNativeDriver: true }).start();
+      Animated.spring(v, { toValue: 0, speed: 10, bounciness: 8, useNativeDriver: true }).start();
     }
   }, [pressed, v]);
   useEffect(() => {
     if (selected === undefined) return;
     if (selected) {
-      Animated.timing(sel, { toValue: 1, duration: 150, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+      Animated.timing(sel, { toValue: 1, duration: 220, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
     } else {
-      Animated.spring(sel, { toValue: 0, speed: 16, bounciness: 14, useNativeDriver: true }).start();
+      Animated.spring(sel, { toValue: 0, speed: 8, bounciness: 4, useNativeDriver: true }).start();
     }
   }, [selected, sel]);
   v.sel = sel;
@@ -73,12 +73,12 @@ const clamp01 = (x) => x.interpolate({ inputRange: [0, 1], outputRange: [0, 1], 
 /** The label sinks 1dp when pressed, and bobs up a little as the surface springs back. */
 export function pressShift(anim) {
   const total = anim.sel ? Animated.add(anim, anim.sel) : anim;
-  return { transform: [{ translateY: total.interpolate({ inputRange: [-0.5, 0, 1, 2], outputRange: [-1.5, 0, 1, 1.5], extrapolate: 'clamp' }) }] };
+  return { transform: [{ translateY: total.interpolate({ inputRange: [-0.5, 0, 1, 2], outputRange: [-2, 0, 1, 1.5], extrapolate: 'clamp' }) }] };
 }
 
 /** The surface itself pops up a touch as it springs back past its resting height. */
 function popStyle(anim) {
-  return { transform: [{ translateY: anim.interpolate({ inputRange: [-0.5, 0, 1], outputRange: [-3, 0, 0], extrapolate: 'clamp' }) }] };
+  return { transform: [{ translateY: anim.interpolate({ inputRange: [-0.5, 0, 1], outputRange: [-4, 0, 0], extrapolate: 'clamp' }) }] };
 }
 
 /** Opacities of the three layers (raised, pressed, dented) for one anim, times an optional base opacity (idle = 0). */
