@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet, Platform, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Eye, EyeOff } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { withAlpha } from '../styles/semanticColors';
 
@@ -105,6 +106,28 @@ export const SoftField = React.forwardRef(({
   );
 });
 
+/**
+ * The show/hide control for a password field. Its own fixed-size touch target
+ * with a stronger icon colour than the field's other icons: the dimmest text
+ * colour disappears into the dish, and a flexible icon can be squeezed out of
+ * the field entirely on some devices.
+ */
+export function PasswordToggle({ shown, onToggle }) {
+  const { colors } = useTheme();
+  const Icon = shown ? EyeOff : Eye;
+  return (
+    <Pressable
+      onPress={onToggle}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel={shown ? 'Hide password' : 'Show password'}
+      style={styles.eye}
+    >
+      <Icon size={22} strokeWidth={1.7} color={colors.text.secondary} />
+    </Pressable>
+  );
+}
+
 export function SoftKey({ title, icon, onPress, loading = false, disabled = false, style }) {
   const { colors, isDark } = useTheme();
   const p = palette(isDark, colors);
@@ -184,7 +207,8 @@ const styles = StyleSheet.create({
   fieldBody: { flex: 1, flexDirection: 'row', alignItems: 'center', overflow: 'hidden', paddingHorizontal: 18 },
   input: { flex: 1, minWidth: 0, fontSize: 16, paddingVertical: 0, backgroundColor: 'transparent', outlineStyle: 'none' },
   iconL: { marginRight: 8, flexShrink: 0 },
-  iconR: { marginLeft: 8, flexShrink: 0 },
+  iconR: { marginLeft: 4, marginRight: -8, flexShrink: 0 },
+  eye: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   edgeTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 16 },
   edgeLeft: { position: 'absolute', top: 0, bottom: 0, left: 0, width: 16 },
   edgeBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 12 },
@@ -195,4 +219,4 @@ const styles = StyleSheet.create({
   keyText: { fontSize: 16, fontWeight: '700', letterSpacing: 0.2 },
 });
 
-export default { SoftField, SoftKey };
+export default { SoftField, SoftKey, PasswordToggle };

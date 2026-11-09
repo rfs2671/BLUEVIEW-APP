@@ -3,9 +3,9 @@ import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Image
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Mail, Lock, Eye, EyeOff, ArrowRight, Building2 } from 'lucide-react-native';
+import { Mail, Lock, ArrowRight, Building2 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
-import { SoftField, SoftKey } from '../src/components/SoftSilicone';
+import { SoftField, SoftKey, PasswordToggle } from '../src/components/SoftSilicone';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
@@ -364,15 +364,7 @@ export default function LoginScreen() {
                       returnKeyType="go"
                       onSubmitEditing={handleSubmit}
                       leftIcon={<Lock size={20} strokeWidth={1.5} color={colors.text.subtle} />}
-                      rightIcon={
-                        <Pressable onPress={() => setShowPassword(!showPassword)}>
-                          {showPassword ? (
-                            <EyeOff size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                          ) : (
-                            <Eye size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                          )}
-                        </Pressable>
-                      }
+                      rightIcon={<PasswordToggle shown={showPassword} onToggle={() => setShowPassword(!showPassword)} />}
                     />
                   </View>
 
