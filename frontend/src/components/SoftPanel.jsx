@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Image, StyleSheet, Animated, Easing } from 'react-native';
+import { View, Image, StyleSheet, Animated, Easing, Platform } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
-import { SOFT_PANEL, SOFT_PANEL_DIMS, SOFT_PILL, SOFT_PILL_DIMS } from './softAssets';
+import { SOFT_PANEL, SOFT_PANEL_DIMS, SOFT_PILL, SOFT_PILL_DIMS, SOFT_FULL } from './softAssets';
 
 /**
  * Stretchable soft-silicone surfaces: a `card` that rises off the page and a `well` that is pressed into it.
@@ -63,7 +63,19 @@ function NineSlice({ kind = 'card' }) {
   const { isDark } = useTheme();
   const set = SOFT_PANEL[isDark ? 'dark' : 'light'][kind];
   const c = SOFT_PANEL_DIMS[kind].corner;
-  // Laid out in three flex rows, the same way the login fields are (which draw correctly on a phone):
+  // iPhone: ONE image with fixed corners (cap insets), so there are no joins. Separate stretched pieces faded at
+  // their edges there (a one-pixel piece vanished; wider ones left faint seams).
+  if (Platform.OS === 'ios') {
+    return (
+      <Image
+        source={SOFT_FULL[isDark ? 'dark' : 'light'][kind]}
+        style={StyleSheet.absoluteFill}
+        capInsets={{ top: c, left: c, bottom: c, right: c }}
+        resizeMode="stretch"
+      />
+    );
+  }
+  // Elsewhere: laid out in three flex rows, the same way the login fields are (which draw correctly on a phone):
   // fixed-size corners, and the pieces between them take whatever room is left.
   const fixed = { width: c, height: c };
   return (
@@ -121,6 +133,16 @@ function PillLayer({ pressed = false }) {
   const { isDark } = useTheme();
   const set = SOFT_PILL[(isDark ? 'dark' : 'light') + (pressed ? 'p' : '')];
   const d = SOFT_PILL_DIMS;
+  if (Platform.OS === 'ios') {
+    return (
+      <Image
+        source={SOFT_FULL[isDark ? 'dark' : 'light'][pressed ? 'pillp' : 'pill']}
+        style={StyleSheet.absoluteFill}
+        capInsets={{ top: 0, left: d.capW, bottom: 0, right: d.capW }}
+        resizeMode="stretch"
+      />
+    );
+  }
   return (
     <View style={[StyleSheet.absoluteFill, { flexDirection: 'row' }]}>
       <Image source={set.L} style={{ width: d.capW, height: d.imgH }} fadeDuration={0} />

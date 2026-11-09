@@ -108,26 +108,29 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const [isHovered, setIsHovered] = useState(false);
+  const [fingerDown, setFingerDown] = useState(false);
+  const anim = usePressAnim(fingerDown);
   const Icon = action.icon;
   return (
     <Pressable
       onPress={onPress}
       onHoverIn={() => setIsHovered(true)}
       onHoverOut={() => setIsHovered(false)}
-      style={[
-        s.actionTile,
-        { width: tileWidth, backgroundColor: colors.glass.background },
-        auraRim(colors),
-        auraShadow(colors, undefined, { translucent: true }),
-        isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover, transform: [{ translateY: -2 }] },
-      ]}
+      onPressIn={() => setFingerDown(true)}
+      onPressOut={() => setFingerDown(false)}
+      style={[{ width: tileWidth }, isHovered && !fingerDown && { transform: [{ translateY: -2 }] }]}
     >
-      <CardSheen radius={borderRadius.lg} active={isHovered} intro />
-      <IconPod size={40} style={s.actionIcon}>
-        <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
-      </IconPod>
-      <Text style={[s.actionTitle, { color: colors.text.primary }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{action.title}</Text>
-      <Text style={[s.actionSubtitle, { color: colors.text.muted }]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.7}>{action.subtitle}</Text>
+      {/* a soft raised tile: the surface is a picture behind the content, so it is always as big as the content */}
+      <View style={[s.actionTile, { position: 'relative', minHeight: 96 }]}>
+        <PanelSurface kind="card" anim={anim} />
+        <Animated.View style={[{ alignItems: 'flex-start', gap: spacing.xs, position: 'relative' }, pressShift(anim)]}>
+          <IconPod size={40} style={s.actionIcon}>
+            <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
+          </IconPod>
+          <Text style={[s.actionTitle, { color: colors.text.primary }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{action.title}</Text>
+          <Text style={[s.actionSubtitle, { color: colors.text.muted }]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.7}>{action.subtitle}</Text>
+        </Animated.View>
+      </View>
     </Pressable>
   );
 };
@@ -1346,11 +1349,8 @@ function buildStyles(colors, isDark) {
     rowGap: spacing.sm,
   },
   actionTile: {
-    borderRadius: borderRadius.lg,
     padding: spacing.md,
-    alignItems: 'flex-start',
     justifyContent: 'center',
-    gap: spacing.xs,
   },
   actionIcon: {
     marginBottom: spacing.xs,

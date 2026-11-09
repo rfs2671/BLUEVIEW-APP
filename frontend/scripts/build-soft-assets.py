@@ -59,6 +59,7 @@ def save_pieces(im, name, cap, margin):
         r = resample(im, scale)
         c = cap * scale
         W = r.size[0]
+        r.save(f'{OUT}/{name}_full{suffix}.png', optimize=True)  # whole picture, for iPhone's cap-insets stretch
         assert W == (2 * cap + MID) * scale, (name, W)
         r.crop((0, 0, c, r.size[1])).save(f'{OUT}/{name}_L{suffix}.png', optimize=True)
         r.crop((c, 0, c + MID * scale, r.size[1])).save(f'{OUT}/{name}_M{suffix}.png', optimize=True)
@@ -113,6 +114,7 @@ def save_nine(tn, name, spec, pressed=False):
     print(name, tn, im.size, 'seam delta', seam)
     for scale, suffix in ((1, ''), (2, '@2x'), (3, '@3x')):
         r = resample(im, scale); k = C * scale; W = r.size[0]
+        r.save(f'{OUT}/{name}_{tn}_full{suffix}.png', optimize=True)
         assert W == (2 * C + MID) * scale
         xs = {'l': (0, k), 'c': (k, k + MID * scale), 'r': (W - k, W)}
         for ry, (y0, y1) in (('t', xs['l']), ('m', xs['c']), ('b', xs['r'])):
