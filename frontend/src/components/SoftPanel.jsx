@@ -1,7 +1,8 @@
-import React, { useEffect, useRef } from 'react';
-import { View, Image, StyleSheet, Animated, Easing, Platform } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Image, StyleSheet, Animated, Easing, Platform, useWindowDimensions } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { SOFT_PANEL, SOFT_PANEL_DIMS, SOFT_PILL, SOFT_PILL_DIMS, SOFT_FULL } from './softAssets';
+import { SOFT_PLATEAU } from './softPlateau';
 
 /**
  * Stretchable soft-silicone surfaces: a `card` that rises off the page and a `well` that is pressed into it.
@@ -13,6 +14,25 @@ import { SOFT_PANEL, SOFT_PANEL_DIMS, SOFT_PILL, SOFT_PILL_DIMS, SOFT_FULL } fro
  * The pieces are laid out in rows and share exact edges. None of them is a one-pixel-wide image: those drew as
  * nothing on iPhone, leaving only the four corners.
  */
+// The straight run between two corners is a tile TILE dp long, drawn at its natural size and REPEATED, then clipped
+// to the run. It is never stretched: a thin strip stretched a long way drew wrongly on Android (blank, then bands
+// and hairlines), while corners, which are never stretched, always drew right.
+export const TILE = 256;
+export function TileRow({ src, height, count = 3 }) {
+  const tiles = [];
+  for (let i = 0; i < count; i += 1) tiles.push(<Image key={i} source={src} style={{ width: TILE, height }} fadeDuration={0} />);
+  return <View style={{ flex: 1, height, overflow: 'hidden', flexDirection: 'row' }}>{tiles}</View>;
+}
+function TileCol({ src, width, count = 3 }) {
+  const tiles = [];
+  for (let i = 0; i < count; i += 1) tiles.push(<Image key={i} source={src} style={{ width, height: TILE }} fadeDuration={0} />);
+  return <View style={{ width, overflow: 'hidden' }}>{tiles}</View>;
+}
+export function useTileCount() {
+  const { width } = useWindowDimensions();
+  return Math.ceil((width + 80) / TILE) + 0;
+}
+
 /**
  * 0 -> 1 while something is pressed, with the soft-silicone timing: it eases in over about a tenth of a second and
  * eases back out more slowly, like silicone returning to shape. Opacity and transform only, so it runs on the
@@ -75,24 +95,31 @@ function NineSlice({ kind = 'card' }) {
       />
     );
   }
-  // Elsewhere: laid out in three flex rows, the same way the login fields are (which draw correctly on a phone):
-  // fixed-size corners, and the pieces between them take whatever room is left.
+  // Android and web: corners at natural size, the runs between them repeated tiles, the middle a flat colour.
+  return <NineTiles set={set} c={c} plateau={SOFT_PLATEAU[isDark ? 'dark' : 'light'][kind]} />;
+}
+
+function NineTiles({ set, c, plateau }) {
+  const [h, setH] = useState(640);
+  const nH = useTileCount();
+  const nV = Math.max(1, Math.ceil(h / TILE));
   const fixed = { width: c, height: c };
+  const mid = `rgba(${plateau[0]},${plateau[1]},${plateau[2]},${plateau[3] / 255})`;
   return (
-    <View style={StyleSheet.absoluteFill}>
+    <View style={StyleSheet.absoluteFill} onLayout={(e) => setH(e.nativeEvent.layout.height)}>
       <View style={{ height: c, flexDirection: 'row' }}>
         <Image source={set.tl} style={fixed} fadeDuration={0} />
-        <Image source={set.tc} style={{ flex: 1, height: c }} resizeMode="stretch" fadeDuration={0} />
+        <TileRow src={set.tc} height={c} count={nH} />
         <Image source={set.tr} style={fixed} fadeDuration={0} />
       </View>
       <View style={{ flex: 1, flexDirection: 'row' }}>
-        <Image source={set.ml} style={{ width: c }} resizeMode="stretch" fadeDuration={0} />
-        <Image source={set.mc} style={{ flex: 1 }} resizeMode="stretch" fadeDuration={0} />
-        <Image source={set.mr} style={{ width: c }} resizeMode="stretch" fadeDuration={0} />
+        <TileCol src={set.ml} width={c} count={nV} />
+        <View style={{ flex: 1, backgroundColor: mid }} />
+        <TileCol src={set.mr} width={c} count={nV} />
       </View>
       <View style={{ height: c, flexDirection: 'row' }}>
         <Image source={set.bl} style={fixed} fadeDuration={0} />
-        <Image source={set.bc} style={{ flex: 1, height: c }} resizeMode="stretch" fadeDuration={0} />
+        <TileRow src={set.bc} height={c} count={nH} />
         <Image source={set.br} style={fixed} fadeDuration={0} />
       </View>
     </View>
@@ -143,10 +170,15 @@ function PillLayer({ pressed = false }) {
       />
     );
   }
+  return <PillTiles set={set} d={d} />;
+}
+
+function PillTiles({ set, d }) {
+  const n = useTileCount();
   return (
     <View style={[StyleSheet.absoluteFill, { flexDirection: 'row' }]}>
       <Image source={set.L} style={{ width: d.capW, height: d.imgH }} fadeDuration={0} />
-      <Image source={set.M} style={{ flex: 1, height: d.imgH }} resizeMode="stretch" fadeDuration={0} />
+      <TileRow src={set.M} height={d.imgH} count={n} />
       <Image source={set.R} style={{ width: d.capW, height: d.imgH }} fadeDuration={0} />
     </View>
   );
