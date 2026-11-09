@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { TextInput, View, StyleSheet, Platform } from 'react-native';
 import { borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
+import { Surface } from './SoftSilicone';
+import { PanelSurface } from './SoftPanel';
+import { SOFT_DIMS } from './softAssets';
 
 /* Inject a global CSS rule once to kill Chrome's autofill background.
  *
@@ -64,19 +67,22 @@ const GlassInput = React.forwardRef(({
 
   useEffect(() => { injectAutofillCSS(); }, []);
 
+  // The field is a soft dish pressed into the surface (the same one as the login): a pill for one line, a rounded
+  // well for a multi-line box. Its fill and hairline border from the old glass look are gone; a caller's own
+  // background, border and radius are dropped so they cannot draw a frame around the dish.
+  const flat = StyleSheet.flatten(style) || {};
+  const callerStyle = {};
+  Object.keys(flat).forEach((k) => {
+    if (['backgroundColor', 'borderColor', 'borderWidth', 'borderRadius', 'overflow'].includes(k)) return;
+    callerStyle[k] = flat[k];
+  });
+  const fieldH = SOFT_DIMS.field.body;
+
   return (
     <View
-      style={[
-        s.container,
-        isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover },
-        isFocused && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.border.strong },
-        style,
-      ]}
-      {...(Platform.OS === 'web' ? {
-        onMouseEnter: () => setIsHovered(true),
-        onMouseLeave: () => setIsHovered(false),
-      } : {})}
+      style={[multiline ? s.containerMulti : [s.container, { height: fieldH }], callerStyle]}
     >
+      {multiline ? <PanelSurface kind="well" /> : <Surface kind="field" isDark={isDark} />}
       {leftIcon && <IconWrap style={s.leftIcon}>{leftIcon}</IconWrap>}
       <TextInput
         ref={ref}
@@ -89,8 +95,6 @@ const GlassInput = React.forwardRef(({
         autoCapitalize={autoCapitalize}
         multiline={multiline}
         numberOfLines={numberOfLines}
-        onFocus={() => setIsFocused(true)}
-        onBlur={() => setIsFocused(false)}
         style={[
           s.input,
           leftIcon && s.inputWithLeftIcon,
@@ -108,38 +112,42 @@ const GlassInput = React.forwardRef(({
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
   container: {
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.lg,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
     flexDirection: 'row',
     alignItems: 'center',
     position: 'relative',
-    transition: 'all 0.2s ease',
+  },
+  containerMulti: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    position: 'relative',
+    minHeight: 96,
+    paddingVertical: spacing.xs,
   },
   input: {
     flex: 1,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
+    position: 'relative', // above the soft dish: an absolutely placed surface would paint over it on the web
+    paddingHorizontal: spacing.xl,
+    paddingVertical: 0,
     color: colors.text.primary,
     fontSize: 16,
     backgroundColor: 'transparent',
     outlineStyle: 'none',
   },
   inputWithLeftIcon: {
-    paddingLeft: spacing.xxl + spacing.md,
+    paddingLeft: spacing.xxl + spacing.lg,
   },
   inputWithRightIcon: {
-    paddingRight: spacing.xxl + spacing.md,
+    paddingRight: spacing.xxl + spacing.lg,
   },
   multilineInput: {
-    minHeight: 100,
+    minHeight: 96,
     textAlignVertical: 'top',
     paddingTop: spacing.md,
+    paddingVertical: spacing.md,
   },
   leftIcon: {
     position: 'absolute',
-    left: spacing.lg,
+    left: spacing.xl,
     top: 0,
     bottom: 0,
     justifyContent: 'center',
@@ -150,7 +158,7 @@ function buildStyles(colors, isDark) {
   },
   rightIcon: {
     position: 'absolute',
-    right: spacing.lg,
+    right: spacing.xl,
     top: 0,
     bottom: 0,
     justifyContent: 'center',
