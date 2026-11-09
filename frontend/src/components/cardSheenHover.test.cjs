@@ -43,9 +43,9 @@ ok(/body = \(active, pressedNow\) =>/.test(dash) && /\{\(\{ hovered, pressed \}\
 ok(/<PillSurface anim=\{anim\} \/>/.test(dash) && /adminRowInner, hovered && !pressed && \{ transform: \[\{ translateY: -2 \}\] \}\]/.test(dash), 'the desktop tool buttons are soft pills that lift when lit');
 ok((dash.match(/translateY: -2/g) || []).length === 3, 'the three dashboard tile kinds lift 2px when lit');
 const proj = read('app/project/[id].jsx');
-ok(/<CardSheen radius=\{borderRadius\.xl\} active=\{!!\(hovered \|\| pressed\)\} intro \/>/.test(proj), 'the project quick actions');
+ok(/<SoftBox\s+key=\{action\.title\}\s+kind="card"/.test(proj), 'the project quick actions are soft cards that sink when pressed');
 const logs = read('app/logbooks/index.jsx');
-ok((logs.match(/<CardSheen radius=\{borderRadius\.xl\} active=\{!!\(hovered \|\| pressed\)\} intro \/>/g) || []).length === 2, 'both log-book list cards');
+ok((logs.match(/<SoftBox\s+kind="card"/g) || []).length === 2, 'both log-book list cards are soft cards');
 ok(/<CardSheen radius=\{borderRadius\.lg\} intro \/>/.test(read('src/components/SyncButton.jsx')), 'the sync card');
 
 console.log('\n── Boxes a screen draws itself ──');

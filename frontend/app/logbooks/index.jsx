@@ -67,6 +67,7 @@ import { chrome } from '../../src/styles/semanticColors';
 
 
 import SectionLabel from '../../src/components/SectionLabel';
+import { SoftBox } from '../../src/components/SoftPanel';
 import CardSheen from '../../src/components/CardSheen';
 // Icon mapping for dynamic logbook types from API
 const ICON_MAP = {
@@ -1290,17 +1291,15 @@ export default function LogBooksScreen() {
                     : (!notHis || status === 'submitted');
                   return (
                     <React.Fragment key={logType.key}>
-                    <Pressable
+                    <SoftBox
+                      kind="card"
                       onPress={() => handleOpenLog(logType.key)}
                       accessibilityRole="button"
                       accessibilityLabel={whoseLine
                         ? `${openable ? 'Open ' : ''}${logType.label} — ${whoseLine}`
                         : `Open ${logType.label}`}
-                      style={({ pressed }) => [styles.logCard, pressed && styles.logCardPressed]}
+                      contentStyle={styles.logCard}
                     >
-{({ hovered, pressed }) => (
-<>
-<CardSheen radius={borderRadius.xl} active={!!(hovered || pressed)} intro />
                       <View style={[styles.logIcon, { backgroundColor: logType.bg || (logType.color + '26') }]}>
                         <Icon size={22} strokeWidth={1.5} color={logType.color} />
                       </View>
@@ -1324,8 +1323,7 @@ export default function LogBooksScreen() {
                           <Lock size={16} strokeWidth={1.5} color={colors.text.muted} />
                         )}
                       </View>
-                    </>)}
-</Pressable>
+                    </SoftBox>
                     {/* A SECOND ROW, NOT A BUTTON INSIDE THE FIRST.
                         Every other route on this screen goes to the editor,
                         and this is the one that does not — so it is its own
@@ -1351,13 +1349,12 @@ export default function LogBooksScreen() {
               )}
 
               {toolboxDoneThisWeek && (
-                <Pressable
+                <SoftBox
+                  kind="card"
                   onPress={() => handleOpenLog('toolbox_talk')}
-                  style={({ pressed }) => [styles.logCard, styles.logCardDone, pressed && styles.logCardPressed]}
+                  style={styles.logCardDone}
+                  contentStyle={styles.logCard}
                 >
-{({ hovered, pressed }) => (
-<>
-<CardSheen radius={borderRadius.xl} active={!!(hovered || pressed)} intro />
                   <View style={[styles.logIcon, { backgroundColor: withAlpha(colors.primary, 0.15) }]}>
                     <BookOpen size={22} strokeWidth={1.5} color={colors.primary} />
                   </View>
@@ -1369,8 +1366,7 @@ export default function LogBooksScreen() {
                     <StatusBadge status="submitted" />
                     <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
                   </View>
-                </>)}
-</Pressable>
+                </SoftBox>
               )}
             </View>
           )}
@@ -1551,9 +1547,6 @@ function buildStyles(colors, isDark) {
 
     logCard: {
       flexDirection: 'row', alignItems: 'center',
-      backgroundColor: colors.glass.background,
-      borderRadius: borderRadius.xl,
-      borderWidth: 1, borderColor: colors.glass.border,
       padding: spacing.md, gap: spacing.md,
     },
     logCardDone: { opacity: 0.5 },
