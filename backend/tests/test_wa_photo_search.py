@@ -265,8 +265,8 @@ class TheOwnersQuestion(_Brain):
             out = json.loads(_run(server._dm_find_photos(ctx, {"id": THOMAS, "label": "588"}, {"what": "front"})))
         self.assertEqual((out["photos_searched"], out["matches"]), (0, []))
 
-    def test_the_slow_notice_no_longer_says_drawings(self):
-        self.assertNotIn("drawing", server.DM_SLOW_NOTICE_TEXT.lower())
+    def test_the_slow_notice_is_about_any_question(self):
+        self.assertEqual(server.DM_SLOW_NOTICE_TEXT, "Still working on it.")
 
 
 if __name__ == "__main__":

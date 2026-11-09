@@ -305,13 +305,19 @@ def scan():
 
 
 def frontend_mentions(field: str) -> bool:
-    """Does any frontend source name this key? Text search, deliberately."""
-    pattern = re.compile(r"['\"]?\b" + re.escape(field) + r"\b['\"]?\s*[:=]")
+    """Does any frontend source name this key? Text search, deliberately.
+
+    A comparison (`phase === 'done'`) and a comment line are not a key: the
+    login screen's own `phase` state (#974) read as a client sending
+    daily_logs.phase, and the frontend-only PR that added it never ran this."""
+    pattern = re.compile(r"['\"]?\b" + re.escape(field) + r"\b['\"]?\s*(?::|=(?!=))")
     for path in FRONTEND.rglob("*.js*"):
         if "node_modules" in path.parts or "assets" in path.parts:
             continue
         try:
-            if pattern.search(path.read_text(encoding="utf-8", errors="ignore")):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if any(pattern.search(line) for line in text.splitlines()
+                   if not line.lstrip().startswith(("//", "*", "/*"))):
                 return True
         except OSError:
             continue
