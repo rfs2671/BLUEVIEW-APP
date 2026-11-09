@@ -216,7 +216,7 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
   // The card is a soft raised surface behind its content, so it is always as big as what is on it.
   // Pressed in while a finger is on it, and while its list is open; it eases in and back out like silicone.
   const [fingerDown, setFingerDown] = useState(false);
-  const anim = usePressAnim(fingerDown || !!expanded);
+  const anim = usePressAnim(fingerDown, pressable ? !!expanded : undefined);
   const body = (active, pressedNow) => (
     <View style={[deskStyles.rollupCard, active && !pressedNow && !expanded && { transform: [{ translateY: -2 }] }]}>
       <PanelSurface kind="card" anim={anim} />
