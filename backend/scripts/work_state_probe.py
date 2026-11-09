@@ -17,12 +17,14 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import server  # noqa: E402
+from probe_helpers import require_fields  # noqa: E402
 from lib import progress_report, work_state as W  # noqa: E402
 
 
 async def main(job: str, work: str, level: str) -> None:
     rows = await server.db.projects.find({"is_deleted": {"$ne": True}}, {"name": 1, "address": 1, "company_id": 1,
                                                                          "nyc_bin": 1, "additional_bins": 1}).to_list(2000)
+    require_fields(rows, "name", "address", "company_id")
     hits = [p for p in rows if job.lower() in f"{p.get('name')} {p.get('address')}".lower()]
     if len(hits) != 1:
         print(f"{len(hits)} jobs match {job!r}: {[p.get('name') for p in hits][:10]}")
