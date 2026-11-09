@@ -30,6 +30,9 @@ V = sl.VARIANTS[1]  # "Soft dish"
 OUT = os.path.join(HERE, '..', 'assets', 'soft')
 os.makedirs(OUT, exist_ok=True)
 
+# The stretchable middle piece is MID dp wide, not 1: a one-pixel-wide image drew as nothing on iPhone,
+# leaving only the corners of every card. 8 dp is far from that edge case and still uniform along its width.
+MID = 8
 KEY = dict(body=60, margin=52, cap=138)    # cap = margin + 30 radius + 56 straight run
 FIELD = dict(body=60, margin=28, cap=102)  # cap = margin + 30 radius + 44 straight run
 
@@ -56,9 +59,9 @@ def save_pieces(im, name, cap, margin):
         r = resample(im, scale)
         c = cap * scale
         W = r.size[0]
-        assert W == (2 * cap + 1) * scale, (name, W)
+        assert W == (2 * cap + MID) * scale, (name, W)
         r.crop((0, 0, c, r.size[1])).save(f'{OUT}/{name}_L{suffix}.png', optimize=True)
-        r.crop((c, 0, c + scale, r.size[1])).save(f'{OUT}/{name}_M{suffix}.png', optimize=True)
+        r.crop((c, 0, c + MID * scale, r.size[1])).save(f'{OUT}/{name}_M{suffix}.png', optimize=True)
         r.crop((W - c, 0, W, r.size[1])).save(f'{OUT}/{name}_R{suffix}.png', optimize=True)
 
 
@@ -102,7 +105,7 @@ def panel_image(tn, spec, w, h, pressed=False):
 
 def save_nine(tn, name, spec, pressed=False):
     C = spec['m'] + spec['r'] + spec['run']              # corner size in dp
-    body = 2 * (spec['r'] + spec['run']) + 1              # body size that leaves a 1 dp middle
+    body = 2 * (spec['r'] + spec['run']) + MID            # body size that leaves a MID dp middle
     im = panel_image(tn, spec, body, body, pressed)
     a = np.asarray(im).astype(int)
     c = C * RENDER_S
@@ -110,8 +113,8 @@ def save_nine(tn, name, spec, pressed=False):
     print(name, tn, im.size, 'seam delta', seam)
     for scale, suffix in ((1, ''), (2, '@2x'), (3, '@3x')):
         r = resample(im, scale); k = C * scale; W = r.size[0]
-        assert W == (2 * C + 1) * scale
-        xs = {'l': (0, k), 'c': (k, k + scale), 'r': (W - k, W)}
+        assert W == (2 * C + MID) * scale
+        xs = {'l': (0, k), 'c': (k, k + MID * scale), 'r': (W - k, W)}
         for ry, (y0, y1) in (('t', xs['l']), ('m', xs['c']), ('b', xs['r'])):
             for cx, (x0, x1) in (('l', xs['l']), ('c', xs['c']), ('r', xs['r'])):
                 r.crop((x0, y0, x1, y1)).save(f'{OUT}/{name}_{tn}_{ry}{cx}{suffix}.png', optimize=True)
@@ -119,7 +122,7 @@ def save_nine(tn, name, spec, pressed=False):
 
 def save_pill(tn, spec, pressed=False):
     C = spec['m'] + spec['r'] + spec['run']
-    w = 2 * (C - spec['m']) + 1
+    w = 2 * (C - spec['m']) + MID
     im = panel_image(tn, spec, w, spec['h'], pressed)
     save_pieces(im, f'pill{"p" if pressed else ""}_{tn}', C, spec['m'])
 
@@ -155,9 +158,9 @@ def logo(theme):
 
 def main():
     for tn in ('light', 'dark'):
-        k = ms.key_img(tn, V, 2 * (KEY['cap'] - KEY['margin']) + 1, KEY['body'], m=KEY['margin'])
-        kp = ms.key_img(tn, V, 2 * (KEY['cap'] - KEY['margin']) + 1, KEY['body'], pressed=True, m=KEY['margin'])
-        f = ms.field_img(tn, V, 2 * (FIELD['cap'] - FIELD['margin']) + 1, FIELD['body'], FIELD['body'] // 2, m=FIELD['margin'])
+        k = ms.key_img(tn, V, 2 * (KEY['cap'] - KEY['margin']) + MID, KEY['body'], m=KEY['margin'])
+        kp = ms.key_img(tn, V, 2 * (KEY['cap'] - KEY['margin']) + MID, KEY['body'], pressed=True, m=KEY['margin'])
+        f = ms.field_img(tn, V, 2 * (FIELD['cap'] - FIELD['margin']) + MID, FIELD['body'], FIELD['body'] // 2, m=FIELD['margin'])
         for nm, im, d in ((f'key_{tn}', k, KEY), (f'keyp_{tn}', kp, KEY), (f'field_{tn}', f, FIELD)):
             print(nm, im.size, 'seam delta', check_seamless(im, d['cap']))
             save_pieces(im, nm, d['cap'], d['margin'])

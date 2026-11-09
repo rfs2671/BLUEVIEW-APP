@@ -10,8 +10,8 @@ import { SOFT_PANEL, SOFT_PANEL_DIMS, SOFT_PILL, SOFT_PILL_DIMS } from './softAs
  * the content, so it is always exactly as big as what is on it. A card whose list opens, or whose address wraps,
  * simply grows: text can never run off the edge of the surface the way it did on a fixed-size picture.
  *
- * Pieces share exact edges, so they snap to the same pixel together. Only the opaque centre tucks 1dp under its
- * neighbours: the shadow pieces are translucent, and overlapping them would draw a darker line where they meet.
+ * The pieces are laid out in rows and share exact edges. None of them is a one-pixel-wide image: those drew as
+ * nothing on iPhone, leaving only the four corners.
  */
 /**
  * 0 -> 1 while something is pressed, with the soft-silicone timing: it eases in over about a tenth of a second and
@@ -63,19 +63,26 @@ function NineSlice({ kind = 'card' }) {
   const { isDark } = useTheme();
   const set = SOFT_PANEL[isDark ? 'dark' : 'light'][kind];
   const c = SOFT_PANEL_DIMS[kind].corner;
-  const o = c - 1; // only the opaque centre tucks 1dp under its neighbours
-  const img = (src, style) => <Image source={src} style={[styles.abs, style]} resizeMode="stretch" fadeDuration={0} />;
+  // Laid out in three flex rows, the same way the login fields are (which draw correctly on a phone):
+  // fixed-size corners, and the pieces between them take whatever room is left.
+  const fixed = { width: c, height: c };
   return (
     <View style={StyleSheet.absoluteFill}>
-      {img(set.mc, { left: o, right: o, top: o, bottom: o })}
-      {img(set.tc, { left: c, right: c, top: 0, height: c })}
-      {img(set.bc, { left: c, right: c, bottom: 0, height: c })}
-      {img(set.ml, { left: 0, width: c, top: c, bottom: c })}
-      {img(set.mr, { right: 0, width: c, top: c, bottom: c })}
-      {img(set.tl, { left: 0, top: 0, width: c, height: c })}
-      {img(set.tr, { right: 0, top: 0, width: c, height: c })}
-      {img(set.bl, { left: 0, bottom: 0, width: c, height: c })}
-      {img(set.br, { right: 0, bottom: 0, width: c, height: c })}
+      <View style={{ height: c, flexDirection: 'row' }}>
+        <Image source={set.tl} style={fixed} fadeDuration={0} />
+        <Image source={set.tc} style={{ flex: 1, height: c }} resizeMode="stretch" fadeDuration={0} />
+        <Image source={set.tr} style={fixed} fadeDuration={0} />
+      </View>
+      <View style={{ flex: 1, flexDirection: 'row' }}>
+        <Image source={set.ml} style={{ width: c }} resizeMode="stretch" fadeDuration={0} />
+        <Image source={set.mc} style={{ flex: 1 }} resizeMode="stretch" fadeDuration={0} />
+        <Image source={set.mr} style={{ width: c }} resizeMode="stretch" fadeDuration={0} />
+      </View>
+      <View style={{ height: c, flexDirection: 'row' }}>
+        <Image source={set.bl} style={fixed} fadeDuration={0} />
+        <Image source={set.bc} style={{ flex: 1, height: c }} resizeMode="stretch" fadeDuration={0} />
+        <Image source={set.br} style={fixed} fadeDuration={0} />
+      </View>
     </View>
   );
 }
