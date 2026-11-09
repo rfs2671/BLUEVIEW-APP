@@ -13,6 +13,7 @@ const GlassButton = ({
   icon,
   iconRight,
   variant = 'default', // 'default' | 'icon'
+  selected, // stays dented, like a chosen option
   style,
   textStyle,
 }) => {
@@ -23,7 +24,7 @@ const GlassButton = ({
   // that no other call site already uses. 'secondary' and the default stay the translucent glass button they always were.
   const filled = variant === 'primary' || variant === 'filled';
   const [fingerDown, setFingerDown] = useState(false);
-  const anim = usePressAnim(fingerDown);
+  const anim = usePressAnim(fingerDown, selected);
   // Strip the old glass fill, border and radius from a caller's style: the soft pill draws its own.
   const flat = StyleSheet.flatten(style) || {};
   const softStyle = {};
@@ -35,7 +36,7 @@ const GlassButton = ({
   if (variant === 'icon') {
     // A round soft pebble. A caller's own fill, border and radius are dropped (see softStyle).
     return (
-      <SoftPebble onPress={onPress} disabled={disabled || loading} style={{ ...softStyle, width: undefined }}>
+      <SoftPebble onPress={onPress} disabled={disabled || loading} selected={selected} style={{ ...softStyle, width: undefined }}>
         {loading ? <ActivityIndicator size="small" color={colors.text.primary} /> : icon}
       </SoftPebble>
     );

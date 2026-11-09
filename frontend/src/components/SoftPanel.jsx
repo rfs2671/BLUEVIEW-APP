@@ -34,30 +34,67 @@ export function useTileCount() {
 }
 
 /**
- * 0 -> 1 while something is pressed, with the soft-silicone timing: it eases in over about a tenth of a second and
- * eases back out more slowly, like silicone returning to shape. Opacity and transform only, so it runs on the
- * native driver.
+ * The press state of a soft surface, as ONE number (0 = raised, 1 = pressed in) plus an optional second number for
+ * "selected" (0 = not, 1 = stays dented, like the text fields).
+ *
+ *  - pressing eases in over about a tenth of a second;
+ *  - letting go SPRINGS back: it overshoots a little and settles, so the button bounces up out of the dent;
+ *  - choosing something (selected = true) dents it and holds it there; choosing something ELSE releases it with the
+ *    same spring, so the old choice bounces back up as the new one sinks.
+ *
+ * Opacity and transform only, so everything runs on the native driver. Pass `selected` (true/false) to make the
+ * surface selectable; leave it undefined for a plain button.
  */
-export function usePressAnim(pressed) {
+export function usePressAnim(pressed, selected) {
   const v = useRef(new Animated.Value(pressed ? 1 : 0)).current;
+  const sel = useRef(new Animated.Value(selected ? 1 : 0)).current;
   useEffect(() => {
-    Animated.timing(v, {
-      toValue: pressed ? 1 : 0,
-      duration: pressed ? 110 : 260,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
+    if (pressed) {
+      Animated.timing(v, { toValue: 1, duration: 110, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+    } else {
+      Animated.spring(v, { toValue: 0, speed: 20, bounciness: 15, useNativeDriver: true }).start();
+    }
   }, [pressed, v]);
+  useEffect(() => {
+    if (selected === undefined) return;
+    if (selected) {
+      Animated.timing(sel, { toValue: 1, duration: 150, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+    } else {
+      Animated.spring(sel, { toValue: 0, speed: 16, bounciness: 14, useNativeDriver: true }).start();
+    }
+  }, [selected, sel]);
+  v.sel = sel;
+  v.selectable = selected !== undefined;
   return v;
 }
 
-/** The label drops 1dp as the surface sinks. Pass the value from usePressAnim. */
+const clamp01 = (x) => x.interpolate({ inputRange: [0, 1], outputRange: [0, 1], extrapolate: 'clamp' });
+
+/** The label sinks 1dp when pressed, and bobs up a little as the surface springs back. */
 export function pressShift(anim) {
-  return { transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }) }] };
+  const total = anim.sel ? Animated.add(anim, anim.sel) : anim;
+  return { transform: [{ translateY: total.interpolate({ inputRange: [-0.5, 0, 1, 2], outputRange: [-1.5, 0, 1, 1.5], extrapolate: 'clamp' }) }] };
+}
+
+/** The surface itself pops up a touch as it springs back past its resting height. */
+function popStyle(anim) {
+  return { transform: [{ translateY: anim.interpolate({ inputRange: [-0.5, 0, 1], outputRange: [-3, 0, 0], extrapolate: 'clamp' }) }] };
+}
+
+/** Opacities of the three layers (raised, pressed, dented) for one anim, times an optional base opacity (idle = 0). */
+function layerOpacities(anim, base) {
+  const vc = clamp01(anim);
+  const sc = anim.selectable ? clamp01(anim.sel) : null;
+  let raised = sc ? clamp01(Animated.subtract(1, Animated.add(vc, sc))) : Animated.subtract(1, vc);
+  let pressed = sc ? Animated.multiply(vc, Animated.subtract(1, sc)) : vc;
+  if (base) { raised = Animated.multiply(raised, base); pressed = Animated.multiply(pressed, base); }
+  return { raised, pressed, dent: sc };
 }
 
 /**
- * A card surface. With `anim` (from usePressAnim) it crossfades between the raised surface and the pressed one.
+ * A card surface. With `anim` (from usePressAnim) it crossfades between the raised surface, the pressed one and
+ * (when selectable) the dented one. `tone` forces the dark/light artwork (the sidebar rail is always navy);
+ * `baseOpacity` (an Animated value) hides the surface at rest, for items that only show one on hover.
  *
  * THE FADING LAYERS MUST BE THE SAME SIZE AS THE PICTURE, shadow margin included. A view with an animated opacity is
  * composited on its own, and Android cuts a composited view off at its edges: fading a layer that is only as big as
@@ -65,33 +102,37 @@ export function pressShift(anim) {
  * box is the whole picture, and the layers inside it fill that box exactly.
  */
 const PRESSED_KIND = { card: 'cardp', slim: 'slimp' };
+const DENT_KIND = { card: 'cardd', slim: 'slimd' };
 
-export function PanelSurface({ kind = 'card', anim }) {
+export function PanelSurface({ kind = 'card', anim, tone, baseOpacity }) {
   const d = SOFT_PANEL_DIMS[kind];
   const box = { position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, bottom: -d.margin };
   const pressedKind = PRESSED_KIND[kind];
   if (anim && pressedKind) {
-    const up = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
+    const o = layerOpacities(anim, baseOpacity);
+    const fill = StyleSheet.absoluteFill;
     return (
-      <View pointerEvents="none" style={box}>
-        <Animated.View style={[StyleSheet.absoluteFill, { opacity: up }]}><NineSlice kind="card" /></Animated.View>
-        <Animated.View style={[StyleSheet.absoluteFill, { opacity: anim }]}><NineSlice kind="cardp" /></Animated.View>
-      </View>
+      <Animated.View pointerEvents="none" style={[box, popStyle(anim)]}>
+        <Animated.View style={[fill, { opacity: o.raised }]}><NineSlice kind={kind} tone={tone} /></Animated.View>
+        <Animated.View style={[fill, { opacity: o.pressed }]}><NineSlice kind={pressedKind} tone={tone} /></Animated.View>
+        {o.dent ? <Animated.View style={[fill, { opacity: o.dent }]}><NineSlice kind={DENT_KIND[kind]} tone={tone} /></Animated.View> : null}
+      </Animated.View>
     );
   }
-  return <View pointerEvents="none" style={box}><NineSlice kind={kind} /></View>;
+  return <View pointerEvents="none" style={box}><NineSlice kind={kind} tone={tone} /></View>;
 }
 
-function NineSlice({ kind = 'card' }) {
+function NineSlice({ kind = 'card', tone }) {
   const { isDark } = useTheme();
-  const set = SOFT_PANEL[isDark ? 'dark' : 'light'][kind];
+  const t = tone || (isDark ? 'dark' : 'light');
+  const set = SOFT_PANEL[t][kind];
   const c = SOFT_PANEL_DIMS[kind].corner;
   // iPhone: ONE image with fixed corners (cap insets), so there are no joins. Separate stretched pieces faded at
   // their edges there (a one-pixel piece vanished; wider ones left faint seams).
   if (Platform.OS === 'ios') {
     return (
       <Image
-        source={SOFT_FULL[isDark ? 'dark' : 'light'][kind]}
+        source={SOFT_FULL[t][kind]}
         style={StyleSheet.absoluteFill}
         capInsets={{ top: c, left: c, bottom: c, right: c }}
         resizeMode="stretch"
@@ -99,7 +140,7 @@ function NineSlice({ kind = 'card' }) {
     );
   }
   // Android and web: corners at natural size, the runs between them repeated tiles, the middle a flat colour.
-  return <NineTiles set={set} c={c} plateau={SOFT_PLATEAU[isDark ? 'dark' : 'light'][kind]} />;
+  return <NineTiles set={set} c={c} plateau={SOFT_PLATEAU[t][kind]} />;
 }
 
 function NineTiles({ set, c, plateau }) {
@@ -143,30 +184,37 @@ export function SoftPanel({ kind = 'card', style, children, ...rest }) {
   );
 }
 
-/** The surface of a small raised pill (fixed height 44, any width), for tool buttons. Same rule as PanelSurface. */
-export function PillSurface({ anim }) {
+/**
+ * The surface of a small raised pill (fixed height 44, any width), for tool buttons and sidebar items. Same rules as
+ * PanelSurface: the fading layers fill the whole picture; `tone` ('light' | 'dark' | 'raild' | 'raill') picks the
+ * artwork; `baseOpacity` hides the raised look at rest.
+ */
+export function PillSurface({ anim, tone, baseOpacity }) {
   const d = SOFT_PILL_DIMS;
   const box = { position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, height: d.imgH };
   if (anim) {
-    const up = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
+    const o = layerOpacities(anim, baseOpacity);
+    const fill = StyleSheet.absoluteFill;
     return (
-      <View pointerEvents="none" style={box}>
-        <Animated.View style={[StyleSheet.absoluteFill, { opacity: up }]}><PillLayer /></Animated.View>
-        <Animated.View style={[StyleSheet.absoluteFill, { opacity: anim }]}><PillLayer pressed /></Animated.View>
-      </View>
+      <Animated.View pointerEvents="none" style={[box, popStyle(anim)]}>
+        <Animated.View style={[fill, { opacity: o.raised }]}><PillLayer tone={tone} /></Animated.View>
+        <Animated.View style={[fill, { opacity: o.pressed }]}><PillLayer tone={tone} state="p" /></Animated.View>
+        {o.dent ? <Animated.View style={[fill, { opacity: o.dent }]}><PillLayer tone={tone} state="d" /></Animated.View> : null}
+      </Animated.View>
     );
   }
-  return <View pointerEvents="none" style={box}><PillLayer /></View>;
+  return <View pointerEvents="none" style={box}><PillLayer tone={tone} /></View>;
 }
 
-function PillLayer({ pressed = false }) {
+function PillLayer({ tone, state = '' }) {
   const { isDark } = useTheme();
-  const set = SOFT_PILL[(isDark ? 'dark' : 'light') + (pressed ? 'p' : '')];
+  const t = tone || (isDark ? 'dark' : 'light');
+  const set = SOFT_PILL[t + state];
   const d = SOFT_PILL_DIMS;
   if (Platform.OS === 'ios') {
     return (
       <Image
-        source={SOFT_FULL[isDark ? 'dark' : 'light'][pressed ? 'pillp' : 'pill']}
+        source={SOFT_FULL[t][state === 'p' ? 'pillp' : state === 'd' ? 'pilld' : 'pill']}
         style={StyleSheet.absoluteFill}
         capInsets={{ top: 0, left: d.capW, bottom: 0, right: d.capW }}
         resizeMode="stretch"
@@ -194,10 +242,10 @@ const styles = StyleSheet.create({ abs: { position: 'absolute' } });
  * (`kind="slimw"` or "well"). `style` places it (margins, flex, width); `contentStyle` lays out what is inside
  * (padding, rows). It is as big as its content, never smaller than the panel's minimum.
  */
-export function SoftBox({ kind = 'slim', onPress, style, contentStyle, children, ...rest }) {
+export function SoftBox({ kind = 'slim', onPress, selected, style, contentStyle, children, ...rest }) {
   const d = SOFT_PANEL_DIMS[kind];
   const [down, setDown] = useState(false);
-  const anim = usePressAnim(down);
+  const anim = usePressAnim(down, selected);
   const pressable = typeof onPress === 'function' && !!PRESSED_KIND[kind];
   const Wrapper = onPress ? Pressable : View;
   const press = onPress ? { onPress, onPressIn: () => setDown(true), onPressOut: () => setDown(false) } : {};
@@ -209,15 +257,30 @@ export function SoftBox({ kind = 'slim', onPress, style, contentStyle, children,
   );
 }
 
-/** The round 44dp button: a raised pebble that sinks when pressed. Children (an icon) sit in its centre. */
-export function SoftPebble({ onPress, disabled, style, children, ...rest }) {
+/** The surface of the round 44dp button, to place inside a 44 x 44 box. Same rules as PanelSurface. */
+export function PebbleSurface({ anim, tone, baseOpacity }) {
   const { isDark } = useTheme();
-  const [down, setDown] = useState(false);
-  const anim = usePressAnim(down);
   const d = SOFT_PEBBLE_DIMS;
-  const set = SOFT_PEBBLE[isDark ? 'dark' : 'light'];
-  const up = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
+  const set = SOFT_PEBBLE[tone || (isDark ? 'dark' : 'light')];
+  const o = layerOpacities(anim, baseOpacity);
   const box = { position: 'absolute', left: -d.margin, top: -d.margin, width: d.img, height: d.img };
+  return (
+    <Animated.View pointerEvents="none" style={[box, popStyle(anim)]}>
+      <Animated.Image source={set.up} style={[StyleSheet.absoluteFill, { opacity: o.raised }]} fadeDuration={0} />
+      <Animated.Image source={set.down} style={[StyleSheet.absoluteFill, { opacity: o.pressed }]} fadeDuration={0} />
+      {o.dent ? <Animated.Image source={set.dent} style={[StyleSheet.absoluteFill, { opacity: o.dent }]} fadeDuration={0} /> : null}
+    </Animated.View>
+  );
+}
+
+/**
+ * The round 44dp button: a raised pebble that sinks when pressed and springs back. `selected` keeps it dented (the
+ * active sidebar item); `tone` picks the artwork.
+ */
+export function SoftPebble({ onPress, disabled, selected, tone, baseOpacity, style, children, ...rest }) {
+  const [down, setDown] = useState(false);
+  const anim = usePressAnim(down, selected);
+  const d = SOFT_PEBBLE_DIMS;
   return (
     <Pressable
       {...rest}
@@ -227,10 +290,7 @@ export function SoftPebble({ onPress, disabled, style, children, ...rest }) {
       onPressOut={() => setDown(false)}
       style={[{ width: d.body, height: d.body, position: 'relative' }, style, disabled && { opacity: 0.5 }]}
     >
-      <View pointerEvents="none" style={box}>
-        <Animated.Image source={set.up} style={[StyleSheet.absoluteFill, { opacity: up }]} fadeDuration={0} />
-        <Animated.Image source={set.down} style={[StyleSheet.absoluteFill, { opacity: anim }]} fadeDuration={0} />
-      </View>
+      <PebbleSurface anim={anim} tone={tone} baseOpacity={baseOpacity} />
       <Animated.View style={[{ width: d.body, height: d.body, alignItems: 'center', justifyContent: 'center', position: 'relative' }, pressShift(anim)]}>
         {children}
       </Animated.View>

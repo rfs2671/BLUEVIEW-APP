@@ -192,7 +192,7 @@ function splitTint(inner, colors) {
 export const GlassCard = (props) => (props.variant === 'modal' ? <LegacyGlassCard {...props} /> : <SoftGlassCard {...props} />);
 
 const SoftGlassCard = (props) => {
-  const { children, style, contentStyle, onPress, hoverEffect = true } = props;
+  const { children, style, contentStyle, onPress, hoverEffect = true, selected } = props;
   const { colors: themeColors } = useTheme();
   const [isHovered, setIsHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
@@ -203,7 +203,7 @@ const SoftGlassCard = (props) => {
     ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false), onPressIn: () => setPressed(true), onPressOut: () => setPressed(false) }
     : { onMouseEnter: () => hoverEffect && setIsHovered(true), onMouseLeave: () => hoverEffect && setIsHovered(false) };
   const d = SOFT_PANEL_DIMS.card;
-  const anim = usePressAnim(pressed);
+  const anim = usePressAnim(pressed, selected);
   return (
     <CardWrapper
       {...cardProps}
@@ -223,7 +223,7 @@ const softStyles = StyleSheet.create({
 /* ═══════════════════════════════════════════════════════════════════════════════
    StatCard
    ═══════════════════════════════════════════════════════════════════════════════ */
-export const StatCard = ({ children, style, onPress }) => {
+export const StatCard = ({ children, style, onPress, selected }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
   const CardWrapper = onPress ? Pressable : View;
@@ -234,7 +234,7 @@ export const StatCard = ({ children, style, onPress }) => {
   const { outer, inner } = splitCardStyle(style);
   const { rest, tint } = splitTint(inner, themeColors);
   const d = SOFT_PANEL_DIMS.card;
-  const anim = usePressAnim(pressed);
+  const anim = usePressAnim(pressed, selected);
   return (
     <CardWrapper {...cardProps} style={[outer, isHovered && !pressed && { transform: [{ translateY: -3 }] }]}>
       <View style={[{ position: 'relative', minHeight: d.min }, rest]}>
@@ -262,6 +262,7 @@ export const GlassListItem = ({
   contentStyle,
   onPress,
   disabled,
+  selected,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [pressedState, setPressedState] = useState(false);
@@ -288,7 +289,7 @@ export const GlassListItem = ({
   );
 
   const d = SOFT_PANEL_DIMS.card;
-  const anim = usePressAnim(pressedState);
+  const anim = usePressAnim(pressedState, selected);
   const { rest: restStyle, tint: tintStyle } = splitTint(StyleSheet.flatten(style) || {}, colors);
   return (
     <Pressable
