@@ -3,6 +3,7 @@ import { View, Text, TextInput, Pressable, Image, StyleSheet, ActivityIndicator,
 import { Eye, EyeOff } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { SOFT, SOFT_DIMS, SOFT_FULL } from './softAssets';
+import { TileRow, useTileCount } from './SoftPanel';
 
 /**
  * Soft-silicone controls for the login and register screens: a field that is a
@@ -41,6 +42,7 @@ function injectAutofillCSS() {
 
 function Surface({ kind, isDark }) {
   const d = SOFT_DIMS[kind];
+  const tiles = useTileCount();
   const set = SOFT[isDark ? 'dark' : 'light'][kind];
   if (Platform.OS === 'ios') {
     // one image with fixed ends (cap insets): no joins to fade (see SoftPanel.jsx)
@@ -60,7 +62,7 @@ function Surface({ kind, isDark }) {
       style={{ position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, height: d.imgH, flexDirection: 'row' }}
     >
       <Image source={set.L} style={{ width: d.capW, height: d.imgH }} />
-      <Image source={set.M} style={{ flex: 1, height: d.imgH }} resizeMode="stretch" />
+      <TileRow src={set.M} height={d.imgH} count={tiles} />
       <Image source={set.R} style={{ width: d.capW, height: d.imgH }} />
     </View>
   );
