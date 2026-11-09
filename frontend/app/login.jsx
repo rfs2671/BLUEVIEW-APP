@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Image, Platform } from 'react-native';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Image, Platform, AccessibilityInfo } from 'react-native';
+import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Mail, Lock, Eye, EyeOff, ArrowRight, Building2 } from 'lucide-react-native';
@@ -14,6 +15,12 @@ import { semantic } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 import { useT } from '../src/i18n';
 import { readLoginAnswer, companyLabel, roleLabel } from '../src/utils/loginChoice';
+import LogoEntrance from '../src/components/LogoEntrance';
+import { logoSource } from '../src/utils/logoSource';
+
+// THE ENTRANCE PLAYS ONCE PER APP LAUNCH. Coming back to this screen (signing out,
+// a session ending) shows the finished screen straight away.
+let entrancePlayed = false;
 
 // WHERE A ROLE LANDS AFTER LOGIN.
 //
@@ -50,6 +57,79 @@ export default function LoginScreen() {
   // company to sign in to: [{ companyName, role, choiceToken }].
   const [choices, setChoices] = useState(null);
   const t = useT('loginPicker');
+
+  // ── Login entrance (particles pulled into the logo) ──────────────────────
+  // phase: 'measure' (waiting for the logo's place on screen), 'playing', 'done'.
+  // Anything going wrong, or a tap, or reduced motion, lands on 'done' with the
+  // real screen fully shown. Nothing here can leave the form hidden: a timer
+  // guarantees it.
+  const logoSrc = logoSource(isDark);
+  const [phase, setPhase] = useState(entrancePlayed ? 'done' : 'measure');
+  const [entranceCfg, setEntranceCfg] = useState(null);
+  const overlayRef = useRef(null);
+  const logoBoxRef = useRef(null);
+  const startedRef = useRef(false);
+  const logoOp = useSharedValue(entrancePlayed ? 1 : 0);
+  const uiOp = useSharedValue(entrancePlayed ? 1 : 0);
+  const uiY = useSharedValue(entrancePlayed ? 0 : 16);
+  const logoStyle = useAnimatedStyle(() => ({ opacity: logoOp.value }), [logoOp]);
+  const uiStyle = useAnimatedStyle(() => ({ opacity: uiOp.value, transform: [{ translateY: uiY.value }] }), [uiOp, uiY]);
+
+  const finishEntrance = useCallback(() => {
+    entrancePlayed = true;
+    logoOp.value = withTiming(1, { duration: 90 });
+    uiOp.value = withTiming(1, { duration: 90 });
+    uiY.value = withTiming(0, { duration: 90 });
+    setPhase('done');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onEntranceEvent = useCallback((name) => {
+    if (name === 'started') { startedRef.current = true; return; }
+    if (name === 'logo') { logoOp.value = withTiming(1, { duration: 340, easing: Easing.out(Easing.quad) }); return; }
+    if (name === 'ui') {
+      uiOp.value = withTiming(1, { duration: 320, easing: Easing.out(Easing.cubic) });
+      uiY.value = withTiming(0, { duration: 320, easing: Easing.out(Easing.cubic) });
+      return;
+    }
+    if (name === 'done') finishEntrance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const beginEntrance = useCallback(() => {
+    if (phase !== 'measure') return;
+    // a beat for the layout to settle (the card is centred and can shift once fonts and insets land)
+    setTimeout(() => {
+    const o = overlayRef.current; const l = logoBoxRef.current;
+    if (!o || !l || typeof o.measureInWindow !== 'function') return;
+    o.measureInWindow((ox, oy, ow, oh) => {
+      l.measureInWindow((lx, ly, lw, lh) => {
+        if (!ow || !oh || !lw || !lh) { finishEntrance(); return; }
+        // the logo is drawn "contain" inside its box: find where the picture itself sits
+        const sc = Math.min(lw / 2103, lh / 1080);
+        const dw = 2103 * sc; const dh = 1080 * sc;
+        setEntranceCfg({
+          size: { w: ow, h: oh },
+          rect: { x: lx - ox + (lw - dw) / 2, y: ly - oy + (lh - dh) / 2, w: dw, h: dh },
+        });
+        setPhase('playing');
+      });
+    });
+    }, 90);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  useEffect(() => {
+    if (phase === 'done') return undefined;
+    try {
+      AccessibilityInfo.isReduceMotionEnabled().then((r) => { if (r) finishEntrance(); }).catch(() => {});
+    } catch (_e) { /* ignore */ }
+    // never leave the form hidden: not started in time, or not finished in time
+    const t1 = setTimeout(() => { if (!startedRef.current) finishEntrance(); }, 3000);
+    const t2 = setTimeout(finishEntrance, 6000);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase === 'done']);
 
   const pwdRef = useRef(null);
 
@@ -144,7 +224,7 @@ export default function LoginScreen() {
       <AnimatedBackground>
         <View style={s.loadingContainer}>
           <Image
-            source={require('../assets/logo-header.png')}
+            source={logoSrc}
             style={{ width: '100%', maxWidth: 440, height: 200, resizeMode: 'contain' }}
           />
           <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.lg }} />
@@ -177,13 +257,21 @@ export default function LoginScreen() {
         <View style={s.content}>
           {/* Logo */}
           <View style={s.logoContainer}>
-            <Image
-              source={require('../assets/logo-header.png')}
-              style={s.logoImage}
-              resizeMode="contain"
-            />
+            <Animated.View
+              ref={logoBoxRef}
+              collapsable={false}
+              onLayout={beginEntrance}
+              style={[s.logoImage, logoStyle]}
+            >
+              <Image
+                source={logoSrc}
+                style={{ width: '100%', height: '100%' }}
+                resizeMode="contain"
+              />
+            </Animated.View>
           </View>
 
+          <Animated.View style={[{ alignSelf: 'stretch' }, uiStyle]}>
           <GlassCard style={s.card}>
             <View style={s.welcomeSection}>
               <Text style={s.welcomeLabel}>WELCOME TO</Text>
@@ -304,9 +392,37 @@ export default function LoginScreen() {
               Don't have an account? <Text style={s.signupLink}>Sign up</Text>
             </Text>
           </Pressable>
+          </Animated.View>
         </View>
         </ScrollView>
       </SafeAreaView>
+
+      {/* THE ENTRANCE OVERLAY. Always mounted so it can be measured; it holds the
+          particle animation while playing and a tap anywhere skips it. */}
+      <View
+        ref={overlayRef}
+        collapsable={false}
+        pointerEvents={phase === 'playing' ? 'auto' : 'none'}
+        style={StyleSheet.absoluteFill}
+      >
+        {phase === 'playing' && entranceCfg ? (
+          <>
+            <LogoEntrance
+              size={entranceCfg.size}
+              rect={entranceCfg.rect}
+              dark={isDark}
+              onEvent={onEntranceEvent}
+              onFail={finishEntrance}
+            />
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={finishEntrance}
+              accessibilityRole="button"
+              accessibilityLabel="Skip intro"
+            />
+          </>
+        ) : null}
+      </View>
     </AnimatedBackground>
   );
 }
