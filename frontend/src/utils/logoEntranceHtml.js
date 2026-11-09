@@ -87,7 +87,7 @@ function step(){
 }
 function draw(T){
   ctx.setTransform(dpr,0,0,dpr,0,0);ctx.globalCompositeOperation='source-over';ctx.clearRect(0,0,W,H);
-  var dens=0.28+0.72*INT,maxS=9+22*INT,lineA=0.72+0.28*INT;
+  var dens=Math.min(1,(0.28+0.72*INT)*2),maxS=9+22*INT,lineA=0.72+0.28*INT; /* 2x the particles drawn; speed and timing unchanged */
   var sk=(0.005+0.017*INT)*(1-sm(0.95,1.5,T)),fade=1-sm(1.15,1.58,T);
   if(fade<=0.003)return;
   ctx.globalCompositeOperation=THEME.op;ctx.lineCap='round';ctx.globalAlpha=Math.min(1,fade*lineA);ctx.lineWidth=1.0;
