@@ -2,11 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Image, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Mail, Lock, Eye, EyeOff, User, Building2, ArrowRight } from 'lucide-react-native';
+import { Mail, Lock, User, Building2, ArrowRight } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
-import { GlassCard } from '../src/components/GlassCard';
-import GlassInput from '../src/components/GlassInput';
-import GlassButton from '../src/components/GlassButton';
+import { SoftField, SoftKey, PasswordToggle } from '../src/components/SoftSilicone';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { authAPI } from '../src/utils/api';
@@ -110,7 +108,7 @@ export default function RegisterScreen() {
             <Image source={logoSource(isDark)} style={s.logoImage} resizeMode="contain" />
           </View>
 
-          <GlassCard style={s.card}>
+          <View style={s.plate}>
             <View style={s.welcomeSection}>
               <Text style={s.welcomeLabel}>CREATE YOUR ACCOUNT</Text>
               <Text style={s.welcomeTitle}>Sign up</Text>
@@ -121,7 +119,7 @@ export default function RegisterScreen() {
                 <View style={s.form}>
                   <View style={s.inputGroup}>
                     <Text style={s.inputLabel}>FULL NAME</Text>
-                    <GlassInput
+                    <SoftField
                       value={name}
                       onChangeText={setName}
                       placeholder="Your name"
@@ -133,7 +131,7 @@ export default function RegisterScreen() {
 
                   <View style={s.inputGroup}>
                     <Text style={s.inputLabel}>COMPANY (OPTIONAL)</Text>
-                    <GlassInput
+                    <SoftField
                       ref={companyRef}
                       value={company}
                       onChangeText={setCompany}
@@ -146,7 +144,7 @@ export default function RegisterScreen() {
 
                   <View style={s.inputGroup}>
                     <Text style={s.inputLabel}>EMAIL</Text>
-                    <GlassInput
+                    <SoftField
                       ref={emailRef}
                       value={email}
                       onChangeText={setEmail}
@@ -161,7 +159,7 @@ export default function RegisterScreen() {
 
                   <View style={s.inputGroup}>
                     <Text style={s.inputLabel}>PASSWORD</Text>
-                    <GlassInput
+                    <SoftField
                       ref={pwdRef}
                       value={password}
                       onChangeText={setPassword}
@@ -170,21 +168,13 @@ export default function RegisterScreen() {
                       returnKeyType="go"
                       onSubmitEditing={handleSubmit}
                       leftIcon={<Lock size={20} strokeWidth={1.5} color={colors.text.subtle} />}
-                      rightIcon={
-                        <Pressable onPress={() => setShowPassword(!showPassword)}>
-                          {showPassword ? (
-                            <EyeOff size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                          ) : (
-                            <Eye size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                          )}
-                        </Pressable>
-                      }
+                      rightIcon={<PasswordToggle shown={showPassword} onToggle={() => setShowPassword(!showPassword)} />}
                     />
                   </View>
 
                   {error ? <Text style={s.errorText}>{error}</Text> : null}
 
-                  <GlassButton
+                  <SoftKey
                     title={loading ? 'Creating account...' : 'Create account'}
                     icon={!loading ? <ArrowRight size={18} strokeWidth={1.5} color={colors.text.primary} /> : null}
                     onPress={handleSubmit}
@@ -199,7 +189,7 @@ export default function RegisterScreen() {
                 </form>
               ) : formContent;
             })()}
-          </GlassCard>
+          </View>
 
           <Pressable
             onPress={() => router.push('/login')}
@@ -242,6 +232,8 @@ function buildStyles(colors, isDark) {
     logoContainer: { alignItems: 'center', marginBottom: -spacing.md, marginTop: spacing.xl },
     logoImage: { width: '100%', height: 200, alignSelf: 'center' },
     card: { padding: spacing.xl },
+    // The form sits directly on the screen (no card): the soft fields and key carry the depth.
+    plate: { paddingHorizontal: spacing.sm, paddingTop: spacing.lg, paddingBottom: spacing.sm },
     welcomeSection: { marginBottom: spacing.xl },
     welcomeLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.xs },
     welcomeTitle: { fontSize: 28, fontFamily: typography.display, fontWeight: '800', color: colors.text.primary },
