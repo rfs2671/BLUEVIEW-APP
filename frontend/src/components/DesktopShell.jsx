@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Platform, Animated as RNAnimated, Easing as RNEasing } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, interpolateColor } from 'react-native-reanimated';
 import {
@@ -13,6 +13,7 @@ import {
 import { withAlpha } from '../styles/semanticColors';
 import { useTheme } from '../context/ThemeContext';
 import ThemeSwitch from './ThemeSwitch';
+import { PillSurface, PebbleSurface, usePressAnim, pressShift } from './SoftPanel';
 import { useAuth } from '../context/AuthContext';
 import { brandLabel } from '../utils/brandLabel';
 import { spacing, borderRadius, typography } from '../styles/theme';
@@ -178,6 +179,45 @@ function RailIdentity({ open, name, role, company, colors }) {
   );
 }
 
+/**
+ * One destination in the rail, in the soft-silicone style. At rest it is just its icon on the rail. Hover raises it
+ * (a round pebble in the narrow rail, a pill when the rail is open); pressing sinks it and letting go springs it back
+ * up; the CURRENT destination stays dented, like the text fields, and when you go somewhere else it bounces back up
+ * as the new one sinks. The surfaces are drawn on the rail's own navy (`raild` / `raill`), not the page colour.
+ */
+function RailItem({ open, active, onPress, onFocus, onBlur, label, tone, children, last }) {
+  const [down, setDown] = useState(false);
+  const anim = usePressAnim(down, active);
+  const hov = useRef(new RNAnimated.Value(0)).current;
+  const hover = (to) => RNAnimated.timing(hov, { toValue: to, duration: 140, easing: RNEasing.out(RNEasing.cubic), useNativeDriver: true }).start();
+  // pebble in the narrow rail, pill in the open one
+  const pebbleFade = useAnimatedStyle(() => ({ opacity: Math.max(0, 1 - Math.max(0, (open.value - 0.2) / 0.4)) }), [open]);
+  const pillFade = useAnimatedStyle(() => ({ opacity: Math.max(0, Math.min(1, (open.value - 0.2) / 0.4)) }), [open]);
+  return (
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => setDown(true)}
+      onPressOut={() => setDown(false)}
+      onHoverIn={() => hover(1)}
+      onHoverOut={() => hover(0)}
+      onFocus={onFocus}
+      onBlur={onBlur}
+      accessibilityRole="link"
+      accessibilityLabel={label}
+      accessibilityState={{ selected: !!active }}
+      style={({ focused }) => [styles.railItem, focused && { backgroundColor: withAlpha('#FFFFFF', 0.10) }]}
+    >
+      <Animated.View pointerEvents="none" style={[styles.pebbleSlot, pebbleFade]}>
+        <PebbleSurface anim={anim} tone={tone} baseOpacity={hov} />
+      </Animated.View>
+      <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, pillFade]}>
+        <PillSurface anim={anim} tone={tone} baseOpacity={hov} />
+      </Animated.View>
+      <RNAnimated.View style={[styles.railItemRow, pressShift(anim)]}>{children}</RNAnimated.View>
+    </Pressable>
+  );
+}
+
 export default function DesktopShell({ children }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -256,6 +296,7 @@ export default function DesktopShell({ children }) {
   const personCompany = user && (user.gc_business_name || user.company_name) ? brandLabel(user) : '';
   const railIdle = withAlpha(colors.onBar, 0.78);
   const railActive = isDark ? colors.barActive : colors.onBar;
+  const railTone = isDark ? 'raild' : 'raill';
 
   return (
     <View style={styles.root}>
@@ -272,23 +313,15 @@ export default function DesktopShell({ children }) {
           const active = pathname === item.path;
           const Icon = item.icon;
           return (
-            <Pressable
+            <RailItem
               key={item.path}
+              open={open}
+              active={active}
+              tone={railTone}
+              label={item.label}
               onPress={() => router.push(item.path)}
               onFocus={openRail}
               onBlur={closeRail}
-              accessibilityRole="link"
-              accessibilityLabel={item.label}
-              style={({ hovered, pressed, focused }) => [
-                styles.railItem,
-                active && { backgroundColor: withAlpha(colors.onBar, 0.10) },
-                !active && hovered && { backgroundColor: withAlpha(colors.onBar, 0.06) },
-                // The browser's own focus ring is a separate box that stays after a
-                // click and lags behind the rail as it widens. Keyboard focus is shown
-                // as a highlight on the item itself instead.
-                focused && { backgroundColor: withAlpha(colors.onBar, 0.14) },
-                pressed && { opacity: 0.8 },
-              ]}
             >
               {active ? <View style={[styles.railTick, { backgroundColor: colors.barActive }]} /> : null}
               {/* flexShrink 0: in the narrow resting rail the label's fixed width
@@ -312,7 +345,7 @@ export default function DesktopShell({ children }) {
                   {item.label}
                 </Text>
               </Animated.View>
-            </Pressable>
+            </RailItem>
           );
         })}
 
@@ -328,25 +361,20 @@ export default function DesktopShell({ children }) {
             <View style={styles.switchSlot}><ThemeSwitch /></View>
             <Text style={[styles.footLabel, { color: railIdle }]} numberOfLines={1}>{isDark ? 'Dark mode' : 'Light mode'}</Text>
           </View>
-          <Pressable
+          <RailItem
+            open={open}
+            active={pathname === '/settings'}
+            tone={railTone}
+            label="Settings"
             onPress={() => router.push('/settings')}
             onFocus={openRail}
             onBlur={closeRail}
-            accessibilityRole="link"
-            accessibilityLabel="Settings"
-            style={({ hovered, pressed, focused }) => [
-              styles.railItem,
-              pathname === '/settings' && { backgroundColor: withAlpha(colors.onBar, 0.10) },
-              pathname !== '/settings' && hovered && { backgroundColor: withAlpha(colors.onBar, 0.06) },
-              focused && { backgroundColor: withAlpha(colors.onBar, 0.14) },
-              pressed && { opacity: 0.8 },
-            ]}
           >
             <View style={styles.railIcon}>
               <Settings size={20} strokeWidth={1.5} color={pathname === '/settings' ? railActive : railIdle} />
             </View>
             <Text style={[styles.railLabel, { color: pathname === '/settings' ? railActive : railIdle }]} numberOfLines={1}>Settings</Text>
-          </Pressable>
+          </RailItem>
         </Animated.View>
       </Animated.View>
       </View>
@@ -388,14 +416,22 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   railItem: {
+    height: 44,
+    borderRadius: 22,
+    position: 'relative',
+    ...(Platform.OS === 'web' ? { outlineStyle: 'none' } : null),
+  },
+  // The icon and label, on top of the soft surface; the icon sits dead centre of the 48 wide resting item.
+  railItemRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
     height: 44,
     paddingHorizontal: 14,
-    borderRadius: 12,
-    ...(Platform.OS === 'web' ? { outlineStyle: 'none' } : null),
+    position: 'relative',
   },
+  // The resting rail is 48 wide, the pebble 44: it sits centred in it.
+  pebbleSlot: { position: 'absolute', left: 2, top: 0, width: 44, height: 44 },
   // The active destination's tick: a short brass bar flush with the rail's left
   // edge (the item sits RAIL_PAD in from it).
   railTick: { position: 'absolute', left: -RAIL_PAD, top: 12, bottom: 12, width: 3, borderTopRightRadius: 2, borderBottomRightRadius: 2 },
