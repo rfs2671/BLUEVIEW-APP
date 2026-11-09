@@ -7,7 +7,8 @@ import { useTheme } from '../context/ThemeContext';
 import { withAlpha } from '../styles/semanticColors';
 import { auraShadow, auraRim } from '../styles/aura';
 import CardSheen from './CardSheen';
-import { PanelSurface } from './SoftPanel';
+import { PanelSurface, usePressAnim, pressShift } from './SoftPanel';
+import { Animated } from 'react-native';
 import { SOFT_PANEL_DIMS } from './softAssets';
 
 /**
@@ -192,14 +193,15 @@ const SoftGlassCard = (props) => {
     ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false), onPressIn: () => setPressed(true), onPressOut: () => setPressed(false) }
     : { onMouseEnter: () => hoverEffect && setIsHovered(true), onMouseLeave: () => hoverEffect && setIsHovered(false) };
   const d = SOFT_PANEL_DIMS.card;
+  const anim = usePressAnim(pressed);
   return (
     <CardWrapper
       {...cardProps}
       style={[outer, isHovered && !pressed && hoverEffect && { transform: [{ translateY: -2 }] }]}
     >
       <View style={[{ position: 'relative', minHeight: d.min }, rest]}>
-        <PanelSurface kind={pressed ? 'cardp' : 'card'} />
-        <View style={[softStyles.cardContent, contentStyle, tint, { borderRadius: d.radius }, pressed && { top: 1 }]}>{children}</View>
+        <PanelSurface kind="card" anim={anim} />
+        <Animated.View style={[softStyles.cardContent, contentStyle, tint, { borderRadius: d.radius }, pressShift(anim)]}>{children}</Animated.View>
       </View>
     </CardWrapper>
   );
@@ -221,13 +223,14 @@ export const StatCard = ({ children, style, onPress }) => {
   const { outer, inner } = splitCardStyle(style);
   const { rest, tint } = splitTint(inner);
   const d = SOFT_PANEL_DIMS.card;
+  const anim = usePressAnim(pressed);
   return (
     <CardWrapper {...cardProps} style={[outer, isHovered && !pressed && { transform: [{ translateY: -3 }] }]}>
       <View style={[{ position: 'relative', minHeight: d.min }, rest]}>
-        <PanelSurface kind={pressed ? 'cardp' : 'card'} />
-        <View style={[{ overflow: 'hidden', position: 'relative', top: pressed ? 1 : 0, borderRadius: d.radius }, tint]}>
+        <PanelSurface kind="card" anim={anim} />
+        <Animated.View style={[{ overflow: 'hidden', position: 'relative', borderRadius: d.radius }, tint, pressShift(anim)]}>
           <View style={softStyles.statPadded}>{children}</View>
-        </View>
+        </Animated.View>
       </View>
     </CardWrapper>
   );
@@ -274,6 +277,7 @@ export const GlassListItem = ({
   );
 
   const d = SOFT_PANEL_DIMS.card;
+  const anim = usePressAnim(pressedState);
   return (
     <Pressable
       onPress={onPress}
@@ -289,12 +293,12 @@ export const GlassListItem = ({
       onPressIn={() => setPressedState(true)}
       onPressOut={() => setPressedState(false)}
     >
-      <PanelSurface kind={pressedState ? 'cardp' : 'card'} />
+      <PanelSurface kind="card" anim={anim} />
       {/* `contentStyle` (optional) overrides the default spacing.lg inset: for
           dense rows where a 24px inset per side eats the content width. */}
-      <View style={[styles.listItemContent, contentStyle, pressedState && { top: 1 }]}>
+      <Animated.View style={[styles.listItemContent, contentStyle, pressShift(anim)]}>
         {children || defaultContent}
-      </View>
+      </Animated.View>
     </Pressable>
   );
 };

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, Image, Animated } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -28,7 +28,7 @@ import OfflineIndicator from '../src/components/OfflineIndicator';
 import SyncButton from '../src/components/SyncButton';
 import { auraRim, auraShadow } from '../src/styles/aura';
 import CardSheen from '../src/components/CardSheen';
-import { PanelSurface, PillSurface } from '../src/components/SoftPanel';
+import { PanelSurface, PillSurface, usePressAnim, pressShift } from '../src/components/SoftPanel';
 import SectionLabel from '../src/components/SectionLabel';
 import { useToast } from '../src/components/Toast';
 import { useAuth, isCompanyAdmin, isAccountAdmin } from '../src/context/AuthContext';
@@ -211,10 +211,13 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
   const pressable = !loading && !isZero && typeof onToggle === 'function';
 
   // The card is a soft raised surface behind its content, so it is always as big as what is on it.
-  // Pressed in while a finger is on it, and while its list is open.
+  // Pressed in while a finger is on it, and while its list is open; it eases in and back out like silicone.
+  const [fingerDown, setFingerDown] = useState(false);
+  const anim = usePressAnim(fingerDown || !!expanded);
   const body = (active, pressedNow) => (
     <View style={[deskStyles.rollupCard, active && !pressedNow && !expanded && { transform: [{ translateY: -2 }] }]}>
-      <PanelSurface kind={pressedNow || expanded ? 'cardp' : 'card'} />
+      <PanelSurface kind="card" anim={anim} />
+      <Animated.View style={pressShift(anim)}>
       <Text style={[deskStyles.rollupNumber, { color: numberColor }]}>
         {loading ? '—' : (value ?? 0)}
       </Text>
@@ -229,6 +232,7 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
             : <ChevronDown size={13} strokeWidth={2} color={text.secondary} />}
         </View>
       ) : null}
+      </Animated.View>
     </View>
   );
 
@@ -239,6 +243,8 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
   return (
     <Pressable
       onPress={onToggle}
+      onPressIn={() => setFingerDown(true)}
+      onPressOut={() => setFingerDown(false)}
       accessibilityRole="button"
       accessibilityState={{ expanded }}
       accessibilityLabel={`${label}: ${value}. ${expanded ? 'Hide' : 'Show'} contributing projects`}
@@ -253,21 +259,27 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
 // stacked card the mobile home uses). Destinations are the same adminActions.
 function AdminRowTile({ action, onPress }) {
   const { colors } = useTheme();
+  const [fingerDown, setFingerDown] = useState(false);
+  const anim = usePressAnim(fingerDown);
   const Icon = action.icon;
   return (
     <Pressable
       onPress={onPress}
+      onPressIn={() => setFingerDown(true)}
+      onPressOut={() => setFingerDown(false)}
       accessibilityRole="link"
       accessibilityLabel={action.title}
       style={deskStyles.adminRowTile}
     >
       {({ hovered, pressed }) => (
-        <View style={[deskStyles.adminRowInner, hovered && !pressed && { transform: [{ translateY: -2 }] }, pressed && { paddingTop: 1 }]}>
-          <PillSurface pressed={!!pressed} />
-          <View style={{ position: 'relative' }}><Icon size={16} strokeWidth={1.5} color={chrome.icon} /></View>
-          <Text style={[deskStyles.adminRowLabel, { color: text.primary }]} numberOfLines={1}>
-            {action.title}
-          </Text>
+        <View style={[deskStyles.adminRowInner, hovered && !pressed && { transform: [{ translateY: -2 }] }]}>
+          <PillSurface anim={anim} />
+          <Animated.View style={[{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }, pressShift(anim)]}>
+            <View style={{ position: 'relative' }}><Icon size={16} strokeWidth={1.5} color={chrome.icon} /></View>
+            <Text style={[deskStyles.adminRowLabel, { color: text.primary }]} numberOfLines={1}>
+              {action.title}
+            </Text>
+          </Animated.View>
         </View>
       )}
     </Pressable>

@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Image, StyleSheet } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { View, Image, StyleSheet, Animated, Easing } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { SOFT_PANEL, SOFT_PANEL_DIMS, SOFT_PILL, SOFT_PILL_DIMS } from './softAssets';
 
@@ -13,7 +13,46 @@ import { SOFT_PANEL, SOFT_PANEL_DIMS, SOFT_PILL, SOFT_PILL_DIMS } from './softAs
  * Pieces share exact edges, so they snap to the same pixel together. Only the opaque centre tucks 1dp under its
  * neighbours: the shadow pieces are translucent, and overlapping them would draw a darker line where they meet.
  */
-export function PanelSurface({ kind = 'card', radius }) {
+/**
+ * 0 -> 1 while something is pressed, with the soft-silicone timing: it eases in over about a tenth of a second and
+ * eases back out more slowly, like silicone returning to shape. Opacity and transform only, so it runs on the
+ * native driver.
+ */
+export function usePressAnim(pressed) {
+  const v = useRef(new Animated.Value(pressed ? 1 : 0)).current;
+  useEffect(() => {
+    Animated.timing(v, {
+      toValue: pressed ? 1 : 0,
+      duration: pressed ? 110 : 260,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [pressed, v]);
+  return v;
+}
+
+/** The label drops 1dp as the surface sinks. Pass the value from usePressAnim. */
+export function pressShift(anim) {
+  return { transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }) }] };
+}
+
+/**
+ * A card surface. With `anim` (from usePressAnim) it crossfades between the raised surface and the pressed one.
+ */
+export function PanelSurface({ kind = 'card', anim }) {
+  if (anim && kind === 'card') {
+    const up = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
+    return (
+      <>
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: up }]}><PanelLayer kind="card" /></Animated.View>
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: anim }]}><PanelLayer kind="cardp" /></Animated.View>
+      </>
+    );
+  }
+  return <PanelLayer kind={kind} />;
+}
+
+function PanelLayer({ kind = 'card' }) {
   const { isDark } = useTheme();
   const set = SOFT_PANEL[isDark ? 'dark' : 'light'][kind];
   const d = SOFT_PANEL_DIMS[kind];
@@ -50,7 +89,20 @@ export function SoftPanel({ kind = 'card', style, children, ...rest }) {
 }
 
 /** The surface of a small raised pill (fixed height 44, any width), for tool buttons. */
-export function PillSurface({ pressed = false }) {
+export function PillSurface({ anim }) {
+  if (anim) {
+    const up = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
+    return (
+      <>
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: up }]}><PillLayer /></Animated.View>
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: anim }]}><PillLayer pressed /></Animated.View>
+      </>
+    );
+  }
+  return <PillLayer />;
+}
+
+function PillLayer({ pressed = false }) {
   const { isDark } = useTheme();
   const set = SOFT_PILL[(isDark ? 'dark' : 'light') + (pressed ? 'p' : '')];
   const d = SOFT_PILL_DIMS;
