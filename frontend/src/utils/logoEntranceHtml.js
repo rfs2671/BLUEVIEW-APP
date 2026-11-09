@@ -9,9 +9,10 @@ import { LOGO_MASK } from './logoMask';
  * is needed (the app already ships react-native-webview for its PDF viewer), so
  * this can go out over the air.
  *
- * The page draws only the particles. The real logo image and the login card are
+ * The swarm is pulled to the CENTRE of the screen (the caller passes the logo's
+ * centred rectangle). The page draws only the particles. The real logo image and the login card are
  * ordinary React Native views; the page tells the app when to reveal each
- * ('logo', 'ui', 'done') and the app does the fading. That keeps the final
+ * ('logo', 'rise', 'ui', 'done') and the app does the moving and fading. That keeps the final
  * screen the actual image, pixel for pixel, with nothing left running.
  *
  * Tuned at "calm" (intensity 0.125) on the prototype dial: about 1.4 seconds,
@@ -22,7 +23,9 @@ import { LOGO_MASK } from './logoMask';
  *   dark        dark theme (luminous blue-white) or light (ink blue)
  */
 export const ENTRANCE_INTENSITY = 0.125;
-export const ENTRANCE_SECONDS = 1.35 + 0.4 * ENTRANCE_INTENSITY; // 1.4
+// The swarm itself takes 1.4s as before; the logo then rises into place and the
+// login card follows, so the whole entrance is about 2.0s.
+export const ENTRANCE_SECONDS = 2.0;
 
 export function buildEntranceHtml({ w, h, rect, dark }) {
   const cfg = JSON.stringify({
@@ -103,16 +106,18 @@ function draw(T){
   }
   ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
 }
-var t0=null,sent={logo:false,ui:false,done:false},stopped=false;
+var t0=null,sent={logo:false,rise:false,ui:false,done:false},stopped=false;
 function frame(now){
   if(stopped)return;
   if(t0===null){t0=now;post('started');}
   var Treal=(now-t0)/1000,T=Treal/TF,n=0;
   while(simT+DT<=T&&n++<20)step();
   draw(T);
-  if(!sent.logo&&T>=1.2){sent.logo=true;post('logo');}
-  if(!sent.ui&&T>=1.36){sent.ui=true;post('ui');}
-  if(T>=1.8){sent.done=true;stopped=true;ctx.clearRect(0,0,W,H);post('done');return;}
+  // normalised time T = real seconds / 0.8
+  if(!sent.logo&&T>=1.2){sent.logo=true;post('logo');}      // 0.96s: the real logo starts to fade in
+  if(!sent.rise&&T>=1.45){sent.rise=true;post('rise');}     // 1.16s: the logo springs up into place
+  if(!sent.ui&&T>=1.625){sent.ui=true;post('ui');}          // 1.30s: the login card follows
+  if(T>=2.5){sent.done=true;stopped=true;ctx.clearRect(0,0,W,H);post('done');return;} // 2.0s
   requestAnimationFrame(frame);
 }
 window.__skip=function(){stopped=true;ctx.clearRect(0,0,W,H);post('done');};
