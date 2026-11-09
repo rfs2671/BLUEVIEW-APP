@@ -475,15 +475,25 @@ function AppShell() {
       <SiteDeviceLightMode />
       <SiteManifestSync />
       <AdminPlanPrefetch />
-      <View key={themeKey} style={styles.themed}>
-        <StatusBar style={isDark ? 'light' : 'dark'} />
-        {/* Tells a man ONCE that a daily log saved on this device was never
-            filed. The retired editors left those drafts behind and there is no
-            server-side trace of one, so the device is the only place the
-            question can be asked. Headless until it has something to say. */}
-        <UnfiledDailyLogNotice />
-        {isDesktop ? <DesktopShell>{stack}</DesktopShell> : stack}
-        <CornerSettings />
+      {/* THE DESKTOP SIDEBAR IS NOT KEYED. A theme switch remounts the screens (so every one redraws in the new
+          palette), but the rail used to be inside that remount: it came back CLOSED, with its animation and hover
+          state thrown away, so switching the theme from the rail made the rail snap shut. It repaints in place
+          (it reads the theme from context), and only the page inside it remounts. */}
+      <View style={styles.themed}>
+        <React.Fragment key={`chrome-${themeKey}`}>
+          <StatusBar style={isDark ? 'light' : 'dark'} />
+          {/* Tells a man ONCE that a daily log saved on this device was never
+              filed. The retired editors left those drafts behind and there is no
+              server-side trace of one, so the device is the only place the
+              question can be asked. Headless until it has something to say. */}
+          <UnfiledDailyLogNotice />
+        </React.Fragment>
+        {isDesktop
+          ? <DesktopShell><View key={themeKey} style={styles.themed}>{stack}</View></DesktopShell>
+          : <View key={themeKey} style={styles.themed}>{stack}</View>}
+        <React.Fragment key={`corner-${themeKey}`}>
+          <CornerSettings />
+        </React.Fragment>
       </View>
     </View>
   );
