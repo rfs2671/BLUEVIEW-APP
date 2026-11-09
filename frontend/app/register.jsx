@@ -12,6 +12,7 @@ import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { semantic } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 import { logoSource } from '../src/utils/logoSource';
+import { SOFT_LOGO } from '../src/components/softAssets';
 
 export default function RegisterScreen() {
   const { colors, isDark } = useTheme();
@@ -105,24 +106,19 @@ export default function RegisterScreen() {
         >
         <View style={s.content}>
           <View style={s.logoContainer}>
-            <Image source={logoSource(isDark)} style={s.logoImage} resizeMode="contain" />
+            <Image source={isDark ? SOFT_LOGO.dark : SOFT_LOGO.light} style={s.logoImage} resizeMode="contain" accessibilityLabel="LeveLog" />
           </View>
 
           <View style={s.plate}>
-            <View style={s.welcomeSection}>
-              <Text style={s.welcomeLabel}>CREATE YOUR ACCOUNT</Text>
-              <Text style={s.welcomeTitle}>Sign up</Text>
-            </View>
 
             {(() => {
               const formContent = (
                 <View style={s.form}>
                   <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>FULL NAME</Text>
                     <SoftField
                       value={name}
                       onChangeText={setName}
-                      placeholder="Your name"
+                      placeholder="Full name" accessibilityLabel="Full name"
                       returnKeyType="next"
                       onSubmitEditing={() => companyRef.current?.focus()}
                       leftIcon={<User size={20} strokeWidth={1.5} color={colors.text.subtle} />}
@@ -130,12 +126,11 @@ export default function RegisterScreen() {
                   </View>
 
                   <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>COMPANY (OPTIONAL)</Text>
                     <SoftField
                       ref={companyRef}
                       value={company}
                       onChangeText={setCompany}
-                      placeholder="Your company"
+                      placeholder="Company (optional)" accessibilityLabel="Company"
                       returnKeyType="next"
                       onSubmitEditing={() => emailRef.current?.focus()}
                       leftIcon={<Building2 size={20} strokeWidth={1.5} color={colors.text.subtle} />}
@@ -143,12 +138,11 @@ export default function RegisterScreen() {
                   </View>
 
                   <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>EMAIL</Text>
                     <SoftField
                       ref={emailRef}
                       value={email}
                       onChangeText={setEmail}
-                      placeholder="Enter your email"
+                      placeholder="Email" accessibilityLabel="Email"
                       keyboardType="email-address"
                       autoCapitalize="none"
                       returnKeyType="next"
@@ -158,12 +152,11 @@ export default function RegisterScreen() {
                   </View>
 
                   <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>PASSWORD</Text>
                     <SoftField
                       ref={pwdRef}
                       value={password}
                       onChangeText={setPassword}
-                      placeholder="Create a password"
+                      placeholder="Password" accessibilityLabel="Password"
                       secureTextEntry={!showPassword}
                       returnKeyType="go"
                       onSubmitEditing={handleSubmit}
@@ -198,7 +191,7 @@ export default function RegisterScreen() {
             accessibilityLabel="Sign in"
           >
             <Text style={s.signinText}>
-              Already have an account? <Text style={s.signinLink}>Sign in</Text>
+              Sign in
             </Text>
           </Pressable>
         </View>
@@ -237,13 +230,13 @@ function buildStyles(colors, isDark) {
     welcomeSection: { marginBottom: spacing.xl },
     welcomeLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.xs },
     welcomeTitle: { fontSize: 28, fontFamily: typography.display, fontWeight: '800', color: colors.text.primary },
-    form: { gap: spacing.md },
+    form: { gap: 18 },
     inputGroup: { gap: spacing.xs },
     inputLabel: { ...typography.label, color: colors.text.muted },
     errorText: { fontSize: 13, color: colors.error || semantic.criticalText, textAlign: 'center' },
     submitBtn: { marginTop: spacing.sm },
     signinRow: { marginTop: spacing.lg, alignItems: 'center' },
-    signinText: { fontSize: 14, color: colors.text.muted },
+    signinText: { fontSize: 15, fontWeight: '600', color: colors.text.muted },
     signinLink: { color: colors.primary, fontWeight: '600' },
   });
 }

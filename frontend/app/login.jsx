@@ -15,6 +15,7 @@ import { useT } from '../src/i18n';
 import { readLoginAnswer, companyLabel, roleLabel } from '../src/utils/loginChoice';
 import LogoEntrance from '../src/components/LogoEntrance';
 import { logoSource } from '../src/utils/logoSource';
+import { SOFT_LOGO } from '../src/components/softAssets';
 
 // THE ENTRANCE PLAYS ONCE PER APP LAUNCH. Coming back to this screen (signing out,
 // a session ending) shows the finished screen straight away.
@@ -285,20 +286,16 @@ export default function LoginScreen() {
               style={[s.logoImage, logoStyle]}
             >
               <Image
-                source={logoSrc}
+                source={isDark ? SOFT_LOGO.dark : SOFT_LOGO.light}
                 style={{ width: '100%', height: '100%' }}
                 resizeMode="contain"
+                accessibilityLabel="LeveLog"
               />
             </Animated.View>
           </View>
 
           <Animated.View style={[{ alignSelf: 'stretch' }, uiStyle]}>
           <View style={s.plate}>
-            <View style={s.welcomeSection}>
-              <Text style={s.welcomeLabel}>WELCOME TO</Text>
-              <Text style={s.welcomeTitle}>LeveLog</Text>
-            </View>
-
             {choices ? (
               <View style={s.form}>
                 <Text style={s.pickerTitle}>{t('title')}</Text>
@@ -340,11 +337,10 @@ export default function LoginScreen() {
               const formContent = (
                 <View style={s.form}>
                   <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>EMAIL</Text>
                     <SoftField
                       value={email}
                       onChangeText={setEmail}
-                      placeholder="Enter your email"
+                      placeholder="Email" accessibilityLabel="Email"
                       keyboardType="email-address"
                       autoCapitalize="none"
                       returnKeyType="next"
@@ -354,12 +350,11 @@ export default function LoginScreen() {
                   </View>
 
                   <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>PASSWORD</Text>
                     <SoftField
                       ref={pwdRef}
                       value={password}
                       onChangeText={setPassword}
-                      placeholder="Enter password"
+                      placeholder="Password" accessibilityLabel="Password"
                       secureTextEntry={!showPassword}
                       returnKeyType="go"
                       onSubmitEditing={handleSubmit}
@@ -373,7 +368,7 @@ export default function LoginScreen() {
                   ) : null}
 
                   <SoftKey
-                    title={loading ? 'Signing in...' : 'Sign In'}
+                    title={loading ? 'Signing in...' : 'Sign in'}
                     icon={!loading ? <ArrowRight size={18} strokeWidth={1.5} color={colors.text.primary} /> : null}
                     onPress={handleSubmit}
                     loading={loading}
@@ -401,9 +396,7 @@ export default function LoginScreen() {
             accessibilityRole="link"
             accessibilityLabel="Create an account"
           >
-            <Text style={s.signupText}>
-              Don't have an account? <Text style={s.signupLink}>Sign up</Text>
-            </Text>
+            <Text style={s.signupText}>Create account</Text>
           </Pressable>
           </Animated.View>
         </View>
@@ -477,7 +470,7 @@ function buildStyles(colors, isDark) {
   },
   card: { padding: spacing.xl },
   // The form sits directly on the screen (no card): the soft fields and key carry the depth.
-  plate: { paddingHorizontal: spacing.sm, paddingTop: spacing.lg, paddingBottom: spacing.sm },
+  plate: { paddingHorizontal: spacing.sm, paddingTop: spacing.xl, paddingBottom: spacing.sm },
   welcomeSection: { marginBottom: spacing.xl },
   welcomeLabel: {
     ...typography.label,
@@ -489,7 +482,7 @@ function buildStyles(colors, isDark) {
     fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
   },
-  form: { gap: spacing.md },
+  form: { gap: 18 },
   inputGroup: { gap: spacing.xs },
   inputLabel: {
     ...typography.label,
@@ -551,7 +544,8 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
   },
   signupText: {
-    fontSize: 14,
+    fontSize: 15,
+    fontWeight: '600',
     color: colors.text.muted,
   },
   signupLink: {

@@ -1,47 +1,22 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, Pressable, StyleSheet, Platform, ActivityIndicator } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+import React, { useEffect } from 'react';
+import { View, Text, TextInput, Pressable, Image, StyleSheet, ActivityIndicator, Platform } from 'react-native';
 import { Eye, EyeOff } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
-import { withAlpha } from '../styles/semanticColors';
+import { SOFT, SOFT_DIMS } from './softAssets';
 
 /**
- * Soft-silicone controls for the login screen: a field that reads as a shallow
- * dish pressed into the surface, and a key that rises off it. Matte, with long
- * soft shadows and a thin light edge; light comes from the top left.
+ * Soft-silicone controls for the login and register screens: a field that is a
+ * shallow dish pressed into the surface, and a key that rises off it. Matte,
+ * with long soft shadows and a thin light edge; light comes from the top left.
  *
- * Built only from the app's own theme colours: the surface IS the screen
- * background (paper #ECEDE9 in light, navy #1C2B38 in dark) and the shadows are
- * darker and lighter versions of it, so nothing here introduces a new hue.
- *
- * React Native has one shadow per view and no inner shadow, so on a phone:
- *   - the key stacks two shadow layers (a light one up-left, a dark one down-right)
- *   - the field fakes its inner shadow with edge gradients
- * On the web the same look is drawn with real CSS shadows (inset included).
+ * THE SURFACES ARE IMAGES. React Native cannot draw inner shadows or stacked
+ * shadows, and iPhone and Android draw single shadows differently, so computing
+ * this on the phone gave a flat, faint version of the design. The surfaces are
+ * rendered once, in the app's own colours (paper #ECEDE9 in light, navy #1C2B38
+ * in dark), by scripts/build-soft-assets.py, and drawn here as three pieces
+ * (left cap, stretchy middle, right cap) so they fit any width and look the same
+ * everywhere. Text and icons stay live. There is no focus ring: the dish stays calm.
  */
-const CSS_SHADOWS = Platform.OS === 'web' && !(typeof globalThis !== 'undefined' && globalThis.__SOFT_NATIVE_PATH__);
-
-function palette(isDark, colors) {
-  const surface = (colors.background && colors.background.start) || (isDark ? '#1C2B38' : '#ECEDE9');
-  return isDark
-    ? {
-        surface,
-        keyTop: '#2C4050', keyBottom: '#1F2F3C',
-        hi: '#FFFFFF', hiA: 0.06, lo: '#03090E', loA: 0.72,
-        wellA: 'rgba(0,0,0,0.32)', wellB: 'rgba(255,255,255,0.02)',
-        edge: 'rgba(255,255,255,0.14)',
-        focus: 'rgba(120,172,214,0.55)',
-      }
-    : {
-        surface,
-        keyTop: '#F8F9F6', keyBottom: '#DCDED8',
-        hi: '#FFFFFF', hiA: 0.95, lo: '#7C8072', loA: 0.46,
-        wellA: 'rgba(124,128,114,0.18)', wellB: 'rgba(255,255,255,0.34)',
-        edge: 'rgba(255,255,255,0.95)',
-        focus: 'rgba(69,140,181,0.5)',
-      };
-}
-
 // Chrome paints autofilled inputs with its own pale-blue background, which shows
 // as a blue bar across the soft dish. Make it transparent; currentColor keeps the
 // text colour following the theme (see GlassInput for the history).
@@ -64,48 +39,33 @@ function injectAutofillCSS() {
   document.head.appendChild(style);
 }
 
+function Surface({ kind, isDark }) {
+  const d = SOFT_DIMS[kind];
+  const set = SOFT[isDark ? 'dark' : 'light'][kind];
+  return (
+    <View
+      pointerEvents="none"
+      style={{ position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, height: d.imgH, flexDirection: 'row' }}
+    >
+      <Image source={set.L} style={{ width: d.capW, height: d.imgH }} />
+      <Image source={set.M} style={{ flex: 1, height: d.imgH }} resizeMode="stretch" />
+      <Image source={set.R} style={{ width: d.capW, height: d.imgH }} />
+    </View>
+  );
+}
+
 export const SoftField = React.forwardRef(({
   value, onChangeText, placeholder, secureTextEntry, keyboardType = 'default', autoCapitalize = 'none',
   leftIcon, rightIcon, style, ...props
 }, ref) => {
   const { colors, isDark } = useTheme();
-  const p = palette(isDark, colors);
-  const [focused, setFocused] = useState(false);
   useEffect(() => { injectAutofillCSS(); }, []);
-  const R = 28; // half the 56 field height: a true pill, so rings and edges follow it
-
-  const webShadow = CSS_SHADOWS
-    ? {
-        boxShadow: isDark
-          ? `inset 7px 8px 14px rgba(2,8,12,0.72), inset -6px -7px 13px rgba(255,255,255,0.05), 0 1px 0 rgba(255,255,255,0.04)`
-          : `inset 7px 8px 14px rgba(124,128,114,0.40), inset -7px -8px 14px rgba(255,255,255,0.95), 0 1px 0 rgba(255,255,255,0.7)`,
-      }
-    : null;
+  const h = SOFT_DIMS.field.body;
 
   return (
-    <View
-      style={[
-        styles.fieldWrap,
-        { borderRadius: R },
-        style,
-      ]}
-    >
-      <LinearGradient
-        colors={[p.wellA, p.wellB]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={[styles.fieldBody, { borderRadius: R }, webShadow]}
-      >
-        {!CSS_SHADOWS && (
-          <>
-            {/* inner shadow, dark on the top and left edges... */}
-            <LinearGradient pointerEvents="none" colors={[withAlpha(p.lo, isDark ? 0.55 : 0.30), withAlpha(p.lo, 0)]} style={styles.edgeTop} />
-            <LinearGradient pointerEvents="none" colors={[withAlpha(p.lo, isDark ? 0.45 : 0.24), withAlpha(p.lo, 0)]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.edgeLeft} />
-            {/* ...light on the bottom and right edges */}
-            <LinearGradient pointerEvents="none" colors={[withAlpha(p.hi, 0), withAlpha(p.hi, isDark ? 0.07 : 0.9)]} style={styles.edgeBottom} />
-            <LinearGradient pointerEvents="none" colors={[withAlpha(p.hi, 0), withAlpha(p.hi, isDark ? 0.05 : 0.7)]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.edgeRight} />
-          </>
-        )}
+    <View style={[{ height: h }, style]}>
+      <Surface kind="field" isDark={isDark} />
+      <View style={styles.fieldRow}>
         {leftIcon ? <View style={styles.iconL}>{leftIcon}</View> : null}
         <TextInput
           ref={ref}
@@ -116,13 +76,11 @@ export const SoftField = React.forwardRef(({
           secureTextEntry={secureTextEntry}
           keyboardType={keyboardType}
           autoCapitalize={autoCapitalize}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
           style={[styles.input, { color: colors.text.primary }, leftIcon ? { paddingLeft: 6 } : null, rightIcon ? { paddingRight: 6 } : null]}
           {...props}
         />
         {rightIcon ? <View style={styles.iconR}>{rightIcon}</View> : null}
-      </LinearGradient>
+      </View>
     </View>
   );
 });
@@ -151,10 +109,7 @@ export function PasswordToggle({ shown, onToggle }) {
 
 export function SoftKey({ title, icon, onPress, loading = false, disabled = false, style }) {
   const { colors, isDark } = useTheme();
-  const p = palette(isDark, colors);
-  const R = 30;
   const off = disabled || loading;
-
   return (
     <Pressable
       onPress={onPress}
@@ -164,26 +119,12 @@ export function SoftKey({ title, icon, onPress, loading = false, disabled = fals
       accessibilityState={{ disabled: off, busy: loading }}
       style={[{ opacity: disabled && !loading ? 0.55 : 1 }, style]}
     >
-      {({ pressed }) => {
-        const body = (
-          <LinearGradient
-            colors={pressed ? [p.keyBottom, p.keyTop] : [p.keyTop, p.keyBottom]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={[
-              styles.keyBody,
-              { borderRadius: R, borderColor: p.edge },
-              CSS_SHADOWS && {
-                boxShadow: pressed
-                  ? (isDark
-                      ? 'inset 6px 7px 13px rgba(2,8,12,0.72), inset -5px -6px 11px rgba(255,255,255,0.05)'
-                      : 'inset 6px 7px 13px rgba(124,128,114,0.40), inset -5px -6px 11px rgba(255,255,255,0.9)')
-                  : (isDark
-                      ? '-9px -9px 20px rgba(255,255,255,0.05), 14px 18px 30px rgba(2,8,12,0.8), inset 1px 1px 1px rgba(255,255,255,0.13), inset -3px -4px 7px rgba(0,0,0,0.34)'
-                      : '-12px -12px 26px rgba(255,255,255,0.95), 14px 18px 32px rgba(124,128,114,0.46), inset 1px 1px 2px rgba(255,255,255,0.95), inset -3px -4px 7px rgba(124,128,114,0.22)'),
-              },
-            ]}
-          >
+      {({ pressed }) => (
+        // No scale on press: shrinking the key would re-sample the image pieces and show a hairline at each
+        // join. The pressed image (the key sinking in) carries the feel.
+        <View style={{ height: SOFT_DIMS.key.body }}>
+          <Surface kind={pressed ? 'keyp' : 'key'} isDark={isDark} />
+          <View style={styles.keyContent}>
             {loading ? (
               <ActivityIndicator size="small" color={colors.text.primary} />
             ) : (
@@ -192,49 +133,20 @@ export function SoftKey({ title, icon, onPress, loading = false, disabled = fals
                 <Text style={[styles.keyText, { color: colors.text.primary }]}>{title}</Text>
               </View>
             )}
-          </LinearGradient>
-        );
-        if (CSS_SHADOWS) return <View style={{ transform: [{ scale: pressed ? 0.985 : 1 }] }}>{body}</View>;
-        // phone: two stacked shadow layers; pressing pulls both in close
-        return (
-          <View
-            style={{
-              borderRadius: R,
-              shadowColor: p.hi, shadowOpacity: pressed ? 0.3 * p.hiA : p.hiA, shadowRadius: pressed ? 6 : 18,
-              shadowOffset: { width: pressed ? -2 : -9, height: pressed ? -2 : -9 },
-              transform: [{ scale: pressed ? 0.985 : 1 }],
-            }}
-          >
-            <View
-              style={{
-                borderRadius: R,
-                shadowColor: p.lo, shadowOpacity: pressed ? 0.5 * p.loA : p.loA, shadowRadius: pressed ? 8 : 26,
-                shadowOffset: { width: pressed ? 3 : 11, height: pressed ? 4 : 15 },
-                elevation: pressed ? 2 : 8,
-                backgroundColor: p.surface,
-              }}
-            >
-              {body}
-            </View>
           </View>
-        );
-      }}
+        </View>
+      )}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  fieldWrap: { height: 56 },
-  fieldBody: { flex: 1, flexDirection: 'row', alignItems: 'center', overflow: 'hidden', paddingHorizontal: 18 },
+  fieldRow: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 28 },
   input: { flex: 1, minWidth: 0, fontSize: 16, paddingVertical: 0, backgroundColor: 'transparent', outlineStyle: 'none' },
   iconL: { marginRight: 8, flexShrink: 0 },
-  iconR: { marginLeft: 4, marginRight: -8, flexShrink: 0 },
+  iconR: { marginLeft: 4, marginRight: -10, flexShrink: 0 },
   eye: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-  edgeTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 16 },
-  edgeLeft: { position: 'absolute', top: 0, bottom: 0, left: 0, width: 16 },
-  edgeBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 12 },
-  edgeRight: { position: 'absolute', top: 0, bottom: 0, right: 0, width: 12 },
-  keyBody: { height: 60, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', borderWidth: StyleSheet.hairlineWidth },
+  keyContent: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   keyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   keyIcon: { marginRight: 10 },
   keyText: { fontSize: 16, fontWeight: '700', letterSpacing: 0.2 },
