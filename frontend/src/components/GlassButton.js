@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Pressable, Text, StyleSheet, ActivityIndicator, View } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { borderRadius, spacing } from '../styles/theme';
+import { PillSurface, usePressAnim, pressShift } from './SoftPanel';
+import { Animated } from 'react-native';
 
 const GlassButton = ({
   title,
@@ -20,6 +22,15 @@ const GlassButton = ({
   // The concept's filled action: the primary action of a screen. 'primary' is that; 'filled' is the same look under a name
   // that no other call site already uses. 'secondary' and the default stay the translucent glass button they always were.
   const filled = variant === 'primary' || variant === 'filled';
+  const [fingerDown, setFingerDown] = useState(false);
+  const anim = usePressAnim(fingerDown);
+  // Strip the old glass fill, border and radius from a caller's style: the soft pill draws its own.
+  const flat = StyleSheet.flatten(style) || {};
+  const softStyle = {};
+  Object.keys(flat).forEach((k) => {
+    if (['backgroundColor', 'borderColor', 'borderWidth', 'borderRadius', 'overflow', 'paddingVertical', 'height'].includes(k)) return;
+    softStyle[k] = flat[k];
+  });
 
   if (variant === 'icon') {
     return (
@@ -43,6 +54,30 @@ const GlassButton = ({
           <ActivityIndicator size="small" color={colors.text.primary} />
         ) : (
           icon
+        )}
+      </Pressable>
+    );
+  }
+
+  if (!filled) {
+    // The standard button is a soft raised pill (the same as the dashboard tools): it sinks when pressed.
+    return (
+      <Pressable
+        onPress={onPress}
+        disabled={disabled || loading}
+        onPressIn={() => setFingerDown(true)}
+        onPressOut={() => setFingerDown(false)}
+        style={[styles.softButton, softStyle, disabled && styles.disabled]}
+      >
+        <PillSurface anim={anim} />
+        {loading ? (
+          <ActivityIndicator size="small" color={colors.text.primary} />
+        ) : (
+          <Animated.View style={[styles.content, pressShift(anim)]}>
+            {icon && <View style={styles.iconLeft}>{icon}</View>}
+            <Text style={[styles.text, textStyle]}>{title}</Text>
+            {iconRight && <View style={styles.iconRight}>{iconRight}</View>}
+          </Animated.View>
         )}
       </Pressable>
     );
@@ -82,6 +117,13 @@ const GlassButton = ({
 
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
+    softButton: {
+      height: 44,
+      paddingHorizontal: spacing.xl,
+      alignItems: 'center',
+      justifyContent: 'center',
+      position: 'relative',
+    },
     button: {
       backgroundColor: colors.glass.background,
       borderRadius: borderRadius.lg,

@@ -40,7 +40,7 @@ function injectAutofillCSS() {
   document.head.appendChild(style);
 }
 
-function Surface({ kind, isDark }) {
+export function Surface({ kind, isDark }) {
   const d = SOFT_DIMS[kind];
   const tiles = useTileCount();
   const set = SOFT[isDark ? 'dark' : 'light'][kind];
