@@ -1308,10 +1308,11 @@ export default function ProjectDetailScreen() {
                 </View>
                 <View style={s.workerTags}>
                   {company.workers.map((worker, idx) => (
-                    <View key={idx} style={s.workerTag}>
+                    // pressed INTO the company card, like a text field: a read-out, not a button
+                    <SoftBox key={idx} kind="slimw" style={s.workerTagSlot} contentStyle={s.workerTag}>
                       <Text style={s.workerTagName}>{worker.name || worker.worker_name}</Text>
                       <Text style={s.workerTagTrade}>{worker.trade || 'Worker'}</Text>
-                    </View>
+                    </SoftBox>
                   ))}
                 </View>
               </GlassCard>
@@ -2068,13 +2069,14 @@ function buildStyles(colors, isDark) {
   workerTags: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.sm,
+    gap: spacing.md,
   },
+  workerTagSlot: {},
   workerTag: {
-    backgroundColor: withAlpha('#ffffff', 0.05),
-    borderRadius: borderRadius.md,
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
+    justifyContent: 'center',
+    minHeight: 56,
   },
   workerTagName: {
     fontSize: 13,
