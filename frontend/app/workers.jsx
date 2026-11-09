@@ -16,6 +16,7 @@ import {
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
+import { SoftBox } from '../src/components/SoftPanel';
 import GlassButton from '../src/components/GlassButton';
 import { WorkerCardSkeleton, StatCardSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
@@ -350,7 +351,7 @@ export default function WorkersScreen() {
           </View>
 
           {/* Date Selector */}
-          <View style={s.dateSelector}>
+          <SoftBox kind="slim" style={s.dateSelectorSlot} contentStyle={s.dateSelector}>
             <GlassButton
               variant="icon"
               icon={<ChevronLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
@@ -372,7 +373,7 @@ export default function WorkersScreen() {
               disabled={isToday}
               style={isToday && s.disabledButton}
             />
-          </View>
+          </SoftBox>
 
           {/* Stats */}
           <View style={s.statsRow}>
@@ -662,16 +663,12 @@ function buildStyles(colors, isDark) {
     color: colors.text.primary,
     letterSpacing: -1,
   },
+  dateSelectorSlot: { marginBottom: spacing.xl },
   dateSelector: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
     padding: spacing.md,
-    marginBottom: spacing.lg,
   },
   dateDisplay: {
     flexDirection: 'row',

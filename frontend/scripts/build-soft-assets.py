@@ -85,7 +85,11 @@ PANELS = {
     'card': dict(r=20, m=32, run=20, E=22, raised=True),
     'well': dict(r=26, m=28, run=22, E=24, raised=False),
     'pill': dict(r=22, m=32, run=22, E=22, raised=True, h=44),  # three-piece, fixed height
+    # slimmer panels for selectors, date bars and segmented tracks (smallest body 56dp)
+    'slim': dict(r=18, m=32, run=10, E=18, raised=True),
+    'slimw': dict(r=18, m=28, run=10, E=16, raised=False),
 }
+PEBBLE = dict(r=22, m=32, E=20, raised=True)  # the round 44dp button, one fixed-size picture
 
 
 RAISED_SHADOW_PRESSED = [(-3, -3, 4, 'hi', 0.5), (0, 2, 4, 'lo', 0.20), (3, 5, 6, 'lo', 0.22)]
@@ -177,7 +181,11 @@ def main():
         for nm, im, d in ((f'key_{tn}', k, KEY), (f'keyp_{tn}', kp, KEY), (f'field_{tn}', f, FIELD)):
             print(nm, im.size, 'seam delta', check_seamless(im, d['cap']))
             save_pieces(im, nm, d['cap'], d['margin'])
-        save_nine(tn, 'card', PANELS['card']); save_nine(tn, 'cardp', PANELS['card'], True); save_nine(tn, 'well', PANELS['well']); save_pill(tn, PANELS['pill']); save_pill(tn, PANELS['pill'], True)
+        save_nine(tn, 'card', PANELS['card']); save_nine(tn, 'cardp', PANELS['card'], True); save_nine(tn, 'well', PANELS['well']); save_nine(tn, 'slim', PANELS['slim']); save_nine(tn, 'slimp', PANELS['slim'], True); save_nine(tn, 'slimw', PANELS['slimw']); save_pill(tn, PANELS['pill']); save_pill(tn, PANELS['pill'], True)
+        for pressed, nm in ((False, 'pebble'), (True, 'pebblep')):
+            im = panel_image(tn, PEBBLE, 44, 44, pressed)
+            for scale, suffix in ((1, ''), (2, '@2x'), (3, '@3x')):
+                resample(im, scale).save(f'{OUT}/{nm}_{tn}{suffix}.png', optimize=True)
         lg = logo(tn)
         for scale, suffix in ((1, ''), (2, '@2x'), (3, '@3x')):
             resample(lg, scale).save(f'{OUT}/logo_{tn}{suffix}.png', optimize=True)
