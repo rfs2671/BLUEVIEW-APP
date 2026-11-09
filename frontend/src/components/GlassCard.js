@@ -184,21 +184,22 @@ export const GlassCard = (props) => (props.variant === 'modal' ? <LegacyGlassCar
 const SoftGlassCard = (props) => {
   const { children, style, contentStyle, onPress, hoverEffect = true } = props;
   const [isHovered, setIsHovered] = useState(false);
+  const [pressed, setPressed] = useState(false);
   const { outer, inner } = splitCardStyle(style);
   const { rest, tint } = splitTint(inner);
   const CardWrapper = onPress ? Pressable : View;
   const cardProps = onPress
-    ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false) }
+    ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false), onPressIn: () => setPressed(true), onPressOut: () => setPressed(false) }
     : { onMouseEnter: () => hoverEffect && setIsHovered(true), onMouseLeave: () => hoverEffect && setIsHovered(false) };
   const d = SOFT_PANEL_DIMS.card;
   return (
     <CardWrapper
       {...cardProps}
-      style={[outer, isHovered && hoverEffect && { transform: [{ translateY: -2 }] }]}
+      style={[outer, isHovered && !pressed && hoverEffect && { transform: [{ translateY: -2 }] }]}
     >
       <View style={[{ position: 'relative', minHeight: d.min }, rest]}>
-        <PanelSurface kind="card" />
-        <View style={[softStyles.cardContent, contentStyle, tint, { borderRadius: d.radius }]}>{children}</View>
+        <PanelSurface kind={pressed ? 'cardp' : 'card'} />
+        <View style={[softStyles.cardContent, contentStyle, tint, { borderRadius: d.radius }, pressed && { top: 1 }]}>{children}</View>
       </View>
     </CardWrapper>
   );
@@ -212,18 +213,19 @@ const softStyles = StyleSheet.create({
    ═══════════════════════════════════════════════════════════════════════════════ */
 export const StatCard = ({ children, style, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const [pressed, setPressed] = useState(false);
   const CardWrapper = onPress ? Pressable : View;
   const cardProps = onPress
-    ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false) }
+    ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false), onPressIn: () => setPressed(true), onPressOut: () => setPressed(false) }
     : { onMouseEnter: () => setIsHovered(true), onMouseLeave: () => setIsHovered(false) };
   const { outer, inner } = splitCardStyle(style);
   const { rest, tint } = splitTint(inner);
   const d = SOFT_PANEL_DIMS.card;
   return (
-    <CardWrapper {...cardProps} style={[outer, isHovered && { transform: [{ translateY: -3 }] }]}>
+    <CardWrapper {...cardProps} style={[outer, isHovered && !pressed && { transform: [{ translateY: -3 }] }]}>
       <View style={[{ position: 'relative', minHeight: d.min }, rest]}>
-        <PanelSurface kind="card" />
-        <View style={[{ overflow: 'hidden', position: 'relative', borderRadius: d.radius }, tint]}>
+        <PanelSurface kind={pressed ? 'cardp' : 'card'} />
+        <View style={[{ overflow: 'hidden', position: 'relative', top: pressed ? 1 : 0, borderRadius: d.radius }, tint]}>
           <View style={softStyles.statPadded}>{children}</View>
         </View>
       </View>
@@ -248,10 +250,9 @@ export const GlassListItem = ({
   disabled,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const [pressedState, setPressedState] = useState(false);
   const { colors, isDark } = useTheme();
   const styles = buildStyles(colors, isDark);
-
-  const gradientColors = isDark ? DARK_GRADIENT : LIGHT_GRADIENT;
 
   const defaultContent = (
     <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
@@ -279,18 +280,19 @@ export const GlassListItem = ({
       disabled={disabled}
       onHoverIn={() => setIsHovered(true)}
       onHoverOut={() => setIsHovered(false)}
-      style={({ pressed }) => [
+      style={[
         { position: 'relative', minHeight: d.min },
-        isHovered && { transform: [{ translateY: -2 }] },
-        pressed && styles.listItemPressed,
+        isHovered && !pressedState && { transform: [{ translateY: -2 }] },
         disabled && styles.listItemDisabled,
         style,
       ]}
+      onPressIn={() => setPressedState(true)}
+      onPressOut={() => setPressedState(false)}
     >
-      <PanelSurface kind="card" />
+      <PanelSurface kind={pressedState ? 'cardp' : 'card'} />
       {/* `contentStyle` (optional) overrides the default spacing.lg inset: for
           dense rows where a 24px inset per side eats the content width. */}
-      <View style={[styles.listItemContent, contentStyle]}>
+      <View style={[styles.listItemContent, contentStyle, pressedState && { top: 1 }]}>
         {children || defaultContent}
       </View>
     </Pressable>

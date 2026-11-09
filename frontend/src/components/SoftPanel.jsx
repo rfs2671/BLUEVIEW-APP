@@ -50,9 +50,9 @@ export function SoftPanel({ kind = 'card', style, children, ...rest }) {
 }
 
 /** The surface of a small raised pill (fixed height 44, any width), for tool buttons. */
-export function PillSurface() {
+export function PillSurface({ pressed = false }) {
   const { isDark } = useTheme();
-  const set = SOFT_PILL[isDark ? 'dark' : 'light'];
+  const set = SOFT_PILL[(isDark ? 'dark' : 'light') + (pressed ? 'p' : '')];
   const d = SOFT_PILL_DIMS;
   return (
     <View pointerEvents="none" style={{ position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, height: d.imgH, flexDirection: 'row' }}>

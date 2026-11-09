@@ -83,24 +83,27 @@ PANELS = {
 }
 
 
-def panel_image(tn, spec, w, h):
+RAISED_SHADOW_PRESSED = [(-3, -3, 4, 'hi', 0.5), (0, 2, 4, 'lo', 0.20), (3, 5, 6, 'lo', 0.22)]
+
+
+def panel_image(tn, spec, w, h, pressed=False):
     th = sl.THEME[tn]; sl._theme_name = tn
     if not spec['raised']:
         return ms.field_img(tn, V, w, h, spec['r'], m=spec['m'])
     d, x, y = ms.rbox(w, h, spec['r'], spec['m'])
     mask = np.clip(.5 - d * RENDER_S, 0, 1)
     img = np.zeros(mask.shape + (4,))
-    for dx, dy, sg, kind, a in RAISED_SHADOW:
+    for dx, dy, sg, kind, a in (RAISED_SHADOW_PRESSED if pressed else RAISED_SHADOW):
         img = sl.cast(img, mask, dx, dy, sg, th['hi'] if kind == 'hi' else th['lo'], a * (th['hia'] if kind == 'hi' else V['shadow_gain'][tn]))
     t = np.clip(-d / spec['E'], 0, 1); p = V['key']['p']
-    hgt = V['key']['h0'] * (1 - (1 - t) ** p) ** (1 / p)
+    hgt = V['key']['h0'] * (0.35 if pressed else 1.0) * (1 - (1 - t) ** p) ** (1 / p)
     return ms.finish(sl.over_img(img, sl.lighting(hgt, th, V), mask))
 
 
-def save_nine(tn, name, spec):
+def save_nine(tn, name, spec, pressed=False):
     C = spec['m'] + spec['r'] + spec['run']              # corner size in dp
     body = 2 * (spec['r'] + spec['run']) + 1              # body size that leaves a 1 dp middle
-    im = panel_image(tn, spec, body, body)
+    im = panel_image(tn, spec, body, body, pressed)
     a = np.asarray(im).astype(int)
     c = C * RENDER_S
     seam = max(np.abs(a[:, c - 3] - a[:, c + 1]).max(), np.abs(a[c - 3, :] - a[c + 1, :]).max())
@@ -114,11 +117,11 @@ def save_nine(tn, name, spec):
                 r.crop((x0, y0, x1, y1)).save(f'{OUT}/{name}_{tn}_{ry}{cx}{suffix}.png', optimize=True)
 
 
-def save_pill(tn, spec):
+def save_pill(tn, spec, pressed=False):
     C = spec['m'] + spec['r'] + spec['run']
     w = 2 * (C - spec['m']) + 1
-    im = panel_image(tn, spec, w, spec['h'])
-    save_pieces(im, f'pill_{tn}', C, spec['m'])
+    im = panel_image(tn, spec, w, spec['h'], pressed)
+    save_pieces(im, f'pill{"p" if pressed else ""}_{tn}', C, spec['m'])
 
 
 def logo(theme):
@@ -158,7 +161,7 @@ def main():
         for nm, im, d in ((f'key_{tn}', k, KEY), (f'keyp_{tn}', kp, KEY), (f'field_{tn}', f, FIELD)):
             print(nm, im.size, 'seam delta', check_seamless(im, d['cap']))
             save_pieces(im, nm, d['cap'], d['margin'])
-        save_nine(tn, 'card', PANELS['card']); save_nine(tn, 'well', PANELS['well']); save_pill(tn, PANELS['pill'])
+        save_nine(tn, 'card', PANELS['card']); save_nine(tn, 'cardp', PANELS['card'], True); save_nine(tn, 'well', PANELS['well']); save_pill(tn, PANELS['pill']); save_pill(tn, PANELS['pill'], True)
         lg = logo(tn)
         for scale, suffix in ((1, ''), (2, '@2x'), (3, '@3x')):
             resample(lg, scale).save(f'{OUT}/logo_{tn}{suffix}.png', optimize=True)

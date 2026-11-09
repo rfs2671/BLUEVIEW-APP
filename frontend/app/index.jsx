@@ -211,9 +211,10 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
   const pressable = !loading && !isZero && typeof onToggle === 'function';
 
   // The card is a soft raised surface behind its content, so it is always as big as what is on it.
-  const body = (active) => (
-    <View style={[deskStyles.rollupCard, active && { transform: [{ translateY: -2 }] }]}>
-      <PanelSurface kind="card" />
+  // Pressed in while a finger is on it, and while its list is open.
+  const body = (active, pressedNow) => (
+    <View style={[deskStyles.rollupCard, active && !pressedNow && !expanded && { transform: [{ translateY: -2 }] }]}>
+      <PanelSurface kind={pressedNow || expanded ? 'cardp' : 'card'} />
       <Text style={[deskStyles.rollupNumber, { color: numberColor }]}>
         {loading ? '—' : (value ?? 0)}
       </Text>
@@ -232,7 +233,7 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
   );
 
   if (!pressable) {
-    return <View style={deskStyles.rollupSlot}>{body(false)}</View>;
+    return <View style={deskStyles.rollupSlot}>{body(false, false)}</View>;
   }
 
   return (
@@ -243,7 +244,7 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
       accessibilityLabel={`${label}: ${value}. ${expanded ? 'Hide' : 'Show'} contributing projects`}
       style={deskStyles.rollupSlot}
     >
-      {({ hovered, pressed }) => body(!!(hovered || pressed))}
+      {({ hovered, pressed }) => body(!!hovered, !!pressed)}
     </Pressable>
   );
 }
@@ -261,8 +262,8 @@ function AdminRowTile({ action, onPress }) {
       style={deskStyles.adminRowTile}
     >
       {({ hovered, pressed }) => (
-        <View style={[deskStyles.adminRowInner, (hovered || pressed) && { transform: [{ translateY: -2 }] }]}>
-          <PillSurface />
+        <View style={[deskStyles.adminRowInner, hovered && !pressed && { transform: [{ translateY: -2 }] }, pressed && { paddingTop: 1 }]}>
+          <PillSurface pressed={!!pressed} />
           <View style={{ position: 'relative' }}><Icon size={16} strokeWidth={1.5} color={chrome.icon} /></View>
           <Text style={[deskStyles.adminRowLabel, { color: text.primary }]} numberOfLines={1}>
             {action.title}
