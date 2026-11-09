@@ -135,6 +135,12 @@ VISION_REPORT_PHOTO = "report_photo_pick"
 # and the app read the stored description, never asking again.
 VISION_GROUP_PHOTO = "group_photo_describe"
 
+# ── A DAILY-LOG PHOTO, MADE SEARCHABLE ───────────────────────────────
+#
+# Described once for search (lib/photo_search.py): finding a photo reads the
+# stored words and calls no model.
+VISION_PHOTO_INDEX = "photo_index_describe"
+
 VISION_ENDPOINTS = frozenset({
     VISION_UPLOAD_OSHA,
     VISION_PARSE_CARD,
@@ -145,6 +151,7 @@ VISION_ENDPOINTS = frozenset({
     VISION_PUNCH_PHOTO,
     VISION_REPORT_PHOTO,
     VISION_GROUP_PHOTO,
+    VISION_PHOTO_INDEX,
 })
 
 COLLECTION = "vision_calls"
