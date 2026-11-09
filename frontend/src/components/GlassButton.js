@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Pressable, Text, StyleSheet, ActivityIndicator, View } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { borderRadius, spacing } from '../styles/theme';
-import { PillSurface, usePressAnim, pressShift } from './SoftPanel';
+import { PillSurface, SoftPebble, usePressAnim, pressShift } from './SoftPanel';
 import { Animated } from 'react-native';
 
 const GlassButton = ({
@@ -33,29 +33,11 @@ const GlassButton = ({
   });
 
   if (variant === 'icon') {
+    // A round soft pebble. A caller's own fill, border and radius are dropped (see softStyle).
     return (
-      <Pressable
-        onPress={onPress}
-        disabled={disabled || loading}
-        onHoverIn={() => setIsHovered(true)}
-        onHoverOut={() => setIsHovered(false)}
-        style={({ pressed }) => [
-          styles.iconButton,
-          isHovered && {
-            backgroundColor: colors.glass.backgroundHover,
-            borderColor: colors.glass.borderHover,
-          },
-          pressed && styles.pressed,
-          disabled && styles.disabled,
-          style,
-        ]}
-      >
-        {loading ? (
-          <ActivityIndicator size="small" color={colors.text.primary} />
-        ) : (
-          icon
-        )}
-      </Pressable>
+      <SoftPebble onPress={onPress} disabled={disabled || loading} style={{ ...softStyle, width: undefined }}>
+        {loading ? <ActivityIndicator size="small" color={colors.text.primary} /> : icon}
+      </SoftPebble>
     );
   }
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Image, StyleSheet, Animated, Easing, Platform, useWindowDimensions } from 'react-native';
+import { View, Image, StyleSheet, Animated, Easing, Platform, Pressable, useWindowDimensions } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
-import { SOFT_PANEL, SOFT_PANEL_DIMS, SOFT_PILL, SOFT_PILL_DIMS, SOFT_FULL } from './softAssets';
+import { SOFT_PANEL, SOFT_PANEL_DIMS, SOFT_PILL, SOFT_PILL_DIMS, SOFT_FULL, SOFT_PEBBLE, SOFT_PEBBLE_DIMS } from './softAssets';
 import { SOFT_PLATEAU } from './softPlateau';
 
 /**
@@ -64,10 +64,13 @@ export function pressShift(anim) {
  * the card chopped the shadows (and all of each edge) away, leaving four corners floating on the page. So the outer
  * box is the whole picture, and the layers inside it fill that box exactly.
  */
+const PRESSED_KIND = { card: 'cardp', slim: 'slimp' };
+
 export function PanelSurface({ kind = 'card', anim }) {
   const d = SOFT_PANEL_DIMS[kind];
   const box = { position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, bottom: -d.margin };
-  if (anim && kind === 'card') {
+  const pressedKind = PRESSED_KIND[kind];
+  if (anim && pressedKind) {
     const up = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
     return (
       <View pointerEvents="none" style={box}>
@@ -185,5 +188,54 @@ function PillTiles({ set, d }) {
 }
 
 const styles = StyleSheet.create({ abs: { position: 'absolute' } });
+
+/**
+ * A soft box with content: a raised slim panel (`kind="slim"`, pressable with `onPress`) or a pressed-in track
+ * (`kind="slimw"` or "well"). `style` places it (margins, flex, width); `contentStyle` lays out what is inside
+ * (padding, rows). It is as big as its content, never smaller than the panel's minimum.
+ */
+export function SoftBox({ kind = 'slim', onPress, style, contentStyle, children, ...rest }) {
+  const d = SOFT_PANEL_DIMS[kind];
+  const [down, setDown] = useState(false);
+  const anim = usePressAnim(down);
+  const pressable = typeof onPress === 'function' && !!PRESSED_KIND[kind];
+  const Wrapper = onPress ? Pressable : View;
+  const press = onPress ? { onPress, onPressIn: () => setDown(true), onPressOut: () => setDown(false) } : {};
+  return (
+    <Wrapper {...rest} {...press} style={[{ position: 'relative', minHeight: d.min }, style]}>
+      <PanelSurface kind={kind} anim={pressable ? anim : undefined} />
+      <Animated.View style={[{ position: 'relative' }, contentStyle, pressable && pressShift(anim)]}>{children}</Animated.View>
+    </Wrapper>
+  );
+}
+
+/** The round 44dp button: a raised pebble that sinks when pressed. Children (an icon) sit in its centre. */
+export function SoftPebble({ onPress, disabled, style, children, ...rest }) {
+  const { isDark } = useTheme();
+  const [down, setDown] = useState(false);
+  const anim = usePressAnim(down);
+  const d = SOFT_PEBBLE_DIMS;
+  const set = SOFT_PEBBLE[isDark ? 'dark' : 'light'];
+  const up = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
+  const box = { position: 'absolute', left: -d.margin, top: -d.margin, width: d.img, height: d.img };
+  return (
+    <Pressable
+      {...rest}
+      onPress={onPress}
+      disabled={disabled}
+      onPressIn={() => setDown(true)}
+      onPressOut={() => setDown(false)}
+      style={[{ width: d.body, height: d.body, position: 'relative' }, style, disabled && { opacity: 0.5 }]}
+    >
+      <View pointerEvents="none" style={box}>
+        <Animated.Image source={set.up} style={[StyleSheet.absoluteFill, { opacity: up }]} fadeDuration={0} />
+        <Animated.Image source={set.down} style={[StyleSheet.absoluteFill, { opacity: anim }]} fadeDuration={0} />
+      </View>
+      <Animated.View style={[{ width: d.body, height: d.body, alignItems: 'center', justifyContent: 'center', position: 'relative' }, pressShift(anim)]}>
+        {children}
+      </Animated.View>
+    </Pressable>
+  );
+}
 
 export default SoftPanel;

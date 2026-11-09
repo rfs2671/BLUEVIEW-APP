@@ -38,6 +38,7 @@ import * as Sharing from 'expo-sharing';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
+import { SoftBox } from '../src/components/SoftPanel';
 import { GlassSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
 import { useToast } from '../src/components/Toast';
@@ -420,9 +421,12 @@ export default function ReportsScreen() {
               )}
 
               {/* Project Selector */}
-              <Pressable
-                style={s.selectorCard}
+              <SoftBox
+                kind="slim"
+                style={s.selectorSlot}
+                contentStyle={s.selectorCard}
                 onPress={() => setShowProjectPicker(!showProjectPicker)}
+                accessibilityRole="button"
               >
                 <View style={s.selectorContent}>
                   <IconPod size={44}>
@@ -441,10 +445,10 @@ export default function ReportsScreen() {
                   color={colors.text.muted}
                   style={showProjectPicker && s.iconRotated}
                 />
-              </Pressable>
+              </SoftBox>
 
               {showProjectPicker && (
-                <View style={s.dropdown}>
+                <SoftBox kind="slimw" style={s.dropdownSlot} contentStyle={s.dropdown}>
                   {projects.map((project) => (
                     <Pressable
                       key={project._id || project.id}
@@ -458,13 +462,13 @@ export default function ReportsScreen() {
                       <Text style={s.dropdownText}>{project.name}</Text>
                     </Pressable>
                   ))}
-                </View>
+                </SoftBox>
               )}
 
               {/* ════════════ TODAY'S PREVIEW TAB ════════════ */}
                 <>
                   {/* Date Navigator */}
-                  <View style={s.dateNav}>
+                  <SoftBox kind="slim" style={s.dateNavSlot} contentStyle={s.dateNav}>
                     <GlassButton
                       variant="icon"
                       icon={<ChevronLeft size={18} strokeWidth={1.5} color={colors.text.primary} />}
@@ -485,7 +489,7 @@ export default function ReportsScreen() {
                       onPress={() => navigateDate(1)}
                       disabled={isToday}
                     />
-                  </View>
+                  </SoftBox>
 
                   {previewLoading ? (
                     <View style={s.loadingBox}>
@@ -746,16 +750,12 @@ function buildStyles(colors, isDark) {
     },
 
     // ── Project Selector ──
+    selectorSlot: { marginBottom: spacing.md },
     selectorCard: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
       padding: spacing.md,
-      backgroundColor: colors.glass.background,
-      borderRadius: borderRadius.xl,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-      marginBottom: spacing.sm,
     },
     selectorContent: {
       flexDirection: 'row',
@@ -775,14 +775,8 @@ function buildStyles(colors, isDark) {
     iconRotated: {
       transform: [{ rotate: '180deg' }],
     },
-    dropdown: {
-      backgroundColor: colors.glass.background,
-      borderRadius: borderRadius.xl,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-      marginBottom: spacing.md,
-      overflow: 'hidden',
-    },
+    dropdownSlot: { marginBottom: spacing.lg },
+    dropdown: { overflow: 'hidden', borderRadius: borderRadius.xl },
     dropdownItem: {
       padding: spacing.md,
       borderBottomWidth: 1,
@@ -828,17 +822,13 @@ function buildStyles(colors, isDark) {
     },
 
     // ── Date Navigator ──
+    dateNavSlot: { marginBottom: spacing.lg },
     dateNav: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
-      marginBottom: spacing.md,
       paddingVertical: spacing.sm,
       paddingHorizontal: spacing.md,
-      backgroundColor: colors.glass.background,
-      borderRadius: borderRadius.xl,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
     },
     dateCenter: {
       flexDirection: 'row',
