@@ -108,6 +108,7 @@ from lib import wa_facts  # noqa: E402
 from lib import attendance  # noqa: E402
 from lib import project_report  # noqa: E402
 from lib import progress_report  # noqa: E402
+from lib import photo_search  # noqa: E402
 from lib import report_image  # noqa: E402
 from lib import progress_report_render  # noqa: E402
 from lib import report_regulatory  # noqa: E402
@@ -3887,6 +3888,7 @@ from lib.vision_meter import (  # noqa: E402
     VISION_REFUSAL_CHECK,
     VISION_PUNCH_PHOTO,
     VISION_REPORT_PHOTO,
+    VISION_PHOTO_INDEX,
     VISION_GROUP_PHOTO,
 )
 from lib import plan_extract  # noqa: E402
@@ -56194,6 +56196,284 @@ async def _photo_pipeline_job() -> None:
         logger.error(f"[photo-pipeline] tick failed: {type(e).__name__}: {e}")
 
 
+# ── EVERY DAILY-LOG PHOTO, SEARCHABLE BY WHAT IT SHOWS (lib/photo_search.py) ──
+#
+# Nov 9, the owner, for an insurance file: "any nice pics from the front of
+# the building". The assistant was handed "4 photo(s)" per crew and no way to
+# look, so it answered that the logs hold only counts. The photos were all in
+# R2; nothing could search them or send one.
+#
+# A sweep, like the filing-time pipeline above: newest logs first, then one
+# older slice per tick until the history is done. Each photo is described
+# once, and a search afterwards calls no model. PHOTO_INDEX_DISABLED=1 stops
+# the spend. Rows: {_id: "v1:<key>", kind: "photo", ...}, "fail:<key>" for a
+# photo the model could not read, and "state:backfill" for how far back the
+# history has been read.
+PHOTO_INDEX = "photo_index"
+PHOTO_INDEX_BUDGET = 100          # photographs described per tick
+PHOTO_INDEX_TICK_MINUTES = 20
+PHOTO_INDEX_TRIES = 3             # ticks a photo the model cannot read is tried
+PHOTO_INDEX_RECENT_DAYS = 7
+PHOTO_INDEX_SLICE_DAYS = 14       # how much history one tick looks at
+PHOTO_INDEX_FLOOR = "2024-01-01"  # nothing filed before this
+PHOTO_SEND_MAX = 4                # a reply window allows wa_dm.REPLY_WINDOW_MAX_SENDS
+PHOTO_FIND_MAX = 12
+
+
+async def _photo_index_call(raw: bytes, project_id: Any) -> Optional[dict]:
+    """One vision call: the photo's description for search, or None."""
+    if not QWEN_API_KEY or not raw:
+        return None
+    data, _err = await asyncio.to_thread(_vision_jpeg, raw)
+    if not data:
+        return None
+    await record_vision_call(db, endpoint=VISION_PHOTO_INDEX,
+                             project_id=str(project_id) if project_id else None)
+    try:
+        async with ServerHttpClient(timeout=45.0) as client:
+            resp = await client.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
+                json={"model": QWEN_MODEL, "max_tokens": 300, "temperature": 0,
+                      "messages": [{"role": "user", "content": [
+                          {"type": "image_url", "image_url": {
+                              "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
+                          {"type": "text", "text": photo_search.INDEX_PROMPT}]}]})
+            if resp.status_code >= 400:
+                logger.warning(f"[photo-index] vision HTTP {resp.status_code}")
+                return None
+            said = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"[photo-index] vision failed: {type(e).__name__}: {e!r}")
+        return None
+    return photo_search.parse_index(said)
+
+
+async def _photo_index_window(since: str, until: Optional[str], budget: int, report: dict) -> int:
+    """Describe the unread photos of the filed daily logs dated since <= date
+    (< until), newest first, at most `budget`. How many are left unread."""
+    dates: Dict[str, str] = {"$gte": since}
+    if until:
+        dates["$lt"] = until
+    logs = await db.logbooks.find(
+        await unattended_project_filter({"log_type": "daily_jobsite", "is_deleted": {"$ne": True},
+                                         "date": dates}),
+        {"date": 1, "project_id": 1, "company_id": 1, "status": 1, "is_locked": 1, "is_amendment": 1,
+         "withdrawn": 1, "withdrawn_at": 1, "data.activities": 1}).to_list(3000)
+    found = []
+    for lg in logs:
+        if logbook_is_filed(lg) and not logbook_is_withdrawn(lg):
+            found += [(lg, ph) for ph in photo_search.log_photo_rows(lg)]
+    keys = list(dict.fromkeys(ph["key"] for _, ph in found))
+    done, tried = set(), {}
+    if keys:
+        ids = [f"v1:{k}" for k in keys] + [f"fail:{k}" for k in keys]
+        for doc in await db[PHOTO_INDEX].find({"_id": {"$in": ids}}, {"attempts": 1}).to_list(len(ids)):
+            kind, _, key = str(doc["_id"]).partition(":")
+            if kind == "v1":
+                done.add(key)
+            else:
+                tried[key] = int(doc.get("attempts") or 0)
+    pending, seen = [], set()
+    for lg, ph in sorted(found, key=lambda x: str(x[1]["date"]), reverse=True):
+        k = ph["key"]
+        if k in done or k in seen or tried.get(k, 0) >= PHOTO_INDEX_TRIES:
+            continue
+        seen.add(k)
+        pending.append((lg, ph))
+    sem = asyncio.Semaphore(REPORT_JUDGE_AT_ONCE)
+
+    async def one(lg: dict, ph: dict) -> None:
+        async with sem:
+            raw = await asyncio.to_thread(_report_photo_bytes, {"photo": ph["photo"], "key": ph["key"]})
+            v = await _photo_index_call(raw, lg.get("project_id")) if raw else None
+            now = datetime.now(timezone.utc)
+            if v is None:
+                report["failed"] += 1
+                await db[PHOTO_INDEX].update_one(
+                    {"_id": f"fail:{ph['key']}"},
+                    {"$inc": {"attempts": 1}, "$set": {"kind": "fail", "at": now}}, upsert=True)
+                return
+            await db[PHOTO_INDEX].update_one({"_id": f"v1:{ph['key']}"}, {"$set": {
+                **v, "kind": "photo", "photo_key": ph["key"], "short": photo_search.short_id(ph["key"]),
+                "project_id": str(lg.get("project_id") or ""), "company_id": str(lg.get("company_id") or ""),
+                "log_id": ph["log_id"], "date": ph["date"], "sub": ph["sub"], "where": ph["where"],
+                "work": ph["work"], "at": now}}, upsert=True)
+            report["indexed"] += 1
+    await asyncio.gather(*(one(lg, ph) for lg, ph in pending[:max(0, budget)]), return_exceptions=True)
+    return max(0, len(pending) - max(0, budget))
+
+
+async def _photo_index_tick(now: Optional[datetime] = None, budget: int = PHOTO_INDEX_BUDGET) -> dict:
+    """The recent logs, then one slice of the history. Never raises."""
+    report = {"indexed": 0, "failed": 0, "backlog": 0, "history_before": None}
+    if not QWEN_API_KEY or os.environ.get("PHOTO_INDEX_DISABLED") == "1":
+        return report
+    now = now or datetime.now(timezone.utc)
+    recent = (now - timedelta(days=PHOTO_INDEX_RECENT_DAYS)).date()
+    try:
+        report["backlog"] = await _photo_index_window(recent.isoformat(), None, budget, report)
+        left = budget - report["indexed"] - report["failed"]
+        state = await db[PHOTO_INDEX].find_one({"_id": "state:backfill"}) or {}
+        before = str(state.get("before") or recent.isoformat())
+        report["history_before"] = before
+        if left > 0 and before > PHOTO_INDEX_FLOOR:
+            start = (_Date.fromisoformat(before) - timedelta(days=PHOTO_INDEX_SLICE_DAYS)).isoformat()
+            if not await _photo_index_window(start, before, left, report):
+                await db[PHOTO_INDEX].update_one(
+                    {"_id": "state:backfill"},
+                    {"$set": {"kind": "state", "before": start, "at": now}}, upsert=True)
+                report["history_before"] = start
+    except Exception as e:
+        logger.error(f"[photo-index] tick failed: {type(e).__name__}: {e!r}")
+    logger.info(f"[photo-index] {report}")
+    return report
+
+
+async def _photo_index_job() -> None:
+    try:
+        await _photo_index_tick()
+    except Exception as e:
+        logger.error(f"[photo-index] job failed: {type(e).__name__}: {e!r}")
+
+
+async def _dm_find_photos(ctx: dict, job: dict, args: dict) -> str:
+    """find_photos: reads the stored descriptions only."""
+    pid = str(job["id"])
+    if not await _bot_project_scope(ctx["ident"]["company_id"], pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    q: Dict[str, Any] = {"project_id": pid, "kind": "photo"}
+    dates = {}
+    for arg, op in (("since", "$gte"), ("until", "$lte")):
+        v = str(args.get(arg) or "").strip()[:10]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+            dates[op] = v
+    if dates:
+        q["date"] = dates
+    try:
+        rows = await db[PHOTO_INDEX].find(q).to_list(20000)
+    except Exception as e:
+        logger.warning(f"[photo-index] search failed: {type(e).__name__}")
+        return "The photo search didn't answer. Try again."
+    sub = " ".join(str(args.get("sub") or "").lower().split())
+    if sub:
+        rows = [r for r in rows if sub in str(r.get("sub") or "").lower()]
+    hits = photo_search.search(rows, args.get("what"), limit=PHOTO_FIND_MAX)
+    return json.dumps({
+        "job": job["label"], "photos_searched": len(rows),
+        "matches": [{"id": r.get("short"), "date": r.get("date"), "sub": r.get("sub"),
+                     "where": r.get("where"), "view": r.get("view"), "quality": r.get("quality"),
+                     "shows": r.get("description")} for r in hits],
+        "note": ("Send the ones that fit with send_photos. `shows` is what the picture holds: never "
+                 "call a photo more than that. Older photos may still be waiting to be read.")},
+        ensure_ascii=False)
+
+
+def _photo_send_jpeg(raw: bytes) -> Optional[bytes]:
+    """A log photo as a JPEG to send (at most 1600 px), upright."""
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(raw)) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((1600, 1600))
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=82)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+async def _dm_send_one_photo(dm_chat: str, short: str, jpeg: bytes, caption: str) -> bool:
+    """One photo to this DM chat, through the DM gate, like _dm_send_sheet."""
+    verdict = await _dm_send_verdict(dm_chat, f"[photo {short}]", None)
+    if not verdict["allowed"]:
+        logger.info(f"[photo-index] photo refused ({verdict['reason']}) to {_log_chat(dm_chat)}")
+        return False
+    ledger_id = verdict.get("ledger_id")
+    media_url = await _temp_jpeg_media_url(dm_chat, jpeg, short)
+    ok, body, err = False, None, "no image"
+    if media_url:
+        ok, body, err = await _waapi_send_dm_paced(
+            f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
+            {"chatId": dm_chat, "mediaUrl": media_url, "caption": caption},
+            {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"})
+        inner = body.get("data") if isinstance(body, dict) else None
+        if ok and isinstance(inner, dict) and inner.get("status") == "error":
+            ok, err = False, "data.status error"
+    if ledger_id is not None:
+        await _ledger_finish(ledger_id, ok, err)
+    if not ok:
+        logger.warning(f"[photo-index] photo not sent to {_log_chat(dm_chat)}: {err}")
+        return False
+    try:
+        now = datetime.now(timezone.utc)
+        await db.whatsapp_messages.insert_one({
+            "group_id": dm_chat, "is_dm": True, "sender": "bot", "body": f"[Photo] {caption}",
+            "has_audio": False, "message_id": "", "from_me": True,
+            **({"dm_company": _DM_SCOPE.get()} if _DM_SCOPE.get() else {}),
+            "timestamp": now, "created_at": now})
+    except Exception as e:
+        logger.debug(f"[photo-index] bot-log skipped: {type(e).__name__}")
+    return True
+
+
+async def _dm_send_photos(ctx: dict, job: dict, args: dict) -> str:
+    """send_photos: each photo re-read from its log, so one withdrawn or
+    taken off the log since it was described is not sent."""
+    pid = str(job["id"])
+    if not await _bot_project_scope(ctx["ident"]["company_id"], pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    asked = list(dict.fromkeys(str(x).strip().lower() for x in (args.get("ids") or []) if x))
+    ids = asked[:PHOTO_SEND_MAX]
+    if not ids:
+        return "No photo ids. Call find_photos first."
+    rows = await db[PHOTO_INDEX].find(
+        {"project_id": pid, "kind": "photo", "short": {"$in": ids}}).to_list(len(ids))
+    by_short = {r.get("short"): r for r in rows}
+    sent, missing = [], []
+    for short in ids:
+        row = by_short.get(short)
+        if not row:
+            missing.append(short)
+            continue
+        try:
+            lg = await db.logbooks.find_one({"_id": to_query_id(str(row.get("log_id")))})
+        except Exception:
+            lg = None
+        photo = None
+        if lg and str(lg.get("project_id")) == pid and not lg.get("is_deleted") \
+                and logbook_is_filed(lg) and not logbook_is_withdrawn(lg):
+            photo = next((p for p in progress_report.log_photos(lg) if p["key"] == row.get("photo_key")), None)
+        if not photo:
+            missing.append(short)
+            continue
+        day = str(row.get("date") or "")
+        try:
+            d = _Date.fromisoformat(day)
+            day = f"{d.strftime('%b')} {d.day}, {d.year}"
+        except ValueError:
+            pass
+        caption = " · ".join(x for x in (job["label"], day, row.get("sub")) if x)
+        if ctx.get("dry_run"):
+            ctx["sent"].append(f"[photo {short}]")
+            sent.append(caption)
+            continue
+        raw = await asyncio.to_thread(_report_photo_bytes, {"photo": photo["photo"], "key": photo["key"]})
+        jpeg = await asyncio.to_thread(_photo_send_jpeg, raw) if raw else None
+        if jpeg and await _dm_send_one_photo(ctx["dm_chat"], short, jpeg, caption):
+            ctx["sent"].append(f"[photo {short}]")
+            sent.append(caption)
+        else:
+            missing.append(short)
+    parts = [f"Sent {len(sent)} photo(s) to them: " + "; ".join(sent) + "." if sent
+             else "No photo was sent."]
+    if missing:
+        parts.append(f"{len(missing)} could not be sent ({', '.join(missing)}).")
+    if len(asked) > len(ids):
+        parts.append(f"Only {PHOTO_SEND_MAX} go at a time; {len(asked) - len(ids)} were not sent.")
+    return " ".join(parts)
+
+
 # ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
 
 async def _group_photo_company(row: dict, company_id: Any, project_id: Any) -> Tuple[str, str, str]:
@@ -62026,7 +62306,7 @@ _DM_DEADLINE: contextvars.ContextVar = contextvars.ContextVar("dm_deadline", def
 # says which: "ok" | "slow_notice" | "gave_up".
 DM_SLOW_NOTICE_SECONDS = 45.0
 DM_GIVE_UP_SECONDS = 120.0
-DM_SLOW_NOTICE_TEXT = "Still checking the drawings."
+DM_SLOW_NOTICE_TEXT = "Still working on it."
 DM_GAVE_UP_TEXT = "Couldn't finish that one, try again"
 #: The DM brain client's own per-call timeout (_dm_brain_client) and how
 #: many times a transient failure is tried again -- both inside the deadline.
@@ -62105,7 +62385,7 @@ async def _dm_await_budget(task: "asyncio.Future", dm_chat: str, waited: float,
 
 
 async def _dm_slow_notice(dm_chat: str) -> None:
-    """The one "Still checking the drawings." line, then typing again."""
+    """The one DM_SLOW_NOTICE_TEXT line, then typing again."""
     try:
         await send_whatsapp_message(dm_chat, DM_SLOW_NOTICE_TEXT)
         await _wa_typing(dm_chat, True)                  # and still typing
@@ -62337,6 +62617,23 @@ _DM_BRAIN_EXTRA_TOOLS = [
          "pages": {"type": "string", "description": "PDF page numbers of the file, e.g. '3-5' or '2, 7'."},
          "whole_file": {"type": "boolean", "description": "The whole file the sheet is in."}},
          "required": []}},
+    {"name": "find_photos", "description": (
+        "Search a job's daily-log photos by what they show: 'front of the building', 'roof', "
+        "'scaffold', 'Arkon framing'. Returns each match's id, date, sub and a description of the "
+        "picture. Leave `what` out for the best recent photos. Then send_photos the ones that fit."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "what": {"type": "string", "description": "What should be in the photo, in their words."},
+         "sub": {"type": "string", "description": "Only this sub's photos."},
+         "since": {"type": "string", "description": "From this date, YYYY-MM-DD."},
+         "until": {"type": "string", "description": "Up to and including this date, YYYY-MM-DD."}},
+         "required": []}},
+    {"name": "send_photos", "description": (
+        "Send daily-log photos here (to them), by the ids find_photos gave. At most 4 at a time."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "ids": {"type": "array", "items": {"type": "string"}, "description": "Ids from find_photos."}},
+         "required": ["ids"]}},
     {"name": "sheet_info", "description": (
         "Which file and drawing set a sheet is on (its page), its title, and what the drawing "
         "list says about it and its series (listed but not uploaded). For 'what file is it on'."),
@@ -62726,7 +63023,8 @@ async def _dm_do_set_trade(ident: dict, p: dict):
 
 #: Brain tools that read one job: the job names the account they act as.
 _DM_BRAIN_ONE_JOB = _DM_BRAIN_JOB_TOOLS + ("headcount", "dot_status", "send_sheet",
-                                           "send_plan_file", "sheet_info")
+                                           "send_plan_file", "sheet_info",
+                                           "find_photos", "send_photos")
 
 
 async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
@@ -62847,7 +63145,8 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
     dry = bool(ctx.get("dry_run"))
     now = datetime.now(timezone.utc)
     if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
-                                               "send_plan_file", "sheet_info"):
+                                               "send_plan_file", "sheet_info",
+                                               "find_photos", "send_photos"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
             return why
@@ -62885,6 +63184,10 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
                 where = plan_sources.sheet_source_text(label, src, page.get("page_number"))
                 return f"Sent the image of {label} {title} to them." + (f" {where}" if where else "")
             return f"Found {label} but the image couldn't be sent (may still be rendering)."
+        if name == "find_photos":
+            return await _dm_find_photos(ctx, job, args)
+        if name == "send_photos":
+            return await _dm_send_photos(ctx, job, args)
         if name == "sheet_info":
             return await _dm_sheet_info(str(job["id"]), str(args.get("sheet") or ""))
         if name == "send_plan_file":
@@ -63020,7 +63323,7 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
 
 
 #: Tools that send something: one of each (same arguments) per turn.
-_DM_BRAIN_SENDS = ("send_sheet", "send_plan_file", "send_report", "resend_my_brief")
+_DM_BRAIN_SENDS = ("send_sheet", "send_plan_file", "send_report", "resend_my_brief", "send_photos")
 
 
 def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
@@ -66371,6 +66674,9 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db[WA_CONNECT_CODES], keys=[("expires_at", 1)],
         name="whatsapp_connect_codes_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[PHOTO_INDEX], keys=[("project_id", 1), ("kind", 1), ("date", -1)],
+        name="photo_index_by_project")
     await _ensure_index_resilient(
         db[WA_CONNECT_CODES], keys=[("user_id", 1)],
         name="whatsapp_connect_codes_by_user")
@@ -89992,6 +90298,17 @@ async def startup_event():
     )
     # Filing-time photo pipeline: every unjudged photo of a recent filed daily log
     # is judged once and the verdict stored, so reports are instant. Every 20 min.
+    # Every daily-log photo described once, so it can be searched by what it
+    # shows (WhatsApp find_photos / send_photos).
+    scheduler.add_job(
+        _photo_index_job,
+        IntervalTrigger(minutes=PHOTO_INDEX_TICK_MINUTES),
+        id='photo_index',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=7),
+    )
     scheduler.add_job(
         _photo_pipeline_job,
         IntervalTrigger(minutes=20),
