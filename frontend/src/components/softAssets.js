@@ -28,3 +28,31 @@ export const SOFT_LOGO = {
   light: require('../../assets/soft/logo_light.png'),
   dark: require('../../assets/soft/logo_dark.png'),
 };
+
+// Stretchable panels, cut in nine pieces (see build-soft-assets.py): `card` rises, `well` is pressed in.
+export const SOFT_PANEL = {
+  light: {
+    card: { tl: require('../../assets/soft/card_light_tl.png'), tc: require('../../assets/soft/card_light_tc.png'), tr: require('../../assets/soft/card_light_tr.png'), ml: require('../../assets/soft/card_light_ml.png'), mc: require('../../assets/soft/card_light_mc.png'), mr: require('../../assets/soft/card_light_mr.png'), bl: require('../../assets/soft/card_light_bl.png'), bc: require('../../assets/soft/card_light_bc.png'), br: require('../../assets/soft/card_light_br.png') },
+    cardp: { tl: require('../../assets/soft/cardp_light_tl.png'), tc: require('../../assets/soft/cardp_light_tc.png'), tr: require('../../assets/soft/cardp_light_tr.png'), ml: require('../../assets/soft/cardp_light_ml.png'), mc: require('../../assets/soft/cardp_light_mc.png'), mr: require('../../assets/soft/cardp_light_mr.png'), bl: require('../../assets/soft/cardp_light_bl.png'), bc: require('../../assets/soft/cardp_light_bc.png'), br: require('../../assets/soft/cardp_light_br.png') },
+    well: { tl: require('../../assets/soft/well_light_tl.png'), tc: require('../../assets/soft/well_light_tc.png'), tr: require('../../assets/soft/well_light_tr.png'), ml: require('../../assets/soft/well_light_ml.png'), mc: require('../../assets/soft/well_light_mc.png'), mr: require('../../assets/soft/well_light_mr.png'), bl: require('../../assets/soft/well_light_bl.png'), bc: require('../../assets/soft/well_light_bc.png'), br: require('../../assets/soft/well_light_br.png') },
+  },
+  dark: {
+    card: { tl: require('../../assets/soft/card_dark_tl.png'), tc: require('../../assets/soft/card_dark_tc.png'), tr: require('../../assets/soft/card_dark_tr.png'), ml: require('../../assets/soft/card_dark_ml.png'), mc: require('../../assets/soft/card_dark_mc.png'), mr: require('../../assets/soft/card_dark_mr.png'), bl: require('../../assets/soft/card_dark_bl.png'), bc: require('../../assets/soft/card_dark_bc.png'), br: require('../../assets/soft/card_dark_br.png') },
+    cardp: { tl: require('../../assets/soft/cardp_dark_tl.png'), tc: require('../../assets/soft/cardp_dark_tc.png'), tr: require('../../assets/soft/cardp_dark_tr.png'), ml: require('../../assets/soft/cardp_dark_ml.png'), mc: require('../../assets/soft/cardp_dark_mc.png'), mr: require('../../assets/soft/cardp_dark_mr.png'), bl: require('../../assets/soft/cardp_dark_bl.png'), bc: require('../../assets/soft/cardp_dark_bc.png'), br: require('../../assets/soft/cardp_dark_br.png') },
+    well: { tl: require('../../assets/soft/well_dark_tl.png'), tc: require('../../assets/soft/well_dark_tc.png'), tr: require('../../assets/soft/well_dark_tr.png'), ml: require('../../assets/soft/well_dark_ml.png'), mc: require('../../assets/soft/well_dark_mc.png'), mr: require('../../assets/soft/well_dark_mr.png'), bl: require('../../assets/soft/well_dark_bl.png'), bc: require('../../assets/soft/well_dark_bc.png'), br: require('../../assets/soft/well_dark_br.png') },
+  },
+};
+export const SOFT_PANEL_DIMS = {
+  card: { margin: 32, corner: 72, radius: 20, min: 80 },
+  cardp: { margin: 32, corner: 72, radius: 20, min: 80 },
+  well: { margin: 28, corner: 76, radius: 26, min: 96 },
+};
+
+// A small raised pill, fixed height 44: left cap, one-column middle, right cap.
+export const SOFT_PILL = {
+  light: { L: require('../../assets/soft/pill_light_L.png'), M: require('../../assets/soft/pill_light_M.png'), R: require('../../assets/soft/pill_light_R.png') },
+  lightp: { L: require('../../assets/soft/pillp_light_L.png'), M: require('../../assets/soft/pillp_light_M.png'), R: require('../../assets/soft/pillp_light_R.png') },
+  dark: { L: require('../../assets/soft/pill_dark_L.png'), M: require('../../assets/soft/pill_dark_M.png'), R: require('../../assets/soft/pill_dark_R.png') },
+  darkp: { L: require('../../assets/soft/pillp_dark_L.png'), M: require('../../assets/soft/pillp_dark_M.png'), R: require('../../assets/soft/pillp_dark_R.png') },
+};
+export const SOFT_PILL_DIMS = { body: 44, margin: 32, capW: 76, imgH: 108 };

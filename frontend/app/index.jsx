@@ -28,6 +28,7 @@ import OfflineIndicator from '../src/components/OfflineIndicator';
 import SyncButton from '../src/components/SyncButton';
 import { auraRim, auraShadow } from '../src/styles/aura';
 import CardSheen from '../src/components/CardSheen';
+import { PanelSurface, PillSurface } from '../src/components/SoftPanel';
 import SectionLabel from '../src/components/SectionLabel';
 import { useToast } from '../src/components/Toast';
 import { useAuth, isCompanyAdmin, isAccountAdmin } from '../src/context/AuthContext';
@@ -144,11 +145,9 @@ const EXPOSURE_FIELD = {
 //    come from semantic tokens inline so they stay theme-aware. Mobile never
 //    renders any of this. ──────────────────────────────────────────────────
 const deskStyles = StyleSheet.create({
-  rollupRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, marginBottom: spacing.lg },
-  rollupCard: {
-    flex: 1, minWidth: 190, borderRadius: borderRadius.lg,
-    paddingVertical: spacing.lg, paddingHorizontal: spacing.lg,
-  },
+  rollupRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg, marginBottom: spacing.lg },
+  rollupSlot: { flex: 1, minWidth: 190 },
+  rollupCard: { paddingVertical: spacing.lg, paddingHorizontal: spacing.lg, minHeight: 96, position: 'relative' },
   rollupNumber: { fontSize: 40, fontFamily: typography.num, fontWeight: '600', letterSpacing: -1 },
   rollupLabel: { fontSize: typography.sizes.sm, marginTop: spacing.xs },
   // Expand affordance — only rendered on cards that actually have something
@@ -160,9 +159,9 @@ const deskStyles = StyleSheet.create({
   //    gets the whole shelf instead of being crushed into one 190px column.
   //    This is what fills the empty space — no filler widgets.
   expandPanel: {
-    borderWidth: 1, borderRadius: borderRadius.lg,
-    marginTop: -spacing.xs, marginBottom: spacing.lg,
-    paddingVertical: spacing.xs,
+    // a pressed-in well that grows with the list; the margin keeps its soft edge clear of the cards above and below
+    marginTop: spacing.sm, marginBottom: spacing.xl, paddingVertical: spacing.sm, minHeight: 96,
+    position: 'relative',
   },
   expandHead: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -175,25 +174,26 @@ const deskStyles = StyleSheet.create({
     paddingHorizontal: spacing.lg, paddingVertical: spacing.sm + 2,
     borderRadius: borderRadius.sm,
   },
-  expandRowAddr: { flex: 1, fontSize: typography.sizes.sm, fontWeight: '500' },
+  expandRowAddr: { flex: 1, minWidth: 0, fontSize: typography.sizes.sm, fontWeight: '500' },
   expandRowCount: { fontSize: typography.sizes.sm, fontWeight: '700', minWidth: 24, textAlign: 'right' },
   expandEmpty: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md, fontSize: typography.sizes.sm },
 
   // ── ACTIVE BY SITE ────────────────────────────────────────────────────
   siteList: { marginBottom: spacing.lg },
+  siteWell: { position: 'relative', minHeight: 96, justifyContent: 'center', paddingVertical: spacing.sm, marginBottom: spacing.xl },
+  siteEmptyText: { fontSize: typography.sizes.sm, paddingHorizontal: spacing.xl },
   siteRow: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.md,
-    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm + 2,
+    paddingHorizontal: spacing.xl, paddingVertical: spacing.sm + 2,
   },
   siteName: { flex: 1, fontSize: typography.sizes.sm, fontWeight: '500' },
   siteCount: { fontSize: typography.sizes.sm, fontWeight: '600' },
   siteEmpty: { fontSize: typography.sizes.sm, marginBottom: spacing.lg },
   adminRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  adminRowTile: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.sm, height: 40,
-    flexGrow: 1, flexBasis: 200, maxWidth: 260,
-    paddingHorizontal: spacing.md,
-    borderRadius: borderRadius.md,
+  adminRowTile: { flexGrow: 1, flexBasis: 200, maxWidth: 260, height: 44 },
+  adminRowInner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, height: 44,
+    paddingHorizontal: spacing.md, position: 'relative',
   },
   adminRowLabel: { fontSize: typography.sizes.sm, fontWeight: '500' },
 });
@@ -210,13 +210,15 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
   const numberColor = loading || isZero ? semantic.neutral : token;
   const pressable = !loading && !isZero && typeof onToggle === 'function';
 
-  const body = (active) => (
-    <>
-      <CardSheen radius={borderRadius.lg} active={active} intro />
+  // The card is a soft raised surface behind its content, so it is always as big as what is on it.
+  // Pressed in while a finger is on it, and while its list is open.
+  const body = (active, pressedNow) => (
+    <View style={[deskStyles.rollupCard, active && !pressedNow && !expanded && { transform: [{ translateY: -2 }] }]}>
+      <PanelSurface kind={pressedNow || expanded ? 'cardp' : 'card'} />
       <Text style={[deskStyles.rollupNumber, { color: numberColor }]}>
         {loading ? '—' : (value ?? 0)}
       </Text>
-      <Text style={[deskStyles.rollupLabel, { color: text.secondary }]}>{label}</Text>
+      <Text style={[deskStyles.rollupLabel, { color: text.secondary }]} numberOfLines={2}>{label}</Text>
       {pressable ? (
         <View style={deskStyles.rollupFoot}>
           <Text style={[deskStyles.rollupFootText, { color: text.secondary }]}>
@@ -227,15 +229,11 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
             : <ChevronDown size={13} strokeWidth={2} color={text.secondary} />}
         </View>
       ) : null}
-    </>
+    </View>
   );
 
   if (!pressable) {
-    return (
-      <View style={[deskStyles.rollupCard, { backgroundColor: surface.card }, auraRim(colors), auraShadow(colors, undefined, { translucent: true })]}>
-        {body(false)}
-      </View>
-    );
+    return <View style={deskStyles.rollupSlot}>{body(false, false)}</View>;
   }
 
   return (
@@ -244,14 +242,9 @@ function RollupCard({ value, label, token, loading, expanded, onToggle }) {
       accessibilityRole="button"
       accessibilityState={{ expanded }}
       accessibilityLabel={`${label}: ${value}. ${expanded ? 'Hide' : 'Show'} contributing projects`}
-      style={({ hovered }) => [
-        deskStyles.rollupCard,
-        { backgroundColor: surface.card }, auraRim(colors), auraShadow(colors, undefined, { translucent: true }),
-        expanded && { borderColor: colors.glass.borderHover },
-        hovered && { backgroundColor: surface.glassHover, borderColor: colors.glass.borderHover, transform: [{ translateY: -2 }] },
-      ]}
+      style={deskStyles.rollupSlot}
     >
-      {({ hovered, pressed }) => body(!!(hovered || pressed))}
+      {({ hovered, pressed }) => body(!!hovered, !!pressed)}
     </Pressable>
   );
 }
@@ -266,20 +259,16 @@ function AdminRowTile({ action, onPress }) {
       onPress={onPress}
       accessibilityRole="link"
       accessibilityLabel={action.title}
-      style={({ hovered }) => [
-        deskStyles.adminRowTile,
-        { backgroundColor: surface.glass }, auraRim(colors), auraShadow(colors, undefined, { translucent: true }),
-        hovered && { backgroundColor: surface.glassHover, borderColor: colors.glass.borderHover, transform: [{ translateY: -2 }] },
-      ]}
+      style={deskStyles.adminRowTile}
     >
       {({ hovered, pressed }) => (
-        <>
-          <CardSheen radius={borderRadius.md} depth={22} active={!!(hovered || pressed)} intro />
-          <Icon size={16} strokeWidth={1.5} color={chrome.icon} />
+        <View style={[deskStyles.adminRowInner, hovered && !pressed && { transform: [{ translateY: -2 }] }, pressed && { paddingTop: 1 }]}>
+          <PillSurface pressed={!!pressed} />
+          <View style={{ position: 'relative' }}><Icon size={16} strokeWidth={1.5} color={chrome.icon} /></View>
           <Text style={[deskStyles.adminRowLabel, { color: text.primary }]} numberOfLines={1}>
             {action.title}
           </Text>
-        </>
+        </View>
       )}
     </Pressable>
   );
@@ -735,7 +724,8 @@ export default function DashboardScreen() {
         </View>
 
         {openCard ? (
-          <View style={[deskStyles.expandPanel, { backgroundColor: surface.card, borderColor: border.medium }]}>
+          <View style={deskStyles.expandPanel}>
+            <PanelSurface kind="well" />
             <View style={[deskStyles.expandHead, { borderBottomColor: border.subtle }]}>
               <Text style={[deskStyles.expandHeadText, { color: text.secondary }]}>
                 {openCard.label} — by project
@@ -798,11 +788,13 @@ export default function DashboardScreen() {
         ) : siteRows.length === 0 ? (
           <Text style={[deskStyles.siteEmpty, { color: text.muted }]}>No projects yet.</Text>
         ) : totalOnSite === 0 && !anyOnSiteUnknown ? (
-          <Text style={[deskStyles.siteEmpty, { color: text.muted }]}>
-            No workers checked in today.
-          </Text>
+          <View style={deskStyles.siteWell}>
+            <PanelSurface kind="well" />
+            <Text style={[deskStyles.siteEmptyText, { color: text.muted }]}>No workers checked in today.</Text>
+          </View>
         ) : (
-          <View style={deskStyles.siteList}>
+          <View style={deskStyles.siteWell}>
+            <PanelSurface kind="well" />
             {siteRows.map(({ p, n }, i) => (
               <Pressable
                 key={p.id || p._id}
