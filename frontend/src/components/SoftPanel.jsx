@@ -38,29 +38,35 @@ export function pressShift(anim) {
 
 /**
  * A card surface. With `anim` (from usePressAnim) it crossfades between the raised surface and the pressed one.
+ *
+ * THE FADING LAYERS MUST BE THE SAME SIZE AS THE PICTURE, shadow margin included. A view with an animated opacity is
+ * composited on its own, and Android cuts a composited view off at its edges: fading a layer that is only as big as
+ * the card chopped the shadows (and all of each edge) away, leaving four corners floating on the page. So the outer
+ * box is the whole picture, and the layers inside it fill that box exactly.
  */
 export function PanelSurface({ kind = 'card', anim }) {
+  const d = SOFT_PANEL_DIMS[kind];
+  const box = { position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, bottom: -d.margin };
   if (anim && kind === 'card') {
     const up = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
     return (
-      <>
-        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: up }]}><PanelLayer kind="card" /></Animated.View>
-        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: anim }]}><PanelLayer kind="cardp" /></Animated.View>
-      </>
+      <View pointerEvents="none" style={box}>
+        <Animated.View style={[StyleSheet.absoluteFill, { opacity: up }]}><NineSlice kind="card" /></Animated.View>
+        <Animated.View style={[StyleSheet.absoluteFill, { opacity: anim }]}><NineSlice kind="cardp" /></Animated.View>
+      </View>
     );
   }
-  return <PanelLayer kind={kind} />;
+  return <View pointerEvents="none" style={box}><NineSlice kind={kind} /></View>;
 }
 
-function PanelLayer({ kind = 'card' }) {
+function NineSlice({ kind = 'card' }) {
   const { isDark } = useTheme();
   const set = SOFT_PANEL[isDark ? 'dark' : 'light'][kind];
-  const d = SOFT_PANEL_DIMS[kind];
-  const c = d.corner;
+  const c = SOFT_PANEL_DIMS[kind].corner;
   const o = c - 1; // only the opaque centre tucks 1dp under its neighbours
   const img = (src, style) => <Image source={src} style={[styles.abs, style]} resizeMode="stretch" fadeDuration={0} />;
   return (
-    <View pointerEvents="none" style={{ position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, bottom: -d.margin }}>
+    <View style={StyleSheet.absoluteFill}>
       {img(set.mc, { left: o, right: o, top: o, bottom: o })}
       {img(set.tc, { left: c, right: c, top: 0, height: c })}
       {img(set.bc, { left: c, right: c, bottom: 0, height: c })}
@@ -88,18 +94,20 @@ export function SoftPanel({ kind = 'card', style, children, ...rest }) {
   );
 }
 
-/** The surface of a small raised pill (fixed height 44, any width), for tool buttons. */
+/** The surface of a small raised pill (fixed height 44, any width), for tool buttons. Same rule as PanelSurface. */
 export function PillSurface({ anim }) {
+  const d = SOFT_PILL_DIMS;
+  const box = { position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, height: d.imgH };
   if (anim) {
     const up = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
     return (
-      <>
-        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: up }]}><PillLayer /></Animated.View>
-        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: anim }]}><PillLayer pressed /></Animated.View>
-      </>
+      <View pointerEvents="none" style={box}>
+        <Animated.View style={[StyleSheet.absoluteFill, { opacity: up }]}><PillLayer /></Animated.View>
+        <Animated.View style={[StyleSheet.absoluteFill, { opacity: anim }]}><PillLayer pressed /></Animated.View>
+      </View>
     );
   }
-  return <PillLayer />;
+  return <View pointerEvents="none" style={box}><PillLayer /></View>;
 }
 
 function PillLayer({ pressed = false }) {
@@ -107,7 +115,7 @@ function PillLayer({ pressed = false }) {
   const set = SOFT_PILL[(isDark ? 'dark' : 'light') + (pressed ? 'p' : '')];
   const d = SOFT_PILL_DIMS;
   return (
-    <View pointerEvents="none" style={{ position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, height: d.imgH, flexDirection: 'row' }}>
+    <View style={[StyleSheet.absoluteFill, { flexDirection: 'row' }]}>
       <Image source={set.L} style={{ width: d.capW, height: d.imgH }} fadeDuration={0} />
       <Image source={set.M} style={{ flex: 1, height: d.imgH }} resizeMode="stretch" fadeDuration={0} />
       <Image source={set.R} style={{ width: d.capW, height: d.imgH }} fadeDuration={0} />
