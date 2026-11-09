@@ -22,15 +22,8 @@ import { logoSource } from '../src/utils/logoSource';
 // a session ending) shows the finished screen straight away.
 let entrancePlayed = false;
 
-// A spring with a hint of overshoot, as an easing curve, for the logo's rise.
-function springEase(t) {
-  'worklet';
-  if (t <= 0) return 0;
-  if (t >= 1) return 1;
-  return 1 - Math.exp(-5.5 * t) * Math.cos(8.5 * t);
-}
-// The logo forms this much larger in the middle, then shrinks to its normal size as it rises.
-const HERO_SCALE = 1.14;
+// The logo forms at the middle of the screen at its normal size, then rises into place together with the login card.
+const HERO_SCALE = 1;
 
 // WHERE A ROLE LANDS AFTER LOGIN.
 //
@@ -81,7 +74,7 @@ export default function LoginScreen() {
   const startedRef = useRef(false);
   const logoOp = useSharedValue(entrancePlayed ? 1 : 0);
   const uiOp = useSharedValue(entrancePlayed ? 1 : 0);
-  const uiY = useSharedValue(entrancePlayed ? 0 : 90);
+  const uiY = useSharedValue(entrancePlayed ? 0 : 150);
   // The logo is laid out in its final place; during the entrance it is only DRAWN in the middle
   // of the screen (shifted by dyV and enlarged) and rises into place as riseP goes 0 -> 1.
   const riseP = useSharedValue(entrancePlayed ? 1 : 0);
@@ -110,10 +103,12 @@ export default function LoginScreen() {
   const onEntranceEvent = useCallback((name) => {
     if (name === 'started') { startedRef.current = true; return; }
     if (name === 'logo') { logoOp.value = withTiming(1, { duration: 340, easing: Easing.out(Easing.quad) }); return; }
-    if (name === 'rise') { riseP.value = withTiming(1, { duration: 800, easing: springEase }); return; }
-    if (name === 'ui') {
-      uiOp.value = withTiming(1, { duration: 360, easing: Easing.out(Easing.quad) });
-      uiY.value = withTiming(0, { duration: 600, easing: Easing.out(Easing.poly(4)) });
+    if (name === 'rise') {
+      // logo and card move up at the same moment, on the same smooth curve; the card fades in as it climbs
+      const ease = Easing.inOut(Easing.cubic);
+      riseP.value = withTiming(1, { duration: 620, easing: ease });
+      uiY.value = withTiming(0, { duration: 620, easing: ease });
+      uiOp.value = withTiming(1, { duration: 340, easing: Easing.out(Easing.quad) });
       return;
     }
     if (name === 'done') finishEntrance();
