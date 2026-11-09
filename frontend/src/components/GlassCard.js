@@ -174,10 +174,18 @@ const LegacyGlassCard = ({
    (variant="modal") keep the frosted look: they float over a dimmed page, not on the paper. A caller's tint
    (backgroundColor / borderColor, e.g. the attention cards) is painted on the content layer, inside the rounded edge. */
 const TINT_KEYS = ['backgroundColor', 'borderColor', 'borderWidth'];
-function splitTint(inner) {
+function splitTint(inner, colors) {
   const rest = {}; const tint = {};
   // `overflow` is dropped: the soft surface draws its shadow outside the card, and a clip would cut it off.
   Object.keys(inner).forEach((k) => { if (k === 'overflow') return; (TINT_KEYS.includes(k) ? tint : rest)[k] = inner[k]; });
+  // The old glass fill and hairline border are what a card used to BE. Callers still pass them (a row's own style
+  // often carries the glass tokens), and on a soft surface they draw as a thin frame around the card. Only a
+  // deliberate tint (attention, warning...) is kept.
+  const g = colors && colors.glass;
+  if (g) {
+    if (tint.backgroundColor === g.background || tint.backgroundColor === g.backgroundHover) delete tint.backgroundColor;
+    if (tint.borderColor === g.border || tint.borderColor === g.borderHover) { delete tint.borderColor; delete tint.borderWidth; }
+  }
   return { rest, tint };
 }
 
@@ -185,10 +193,11 @@ export const GlassCard = (props) => (props.variant === 'modal' ? <LegacyGlassCar
 
 const SoftGlassCard = (props) => {
   const { children, style, contentStyle, onPress, hoverEffect = true } = props;
+  const { colors: themeColors } = useTheme();
   const [isHovered, setIsHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
   const { outer, inner } = splitCardStyle(style);
-  const { rest, tint } = splitTint(inner);
+  const { rest, tint } = splitTint(inner, themeColors);
   const CardWrapper = onPress ? Pressable : View;
   const cardProps = onPress
     ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false), onPressIn: () => setPressed(true), onPressOut: () => setPressed(false) }
@@ -221,8 +230,9 @@ export const StatCard = ({ children, style, onPress }) => {
   const cardProps = onPress
     ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false), onPressIn: () => setPressed(true), onPressOut: () => setPressed(false) }
     : { onMouseEnter: () => setIsHovered(true), onMouseLeave: () => setIsHovered(false) };
+  const { colors: themeColors } = useTheme();
   const { outer, inner } = splitCardStyle(style);
-  const { rest, tint } = splitTint(inner);
+  const { rest, tint } = splitTint(inner, themeColors);
   const d = SOFT_PANEL_DIMS.card;
   const anim = usePressAnim(pressed);
   return (
@@ -279,6 +289,7 @@ export const GlassListItem = ({
 
   const d = SOFT_PANEL_DIMS.card;
   const anim = usePressAnim(pressedState);
+  const { rest: restStyle, tint: tintStyle } = splitTint(StyleSheet.flatten(style) || {}, colors);
   return (
     <Pressable
       onPress={onPress}
@@ -289,7 +300,7 @@ export const GlassListItem = ({
         { position: 'relative', minHeight: d.min },
         isHovered && !pressedState && { transform: [{ translateY: -2 }] },
         disabled && styles.listItemDisabled,
-        style,
+        restStyle,
       ]}
       onPressIn={() => setPressedState(true)}
       onPressOut={() => setPressedState(false)}
@@ -297,7 +308,7 @@ export const GlassListItem = ({
       <PanelSurface kind="card" anim={anim} />
       {/* `contentStyle` (optional) overrides the default spacing.lg inset: for
           dense rows where a 24px inset per side eats the content width. */}
-      <Animated.View style={[styles.listItemContent, contentStyle, pressShift(anim)]}>
+      <Animated.View style={[styles.listItemContent, contentStyle, tintStyle, { borderRadius: d.radius }, pressShift(anim)]}>
         {children || defaultContent}
       </Animated.View>
     </Pressable>
