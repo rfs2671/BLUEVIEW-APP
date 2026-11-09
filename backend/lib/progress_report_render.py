@@ -105,6 +105,16 @@ table.ev td:nth-child(1) { width: 5%; } table.ev td:nth-child(2) { width: 27%; }
 .sub .name { font-weight: 700; }
 .sub .meta { color: #5b6676; font-size: 8pt; }
 .sub ul { margin: 3px 0 0 14px; padding: 0; }
+table.gantt { table-layout: fixed; }
+table.gantt td { border: 0; border-top: 1px solid #e3e7ee; padding: 5px 0; vertical-align: middle; }
+table.gantt tr:first-child td { border-top: 0; padding: 0; }
+table.gantt tr { page-break-inside: avoid; }
+table.gantt td.who { width: 34%; padding-right: 10px; }
+table.gantt td.bar { width: 410px; }
+table.gantt td.n { width: 7%; text-align: right; color: #5b6676; font-size: 8pt; white-space: nowrap; }
+table.gantt .name { font-weight: 700; }
+table.gantt .meta { color: #5b6676; font-size: 8pt; }
+table.gantt .what { font-size: 8pt; color: #5b6676; }
 table.floors { width: auto; }
 table.floors td, table.floors th { width: 26px; min-width: 26px; }
 table.floors td.name { width: auto; min-width: 150px; }
@@ -362,37 +372,122 @@ def _overview(rep: Dict[str, Any]) -> str:
 
 # ── LATER SECTIONS ───────────────────────────────────────────────────────────
 
-def _progress(rep: Dict[str, Any]) -> str:
+#: The schedule chart is for a report over a span of work, not a day or two.
+GANTT_MIN_DAYS = 7
+_GANTT_WIDTH = 400
+
+
+def _work_words(work: Optional[Dict[str, Any]]) -> str:
+    """One line: what a sub reported, then the floors it was on."""
+    items = (work or {}).get("items") or []
+    if not items:
+        return "No work description in the daily logs."
+    # Floors follow only the work they belong to: "Ductwork rough · floors 1–4
+    # · roof MEP", never a roof item in front of a floor range.
+    on_floors = [i for i in items if i["floors"]]
+    elsewhere = [i for i in items if not i["floors"]]
+
+    def joined(rows: List[Dict[str, Any]]) -> str:
+        return ", ".join(P.lc_first(i["work"]) for i in rows)
+    parts = []
+    if on_floors:
+        parts += [joined(on_floors), P.floors_label({f for i in on_floors for f in i["floors"]})]
+    if elsewhere:
+        parts.append(joined(elsewhere))
+    text = " · ".join(parts)
+    amended = " (amended log)" if any(i["amended"] for i in items) else ""
+    return text[:1].upper() + text[1:] + amended
+
+
+def _gantt_bars(days: List[date]) -> List[List[date]]:
+    """[[first, last], ...]: a run of worked days is one bar. A weekend between
+    two worked days does not break it; a working day with nobody there does."""
+    bars: List[List[date]] = []
+    for d in sorted(days):
+        if bars:
+            gap = [date.fromordinal(n) for n in range(bars[-1][1].toordinal() + 1, d.toordinal())]
+            if all(x.weekday() >= 5 for x in gap):
+                bars[-1][1] = d
+                continue
+        bars.append([d, d])
+    return bars
+
+
+def _gantt_ticks(start: date, end: date) -> List[date]:
+    """Where the axis is labelled: each Monday, or each month's first for a long report."""
+    days = [date.fromordinal(n) for n in range(start.toordinal(), end.toordinal() + 1)]
+    if len(days) > 120:
+        return [d for d in days if d.day == 1]
+    return [d for d in days if d.weekday() == 0]
+
+
+def _gantt_row(s: Dict[str, Any], start: date, end: date, photo_days: set, ticks: List[date]) -> str:
+    n = (end - start).days + 1
+    width, height = _GANTT_WIDTH, 18
+    slot = width / n
+    x = lambda d: (d - start).days * slot
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">']
+    out += [f'<line x1="{x(t):.1f}" y1="0" x2="{x(t):.1f}" y2="{height}" stroke="{LINE}"/>' for t in ticks]
+    for first, last in _gantt_bars([d for d in s["days"] if start <= d <= end]):
+        out.append(f'<rect x="{x(first) + 0.5:.1f}" y="4" width="{max(2.0, ((last - first).days + 1) * slot - 1):.1f}" '
+                   f'height="10" rx="2" fill="{s["color"]}"/>')
+    for d in sorted(photo_days):
+        out.append(f'<circle cx="{x(d) + slot / 2:.1f}" cy="9" r="2.6" fill="#fff" stroke="{NAVY}" stroke-width="1"/>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+def _gantt_axis(start: date, end: date, ticks: List[date]) -> str:
+    n = (end - start).days + 1
+    width = _GANTT_WIDTH
+    slot = width / n
+    fmt = "%b" if n > 120 else "%b %-d"
+    # The period's first day is named too, unless a tick is about to be.
+    shown = ([start] if not ticks or (ticks[0] - start).days * slot >= 40 else []) + ticks
+    labels = "".join(f'<text x="{(t - start).days * slot:.1f}" y="10" font-size="8" fill="{MUTED}">{_e(_fmt(t, fmt))}</text>'
+                     for t in shown)
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} 14" width="{width}" height="14" '
+            f'font-family="Helvetica, Arial, sans-serif">{labels}</svg>')
+
+
+def _progress(rep: Dict[str, Any], images: Optional[Dict[str, str]] = None) -> str:
+    """One line per sub: who, what they reported, and -- on a report over a
+    span of work -- WHEN, as a bar across the period. The bars are days on
+    site (check-ins and filed logs); nothing here is a percent complete."""
     if not rep["subs"]:
         return ""
     by = {w["key"]: w for w in rep["work"]}
+    start, end = rep["start"], rep["end"]
+    if (end - start).days + 1 < GANTT_MIN_DAYS:
+        rows = "".join(
+            f"<div class='sub'><span class='name'>{_e(s['name'])}</span>"
+            + (f" <span class='meta'>{_e(s['trade'])}</span>" if s["trade"] else "")
+            + f"<div>{_e(_work_words(by.get(s['key'])))}</div></div>" for s in rep["subs"])
+        return ("<section><h2>Reported work</h2><p class='muted'>What each subcontractor reported in the filed daily "
+                f"logs. Not measured completion.</p>{rows}</section>")
+    photo_days: Dict[str, set] = {}
+    for p in rep.get("photos") or []:
+        if (images or {}).get(p["key"]):
+            day = base._d(p["date"])
+            if day:
+                photo_days.setdefault(P.company_key(p["sub"]) or p["sub"], set()).add(day)
+    ticks = _gantt_ticks(start, end)
     rows = []
-    for s in rep["subs"]:
-        w = by.get(s["key"]) or {"items": []}
-        items = []
-        for i in w["items"]:
-            chip = {"advanced": "<span class='chip adv'>ADVANCED</span> "}.get(i["status"], "")
-            if i.get("trade_mismatch"):
-                chip = "<span class='chip warn'>CHECK</span> " + chip
-            amended = " <span class='muted'>(amended log)</span>" if i["amended"] else ""
-            items.append(f"<li>{chip}{_e(i['work'])}" + (f" — {_e(i['place'])}" if i["place"] else "")
-                         + f" <span class='muted'>({_e(P._span(i['first'], i['last']))})</span>{amended}</li>")
-            if i["status"] == "advanced" and i["new_floors"]:
-                items[-1] = items[-1].replace("</li>", f" <span class='muted'>new: {_e(P.floors_label(i['new_floors']))}</span></li>")
-        work = "<ul>" + "".join(items) + "</ul>" if items else \
-            "<div class='muted'>No work description in the daily logs.</div>"
-        trade_chip = (" <span class='chip soft'>" + _e(s["trade"]) + "</span>") if s["trade"] else ""
-        rows.append(
-            f"<div class='sub'><div><span class='dot' style='background:{s['color']}'></span>"
-            f"<span class='name'>{_e(s['name'])}</span>"
-            f"{trade_chip} "
-            f"<span class='meta'>{len(s['days'])} days on site</span>{_tag('L')}"
-            f"</div>{work}</div>")
-    matrix = ""      # reported floors are a column of the workforce table, not a second block
-    return (f"<section><h2>Construction progress</h2><p class='muted'>Documented work: what each subcontractor reported "
-            f"in the filed daily logs, not measured completion and not verified on site. ADVANCED marks the same activity "
-            f"reported on floors it was not reported on before. CHECK marks work that does not match the sub's trade.</p>{''.join(rows)}"
-            f"{matrix}</section>")
+    for s in sorted(rep["subs"], key=lambda s: (s["first"], -len(s["days"]), s["name"])):
+        trade = f" <span class='meta'>{_e(s['trade'])}</span>" if s["trade"] else ""
+        count = len(s["days"])
+        rows.append(f"<tr><td class='who'><span class='name'>{_e(s['name'])}</span>{trade}"
+                    f"<div class='what'>{_e(_work_words(by.get(s['key'])))}</div></td>"
+                    f"<td class='bar'>{_gantt_row(s, start, end, photo_days.get(s['key'], set()), ticks)}</td>"
+                    f"<td class='n'>{count}&nbsp;{'day' if count == 1 else 'days'}</td></tr>")
+    legend = ("<div class='legend'><span class='dot' style='background:#5b6676'></span>On site"
+              + ("&nbsp;&nbsp;<svg width='8' height='8' viewBox='0 0 8 8'><circle cx='4' cy='4' r='3' fill='#fff' "
+                 f"stroke='{NAVY}'/></svg> Photo in this report" if photo_days else "") + "</div>")
+    return (f"<section class='pg'><h2>Schedule progress {_tag('G')}{_tag('L')}</h2>"
+            "<p class='muted'>Who worked when, and what they reported, from site check-ins and filed daily logs. "
+            "A bar is days on site, not measured completion.</p>"
+            f"<table class='gantt'><tr><td class='who'></td><td class='bar'>{_gantt_axis(start, end, ticks)}</td><td class='n'></td></tr>"
+            f"{''.join(rows)}</table>{legend}</section>")
 
 
 def _schedule_section(rep: Dict[str, Any]) -> str:
@@ -497,11 +592,7 @@ def _workforce(rep: Dict[str, Any]) -> str:
     for s in rep["subs"]:
         tag = ""
         if mob["comparable"] and s["prev_days"] == 0:
-            tag = " <span class='chip new'>NEW</span>"
-        elif mob["comparable"]:
-            for m in mob["changed"]:
-                if m["name"] == s["name"]:
-                    tag = " <span class='chip warn'>" + ("UP" if m["direction"] == "up" else "DOWN") + "</span>"
+            tag = " <span class='muted'>· first period on site</span>"
         note = f" <span class='muted'>({s['log_days']} from log)</span>" if s["log_days"] else ""
         prev_days = str(s["prev_days"]) if s["prev_days"] else "—"
         prev_avg = f"{s['prev_avg']:g}" if s["prev_days"] else "—"
@@ -656,7 +747,7 @@ def render_html(reps: List[Dict[str, Any]], *, gc: str = "", title: str = "", no
                     + f"<section class='keep'><div class='two'>{_coming_block(rep) or '<div></div>'}"
                       f"<div style='display:flex;gap:8px'>{_schedule_card(rep)}{_finance_card(rep)}</div></div></section>"
                     + "<div style='page-break-after:always'></div>"
-                    + _progress(rep) + _schedule_section(rep) + _workforce(rep) + _photos(rep, images)
+                    + _progress(rep, images) + _schedule_section(rep) + _workforce(rep) + _photos(rep, images)
                     + _regulatory(rep) + _financial(rep) + _basis(rep, report_id))
     return (f"<!doctype html><html><head><meta charset='utf-8'><title>{_e(title)}</title>"
             f"<style>{css}</style></head><body>{''.join(body)}</body></html>")

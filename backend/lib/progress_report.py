@@ -75,6 +75,8 @@ SOURCE_LINE = "Source: Levelog records — site check-ins, filed daily logs, DOB
 #: at least this many workers; a whole-site change uses the same rule.
 CHANGE_PCT = 0.30
 CHANGE_WORKERS = 3
+#: A crew must have been seen this many days last period to compare its size.
+CHANGE_MIN_PREV_DAYS = 3
 WORKFORCE_NOTE_PCT = 0.15
 #: Gate and log headcount "agree" within this many workers or this share.
 AGREE_WORKERS = 1
@@ -544,6 +546,13 @@ def lc_first(text: str) -> str:
     return text if (len(first) > 1 and first[:2].isupper()) else text[:1].lower() + text[1:]
 
 
+#: A work line that says where it is ("Roof MEP", "Rooftop unit", "Stucco outer
+#: bldg") is not also on the crew row's floors: the row's floors belong to the
+#: row, and a row naming three activities printed "Roof MEP — floors 1–4".
+_NAMES_ITS_PLACE = re.compile(
+    r"\b(?:roof\w*|bulkhead|cellar|basement|exterior|outer\s+(?:bldg|building|wall)|facade|yard|sidewalk)\b", re.I)
+
+
 def _work(cur: List[Dict[str, Any]], prev: List[Dict[str, Any]], canon: Dict[str, str],
           subs: List[Dict[str, Any]], comparable: bool = True) -> List[Dict[str, Any]]:
     """What each sub reported doing, in a few lines: one line per ACTIVITY
@@ -580,17 +589,16 @@ def _work(cur: List[Dict[str, Any]], prev: List[Dict[str, Any]], canon: Dict[str
             shown.setdefault(k, ph)
         items = []
         for k, rows in by_work.items():
-            floors = sorted({f for a in rows for f in a["floors"]})
-            places = Counter(a["where"] for a in rows if a["where"] and not a["floors"])
+            floors = [] if _NAMES_ITS_PLACE.search(shown[k]) else sorted({f for a in rows for f in a["floors"]})
+            places = Counter(a["where"] for a in rows
+                             if a["where"] and not a["floors"] and not _NAMES_ITS_PLACE.search(shown[k]))
             seen_before = k in before_floors
             new_floors = sorted(set(floors) - before_floors.get(k, set()))
             installs = not any(w in f"{s.get('trade') or ''} {s.get('name') or ''}".lower() for w in _NON_INSTALL)
             status = ("reported" if not comparable else
                       "advanced" if installs and seen_before and new_floors and floors else
                       "continued" if seen_before else "reported")
-            fam_sub, fam_work = trade_family(s.get("trade"), s.get("name")), trade_family(shown[k])
             items.append({"work": shown[k], "floors": floors,
-                          "trade_mismatch": bool(fam_sub and fam_work and fam_sub != fam_work),
                           "place": floors_label(floors) or (places.most_common(1)[0][0][:60] if places else ""),
                           "first": rows[0]["date"], "last": rows[-1]["date"], "days": len({a["date"] for a in rows}),
                           "status": status, "new_floors": new_floors if seen_before else [],
@@ -829,8 +837,12 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
         v = verdicts.get(c["key"]) or {}
         if (v.get("ok") and v.get("kind", "progress") == "progress" and _consistent(c, v)
                 and float(v.get("score") or 0) >= MIN_SCORE):
+            # Words under a photo only when they agree with whose photo it is:
+            # with no known kind of work for the sub, the stock caption put
+            # "Plumbing installed" under an insulation crew.
+            seen = str(v.get("work") or "none")
             good.append({**c, "score": float(v.get("score") or 0),
-                         "caption": WORK_CAPTION.get(str(v.get("work") or "none"), WORK_CAPTION["none"]),
+                         "caption": WORK_CAPTION.get(seen, "") if seen == trade_family(c.get("trade"), c.get("sub")) else "",
                          "work": str(v.get("work") or "none")})
     by_sub: Dict[str, List[dict]] = defaultdict(list)
     for c in good:
@@ -1062,7 +1074,10 @@ def mobilization(rep: Dict[str, Any]) -> Dict[str, Any]:
             out["new"].append({"name": s["name"], "first": s["first"], "avg": s["avg"]})
         else:
             delta = s["avg"] - s["prev_avg"]
-            if abs(delta) >= CHANGE_WORKERS and abs(delta) >= CHANGE_PCT * max(s["prev_avg"], 1):
+            # A crew seen for a day or two last period has no size to compare
+            # against ("decreased to 4.3 from 9": the 9 was one day).
+            if (s["prev_days"] >= CHANGE_MIN_PREV_DAYS and abs(delta) >= CHANGE_WORKERS
+                    and abs(delta) >= CHANGE_PCT * max(s["prev_avg"], 1)):
                 out["changed"].append({"name": s["name"], "avg": s["avg"], "prev_avg": s["prev_avg"],
                                        "direction": "up" if delta > 0 else "down"})
     return out
@@ -1111,10 +1126,6 @@ def changes(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
     for m in mob["changed"][:2]:
         out.append({"src": "G", "text": f"{m['name']} crew {'increased' if m['direction'] == 'up' else 'decreased'} "
                     f"to an average of {m['avg']:g} from {m['prev_avg']:g}."})
-    adv = [(w["name"], i) for w in rep["work"] for i in w["items"]
-           if i["status"] == "advanced" and not i.get("trade_mismatch")]
-    for name, i in adv[:3]:
-        out.append({"src": "L", "text": f"{name}: {lc_first(i['work'])} advanced to {floors_label(i['new_floors'])}."})
     return out[:6]
 
 
@@ -1211,7 +1222,7 @@ def overview(rep: Dict[str, Any]) -> List[str]:
         out.append("No site check-ins or filed crew reports were recorded in this period.")
     lines = []
     for w in rep["work"][:4]:
-        for i in [x for x in w["items"] if not x.get("trade_mismatch")][:1]:
+        for i in w["items"][:1]:
             lines.append(f"{w['name']}: {lc_first(i['work'])}" + (f" on {i['place']}" if i["place"] else ""))
     if lines:
         out.append("Reported work — " + "; ".join(lines) + ".")
@@ -1278,11 +1289,6 @@ def data_notes(rep: Dict[str, Any], logs: List[dict], checkins: List[dict], work
     days with no filed log, amended days, gate/log differences."""
     out = []
     site, ls, rc = rep["site"], rep["log_set"], rep["recon"]
-    odd = [(w["name"], i["work"]) for w in rep.get("work") or [] for i in w["items"] if i.get("trade_mismatch")]
-    if odd:
-        out.append("Listed under a sub whose trade does not match the work: "
-                   + "; ".join(f"{n}: {t}" for n, t in odd[:4])
-                   + ". Shown as filed, marked CHECK, and not used in the summary; the daily log may have the wrong company on that line.")
     reg = rep.get("regulatory") or {}
     left = reg.get("excluded") or []
     if left:
@@ -1407,7 +1413,7 @@ def whatsapp_message(rep: Dict[str, Any], *, attached: bool = True, link: Option
         lines.append("- Site: no check-ins this period")
     work = []
     for w in rep["work"][:3]:
-        good = [x for x in w["items"] if not x.get("trade_mismatch")]
+        good = w["items"]
         if good:
             i = good[0]
             work.append(f"{lc_first(i['work'])}{' ' + i['place'] if i['place'] else ''} ({short_name(w['name'], i['work'])})")
