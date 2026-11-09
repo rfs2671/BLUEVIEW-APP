@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View, Text, TextInput, Pressable, Image, StyleSheet, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, TextInput, Pressable, Image, StyleSheet, ActivityIndicator, Platform } from 'react-native';
 import { Eye, EyeOff } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { SOFT, SOFT_DIMS } from './softAssets';
@@ -17,6 +17,28 @@ import { SOFT, SOFT_DIMS } from './softAssets';
  * (left cap, stretchy middle, right cap) so they fit any width and look the same
  * everywhere. Text, icons and the focus ring stay live.
  */
+// Chrome paints autofilled inputs with its own pale-blue background, which shows
+// as a blue bar across the soft dish. Make it transparent; currentColor keeps the
+// text colour following the theme (see GlassInput for the history).
+let autofillCSSInjected = false;
+function injectAutofillCSS() {
+  if (autofillCSSInjected || Platform.OS !== 'web' || typeof document === 'undefined') return;
+  autofillCSSInjected = true;
+  const style = document.createElement('style');
+  style.textContent = `
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover,
+    input:-webkit-autofill:focus,
+    input:-webkit-autofill:active {
+      -webkit-box-shadow: 0 0 0 1000px transparent inset !important;
+      -webkit-text-fill-color: currentColor !important;
+      background-color: transparent !important;
+      transition: background-color 5000s ease-in-out 0s !important;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 function Surface({ kind, isDark }) {
   const d = SOFT_DIMS[kind];
   const set = SOFT[isDark ? 'dark' : 'light'][kind];
@@ -38,6 +60,7 @@ export const SoftField = React.forwardRef(({
 }, ref) => {
   const { colors, isDark } = useTheme();
   const [focused, setFocused] = useState(false);
+  useEffect(() => { injectAutofillCSS(); }, []);
   const h = SOFT_DIMS.field.body;
   const focus = isDark ? 'rgba(120,172,214,0.6)' : 'rgba(69,140,181,0.55)';
 
