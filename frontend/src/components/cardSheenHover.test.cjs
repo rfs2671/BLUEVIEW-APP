@@ -35,12 +35,12 @@ ok(/pointerEvents="none"/.test(sheen) && /importantForAccessibility="no-hide-des
 console.log('\n── Every card tells the sheen when it is hovered ──');
 const glass = read('src/components/GlassCard.js');
 ok(/<CardSheen radius=\{borderRadius\.xxl\} active=\{isHovered && hoverEffect\} intro \/>/.test(glass), 'GlassCard (respecting hoverEffect={false}), and it announces itself');
-ok(/<CardSheen radius=\{borderRadius\.xl\} active=\{isHovered\} intro \/>/.test(glass), 'StatCard, and it announces itself');
-ok(/<CardSheen radius=\{borderRadius\.xl\} active=\{isHovered\} \/>/.test(glass), 'GlassListItem answers a hover but does not play the intro (a list can be long)');
+ok(/export const StatCard[\s\S]*?translateY: -3[\s\S]*?<PanelSurface kind="card" \/>/.test(glass), 'StatCard is a soft panel and lifts when hovered (the sheen is retired on soft surfaces)');
+ok(/export const GlassListItem[\s\S]*?translateY: -2[\s\S]*?<PanelSurface kind="card" \/>/.test(glass), 'GlassListItem is a soft panel and lifts when hovered');
 const dash = read('app/index.jsx');
 ok(/<CardSheen radius=\{borderRadius\.lg\} active=\{isHovered\} intro \/>/.test(dash), 'the dashboard tool tile (phone)');
 ok(/body = \(active\) =>/.test(dash) && /\{\(\{ hovered, pressed \}\) => body\(!!\(hovered \|\| pressed\)\)\}/.test(dash) && /\{body\(false\)\}/.test(dash), 'the portfolio exposure cards (a zero card has nothing to press)');
-ok(/<CardSheen radius=\{borderRadius\.md\} depth=\{22\} active=\{!!\(hovered \|\| pressed\)\} intro \/>/.test(dash), 'the desktop tool buttons');
+ok(/<PillSurface \/>/.test(dash) && /adminRowInner, \(hovered \|\| pressed\) && \{ transform: \[\{ translateY: -2 \}\] \}/.test(dash), 'the desktop tool buttons are soft pills that lift when lit');
 ok((dash.match(/translateY: -2/g) || []).length === 3, 'the three dashboard tile kinds lift 2px when lit');
 const proj = read('app/project/[id].jsx');
 ok(/<CardSheen radius=\{borderRadius\.xl\} active=\{!!\(hovered \|\| pressed\)\} intro \/>/.test(proj), 'the project quick actions');

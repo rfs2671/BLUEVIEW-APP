@@ -7,6 +7,8 @@ import { useTheme } from '../context/ThemeContext';
 import { withAlpha } from '../styles/semanticColors';
 import { auraShadow, auraRim } from '../styles/aura';
 import CardSheen from './CardSheen';
+import { PanelSurface } from './SoftPanel';
+import { SOFT_PANEL_DIMS } from './softAssets';
 
 /**
  * A card's caller-supplied style, split between the two views a card is now drawn with. The OUTER view places the card
@@ -77,7 +79,7 @@ const LIGHT_GRADIENT = [
 /* ═══════════════════════════════════════════════════════════════════════════════
    GlassCard
    ═══════════════════════════════════════════════════════════════════════════════ */
-export const GlassCard = ({
+const LegacyGlassCard = ({
   children,
   style,
   contentStyle,
@@ -166,60 +168,69 @@ export const GlassCard = ({
   );
 };
 
+
+/* The card surface is now soft silicone (SoftPanel.jsx): a raised, stretchable image behind the content. Dialogs
+   (variant="modal") keep the frosted look: they float over a dimmed page, not on the paper. A caller's tint
+   (backgroundColor / borderColor, e.g. the attention cards) is painted on the content layer, inside the rounded edge. */
+const TINT_KEYS = ['backgroundColor', 'borderColor', 'borderWidth'];
+function splitTint(inner) {
+  const rest = {}; const tint = {};
+  Object.keys(inner).forEach((k) => { (TINT_KEYS.includes(k) ? tint : rest)[k] = inner[k]; });
+  return { rest, tint };
+}
+
+export const GlassCard = (props) => (props.variant === 'modal' ? <LegacyGlassCard {...props} /> : <SoftGlassCard {...props} />);
+
+const SoftGlassCard = (props) => {
+  const { children, style, contentStyle, onPress, hoverEffect = true } = props;
+  const [isHovered, setIsHovered] = useState(false);
+  const { outer, inner } = splitCardStyle(style);
+  const { rest, tint } = splitTint(inner);
+  const CardWrapper = onPress ? Pressable : View;
+  const cardProps = onPress
+    ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false) }
+    : { onMouseEnter: () => hoverEffect && setIsHovered(true), onMouseLeave: () => hoverEffect && setIsHovered(false) };
+  const d = SOFT_PANEL_DIMS.card;
+  return (
+    <CardWrapper
+      {...cardProps}
+      style={[outer, isHovered && hoverEffect && { transform: [{ translateY: -2 }] }]}
+    >
+      <View style={[{ position: 'relative', minHeight: d.min }, rest]}>
+        <PanelSurface kind="card" />
+        <View style={[softStyles.cardContent, contentStyle, tint, { borderRadius: d.radius }]}>{children}</View>
+      </View>
+    </CardWrapper>
+  );
+};
+const softStyles = StyleSheet.create({
+  cardContent: { padding: spacing.md, overflow: 'hidden', position: 'relative' },
+});
+
 /* ═══════════════════════════════════════════════════════════════════════════════
    StatCard
    ═══════════════════════════════════════════════════════════════════════════════ */
 export const StatCard = ({ children, style, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
-  const { colors, isDark } = useTheme();
-  const styles = buildStyles(colors, isDark);
   const CardWrapper = onPress ? Pressable : View;
-
   const cardProps = onPress
-    ? {
-        onPress,
-        onHoverIn: () => setIsHovered(true),
-        onHoverOut: () => setIsHovered(false),
-      }
-    : {
-        onMouseEnter: () => setIsHovered(true),
-        onMouseLeave: () => setIsHovered(false),
-      };
-
-  const gradientColors = isDark ? DARK_GRADIENT : LIGHT_GRADIENT;
-
+    ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false) }
+    : { onMouseEnter: () => setIsHovered(true), onMouseLeave: () => setIsHovered(false) };
   const { outer, inner } = splitCardStyle(style);
-
+  const { rest, tint } = splitTint(inner);
+  const d = SOFT_PANEL_DIMS.card;
   return (
-    <CardWrapper
-      {...cardProps}
-      style={[
-        outer,
-        outerAura(colors),
-        isHovered && { transform: [{ scale: 1.03 }, { translateY: -4 }] },
-      ]}
-    >
-     <View
-      style={[
-        styles.statCard,
-        auraRim(colors),
-        innerAura(colors),
-        inner,
-        isHovered && { borderColor: colors.glass.borderHover },
-      ]}
-     >
-      <LinearGradient
-        colors={gradientColors}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 1 }}
-        style={StyleSheet.absoluteFillObject}
-      />
-      <CardSheen radius={borderRadius.xl} active={isHovered} intro />
-      <View style={styles.statPadded}>{children}</View>
-     </View>
+    <CardWrapper {...cardProps} style={[outer, isHovered && { transform: [{ translateY: -3 }] }]}>
+      <View style={[{ position: 'relative', minHeight: d.min }, rest]}>
+        <PanelSurface kind="card" />
+        <View style={[{ overflow: 'hidden', position: 'relative', borderRadius: d.radius }, tint]}>
+          <View style={softStyles.statPadded}>{children}</View>
+        </View>
+      </View>
     </CardWrapper>
   );
 };
+softStyles.statPadded = { paddingVertical: spacing.md, paddingHorizontal: spacing.md };
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    GlassListItem
@@ -261,6 +272,7 @@ export const GlassListItem = ({
     </View>
   );
 
+  const d = SOFT_PANEL_DIMS.card;
   return (
     <Pressable
       onPress={onPress}
@@ -268,27 +280,15 @@ export const GlassListItem = ({
       onHoverIn={() => setIsHovered(true)}
       onHoverOut={() => setIsHovered(false)}
       style={({ pressed }) => [
-        styles.listItem,
-        auraRim(colors),
-        innerAura(colors),
-        isHovered && {
-          ...(isDark && { borderColor: colors.glass.borderHover }),
-          transform: [{ scale: 1.01 }, { translateY: -2 }],
-        },
+        { position: 'relative', minHeight: d.min },
+        isHovered && { transform: [{ translateY: -2 }] },
         pressed && styles.listItemPressed,
         disabled && styles.listItemDisabled,
-        showBorder && styles.listItemBorder,
         style,
       ]}
     >
-      <LinearGradient
-        colors={gradientColors}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 1 }}
-        style={StyleSheet.absoluteFillObject}
-      />
-      <CardSheen radius={borderRadius.xl} active={isHovered} />
-      {/* `contentStyle` (optional) overrides the default spacing.lg inset — for
+      <PanelSurface kind="card" />
+      {/* `contentStyle` (optional) overrides the default spacing.lg inset: for
           dense rows where a 24px inset per side eats the content width. */}
       <View style={[styles.listItemContent, contentStyle]}>
         {children || defaultContent}
@@ -382,6 +382,7 @@ function buildStyles(colors, isDark) {
     transition: 'all 0.2s ease',
   },
   listItemContent: {
+    position: 'relative',
     padding: spacing.lg,
     flexDirection: 'row',
     alignItems: 'center',
@@ -389,7 +390,6 @@ function buildStyles(colors, isDark) {
   },
   listItemPressed: {
     opacity: 0.85,
-    transform: [{ scale: 0.99 }],
   },
   listItemDisabled: {
     opacity: 0.5,
