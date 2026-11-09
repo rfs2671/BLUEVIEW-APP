@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
-import { Dimensions, StyleSheet } from 'react-native';
+import { Dimensions, StyleSheet, InteractionManager } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -8,6 +8,7 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import { runThemeViewTransition } from '../utils/viewTransition';
+import { prefetchSoftAssets } from '../utils/prefetchSoftAssets';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { applyTheme, getActiveMode, colors as themeColors } from '../styles/theme';
 import { effectiveIsDark } from '../utils/themeMode';
@@ -74,6 +75,48 @@ export const ThemeProvider = ({ children }) => {
   const commitSwitch = () => { toggleRef.current(); };
   const clearFlood = () => setFlood(null);
 
+  // THE WIPE STAYS UNTIL THE NEW THEME HAS PAINTED. It used to start fading the instant the switch was committed, while
+  // the app was still rebuilding every screen underneath: the new page appeared half drawn behind a fading wipe and the
+  // frame rate fell off a cliff. Now the screen stays fully covered through the rebuild, and the wipe only starts to
+  // clear after the new tree has rendered, laid out and had a moment to decode its pictures.
+  const revealPending = useRef(false);
+  const revealTimer = useRef(null);
+  const startReveal = () => {
+    if (!revealPending.current) return;
+    revealPending.current = false;
+    if (revealTimer.current) { clearTimeout(revealTimer.current); revealTimer.current = null; }
+    fade.value = withTiming(0, { duration: 340, easing: Easing.out(Easing.cubic) }, (fin) => {
+      if (fin) runOnJS(clearFlood)();
+    });
+  };
+  const commitThenReveal = () => {
+    revealPending.current = true;
+    commitSwitch();
+    // never hold the screen hostage: clear it even if the paint signal never comes
+    revealTimer.current = setTimeout(startReveal, 1200);
+  };
+  const themeKeyNow = keyRef.current;
+  useEffect(() => {
+    if (!revealPending.current) return undefined;
+    // the new tree has been rendered: wait for two frames and for animations/interactions to settle, then a beat
+    // for images to decode
+    let cancelled = false;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      InteractionManager.runAfterInteractions(() => {
+        setTimeout(() => { if (!cancelled) startReveal(); }, 160);
+      });
+    }));
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [themeKeyNow]);
+
+  // The other theme's pictures, warmed a few seconds after launch and after every switch, so the first switch is
+  // not also the first time they are loaded.
+  useEffect(() => {
+    const t = setTimeout(() => prefetchSoftAssets(isDark ? 'light' : 'dark'), 3000);
+    return () => clearTimeout(t);
+  }, [isDark]);
+
   const toggleThemeAnimated = (origin) => {
     if (forced || flood) return;
     const goingDark = !userIsDark;
@@ -84,17 +127,16 @@ export const ThemeProvider = ({ children }) => {
     if (runThemeViewTransition({ x: o.x, y: o.y, commit: commitSwitch })) return;
     const R = Math.hypot(Math.max(o.x, width - o.x), Math.max(o.y, height - o.y));
     setFlood({ x: o.x, y: o.y, R, color: goingDark ? '#1C2B38' : '#ECEDE9' });
+    prefetchSoftAssets(goingDark ? 'dark' : 'light'); // warm the new theme's pictures while the wipe spreads
     expand.value = 0;
     fade.value = 1;
     // Fast: the new theme's colour spreads out of the control in a lumpy, liquid
     // edge, the switch happens underneath once it covers the screen, and it
     // clears. About half a second in all.
-    expand.value = withTiming(1, { duration: 340, easing: Easing.bezier(0.2, 0.75, 0.25, 1) }, (done) => {
+    expand.value = withTiming(1, { duration: 380, easing: Easing.bezier(0.2, 0.75, 0.25, 1) }, (done) => {
       if (!done) return;
-      runOnJS(commitSwitch)();
-      fade.value = withTiming(0, { duration: 230, easing: Easing.out(Easing.quad) }, (fin) => {
-        if (fin) runOnJS(clearFlood)();
-      });
+      // fully covered: switch now, and clear the wipe only once the new theme has painted (see startReveal)
+      runOnJS(commitThenReveal)();
     });
   };
 
