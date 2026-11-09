@@ -22,6 +22,16 @@ import { logoSource } from '../src/utils/logoSource';
 // a session ending) shows the finished screen straight away.
 let entrancePlayed = false;
 
+// A spring with a hint of overshoot, as an easing curve, for the logo's rise.
+function springEase(t) {
+  'worklet';
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  return 1 - Math.exp(-5.5 * t) * Math.cos(8.5 * t);
+}
+// The logo forms this much larger in the middle, then shrinks to its normal size as it rises.
+const HERO_SCALE = 1.14;
+
 // WHERE A ROLE LANDS AFTER LOGIN.
 //
 // A `superintendent` fell through to '/' — the admin dashboard — because only
@@ -71,13 +81,26 @@ export default function LoginScreen() {
   const startedRef = useRef(false);
   const logoOp = useSharedValue(entrancePlayed ? 1 : 0);
   const uiOp = useSharedValue(entrancePlayed ? 1 : 0);
-  const uiY = useSharedValue(entrancePlayed ? 0 : 16);
-  const logoStyle = useAnimatedStyle(() => ({ opacity: logoOp.value }), [logoOp]);
+  const uiY = useSharedValue(entrancePlayed ? 0 : 90);
+  // The logo is laid out in its final place; during the entrance it is only DRAWN in the middle
+  // of the screen (shifted by dyV and enlarged) and rises into place as riseP goes 0 -> 1.
+  const riseP = useSharedValue(entrancePlayed ? 1 : 0);
+  const dyV = useSharedValue(0);
+  const dxV = useSharedValue(0);
+  const logoStyle = useAnimatedStyle(() => ({
+    opacity: logoOp.value,
+    transform: [
+      { translateX: dxV.value * (1 - riseP.value) },
+      { translateY: dyV.value * (1 - riseP.value) },
+      { scale: 1 + (HERO_SCALE - 1) * (1 - riseP.value) },
+    ],
+  }), [logoOp, riseP, dyV, dxV]);
   const uiStyle = useAnimatedStyle(() => ({ opacity: uiOp.value, transform: [{ translateY: uiY.value }] }), [uiOp, uiY]);
 
   const finishEntrance = useCallback(() => {
     entrancePlayed = true;
     logoOp.value = withTiming(1, { duration: 90 });
+    riseP.value = withTiming(1, { duration: 90 });
     uiOp.value = withTiming(1, { duration: 90 });
     uiY.value = withTiming(0, { duration: 90 });
     setPhase('done');
@@ -87,9 +110,10 @@ export default function LoginScreen() {
   const onEntranceEvent = useCallback((name) => {
     if (name === 'started') { startedRef.current = true; return; }
     if (name === 'logo') { logoOp.value = withTiming(1, { duration: 340, easing: Easing.out(Easing.quad) }); return; }
+    if (name === 'rise') { riseP.value = withTiming(1, { duration: 800, easing: springEase }); return; }
     if (name === 'ui') {
-      uiOp.value = withTiming(1, { duration: 320, easing: Easing.out(Easing.cubic) });
-      uiY.value = withTiming(0, { duration: 320, easing: Easing.out(Easing.cubic) });
+      uiOp.value = withTiming(1, { duration: 360, easing: Easing.out(Easing.quad) });
+      uiY.value = withTiming(0, { duration: 600, easing: Easing.out(Easing.poly(4)) });
       return;
     }
     if (name === 'done') finishEntrance();
@@ -108,9 +132,13 @@ export default function LoginScreen() {
         // the logo is drawn "contain" inside its box: find where the picture itself sits
         const sc = Math.min(lw / 2103, lh / 1080);
         const dw = 2103 * sc; const dh = 1080 * sc;
+        // The swarm lands in the MIDDLE of the screen, a little larger than the finished logo.
+        const cw = dw * HERO_SCALE; const ch = dh * HERO_SCALE;
+        dyV.value = (oy + oh / 2) - (ly + lh / 2); // from its final place down to the middle
+        dxV.value = (ox + ow / 2) - (lx + lw / 2);
         setEntranceCfg({
           size: { w: ow, h: oh },
-          rect: { x: lx - ox + (lw - dw) / 2, y: ly - oy + (lh - dh) / 2, w: dw, h: dh },
+          rect: { x: ow / 2 - cw / 2, y: oh / 2 - ch / 2, w: cw, h: ch },
         });
         setPhase('playing');
       });
