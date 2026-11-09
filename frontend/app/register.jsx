@@ -13,6 +13,7 @@ import { authAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { semantic } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
+import { logoSource } from '../src/utils/logoSource';
 
 export default function RegisterScreen() {
   const { colors, isDark } = useTheme();
@@ -74,7 +75,7 @@ export default function RegisterScreen() {
       <AnimatedBackground>
         <View style={s.loadingContainer}>
           <Image
-            source={require('../assets/logo-header.png')}
+            source={logoSource(isDark)}
             style={{ width: '100%', maxWidth: 440, height: 200, resizeMode: 'contain' }}
           />
           <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.lg }} />
@@ -106,7 +107,7 @@ export default function RegisterScreen() {
         >
         <View style={s.content}>
           <View style={s.logoContainer}>
-            <Image source={require('../assets/logo-header.png')} style={s.logoImage} resizeMode="contain" />
+            <Image source={logoSource(isDark)} style={s.logoImage} resizeMode="contain" />
           </View>
 
           <GlassCard style={s.card}>
