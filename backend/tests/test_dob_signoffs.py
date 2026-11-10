@@ -285,7 +285,8 @@ class TheBrainAnswersWhatInspectionsHappened(_Brain):
                   "- B01074863-I1 construction fence, 2026-07-22\n"
                   "- B01141294-S8 support of excavation, 2026-10-29\n"
                   "- B01141294-S4 foundation + earthwork, 2026-11-05\n"
-                  "DOB NOW inspection results and DEP water-main inspections aren't in public data.")
+                  "DOB NOW: Inspections was not checked, and DEP water-main inspections are not a "
+                  "source LeveLog reads.")
 
         def first(kw):
             system = kw["messages"][0]["content"]

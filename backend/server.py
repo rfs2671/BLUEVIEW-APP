@@ -3593,6 +3593,12 @@ class ProjectUpdate(BaseModel):
     lng: Optional[float] = None
     geofence_radius_m: Optional[int] = None
     gates: Optional[List[ProjectGate]] = None
+    # Other BINs of the job site, set by a company ADMIN only (update_project's
+    # admin rule): e.g. the demolished building's obsolete BIN (588: 3255362
+    # beside 3430621). Read by the DOB sync (still only when a listed BIN shares
+    # a job with the project's) and by the DOB NOW: Inspections reader. Nothing
+    # writes it automatically. Each entry: exactly 7 digits, not a placeholder.
+    additional_bins: Optional[List[str]] = None
     # ── Completion, legal hold, and the no-completion attestation ─────────
     #
     # THE COMPLETION IS A PAIR AND ONLY EVER A PAIR. A claim about a legal
@@ -17702,6 +17708,26 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
 
     return ProjectResponse(**serialize_id(project))
 
+#: Most other BINs one site may list.
+MAX_ADDITIONAL_BINS = 4
+
+
+def _valid_additional_bins(value) -> list:
+    """The listed BINs, or 422: each exactly 7 digits, a real BIN (not the
+    x000000 placeholder), at most MAX_ADDITIONAL_BINS, duplicates dropped. An
+    empty list clears it."""
+    out = []
+    for b in value or []:
+        s = str(b or "").strip()
+        if not re.fullmatch(r"\d{7}", s) or s.endswith("000000"):
+            raise HTTPException(status_code=422, detail=f"Not a BIN: {s[:20]!r} (a BIN is 7 digits).")
+        if s not in out:
+            out.append(s)
+    if len(out) > MAX_ADDITIONAL_BINS:
+        raise HTTPException(status_code=422, detail=f"At most {MAX_ADDITIONAL_BINS} other BINs.")
+    return out
+
+
 @api_router.put("/projects/{project_id}", response_model=ProjectResponse, dependencies=[Depends(require_approved), Depends(require_project_admin_access)])
 async def update_project(project_id: str, project_data: ProjectUpdate,
                          admin = Depends(get_project_admin_user)):
@@ -17712,6 +17738,8 @@ async def update_project(project_id: str, project_data: ProjectUpdate,
     if not is_company_admin(admin) and set(update_data) - {"trade_assignments"}:
         raise HTTPException(status_code=403, detail=(
             "Admin access required. A PM on assigned jobs can change the job's subs only."))
+    if "additional_bins" in update_data:
+        update_data["additional_bins"] = _valid_additional_bins(update_data["additional_bins"])
     update_data["updated_at"] = datetime.now(timezone.utc)
 
     # ── COMPLETION AND LEGAL HOLD ───────────────────────────────────────────
@@ -44391,10 +44419,11 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
     under the project's BIN; a neighbour's BIN is never fetched. Never raises: a
     failure leaves the sync exactly as it was.
 
-    `listed_bins`: the BINs a person listed on the project (`additional_bins`,
-    e.g. a demolished building's obsolete BIN). They are the site's by that
-    person's word, so they are fetched without the shared-job test, and before
-    the BINs only the records suggest.
+    `listed_bins`: the BINs an admin listed on the project (`additional_bins`,
+    e.g. a demolished building's obsolete BIN). They are ASKED about first,
+    even when no record suggests them, and kept only when they pass the same
+    shared-job test: a mistyped entry can never pull a neighbour's records
+    in (it is logged instead).
 
     Each record added here is tagged `_site_bin` and each BIN fetched is
     appended to `fetched_bins`, so the first pass of a newly added BIN is
@@ -44407,7 +44436,11 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
                   if b and b != nyc_bin and not _is_placeholder_bin(b)]
         for cand in listed + [b for b in dob_site_bins.candidate_bins(records, nyc_bin) if b not in listed]:
             found = await _query_dob_apis(cand, "", answered)
-            if cand in listed or dob_site_bins.shares_job(records, nyc_bin, found, cand):
+            shared = dob_site_bins.shares_job(records, nyc_bin, found, cand)
+            if cand in listed and not shared:
+                logger.warning(f"[dob-sync] project {project_id}: listed BIN {cand} shares no job with BIN "
+                               f"{nyc_bin}; its records were not added")
+            if shared:
                 for r in found:
                     if isinstance(r, dict):
                         r["_site_bin"] = cand
@@ -57587,7 +57620,8 @@ async def _dm_project_status(ctx: dict, job: dict, args: dict) -> str:
     except Exception as e:
         logger.warning(f"[progress] failed: {type(e).__name__}: {e!r}")
         return "The progress records couldn't be read just now."
-    return project_progress.as_text(model, str(args.get("scope") or "overall"), args.get("name"))
+    return _inspections_answer(project_progress.as_text(model, str(args.get("scope") or "overall"), args.get("name")),
+                               model.get("inspection_sources") or [], "project_status")
 
 
 # ── SCHEDULE FORECAST (lib/forecast.py) ─────────────────────────────────────
@@ -63789,6 +63823,11 @@ def _dm_no_negative_claims(reply: Any, trace: Any, ident: Optional[dict] = None)
         # The appended "Closest detail" quote is a sheet's text: redacted as
         # the rest of the answer was.
         out = dm_brain.redact_phones(out)
+    # INSPECTIONS (2026-11-10, 588): "no inspections" / "not in public data"
+    # said about sources this turn did not check becomes what was not checked.
+    out, m = source_coverage.rewrite_reply(out, trace if isinstance(trace, list) else None)
+    if m:
+        logger.info(f"[dm-gate] inspections absence rewritten company={(ident or {}).get('company_id') or '?'} n={m}")
     return out
 
 
@@ -67330,9 +67369,22 @@ async def _handle_dob_status(project_id: str, *,
     # the answer names every inspection source and whether it was checked, so
     # an empty list is never a "none" about a source nobody read.
     portal = await _dob_now_portal_check(project, filings)
+    sources = await _inspection_sources(project_id, portal, team_reports_read=False)
+    # The coverage goes BEFORE the portal's results: a tool result is cut at
+    # 3000 characters in the brain's trace, and the reply gate reads it there.
+    lines += source_coverage.coverage_lines(sources)
     lines += dob_now_inspections.answer_lines(portal)
-    lines += source_coverage.coverage_lines(await _inspection_sources(project_id, portal, team_reports_read=False))
-    return "\n".join(lines)
+    return _inspections_answer("\n".join(lines), sources, "dob_status")
+
+
+def _inspections_answer(text: str, sources: list, where: str) -> str:
+    """Every composed inspections answer goes out through the coverage gate
+    (lib/source_coverage.enforce): an absence the checked sources do not back
+    is corrected and the unchecked sources named. Logged, never the words."""
+    out, bad = source_coverage.enforce(text, sources)
+    if bad:
+        logger.warning(f"[coverage-gate] {where}: an absence not backed by the sources checked was corrected")
+    return out
 
 
 #: How long one dob_status answer may spend reading DOB NOW: Inspections.

@@ -41,7 +41,7 @@ FLOOR_TABLE = {
     "ROF": {"WS ROUGH": "PASSED", "GAS ROUGH": "PASSED", "ST DRN ROUGH": "PASSED"},
 }
 #: 7755632's own result comment, names removed (fact file).
-COMMENT_7755632 = "ATOI:REP; [plumber's representative] JMFGC#1238...... W/S Storm /gas rough & OSP rough pass"
+COMMENT_7755632 = "W/S Storm /gas rough & OSP rough pass"
 
 
 def record(rid):
@@ -103,7 +103,7 @@ class TheStaticPage(unittest.TestCase):
 
     def test_a_person_is_never_taken_for_the_firm(self):
         page = ("<table role='presentation' id='tbl_licensedps'><tr ><td class='td_child_left'></td>"
-                "<td>JOHN DOE <br/>JANE ROE 003052<br/>1 MAIN ST<br/></td></tr></table>")
+                "<td>PERSON ONE <br/>PERSON TWO 000000<br/>[ADDRESS]<br/></td></tr></table>")
         self.assertIsNone(D.parse_record(page)["licensed_firm"])
 
     def test_advance_notices_and_their_results(self):
@@ -253,7 +253,8 @@ class EveryBin(unittest.TestCase):
         self.assertEqual(by["ADV-PL-26-011521"]["bins_found"], [F.OLD_BIN])
         self.assertEqual(res["state"], "checked")
         # BIN 3430621 has four records: two result pages were read.
-        self.assertEqual(res["searched"][F.NEW_BIN], {"pages": 2, "stated_total": 4, "found": 4})
+        self.assertEqual(res["searched"][F.NEW_BIN], {"pages": 2, "stated_total": 4, "found": 4,
+                                                       "recognised": "grid"})
 
     def test_a_short_search_read_is_partial_not_checked(self):
         """Live on 2026-11-10 the first pager read 10 of 15 records and the
@@ -325,8 +326,8 @@ class TheCoverageContract(unittest.TestCase):
     def test_bare_absence_is_caught(self):
         self.assertIsNotNone(SC.bare_absence("DOB NOW inspection results are not in public data."))
         self.assertIsNotNone(SC.bare_absence("No inspections on record."))
-        self.assertIsNone(SC.bare_absence(SC.absence("inspections", [
-            SC.entry(SC.DOB_NOW_INSPECTIONS, SC.NOT_CHECKED, why="reader off")])))
+        off = [SC.entry(SC.DOB_NOW_INSPECTIONS, SC.NOT_CHECKED, why="reader off")]
+        self.assertIsNone(SC.bare_absence(SC.absence("inspections", off), off))
 
 
 class TheProgressAnswer(unittest.TestCase):
@@ -394,12 +395,14 @@ class TheAssistantsAnswer(unittest.TestCase):
     def test_what_inspections_happened_on_588(self):
         out = self._status(flag=True)
         self.assertIsNone(SC.bare_absence(out), out)
-        self.assertRegex(out, r"PL - Up to 9 Requested Floors \(7755632\): Pass-Final — DOB inspection, resulted "
-                              r"2026-11-05 10:20")
+        self.assertRegex(out, r"PL - Up to 9 Requested Floors \(7755632\): Pass-Final \(Final = resulted; not a "
+                              r"sign-off\) — DOB inspection, resulted 2026-11-05 10:20; result comment: "
+                              r"\"W/S Storm /gas rough & OSP rough pass\"")
         self.assertRegex(out, r"Storm Drainage-ST-Piping-Underground \(7681635\): Certified — licensed master plumber "
                               r"self-certification, not a DOB inspection, resulted 2026-09-01 08:30")
         self.assertRegex(out, r"ADV-PL-26-011521 \([^)]*found under BIN 3255362 only\)")
-        self.assertRegex(out, r"Spot Check \(7672759\): Spot Check - Pass-Final — DOB spot check, resulted 2026-09-01")
+        self.assertRegex(out, r"Spot Check \(7672759\): Spot Check - Pass-Final \(Final = resulted; not a sign-off\) — "
+                              r"DOB spot check, resulted 2026-09-01")
         self.assertRegex(out, r"PL FLOOR RESULTS \(the table carries no dates\): Floor 1: WS UND GRND certified")
         self.assertRegex(out, r"Sources for inspections — checked: [^\n]*DOB NOW: Inspections \(public portal[^\n]*"
                               r"\(read 2026-11-10 13:30 UTC\)")

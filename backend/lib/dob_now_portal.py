@@ -183,14 +183,23 @@ class Portal:
                        "ctl00$ScriptManager1": f"{panel_id}|{SEARCH_BUTTON}"})
         first = self._call("post", HOME, data=fields, headers=dict(AJAX_HEADERS, Referer=HOME))
         records: Dict[str, Dict[str, Any]] = {}
-        pages_read = 1
         text = first["text"]
-        redirect = parse_redirect(text)
-        if redirect:              # one record: the portal goes straight to it
+        kind = search_reply_kind(text)
+        if kind == "redirect":          # one record: the portal goes straight to it
+            redirect = parse_redirect(text)
             records[redirect["capid_key"]] = {"record_id": None, "capid": redirect["capid"]}
-            return {"bin": bin_, "records": records, "pages": 1, "stated_total": 1, "fetched_at": first["fetched_at"]}
+            return {"bin": bin_, "records": records, "pages": 1, "stated_total": 1, "recognised": "redirect",
+                    "fetched_at": first["fetched_at"]}
+        if kind == "no_results":
+            return {"bin": bin_, "records": {}, "pages": 1, "stated_total": 0, "recognised": "no_results",
+                    "fetched_at": first["fetched_at"]}
+        if kind != "grid":
+            # An error segment, a redirect elsewhere, a page with no results
+            # grid: NOT a search that found nothing. Never 'checked'.
+            raise Unreachable(f"the portal's search reply was not recognised ({kind})")
         records.update(parse_search_results(text))
         total = stated_total(text)
+        pages_read = 1
         fields = apply_delta_fields(fields, text)
         seen_pages = {1}
         grid = grid_panel(text, panel_id)
@@ -205,11 +214,21 @@ class Portal:
             fields.pop(SEARCH_BUTTON, None)
             page = self._call("post", HOME, data=fields, headers=dict(AJAX_HEADERS, Referer=HOME))
             text = page["text"]
+            if search_reply_kind(text) != "grid":
+                raise Unreachable(f"results page {number} of the search was not recognised")
             records.update(parse_search_results(text))
             fields = apply_delta_fields(fields, text)
             pages_read += 1
-        return {"bin": bin_, "records": records, "pages": pages_read, "stated_total": total,
+        return {"bin": bin_, "records": records, "pages": pages_read, "stated_total": total, "recognised": "grid",
                 "fetched_at": first["fetched_at"]}
+
+    # -- one inspection's details -------------------------------------------
+    def fetch_inspection_detail(self, path: str) -> Dict[str, Any]:
+        """The inspection's details page (the list row's 'View Details'): a GET."""
+        url = path if path.startswith("http") else "https://a810-lmpaca.nyc.gov" + path
+        if not url.startswith(BASE + "Inspection/InspectionDetails.aspx?"):
+            raise Unreachable("not an inspection details link of the portal")
+        return self._call("get", url)
 
     # -- one record ----------------------------------------------------------
     def fetch_record(self, capid: Sequence[str]) -> Dict[str, Any]:
@@ -232,6 +251,34 @@ class Portal:
 # ── SEARCH RESULT READERS (pure) ───────────────────────────────────────────
 
 _CAP_ROW = re.compile(r"capID1=(\w+)&(?:amp;)?capID2=(\w+)&(?:amp;)?capID3=(\w+)[^>]*>\s*(?:<[^>]+>\s*)*([A-Z0-9][A-Z0-9-]{5,})")
+
+
+#: The portal's own words for a search that matched nothing (captured live,
+#: 2026-11-10, a search for a BIN with no records).
+NO_RESULTS_TEXT = "Your search returned no results"
+
+
+def search_reply_kind(text: str) -> str:
+    """What a search postback reply IS. Only 'grid' (a results grid with the
+    portal's 'Showing a-b of N' and at least one record row), 'no_results'
+    (the portal's own no-results notice) and 'redirect' (straight to one
+    record) are a search that was read. Anything else -- 'error',
+    'not_a_delta', 'redirect_elsewhere', 'unrecognised' -- is not."""
+    try:
+        segs = D.delta_segments(text)
+    except (ValueError, IndexError):
+        return "not_a_delta"
+    kinds = {t for t, _i, _c in segs}
+    if "error" in kinds:
+        return "error"
+    if "pageRedirect" in kinds:
+        return "redirect" if parse_redirect(text) else "redirect_elsewhere"
+    panels = " ".join(c for t, _i, c in segs if t == "updatePanel")
+    if NO_RESULTS_TEXT in _html.unescape(panels) and not parse_search_results(panels):
+        return "no_results"
+    if "dgvPermitList_gdvPermitList" in panels and stated_total(panels) is not None and parse_search_results(panels):
+        return "grid"
+    return "unrecognised"
 
 
 def parse_search_results(text: str) -> Dict[str, Dict[str, Any]]:
@@ -327,7 +374,8 @@ def check_bins(bins: Sequence[str], portal: Optional[Portal] = None, *, keep_raw
         except Unreachable as e:
             out["unreachable"].append({"what": f"BIN {b} search", "why": str(e)})
             continue
-        out["searched"][b] = {"pages": res["pages"], "stated_total": res["stated_total"], "found": len(res["records"])}
+        out["searched"][b] = {"pages": res["pages"], "stated_total": res["stated_total"], "found": len(res["records"]),
+                              "recognised": res.get("recognised")}
         if res["stated_total"] is not None and len(res["records"]) < res["stated_total"]:
             # Fewer rows than the portal says it has: the rest are UNREAD, not absent.
             out["unreachable"].append({"what": f"BIN {b} search",
@@ -338,6 +386,9 @@ def check_bins(bins: Sequence[str], portal: Optional[Portal] = None, *, keep_raw
                                                                  "bins_found": []})
             if b not in slot["bins_found"]:
                 slot["bins_found"].append(b)
+    skipped = [slot["record_id"] or key for key, slot in found.items() if only and slot["record_id"] not in only]
+    if skipped:
+        out["unreachable"].append({"what": f"{len(skipped)} record(s)", "why": "not read (left out of this run)"})
     for key, slot in found.items():
         if only and slot["record_id"] not in only:
             continue
@@ -362,6 +413,17 @@ def check_bins(bins: Sequence[str], portal: Optional[Portal] = None, *, keep_raw
             if not any(u["what"].startswith(f"record {entry['record_id']}") for u in out["unreachable"]):
                 out["unreachable"].append({"what": f"record {entry['record_id']} inspection list",
                                            "why": entry["inspections"].get("why") or "not loaded"})
+        # Each completed inspection's details page: its status history and its
+        # own result comment (what lets an undated floor-table cell be linked).
+        entry["details"] = {}
+        for c in entry["inspections"].get("completed") or []:
+            if not c.get("details_url") or not c.get("id"):
+                continue
+            try:
+                det = D.parse_inspection_detail(portal.fetch_inspection_detail(c["details_url"])["text"])
+            except Unreachable as e:
+                det = {"loaded": False, "why": str(e), "status_history": []}
+            entry["details"][c["id"]] = det
         out["records"].append(entry)
     out["records"].sort(key=lambda e: str(e.get("record_id")))
     if not out["searched"]:
@@ -399,16 +461,26 @@ _CACHE: Dict[Tuple[str, ...], Tuple[float, Dict[str, Any]]] = {}
 _LOCK = threading.Lock()
 
 
+def _cache_key(bins: Sequence[str], state: str) -> Tuple[str, ...]:
+    """The key carries the coverage status: only a CHECKED read is ever kept
+    or served, so a partial or failed read can never come back as checked."""
+    return tuple(sorted(bins)) + (f"state={state}",)
+
+
 def remember(bins: Sequence[str], result: Dict[str, Any], *, at: Optional[float] = None) -> None:
-    if result.get("state") not in ("checked", "partial"):
+    """Keep a fully CHECKED read only. A partial, unreachable or not-checked
+    result is never kept (it is re-read next time)."""
+    if result.get("state") != "checked":
         return
     with _LOCK:
-        _CACHE[tuple(sorted(bins))] = (time.monotonic() if at is None else at, result)
+        _CACHE[_cache_key(bins, "checked")] = (time.monotonic() if at is None else at, result)
 
 
 def cached(bins: Sequence[str], *, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
     with _LOCK:
-        hit = _CACHE.get(tuple(sorted(bins)))
+        hit = _CACHE.get(_cache_key(bins, "checked"))
+    if hit and hit[1].get("state") != "checked":
+        return None
     if not hit:
         return None
     t = time.monotonic() if now is None else now

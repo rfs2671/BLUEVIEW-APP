@@ -42,7 +42,7 @@
                                             </td>
                                             <td valign="top">
                                                 <div class="ACA_LinkButton">
-                                                    <span id="ctl00_PlaceHolderMain_InspectionList_gvListCompleted_ctl02_lblOnlyOneAction"><a id='1806041660' href='javascript:void(0)' onclick="showInspectionPopupDialog('/CitizenAccessBuildings/Inspection/InspectionDetails.aspx?agencyCode=BUILDINGS&RecordAltID=B01141294S5PL&RecordID1=DUB26&RecordID2=00000&RecordID3=07Y1R&Module=DOB&PublicUserID=PUBLICUSER0&ScheduledType=Unknown&Action=ViewDetails&ID=7681635&IsFromWizardPage=False&RequestDayOption=0&ContactChangeOption=Unknown&isPopup=Y&Status=Unknown&NavigationBeginPage=ViewDetails&TimeOption=Unknow','InspectionDetailsPageWidth','1806041660')" title='View Details'>View Details</a></span>
+                                                    <span id="ctl00_PlaceHolderMain_InspectionList_gvListCompleted_ctl02_lblOnlyOneAction"><a id='aaaaaaaaaa' href='javascript:void(0)' onclick="showInspectionPopupDialog('/CitizenAccessBuildings/Inspection/InspectionDetails.aspx?agencyCode=BUILDINGS&RecordAltID=B01141294S5PL&RecordID1=DUB26&RecordID2=00000&RecordID3=07Y1R&Module=DOB&PublicUserID=PUBLICUSER0&ScheduledType=Unknown&Action=ViewDetails&ID=7681635&IsFromWizardPage=False&RequestDayOption=0&ContactChangeOption=Unknown&isPopup=Y&Status=Unknown&NavigationBeginPage=ViewDetails&TimeOption=Unknow','InspectionDetailsPageWidth','aaaaaaaaaa')" title='View Details'>View Details</a></span>
                                                 </div>
                                             </td>
                                         </tr>
@@ -60,7 +60,7 @@
                                             </td>
                                             <td valign="top">
                                                 <div class="ACA_LinkButton">
-                                                    <span id="ctl00_PlaceHolderMain_InspectionList_gvListCompleted_ctl03_lblOnlyOneAction"><a id='1806041660' href='javascript:void(0)' onclick="showInspectionPopupDialog('/CitizenAccessBuildings/Inspection/InspectionDetails.aspx?agencyCode=BUILDINGS&RecordAltID=B01141294S5PL&RecordID1=DUB26&RecordID2=00000&RecordID3=07Y1R&Module=DOB&PublicUserID=PUBLICUSER0&ScheduledType=Unknown&Action=ViewDetails&ID=7681636&IsFromWizardPage=False&RequestDayOption=0&ContactChangeOption=Unknown&isPopup=Y&Status=Unknown&NavigationBeginPage=ViewDetails&TimeOption=Unknow','InspectionDetailsPageWidth','1806041660')" title='View Details'>View Details</a></span>
+                                                    <span id="ctl00_PlaceHolderMain_InspectionList_gvListCompleted_ctl03_lblOnlyOneAction"><a id='aaaaaaaaaa' href='javascript:void(0)' onclick="showInspectionPopupDialog('/CitizenAccessBuildings/Inspection/InspectionDetails.aspx?agencyCode=BUILDINGS&RecordAltID=B01141294S5PL&RecordID1=DUB26&RecordID2=00000&RecordID3=07Y1R&Module=DOB&PublicUserID=PUBLICUSER0&ScheduledType=Unknown&Action=ViewDetails&ID=7681636&IsFromWizardPage=False&RequestDayOption=0&ContactChangeOption=Unknown&isPopup=Y&Status=Unknown&NavigationBeginPage=ViewDetails&TimeOption=Unknow','InspectionDetailsPageWidth','aaaaaaaaaa')" title='View Details'>View Details</a></span>
                                                 </div>
                                             </td>
                                         </tr>
@@ -78,7 +78,7 @@
                                             </td>
                                             <td valign="top">
                                                 <div class="ACA_LinkButton">
-                                                    <span id="ctl00_PlaceHolderMain_InspectionList_gvListCompleted_ctl04_lblOnlyOneAction"><a id='1806041660' href='javascript:void(0)' onclick="showInspectionPopupDialog('/CitizenAccessBuildings/Inspection/InspectionDetails.aspx?agencyCode=BUILDINGS&RecordAltID=B01141294S5PL&RecordID1=DUB26&RecordID2=00000&RecordID3=07Y1R&Module=DOB&PublicUserID=PUBLICUSER0&ScheduledType=Unknown&Action=ViewDetails&ID=7755632&IsFromWizardPage=False&RequestDayOption=0&ContactChangeOption=Unknown&isPopup=Y&Status=Unknown&NavigationBeginPage=ViewDetails&TimeOption=Unknow','InspectionDetailsPageWidth','1806041660')" title='View Details'>View Details</a></span>
+                                                    <span id="ctl00_PlaceHolderMain_InspectionList_gvListCompleted_ctl04_lblOnlyOneAction"><a id='aaaaaaaaaa' href='javascript:void(0)' onclick="showInspectionPopupDialog('/CitizenAccessBuildings/Inspection/InspectionDetails.aspx?agencyCode=BUILDINGS&RecordAltID=B01141294S5PL&RecordID1=DUB26&RecordID2=00000&RecordID3=07Y1R&Module=DOB&PublicUserID=PUBLICUSER0&ScheduledType=Unknown&Action=ViewDetails&ID=7755632&IsFromWizardPage=False&RequestDayOption=0&ContactChangeOption=Unknown&isPopup=Y&Status=Unknown&NavigationBeginPage=ViewDetails&TimeOption=Unknow','InspectionDetailsPageWidth','aaaaaaaaaa')" title='View Details'>View Details</a></span>
                                                 </div>
                                             </td>
                                         </tr>

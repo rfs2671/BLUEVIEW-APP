@@ -85,11 +85,14 @@ class FakeSession:
     (the list never loads). `error_on`: record ids whose pages are the
     portal's 'technical difficulties' page. `challenge`: every call is a
     Cloudflare interstitial. `override`: record id -> delta text.
-    `one_page`: the pager never leaves page 1 (a short read)."""
+    `one_page`: the pager never leaves page 1 (a short read).
+    `search_reply`: every search answers with this text instead (a failed or
+    unrecognised reply). `no_details`: the inspection details pages 404."""
 
     def __init__(self, *, static_only: bool = False, error_on: Tuple[str, ...] = (), challenge: bool = False,
-                 override: Optional[Dict[str, str]] = None, one_page: bool = False):
-        self.one_page = one_page
+                 override: Optional[Dict[str, str]] = None, one_page: bool = False,
+                 search_reply: Optional[str] = None, no_details: bool = False):
+        self.one_page, self.search_reply, self.no_details = one_page, search_reply, no_details
         self.static_only, self.error_on, self.challenge = static_only, set(error_on), challenge
         self.override = dict(override or {})
         self.calls: List[Tuple[str, str, Dict[str, Any]]] = []
@@ -105,6 +108,12 @@ class FakeSession:
                         "</html>", 403, url)
         if "CapHome" in url:
             return Resp(HOME_HTML, 200, url)
+        if "Inspection/InspectionDetails.aspx" in url:
+            m = re.search(r"[?&]ID=(\d+)", url)
+            name = f"detail_{m.group(1)}.html" if m else ""
+            if self.no_details or not m or not (FIX / name).exists():
+                return Resp("", 404, url)
+            return Resp(fixture(name), 200, url)
         rid = self._cap(url)
         if rid in self.error_on:
             return Resp(fixture_error(), 200, "https://a810-lmpaca.nyc.gov/CitizenAccessBuildings/Error.aspx?ErrorId=x")
@@ -119,7 +128,11 @@ class FakeSession:
         if self.challenge:
             return Resp("<title>Just a moment...</title>", 403, url)
         if "CapHome" in url:
+            if self.search_reply is not None:
+                return Resp(self.search_reply, 200, url)
             bin_ = data.get("ctl00$PlaceHolderMain$generalSearchForm$txtGSParcelNo", "")
+            if not any(bin_ in b for _c1, _c3, b in RECORDS.values()):
+                return Resp(no_results_delta(), 200, url)
             m = re.search(r"gdvPermitList\$ctl13\$ctl(\d+)$", data.get("__EVENTTARGET") or "")
             page = int(m.group(1)) - 1 if m and not self.one_page else 1
             if m:
@@ -131,6 +144,24 @@ class FakeSession:
         if self.static_only:
             return Resp(fixture(f"record_{rid}.html"), 200, url)
         return Resp(fixture(f"inspections_{rid}.txt"), 200, url)
+
+
+def no_results_delta() -> str:
+    """The portal's reply to a search that matched nothing (its own words,
+    captured live 2026-11-10)."""
+    return delta(("updatePanel", "ctl00_PlaceHolderMain_updatePanel", "<div>Record Number:</div>"),
+                 ("updatePanel", "ctl00_PlaceHolderMain_updatePanel2",
+                  "<span>Notice:</span><span>Your search returned no results. Please modify your search criteria and "
+                  "try again.</span>"),
+                 ("hiddenField", "__VIEWSTATE", "vs-none"))
+
+
+#: The three replies the adversarial review showed read as "checked, nothing found".
+BAD_SEARCH_REPLIES = {
+    "error segment": "22|error|500|An unknown error occurred|",
+    "a plain page saying no records": "<html>No records found.</html>",
+    "a delta with only a hidden field": "5|hiddenField|__VIEWSTATE|vs-xx|",
+}
 
 
 def fixture_error() -> str:

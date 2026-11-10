@@ -210,7 +210,7 @@ def _firm(s: str) -> Optional[str]:
         return None
     firm = re.sub(r"\s+\d{4,}\s*$", "", scrub(lines[1])).strip()
     # The second line is the business only when it says so: an electrician's
-    # block can carry a second PERSON name there ("RICHARD NEU 003052").
+    # block can carry a second PERSON name and licence number there.
     return firm if _BUSINESS.search(firm) else None
 
 
@@ -339,17 +339,47 @@ def delta_segments(text: Any) -> List[Tuple[str, str, str]]:
 _SPANS = re.compile(r"<SPAN[^>]*>(.*?)</SPAN>", re.S | re.I)
 
 
-def outcome(result: Any) -> str:
-    """'pass' | 'fail' | 'certified' | 'other' from the portal's result words.
-    A failure is read first: 'Not Passed' is a fail."""
+#: THE ONLY result words that are a pass or a certification, after the
+#: 'Spot Check - ' prefix is taken off and case, spaces and the '-Final'
+#: suffix ('Final' = resulted) are normalised. Anything else is NOT done: a
+#: failure, a partial, or unresolved (kept as said, no claim). A whitelist,
+#: because a pattern reads 'Did not pass', 'Not Certified' and 'Partial Pass'
+#: as passes.
+PASS_WORDS = frozenset({"pass", "passed"})
+CERTIFIED_WORDS = frozenset({"certified"})
+FAIL_WORDS = frozenset({"fail", "failed", "disapproved", "disapprove", "not passed", "not pass", "did not pass",
+                        "rejected", "not accepted", "not approved"})
+_PARTIAL = re.compile(r"\bpartial(?:ly)?\b|\bconditional\b|\bcorrections?\b|\bobjections?\b|\bwith\s+comments\b", re.I)
+#: The outcomes. Only the first two are done.
+OUTCOMES = ("pass", "certified", "fail", "partial", "unresolved")
+
+
+def _norm_result(result: Any) -> str:
     r = _text(result).lower()
-    if re.search(r"\b(?:fail(?:ed|s)?|disapproved?|rejected|not\s+(?:approved|accepted|passed)|violation)\b", r):
-        return "fail"
-    if re.search(r"\bcertif(?:ied|ication)\b", r):
-        return "certified"
-    if re.search(r"\bpass(?:ed)?\b|\bapproved\b|\baccepted\b", r):
+    r = re.sub(r"^\s*spot\s+check\s*-\s*", "", r)
+    r = re.sub(r"\s*-\s*final\s*$", "", r)
+    return " ".join(r.replace("(", " ").replace(")", " ").split())
+
+
+def outcome(result: Any) -> str:
+    """'pass' | 'certified' | 'fail' | 'partial' | 'unresolved' from the
+    portal's result words, by WHITELIST: only an exact pass / certified word
+    is done. 'Partial Pass' is partial (not done); 'Not Certified',
+    'Cancelled', 'No Access' and anything unknown are unresolved."""
+    r = _norm_result(result)
+    if r in PASS_WORDS:
         return "pass"
-    return "other"
+    if r in CERTIFIED_WORDS:
+        return "certified"
+    if r in FAIL_WORDS or re.search(r"\bfail|\bdisapprov|\breject|\b(?:not|no|did\s+not|didn'?t)\s+pass", r):
+        return "fail"
+    if _PARTIAL.search(r):
+        return "partial"
+    return "unresolved"
+
+
+#: Outcomes that make NO done claim and are kept as said.
+NOT_DONE = ("partial", "unresolved")
 
 
 def _list_rows(panel: str, grid: str) -> List[Dict[str, Any]]:
@@ -368,9 +398,11 @@ def _list_rows(panel: str, grid: str) -> List[Dict[str, Any]]:
         dm = re.search(r"(\d{1,2}/\d{1,2}/\d{4})(?:\s+at\s+(\d{1,2}:\d{2}\s*[AP]M))?", when, re.I)
         spot = bool(re.match(r"\s*spot\s+check\b", result, re.I))
         base = re.sub(r"^\s*spot\s+check\s*-\s*", "", result, flags=re.I)
+        link = re.search(r"showInspectionPopupDialog\('([^']+)'", r)
         rows.append({"id": ident, "type": typ, "result": result, "outcome": outcome(base),
                      "final": bool(re.search(r"-\s*final\b", base, re.I)), "spot_check": spot,
-                     "resulted_at": _at(dm.group(1), dm.group(2) or "") if dm else None, "when_said": when or None})
+                     "resulted_at": _at(dm.group(1), dm.group(2) or "") if dm else None, "when_said": when or None,
+                     "details_url": _html.unescape(link.group(1)) if link else None})
     return rows
 
 
@@ -397,8 +429,72 @@ def parse_inspection_list(async_delta_text: Any) -> Dict[str, Any]:
     completed = _list_rows(panel, "gvListCompleted")
     upcoming = _list_rows(panel, "gvListUpcoming")
     count = re.search(r"Completed Inspections:(?:</FONT>)?\s*\((\d+)\)", panel)
-    return {"loaded": True, "completed": completed, "upcoming": upcoming,
-            "stated_count": int(count.group(1)) if count else (0 if PLACEHOLDER_COMPLETED in panel else None)}
+    stated = int(count.group(1)) if count else (0 if PLACEHOLDER_COMPLETED in panel and not completed else None)
+    if stated is None:
+        # Neither a count nor the portal's own empty-list words: not a list we recognise.
+        return {"loaded": False, "why": "the inspection list in the reply was not recognised",
+                "completed": completed, "upcoming": upcoming}
+    if stated != len(completed):
+        return {"loaded": False, "why": f"read {len(completed)} of the {stated} completed inspections the portal lists",
+                "completed": completed, "upcoming": upcoming}
+    return {"loaded": True, "completed": completed, "upcoming": upcoming, "stated_count": stated}
+
+
+# ── ONE INSPECTION'S DETAILS PAGE (the "View Details" popup) ───────────────
+#
+# A plain GET of Inspection/InspectionDetails.aspx (the list row's link), read
+# live on 2026-11-10. Its status history carries each status, its date/time
+# and the RESULT COMMENT. The comment names people (the plumber's
+# representative, with a licence number) and the page's separate "Result
+# Comments" block names the inspectors who wrote it: that block is never read,
+# and a comment keeps only its work words.
+
+_HIST = re.compile(r'StatusHistoryList_gdvInspectionStatusHistoryList_ctl\d+_lbl(Status|StatusDateTime|AuditDate|'
+                   r'ResultComments)"[^>]*>(.*?)</span>', re.S)
+
+
+def clean_comment(text: Any) -> Optional[str]:
+    """A result comment's WORK words only. The portal writes the attendee
+    first ('ATOI:REP; <person> <licence>...... <the result>'): everything up
+    to the last run of dots goes. An attendee prefix with no such break is
+    dropped whole (it could not be split from a name). Licence-style numbers,
+    phones and emails never survive."""
+    c = scrub(_text(text))
+    if re.search(r"\.{3,}", c):
+        c = re.split(r"\.{3,}", c)[-1]
+    elif re.match(r"\s*ATOI\b", c, re.I):
+        return None
+    c = re.sub(r"\b[A-Z]{2,}#\s*\d+\b|#\s*\d{3,}\b", "", c)
+    c = " ".join(c.split())
+    return c or None
+
+
+def parse_inspection_detail(page: Any) -> Dict[str, Any]:
+    """{loaded, id, name, status_history: [{status, at, updated, comment}],
+    comment (the newest non-empty one), resulted_at} from the details page.
+    Not that page (an error, a challenge, no history grid) -> loaded False."""
+    s = str(page or "")
+    problem = page_problem(s)
+    name = re.search(r'id="ctl00_phPopup_Inspection_lblInspectionName"[^>]*>(.*?)</span>', s, re.S)
+    rows: List[Dict[str, Any]] = []
+    for field, raw in _HIST.findall(s):
+        if field == "Status" or not rows:
+            rows.append({})
+        rows[-1][field] = raw
+    hist = [{"status": _text(r.get("Status")) or None,
+             "at": _at(*(_text(r.get("StatusDateTime")).split(" ", 1) + [""])[:2]),
+             "updated": _at(*(_text(r.get("AuditDate")).split(" ", 1) + [""])[:2]),
+             "comment": clean_comment(r.get("ResultComments"))} for r in rows]
+    if problem or not name or not hist:
+        return {"loaded": False, "why": problem or "the inspection details page was not recognised",
+                "status_history": []}
+    title = _text(name.group(1))
+    ident = re.search(r"\((\d+)(?:,[^)]*)?\)\s*$", title)
+    resulted = next((h for h in hist if outcome(h["status"]) in ("pass", "certified", "fail", "partial")), None)
+    return {"loaded": True, "id": ident.group(1) if ident else None,
+            "name": re.sub(r"\s*\(\d+(?:,[^)]*)?\)\s*$", "", title), "status_history": hist,
+            "comment": next((h["comment"] for h in hist if h["comment"]), None),
+            "resulted_at": resulted["at"] if resulted else None}
 
 
 # ── TO EVIDENCE ────────────────────────────────────────────────────────────
@@ -461,20 +557,32 @@ def link_for(floor: str, test: str, result: str, linking: Sequence[Dict[str, Any
     OSP and 'pass'. Only a passed cell is linked to a passing inspection."""
     if outcome(result) != "pass":
         return None
+    hits = []
     for ins in linking:
         c = ins.get("comment") or ""
-        if ins.get("outcome") != "pass" or not re.search(r"\bpass(?:ed)?\b", c, re.I):
+        if ins.get("outcome") != "pass" or not re.search(r"\bpass(?:ed)?\b", c, re.I) \
+                or re.search(r"\b(?:not|no|didn'?t|did\s+not)\s+pass", c, re.I):
             continue
         if floor.upper() == "OSP":
             if re.search(r"\bOSP\b", c):
-                return ins
+                hits.append(ins)
             continue
         if "ROUGH" not in test.upper() or not re.search(r"\brough\b", c, re.I):
             continue
         kind = next((rx for name, rx in _KIND_WORDS if test.upper().startswith(name)), None)
         if kind is not None and kind.search(c):
-            return ins
-    return None
+            hits.append(ins)
+    # Two inspections whose comments both name this work: which one passed
+    # THIS floor is not on record, so no date.
+    return hits[0] if len(hits) == 1 else None
+
+
+_CLAIM = {"pass": "done", "certified": "done", "fail": "failed", "partial": "in_progress"}
+
+
+def _claim(o: Any) -> Optional[str]:
+    """The claim an outcome makes; None (no claim, kept as said) when unresolved."""
+    return _CLAIM.get(str(o))
 
 
 def _bind(levels: List[str], frame: Optional[Dict[str, Any]]) -> Tuple[List[str], List[str], Optional[str]]:
@@ -494,7 +602,7 @@ def to_evidence(records: Iterable[Dict[str, Any]], project_id: Any, *,
     inspection's own result comment by inspection id (read from its details
     page), used ONLY to link an undated floor-table cell to that inspection's
     date, marked as a link inference."""
-    comments = {str(k): str(v) for k, v in (comments or {}).items()}
+    given = {str(k): str(v) for k, v in (comments or {}).items()}
     out: List[Dict[str, Any]] = []
     cov: Dict[str, Any] = {"records": 0, "lists_loaded": 0, "lists_not_loaded": [], "floor_cells": 0,
                            "no_claim": [], "linked_cells": 0, "items": 0}
@@ -508,7 +616,13 @@ def to_evidence(records: Iterable[Dict[str, Any]], project_id: Any, *,
             cov["lists_loaded"] += 1
         else:
             cov["lists_not_loaded"].append(rid)
-        linking = [dict(c, comment=comments.get(str(c.get("id")), "")) for c in completed]
+        # An inspection's own comment: from its details page (fetched with the
+        # record), else as given by the caller.
+        comments = dict(given)
+        for ident, det in (entry.get("details") or {}).items():
+            if det and det.get("comment") and str(ident) not in comments:
+                comments[str(ident)] = det["comment"]
+        linking =[dict(c, comment=comments.get(str(c.get("id")), "")) for c in completed]
 
         # 1. Floor-results tables: undated, per floor.
         for title, table in (rec.get("floor_results") or {}).items():
@@ -518,11 +632,11 @@ def to_evidence(records: Iterable[Dict[str, Any]], project_id: Any, *,
                 for test, result in cells.items():
                     cov["floor_cells"] += 1
                     o = outcome(result)
-                    if o == "other":
+                    claim = _claim(o)
+                    if claim is None:
                         cov["no_claim"].append(f"{rid} {floor} {test}: {result}")
                         continue
                     kind = "confirmed" if o == "certified" else "verified"
-                    claim = "failed" if o == "fail" else "done"
                     link = link_for(floor, test, result, linking)
                     on, basis = None, None
                     if link:
@@ -540,13 +654,15 @@ def to_evidence(records: Iterable[Dict[str, Any]], project_id: Any, *,
                         note=_join(f"{LABEL} record {rid}, floor-results table",
                                    None if on else "undated: the floor table carries no date",
                                    "a self-certification, not a DOB inspection" if o == "certified" else None,
+                                   f"partial, as the portal says ({result}): not done" if o == "partial" else None,
                                    why_not, unbound, NOT_SIGNOFF)))
 
         # 2. The loaded completed-inspection list.
         notice = rec.get("advance_notice") or []
         for c in completed:
-            o = c.get("outcome")
-            if o == "other":
+            o = outcome(re.sub(r"^\s*spot\s+check\s*-\s*", "", str(c.get("result") or ""), flags=re.I))
+            claim = _claim(o)
+            if claim is None:
                 cov["no_claim"].append(f"{rid} {c.get('id')}: {c.get('result')}")
                 continue
             day = _day(c.get("resulted_at"))
@@ -559,7 +675,7 @@ def to_evidence(records: Iterable[Dict[str, Any]], project_id: Any, *,
                     lv, why_not = level_of(n.get("floor"))
                     levels, cands, unbound = _bind(lv, frame)
                     out.append(E.item(
-                        "verified", "failed" if o == "fail" else "done", source=SOURCE,
+                        "confirmed" if o == "certified" else "verified", claim, source=SOURCE,
                         ref=f"{rid}|{c.get('id')}|{n.get('inspection_type')}", project_id=project_id,
                         node=test_node(n.get("inspection_type"), rec.get("record_type") or ""), levels=levels,
                         candidates=cands, on=day, by="DOB (spot check)", quote=said,
@@ -575,24 +691,28 @@ def to_evidence(records: Iterable[Dict[str, Any]], project_id: Any, *,
                 basis = f"the inspection's own comment names rough work: \"{scrub(comment)}\""
             kind = "confirmed" if o == "certified" else "verified"
             out.append(E.item(
-                kind, "failed" if o == "fail" else "done", source=SOURCE, ref=f"{rid}|{c.get('id')}",
+                kind, claim, source=SOURCE, ref=f"{rid}|{c.get('id')}",
                 project_id=project_id, node=node, levels=[], on=day, basis=basis,
                 by="licensed master plumber (self-certification)" if o == "certified" else "DOB inspector",
                 quote=said,
                 note=_join(f"{LABEL} record {rid}", final,
                            "a self-certification, not a DOB inspection" if o == "certified" else None,
+                           f"partial, as the portal says ({c.get('result')}): not done" if o == "partial" else None,
+                           f"result comment: \"{comment}\"" if comment else None,
                            "the list names no floor", NOT_SIGNOFF)))
 
         # 3. Self-certification results filed on a CERT-ADV record.
         for r in rec.get("advance_notice_results") or []:
             o = outcome(r.get("result"))
-            if o == "other":
+            claim = _claim(o)
+            if claim is None:
                 cov["no_claim"].append(f"{rid} {r.get('id')}: {r.get('result')}")
                 continue
             lv, why_not = level_of(r.get("floor"))
             levels, cands, unbound = _bind(lv, frame)
+            # The plumber's own results, whatever they say: never DOB-verified.
             out.append(E.item(
-                "confirmed" if o in ("certified", "pass") else "verified", "failed" if o == "fail" else "done",
+                "confirmed", claim,
                 source=SOURCE, ref=f"{rid}|{r.get('id')}", project_id=project_id,
                 node=test_node(r.get("inspection_type"), "PL"), levels=levels, candidates=cands,
                 on=_day(r.get("scheduled")), by="licensed master plumber (self-certification)",
@@ -642,13 +762,18 @@ def answer_lines(portal: Optional[Dict[str, Any]]) -> List[str]:
         found = entry.get("bins_found") or []
         where = f", found under BIN {found[0]} only" if len(found) == 1 and len(portal.get("bins") or []) > 1 else ""
         lines: List[str] = []
+        details = entry.get("details") or {}
         for c in lst.get("completed") or []:
-            o = c.get("outcome")
+            o = outcome(c.get("result"))
             who = ("DOB spot check" if c.get("spot_check") else
                    "licensed master plumber self-certification, not a DOB inspection" if o == "certified" else
                    "DOB inspection")
-            lines.append(f"    - {c.get('type')} ({c.get('id')}): {c.get('result')} — {who}, resulted "
-                         f"{_when(c.get('resulted_at'))}")
+            gloss = (" (Final = resulted; not a sign-off)" if c.get("final") else "") + (
+                "" if o in ("pass", "certified") else
+                " (failed)" if o == "fail" else f" (as the portal says; {'partial, not done' if o == 'partial' else 'unresolved, not done'})")
+            said = (details.get(c.get("id")) or {}).get("comment")
+            lines.append(f"    - {c.get('type')} ({c.get('id')}): {c.get('result')}{gloss} — {who}, resulted "
+                         f"{_when(c.get('resulted_at'))}" + (f"; result comment: \"{said}\"" if said else ""))
         for r in rec.get("advance_notice_results") or []:
             lines.append(f"    - {r.get('inspection_type')} ({r.get('id')}), floor {r.get('floor')}: {r.get('result')} "
                          f"— self-certification results, scheduled {r.get('scheduled') or 'date not shown'}")
