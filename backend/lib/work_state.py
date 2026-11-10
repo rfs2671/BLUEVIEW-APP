@@ -47,6 +47,7 @@ from app.scheduling.graph_v1 import build_graph_v1
 from lib import inspection_reports as IR
 from lib import progress_report as P
 from lib import punch
+from lib import work_nodes
 from lib.plans import level_suggestion as LS
 
 REPORTED_RECENT_DAYS = 7
@@ -175,7 +176,9 @@ def classify(phrase: Any, crew: Any = "") -> Tuple[List[str], bool]:
         return list(ROUGH_MEP), True
     if _GENERIC_PLUMBING.search(t):
         return ["rough_dwv", "rough_water"], True
-    return [], False
+    # Site, structure and envelope work graph_v1 does not cover (data, not an
+    # approved sequence): lib/work_nodes.py.
+    return work_nodes.classify(t)
 
 
 def evidence_rows(activities: Iterable[Dict[str, Any]], frame: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:

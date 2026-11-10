@@ -31,7 +31,7 @@ import re
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-from lib import dob_penalty, dot_embargo, dot_summons, dot_sync, wa_gc
+from lib import dob_penalty, dob_signoffs, dot_embargo, dot_summons, dot_sync, wa_gc
 
 # ── The kinds and their switches ────────────────────────────────────────────
 
@@ -397,6 +397,10 @@ def collect(dob_rows: List[Dict[str, Any]], dot_rows: List[Dict[str, Any]],
                 out.append({"kind": "swo", "item": rid, "rec": r})
         elif rt == "permit":
             if _t(r.get("permit_status")).upper() == "REVOKED":
+                continue
+            # Signed off by DOB (lib/dob_signoffs): finished work, so its
+            # expiry date is not a reminder anyone has to act on.
+            if dob_signoffs.row_signed_off(r):
                 continue
             exp = wa_gc.parse_dob_date(r.get("expiration_date"))
             t = wa_gc.permit_threshold_due(exp, today)

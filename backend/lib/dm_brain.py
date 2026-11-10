@@ -105,6 +105,13 @@ else (the site manager, the super, the office, the sub) for something a tool cou
 that could hold it (a trade, e.g. "how many days hvac worked in 588": sub_attendance with trade; a sub \
 you can't place: find_sub / list_subs, then its tool). If after that nothing has it, say in one line \
 what you checked.
+- Inspections and sign-offs: DOB sign-offs (Letters of Completion) are in dob_status -- what work, \
+DOB's date, the record number. For "what inspections happened" call dob_status AND \
+search_project_history: list each sign-off as DOB-verified and anything the team posted as reported. \
+Say plainly that DOB NOW inspection results (plumbing rough, fire alarm and the like) and DEP \
+water-main inspections are not in public data, and that posting one in the job's WhatsApp group \
+keeps it on record as reported, not DOB-verified. Never say no inspections happened, or that \
+sign-offs are not in anything you can read, because a list came back short.
 - Don't repeat an earlier answer word for word to a different question: answer what they asked now, \
 or ask one short question if you can't tell what they want.
 
@@ -146,6 +153,10 @@ and never say work wasn't done because nothing was reported. When it says the jo
 predecessors are that job's; when it says standard sequence, never call that the job's schedule.
 - schedule_lookahead answers "what's coming up", "what's planned the next two weeks": the confirmed schedule file's \
 dates only. Repeat its rate lines as they are; a rate it calls unknown stays unknown. No percent complete, no delay cause.
+- schedule_status answers "are we on schedule?", "when will we finish?": keep its four groups apart in your answer. \
+VERIFIED and FILE are facts; REPORTED is never a finish; an ESTIMATE is called an estimate with its basis and \
+assumption, and where it says there is not enough evidence, say that and give no date. Past planned finish with no \
+done evidence is not a delay and has no cause. No percent complete unless the file states one, as the file's.
 - proposed_sequence shows a PROPOSED order where no schedule is confirmed. Always call it PROPOSED, never the job's \
 schedule. Pass approve only when their latest message says to approve it, and never approve it for them.
 - confirm_photo_place records the floor of a photo you just sent. Call it ONLY when send_photos said the photo's \

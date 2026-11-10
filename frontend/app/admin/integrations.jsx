@@ -451,6 +451,7 @@ export default function AdminIntegrationsScreen() {
                             router.push(`/projects/${project._id || project.id}/files`)
                           }
                           style={s.projectItem}
+                          contentStyle={s.projectItemContent}
                         >
                           <IconPod size={40}>
                             <FolderOpen size={18} strokeWidth={1.5} color={(isDark ? DROPBOX_BLUE_ON_DARK : DROPBOX_BLUE)} />
@@ -491,6 +492,7 @@ export default function AdminIntegrationsScreen() {
                           router.push(`/projects/${project._id || project.id}/files`)
                         }
                         style={s.projectItem}
+                          contentStyle={s.projectItemContent}
                       >
                         <IconPod size={40}>
                           <FolderOpen
@@ -787,9 +789,13 @@ function buildStyles(colors, isDark) {
   projectsList: {
     gap: spacing.sm,
   },
-  projectItem: {
-    gap: spacing.md,
-    padding: spacing.md,
+  projectItem: {},
+  // icon, then name and path: a clear gap between them (they used to touch)
+  projectItemContent: {
+    gap: spacing.lg,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    justifyContent: 'flex-start',
   },
   projectInfo: {
     flex: 1,

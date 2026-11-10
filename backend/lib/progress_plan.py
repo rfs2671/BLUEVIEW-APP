@@ -200,11 +200,16 @@ def lookahead_text(schedule: Dict[str, Any], rows: Sequence[Row], *, today: date
         out += [f"- {r['name']} ({r['id']}): planned finish {r['planned_finish']}" for r in past[:MAX_PAST_ITEMS]]
         if len(past) > MAX_PAST_ITEMS:
             out.append(f"...and {len(past) - MAX_PAST_ITEMS} more.")
-    out.append("FILE dates and LOGIC are the confirmed schedule's own; REPORTED is the filed logs. Keep them apart. "
-               "No production rate or estimated finish is made: activity dates, a crew moving between floors and photo "
-               "counts are not proof of a rate. Do not give a forecast, a rate, a percent complete, a delay or a cause: "
-               "none is on record.")
+    out.append(LOOKAHEAD_RULE)
     return "\n".join(out)
+
+
+#: The lookahead's closing line. lib/forecast.py replaces it, whole, when it
+#: adds a labelled estimate after the lookahead.
+LOOKAHEAD_RULE = ("FILE dates and LOGIC are the confirmed schedule's own; REPORTED is the filed logs. Keep them apart. "
+                  "No production rate or estimated finish is made: activity dates, a crew moving between floors and photo "
+                  "counts are not proof of a rate. Do not give a forecast, a rate, a percent complete, a delay or a cause: "
+                  "none is on record.")
 
 
 _LAG_UNITS = {"days": "working days", "edays": "calendar days", "percent": "%"}
