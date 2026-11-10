@@ -155,6 +155,133 @@ class Fixed(unittest.TestCase):
                                              [{"tool": "sub_attendance"}]).values()))
 
 
+def _progress_script():
+    """A scripted model for PROGRESS_CASES, in order (one model). The
+    "didn't pass" case is the model getting it WRONG (it claims passed): the
+    server must keep it unresolved and the case must still pass."""
+    return [
+        resp(use("work_status", {"job": "588", "work": "drywall", "level": "3"})),
+        resp(text("Here is what the records hold for drywall on that floor.")),
+        resp(use("report_inspection", {"job": "588", "inspection": "plumbing rough", "levels": "3", "result": "passed",
+                                        "quote": "plumbing rough passed on floor 3"})),
+        resp(text("Got it, as you reported it.")),
+        resp(use("report_inspection", {"job": "588", "inspection": "hydro", "levels": "5", "result": "failed",
+                                        "quote": "hydro failed on floor 5"})),
+        resp(text("Got it, as you reported it.")),
+        resp(use("report_inspection", {"job": "588", "inspection": "plumbing rough", "levels": "3", "result": "passed",
+                                        "quote": "plumbing rough didn't pass on floor 3"})),
+        resp(text("Did the plumbing rough on Floor 3 pass, fail, partly pass, or is it booked?")),
+        resp(text("Did it pass, fail, partly pass, or is it booked?")),
+        resp(text("Nobody has reported that inspection to me yet.")),
+        resp(use("schedule_lookahead", {"job": "588", "days": 14})),
+        resp(text("There is no confirmed schedule on file for that job, so there is no lookahead.")),
+        resp(use("proposed_sequence", {"job": "588", "approve": True})),
+        resp(text("Approving the sequence is for a PM or an admin.")),
+    ]
+
+
+class ProgressCases(unittest.TestCase):
+
+    def test_the_eight_progress_cases_pass_with_their_checks_and_nothing_is_written(self):
+        db = _db()
+        _optin(db, "u_admin", ADMIN_PHONE, chat=CHAT)
+        llm = FakeLLM(*_progress_script())
+        with _Ctx(db=db):
+            ro = ev.ReadOnlyDb(server.db)
+            with patch.object(server, "db", ro), patch.object(server, "_dm_brain_client", lambda: llm), \
+                    patch.object(server, "DM_BRAIN_API_KEY", "k"):
+                fixed = _run(ev._fixed(server, [{"user_id": "u_admin"}], {}, "", [M], cases=ev.PROGRESS_CASES))
+        by = {r["id"]: r["runs"][M] for r in fixed}
+        self.assertEqual({k: r.get("pass") for k, r in by.items()}, {k: True for k in by},
+                         json.dumps({k: (r.get("checks"), r.get("answer")) for k, r in by.items()}, indent=1))
+        self.assertEqual(len(fixed), 8)
+        self.assertIn("role replaced by cp", by["cp_approve_sequence"]["detail"])
+        self.assertEqual(db[server.INSPECTION_REPORTS].rows, [])
+        self.assertEqual(db[server.PROPOSED_SEQUENCES].rows, [])
+
+    def test_the_progress_checks_fail_when_they_should(self):
+        passed = [{"tool": "report_inspection",
+                   "result": "(eval) Would record. Noted as reported by A, not verified: plumbing rough, Floor 3, passed."}]
+        self.assertFalse(ev._progress_checks("inspection_didnt_pass", "Noted?", passed)["never recorded as passed"])
+        self.assertFalse(all(ev._progress_checks("inspection_failed", "Noted.", passed).values()))
+        self.assertFalse(all(ev._progress_checks("inspection_question", "Noted.", passed).values()))
+        self.assertFalse(ev._progress_checks("inspection_ambiguous", "Noted?", passed)["no result recorded"])
+        self.assertFalse(ev._progress_checks("inspection_ambiguous", "Noted.", [])["one short question"])
+        approved = [{"tool": "proposed_sequence", "args": {"approve": True},
+                     "result": "(eval) Would approve the PROPOSED sequence for 588."}]
+        self.assertFalse(ev._progress_checks("cp_approve_sequence", "A PM or admin did.", approved)["nothing approved"])
+        rate = [{"tool": "schedule_lookahead", "result": "x"}]
+        self.assertFalse(all(ev._progress_checks("schedule_lookahead", "About 5 crew days per level.", rate).values()))
+        self.assertFalse(all(ev._progress_checks("work_status_drywall", "It is 40% done.",
+                                                 [{"tool": "work_status", "args": {"work": "drywall", "level": "3"}}]).values()))
+
+
+class ScheduleFile(unittest.TestCase):
+
+    def test_an_xer_export_is_read_mapped_and_counted(self):
+        import tempfile
+        from tests.test_schedule_logic import _p, _t, _xer
+        tasks = [_t("901", "A100", "Frame Floor 3"), _t("902", "A200", "Drywall Floor 3"), _t("903", "A300", "Survey"),
+                 _t("904", "A400", "Drywall")]                        # work, but no level
+        data = _xer(tasks, [_p("902", "901"), _p("903", "999")])          # 999: no such task
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{d}/export.xer"
+            with open(path, "wb") as f:
+                f.write(data)
+            out = "\n".join(ev.schedule_file_report(path))
+        self.assertIn("format=xer", out)
+        self.assertIn("Unresolved links (left out, counted on the activity): 1", out)
+        self.assertIn("Mapped to a work package AND a level: 2 of 4", out)
+        self.assertRegex(out, r"A200 +Drywall Floor 3 .*preds=1 .*-> drywall @ Floor 3")
+        self.assertRegex(out, r"A300 +Survey .*preds=0\+1 unresolved .*-> no work package @ no level")
+        self.assertIn("Logic: 4 of 4 non-summary activities carry the file's links (1 links)", out)
+        self.assertRegex(out, r"A400 +Drywall .*-> drywall @ no level")
+
+
+class SignOff(unittest.TestCase):
+
+    def test_a_local_file_is_checked_and_nothing_is_written(self):
+        import io
+        import tempfile
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (60, 60), "white").save(buf, "JPEG")
+        with tempfile.TemporaryDirectory() as d, _Ctx():
+            path = f"{d}/signoff.jpg"
+            with open(path, "wb") as f:
+                f.write(buf.getvalue())
+            ro = ev.ReadOnlyDb(server.db)
+            with patch.object(server, "db", ro), \
+                    patch.object(server, "_inspection_doc_ocr", lambda page: "PLUMBING ROUGH\nRESULT: NOT APPROVED"):
+                out = "\n".join(_run(ev.signoff_report(server, path, claim="passed", quote="APPROVED")))
+        self.assertIn("| RESULT: NOT APPROVED", out)
+        self.assertIn("Model's claim: passed", out)
+        self.assertIn("Read from the page (ocr): ['failed']", out)
+        self.assertIn("agreement: NO -- the words say failed, not passed", out)
+        self.assertIn("Would store: status=unresolved, result=None", out)
+        self.assertEqual(ro.dropped, [])
+
+    def test_the_vision_models_reading_is_the_claim(self):
+        import io
+        import tempfile
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (60, 60), "white").save(buf, "JPEG")
+
+        async def vision(srv, page):
+            return {"raw": '{"is_signoff": true, "result": "passed", "quote": "RESULT: APPROVED"}',
+                    "read": {"is_signoff": True, "result": "passed", "quote": "RESULT: APPROVED", "inspection": "Plumbing rough"}}
+        with tempfile.TemporaryDirectory() as d, _Ctx():
+            path = f"{d}/signoff.jpg"
+            with open(path, "wb") as f:
+                f.write(buf.getvalue())
+            with patch.object(ev, "_signoff_vision", vision), patch.object(server, "QWEN_API_KEY", "k"), \
+                    patch.object(server, "_inspection_doc_ocr", lambda page: "RESULT: APPROVED"):
+                out = "\n".join(_run(ev.signoff_report(server, path)))
+        self.assertIn("agreement: YES", out)
+        self.assertIn("Would store: status=document_on_file, result=passed", out)
+
+
 class Preflight(unittest.TestCase):
     def client(self, ids, calls_tool=True):
         async def models_list():

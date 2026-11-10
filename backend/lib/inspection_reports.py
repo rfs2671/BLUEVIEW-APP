@@ -292,13 +292,25 @@ def _tokens(text: Any) -> List[str]:
     return re.findall(r"[\w']+", _norm(text))
 
 
+_MERGED_RESULT = re.compile(r"(?i)(?<=[a-z:])(?<!dis)(approved|rejected|accepted|passed|failed|disapproved)\b")
+
+
+def unmerge_ocr(line: Any) -> str:
+    """RapidOCR drops the spaces of printed capitals ("RESULT:NOTAPPROVED",
+    measured on a rendered sign-off): put a space back before a result word
+    that runs into the word before it, so the words can be read ("NOT
+    APPROVED"). Nothing else is split: "PASSENGER" stays one word,
+    "DISAPPROVED" stays a failure."""
+    return _MERGED_RESULT.sub(r" \1", str(line or ""))
+
+
 def document_span(ocr_text: Any, quote: Any) -> Tuple[str, str]:
     """(the text to read the result from, where it came from). The OCR
     line(s) holding the model's quoted result line; the whole OCR text when
     that line is not found on the page; with no OCR text at all, the model's
     own quote, marked "vision_quote" (weaker: the model checked against
     itself); nothing: "none"."""
-    lines = [ln.strip() for ln in str(ocr_text or "").splitlines() if ln.strip()]
+    lines = [unmerge_ocr(ln.strip()) for ln in str(ocr_text or "").splitlines() if ln.strip()]
     want = set(_tokens(quote))
     if not lines:
         return (_norm(quote), "vision_quote") if want else ("", "none")

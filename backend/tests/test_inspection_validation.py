@@ -178,6 +178,17 @@ class TheDocument(unittest.TestCase):
         self.assertEqual(IR.validate_document("", None, "passed")["source"], "none")
         self.assertFalse(IR.validate_document("", None, "passed")["agree"])
 
+    def test_merged_ocr_capitals_are_read(self):
+        """RapidOCR on a rendered sign-off returned "RESULT:NOTAPPROVED" (no
+        spaces): read as not approved, never as approved."""
+        for line, want in (("RESULT:NOTAPPROVED", ["failed"]), ("RESULT:APPROVED", ["passed"]),
+                           ("INSPECTIONPASSED", ["passed"]), ("DISAPPROVED", ["failed"]),
+                           ("PASSENGERELEVATOR", []), ("RESULT:REJECTED", ["failed"])):
+            with self.subTest(line):
+                self.assertEqual(IR.read_result(IR.unmerge_ocr(line))["results"], want)
+        v = IR.validate_document("PLUMBINGROUGHINSPECTION\nFLOOR3\nRESULT:NOTAPPROVED", "APPROVED", "passed")
+        self.assertEqual((v["agree"], v["read"], v["span"]), (False, ["failed"], "result:not approved"))
+
     def test_ocr_lines(self):
         boxes = [(300, 101, "APPROVED"), (40, 99, "RESULT:"), (40, 50, "PLUMBING ROUGH"), (40, 160, "FLOOR 3", 0.9)]
         self.assertEqual(IR.ocr_lines(boxes), "PLUMBING ROUGH\nRESULT: APPROVED\nFLOOR 3")
