@@ -8,6 +8,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, Switch, ActivityIndicator, Pressable } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { GlassCard } from '../GlassCard';
+import { SoftBox } from '../SoftPanel';
 import { useToast } from '../Toast';
 import { whatsappAPI } from '../../utils/api';
 import { companyView, choiceView } from '../../utils/whatsappCompany';
@@ -73,17 +74,21 @@ export default function CompanyWhatsAppPanel() {
             {c.options.map((o) => {
               const on = c.value === o.value;
               return (
-                <Pressable
+                // the CHOSEN option stays dented, like a pressed-in key; the others stay raised
+                <SoftBox
                   key={o.value}
+                  kind="slim"
                   testID={`company-choice-${c.key}-${o.value}`}
                   accessibilityRole="radio"
                   accessibilityState={{ selected: on, disabled: !!busy }}
                   disabled={!!busy || on}
+                  selected={on}
                   onPress={() => change(c, o.value)}
-                  style={[s.option, on && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                  style={s.optionSlot}
+                  contentStyle={s.option}
                 >
-                  <Text style={[s.optionText, on && { color: colors.onPrimary }]}>{o.label}</Text>
-                </Pressable>
+                  <Text style={[s.optionText, on && { color: colors.primary }]}>{o.label}</Text>
+                </SoftBox>
               );
             })}
           </View>
@@ -101,11 +106,9 @@ function buildStyles(colors) {
     label: { color: colors.text.primary, fontSize: 15, fontWeight: '600' },
     note: { color: colors.text.muted, fontSize: 13, marginTop: 2 },
     choice: { paddingVertical: spacing.sm },
-    segment: { flexDirection: 'row', marginTop: spacing.xs },
-    option: {
-      flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center',
-      borderWidth: 1, borderColor: colors.glass.border, marginRight: 8, borderRadius: 10,
-    },
+    segment: { flexDirection: 'row', marginTop: spacing.sm, gap: spacing.md },
+    optionSlot: { flex: 1 },
+    option: { minHeight: 56, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.sm },
     optionText: { color: colors.text.primary, fontSize: 15, fontWeight: '600' },
   });
 }
