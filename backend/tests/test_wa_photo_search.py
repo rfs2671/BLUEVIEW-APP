@@ -112,7 +112,8 @@ class TheSearch(unittest.TestCase):
 
     def test_the_answer_is_cleaned(self):
         v = photo_search.parse_index('x {"view":"Space","quality":99,"description":" a  wall ","tags":"no"} y')
-        self.assertEqual(v, {"view": "other", "quality": 10.0, "description": "a wall", "tags": []})
+        self.assertEqual(v, {"view": "other", "quality": 10.0, "description": "a wall", "tags": [],
+                             "visible_text": [], "room_type": "unknown"})
 
 
 class TheSweep(_Brain):

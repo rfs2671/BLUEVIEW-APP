@@ -209,13 +209,22 @@ def test_every_qwen_call_site_is_metered():
     tree = ast.parse(text)
 
     posts_to_qwen = []
+    bodies = {}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         body = ast.get_source_segment(text, node) or ""
+        bodies[node.name] = body
         if "QWEN_API_BASE" not in body or "chat/completions" not in body:
             continue
         posts_to_qwen.append((node.name, body))
+
+    def counts_in_the_meter(fn: str) -> bool:
+        """A helper that is ITSELF the count: it increments `calls` on the
+        meter's own row (a capped claim, which counts and refuses in one
+        write, so it cannot sit beside a separate record_vision_call)."""
+        b = bodies.get(fn) or ""
+        return "vision_meter.COLLECTION" in b and '"$inc": {"calls": 1}' in b
 
     assert posts_to_qwen, "no Qwen call sites found — has the base URL moved?"
 
@@ -224,6 +233,11 @@ def test_every_qwen_call_site_is_metered():
         post = body.find("chat/completions")
         meter = body.find("record_vision_call")
         if meter != -1 and meter < post:
+            continue
+        # A capped claim ahead of the post, read by what the helper DOES (it
+        # writes the meter's row), not by its name.
+        if any(counts_in_the_meter(m.group(1))
+               for m in re.finditer(r"await\s+(_\w+)\(", body[:post])):
             continue
         # ── THE SECOND LEDGER, AND IT IS A PROPERTY, NOT A NAME ────────────
         #

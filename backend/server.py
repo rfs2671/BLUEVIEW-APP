@@ -76,9 +76,11 @@ from lib import wa_security  # noqa: E402
 from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import dob_penalty  # noqa: E402
+from lib import dob_signoffs  # noqa: E402
 from lib import model_outage  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
+from lib import dm_roles  # noqa: E402
 from lib import datefmt  # noqa: E402
 from lib import multilang  # noqa: E402
 from lib import punch  # noqa: E402
@@ -109,6 +111,8 @@ from lib import attendance  # noqa: E402
 from lib import project_report  # noqa: E402
 from lib import progress_report  # noqa: E402
 from lib import photo_search  # noqa: E402
+from lib import photo_relations, progress_plan, work_state  # noqa: E402
+from lib import photo_geometry, photo_place  # noqa: E402
 from lib import report_image  # noqa: E402
 from lib import progress_report_render  # noqa: E402
 from lib import report_regulatory  # noqa: E402
@@ -3889,8 +3893,11 @@ from lib.vision_meter import (  # noqa: E402
     VISION_PUNCH_PHOTO,
     VISION_REPORT_PHOTO,
     VISION_PHOTO_INDEX,
+    VISION_PHOTO_COMPARE,
     VISION_GROUP_PHOTO,
+    VISION_INSPECTION_DOC,
 )
+from lib import inspection_reports, vision_meter  # noqa: E402
 from lib import plan_extract  # noqa: E402
 from lib import plan_eval  # noqa: E402
 from lib import plan_refusal  # noqa: E402
@@ -9660,6 +9667,45 @@ async def require_project_access(
     current_user = Depends(get_current_user),
 ) -> dict:
     return await _assert_project_access(project_id, current_user)
+
+
+def project_assignment_ok(project_id: Any, current_user: dict) -> bool:
+    """A superintendent / CP (ROLES_SCOPED_TO_ASSIGNED_PROJECTS) only on a
+    project in his `assigned_projects`; any other role is not decided here.
+
+    project_access_ok admits them on every project of their company (branch
+    2, kept for the live accounts it serves), so a route that holds them to
+    their assignments has to ask this as well. It is the same list the
+    logbook write gates and the DM assistant (_dm_assistant_projects) read."""
+    role = str((current_user or {}).get("role") or "").strip().lower()
+    if role not in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
+        return True
+    held = {str(p) for p in ((current_user or {}).get("assigned_projects") or [])}
+    return str(project_id) in held
+
+
+async def _progress_route_project(project_id: str, current_user: dict, *, write: bool) -> dict:
+    """THE GATE FOR THE PROGRESS ENGINE'S ROUTES (owner ruling 2026-11-09).
+    Applied in the handler as well as by the route's dependencies, so a call
+    that does not pass through FastAPI is held to the same rule.
+
+    In order: a site device / kiosk token never writes here (it may read the
+    one project it was provisioned for); a superintendent / CP only on an
+    assigned project; the project re-read inside the caller's own company
+    (_bot_project_scope, as the DM tools do), 404 otherwise; and the ordinary
+    three-branch rule on that document."""
+    user = current_user or {}
+    device = bool(user.get("site_mode")) or str(user.get("role") or "").strip().lower() == "site_device"
+    if write and device:
+        raise HTTPException(status_code=403, detail="A site device can't record this.")
+    if not project_assignment_ok(project_id, user):
+        raise HTTPException(status_code=403, detail="Not assigned to this project")
+    project = await _bot_project_scope(str(get_user_company_id(user) or ""), project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project_access_ok(project, project_id, user):
+        raise HTTPException(status_code=403, detail="Not authorized for this project")
+    return project
 
 
 #: The routes that admit the platform operator on a project's admin actions
@@ -18588,7 +18634,7 @@ _PROJECT_OWNED_COLLECTIONS = [
     "notifications", "signature_events", "material_requests", "report_emails",
     "reports", "cs_registrations", "safety_staff_registrations",
     "document_annotations", "upload_attempts_log", "project_models",
-    "project_schedules", "sequence_graph", "risk_scores", "daily_panels",
+    "project_schedules", "proposed_sequences", "sequence_graph", "risk_scores", "daily_panels",
     "prediction_models", "prediction_validation_ledger", "eligibility_shadow",
     "permit_renewals", "renewal_alert_sent", "site_devices", "subcontractors",
     # Gate-side failure diagnostics (POST /checkin/gate-failure). Project-scoped
@@ -18612,6 +18658,9 @@ _PROJECT_OWNED_COLLECTIONS = [
     # Messages waiting for the end of Shabbos / Yom Tov (whole texts, photo
     # keys): never delivered for a job that is gone.
     "wa_quiet_queue",
+    # The progress engine: inspections people reported, the floor a person
+    # gave a photo, and stored comparisons of two photos of one place.
+    "inspection_reports", "photo_place_confirmations", "photo_relations",
 ]
 
 
@@ -43494,6 +43543,15 @@ def _extract_job_status_fields(rec: dict) -> dict:
     fields["filing_date"] = rec.get("current_status_date") or rec.get("filing_date") or rec.get("latest_action_date") or None
     fields["job_type"] = rec.get("job_type") or None
     fields["job_description"] = rec.get("job_description") or None
+    # The sign-off (lib/dob_signoffs). Kept: DOB's own sign-off date, when the
+    # filing was approved and first permitted, the floors it covers, and the
+    # work types its YES/NO flags name. Dropping these is how a filing with a
+    # Letter of Completion reached the assistant as "no sign-offs".
+    fields["signoff_date"] = rec.get("signoff_date") or None
+    fields["approved_date"] = rec.get("approved_date") or None
+    fields["first_permit_date"] = rec.get("first_permit_date") or None
+    fields["work_on_floor"] = rec.get("work_on_floor") or None
+    fields["work_types"] = dob_signoffs.work_types(rec)
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
@@ -43524,6 +43582,27 @@ def _extract_permit_fields(rec: dict) -> dict:
     fields["job_number"] = rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or None
     fields["job_type"] = rec.get("job_type") or rec.get("filing_reason") or None
     fields["work_type"] = rec.get("work_type") or rec.get("permit_type") or None
+    fields["approved_date"] = rec.get("approved_date") or None
+    fields["work_on_floor"] = rec.get("work_on_floor") or None
+    # What the work is, in DOB's words: an electrical filing has no work type.
+    fields["job_description"] = rec.get("job_description") or None
+    # DOB NOW Electrical (dm9a-ab7w): `job_status` is the job's progress ('Job
+    # in Process' / 'Job is complete' / 'Inspection not complete due to
+    # withdrawal'); permit_status above reads its filing_status first, so the
+    # completion was never kept. Its `completion_date` is an estimate on an
+    # open job (2028, 2030 on 588), so it is kept only once the job IS complete.
+    fields["electrical_job_status"] = rec.get("job_status") or None
+    if dob_signoffs.is_signed_off(rec.get("job_status")):
+        fields["electrical_completion_date"] = rec.get("completion_date") or None
+    # The job-filing twin (w9ak-ipjd) the sync folded onto this permit
+    # (_collapse_job_status_twins): DOB's sign-off lives there, not here.
+    # Only written when the twin was seen, so a sync whose job-filing query
+    # failed does not blank a sign-off date already stored.
+    twin = rec.get("_job_filing") if isinstance(rec.get("_job_filing"), dict) else None
+    if twin:
+        fields["job_filing_status"] = twin.get("filing_status") or None
+        for k in ("signoff_date", "first_permit_date", "work_types"):
+            fields[k] = twin.get(k) or None
     cleaned = {k: str(v).strip() if v else None for k, v in fields.items()}
     # Derived classification — must come AFTER cleanup so we read
     # the same trimmed values the rest of the pipeline persists.
@@ -44337,6 +44416,49 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
         return records
 
 
+def _collapse_job_status_twins(raw_records: list) -> Tuple[list, int]:
+    """DOB NOW Job → Filing de-duplication: (records, twins dropped). Pure.
+
+    A permit-bearing filing appears BOTH in a permit dataset (rbx6-tga4 /
+    dm9a-ab7w, record_type="permit") AND in the job-filing dataset (w9ak-ipjd,
+    record_type="job_status") — the SAME filing, shown twice with two labels.
+    Keep ONE row per permit-bearing filing: the permit (it carries issuance +
+    expiration). Drop the redundant job_status twin. Standalone job_status
+    filings (Approved specs with no permit) survive untouched as demoted
+    "pending filings".
+
+    What the twin alone knows is folded onto EVERY permit of that filing (one
+    filing can be several permits: B01141294-S4 is an Earth Work permit and a
+    Foundation permit): the job's real `job_type` (permit datasets have none),
+    and the twin's extracted fields as `_job_filing` -- its filing status
+    ('LOC Issued'), DOB's sign-off date and its work types, which
+    _extract_permit_fields keeps. Before this the twin was dropped whole, and
+    the sign-off date went with it."""
+    def _norm_jfn(r):
+        return str(r.get("job_filing_number") or r.get("job__") or "").strip().upper()
+
+    permits_by_jfn: Dict[str, list] = {}
+    for r in raw_records:
+        if r.get("_record_type") == "permit" and _norm_jfn(r):
+            permits_by_jfn.setdefault(_norm_jfn(r), []).append(r)
+    if not permits_by_jfn:
+        return raw_records, 0
+    out, dropped = [], 0
+    for r in raw_records:
+        if r.get("_record_type") == "job_status":
+            perms = permits_by_jfn.get(_norm_jfn(r))
+            if perms:
+                twin = _extract_job_status_fields(r)
+                for perm in perms:
+                    if r.get("job_type") and not perm.get("job_type"):
+                        perm["job_type"] = r.get("job_type")
+                    perm.setdefault("_job_filing", twin)
+                dropped += 1
+                continue
+        out.append(r)
+    return out, dropped
+
+
 async def run_dob_sync_for_project(project: dict) -> list:
     """Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual.
 
@@ -44479,33 +44601,12 @@ async def run_dob_sync_for_project(project: dict) -> list:
     # the w9ak twin onto it (permit datasets have no job_type). Drop the redundant
     # job_status twin. Standalone job_status filings (Approved specs with no
     # permit) survive untouched as demoted "pending filings".
-    def _norm_jfn(r):
-        return str(r.get("job_filing_number") or r.get("job__") or "").strip().upper()
-
-    _permit_by_jfn = {
-        _norm_jfn(r): r
-        for r in raw_records
-        if r.get("_record_type") == "permit" and _norm_jfn(r)
-    }
-    if _permit_by_jfn:
-        _deduped, _dropped = [], 0
-        for r in raw_records:
-            if r.get("_record_type") == "job_status":
-                perm = _permit_by_jfn.get(_norm_jfn(r))
-                if perm is not None:
-                    # Fold the job's real type onto the permit for labelling,
-                    # then drop this duplicate filing row.
-                    if r.get("job_type") and not perm.get("job_type"):
-                        perm["job_type"] = r.get("job_type")
-                    _dropped += 1
-                    continue
-            _deduped.append(r)
-        raw_records = _deduped
-        if _dropped:
-            logger.info(
-                f"DOB sync for project {project_id}: collapsed {_dropped} "
-                f"job_status filing(s) into their matching permit rows"
-            )
+    raw_records, _dropped = _collapse_job_status_twins(raw_records)
+    if _dropped:
+        logger.info(
+            f"DOB sync for project {project_id}: collapsed {_dropped} "
+            f"job_status filing(s) into their matching permit rows"
+        )
 
     # One-time cleanup of legacy-format permit rows. Before the
     # renewal-collapse fix, permits were keyed by per-filing
@@ -45920,6 +46021,11 @@ async def check_permit_expirations():
         for permit in permits:
             exp_str = permit.get("expiration_date", "")
             if not exp_str:
+                continue
+            # A permit DOB has signed off is finished work: no renewal is
+            # due and it is not EXPIRED (lib/dob_signoffs.py, the same test
+            # every "is this permit still live" read makes).
+            if dob_signoffs.row_signed_off(permit):
                 continue
             try:
                 from dateutil import parser as dateparser
@@ -48451,6 +48557,8 @@ async def _quiet_queue_tick(now: Optional[datetime] = None) -> dict:
         # failed send it was made from).
         attempts = int(r.get("attempts") or 0) + 1
         if ok:
+            if spec.get("confirmation_ids"):
+                await _confirmation_delivered(spec, now)
             if spec.get("gc_ledger_id"):
                 await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
                                                {"$set": {"status": "sent", "sent_at": now}})
@@ -53597,7 +53705,7 @@ async def _redeem_connect_code(code: str, chat: str) -> Optional[dict]:
              "is_deleted": {"$ne": True}}, {"password": 0})
     except Exception:
         u = None
-    return u if wa_dm.is_dm_eligible(u) else None
+    return u if wa_dm.is_dm_assistant_eligible(u) else None
 
 
 async def _reply_dm(chat_id: str, text: str, outcome: str) -> None:
@@ -53794,7 +53902,10 @@ async def _phone_accounts(phone: str) -> dict:
         if cid:
             by_company[cid] = by_company.get(cid, 0) + 1
     dup = next((c for c, n in by_company.items() if n > 1), "")
-    eligible = sorted((u for u in users if wa_dm.is_dm_eligible(u)),
+    # Who may CONNECT: admins, PMs, and (owner ruling 2026-11-09)
+    # superintendents and CPs, who are answered on their assigned jobs only
+    # and never written to first (wa_dm.is_dm_eligible stays the gate there).
+    eligible = sorted((u for u in users if wa_dm.is_dm_assistant_eligible(u)),
                       key=lambda u: str(u.get("_id")))
     return {"users": users, "eligible": eligible, "dup_company": dup}
 
@@ -54190,7 +54301,8 @@ async def _record_optins(users: List[dict], phone: str, chat: str, chat_digits: 
         # intro. Every START after that: the intro, as before.
         if await _dm_welcome(users[0], chat, "start_welcomed"):
             return True
-        await _reply_dm(chat, wa_dm.INTRO_TEXT, "start_opted_in")
+        await _reply_dm(chat, wa_dm.FIELD_INTRO_TEXT if wa_dm.is_dm_field(users[0])
+                        else wa_dm.INTRO_TEXT, "start_opted_in")
         return True
     if later:
         # Already talking to the assistant: no second hello for the new account.
@@ -54204,7 +54316,8 @@ async def _record_optins(users: List[dict], phone: str, chat: str, chat_digits: 
             else:
                 await _dm_welcome_claim(u)     # one hello per person, not per account
         if not greeted:
-            await _reply_dm(chat, wa_dm.INTRO_TEXT, "start_opted_in")
+            await _reply_dm(chat, wa_dm.FIELD_INTRO_TEXT if all(wa_dm.is_dm_field(u) for u in users)
+                            else wa_dm.INTRO_TEXT, "start_opted_in")
     names = []
     rows = sorted(await _active_optins_for_phone(phone),
                   key=lambda o: (_utc(o.get("opted_in_at")) or _EPOCH, str(o.get("user_id"))))
@@ -54384,7 +54497,8 @@ async def _dm_welcome(u: dict, chat: str, outcome: str) -> bool:
     logger.info(f"[wa-dm] {outcome} kind={wa_dm.jid_kind(chat) or 'unknown'} "
                 f"chat=...{wa_dm.phone_digits(chat)[-4:]}")
     sent = await send_whatsapp_message(
-        chat, wa_welcome.welcome_text(u.get("name"), with_card=with_card))
+        chat, wa_welcome.welcome_text(u.get("name"), with_card=with_card,
+                                      field=wa_dm.is_dm_field(u)))
     inner = sent.get("data") if isinstance(sent, dict) else None
     if sent is None or (isinstance(inner, dict) and inner.get("status") == "error"):
         # WaAPI's 200 with data.status "error" is not a delivery either.
@@ -54712,8 +54826,17 @@ def _dm_is_short_answer(text: str) -> bool:
             or bool(re.fullmatch(r"#?\s*\d{1,2}\s*[.)]?", t)))
 
 
+def _dm_first_able(person: List[dict], tool: str, args: Optional[dict] = None) -> dict:
+    """The first of a person's accounts whose role may make this call
+    (lib/dm_roles.py), else their first: a person-level tool (reminders, the
+    brief, settings) is answered as an account that may answer it."""
+    return next((a for a in person if not dm_roles.tool_refusal(a.get("role"), tool, args)),
+                person[0])
+
+
 async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
-                             brain: bool, has_image: bool = False) -> Optional[dict]:
+                             brain: bool, has_image: bool = False,
+                             signoff: bool = False) -> Optional[dict]:
     """Which of a person's accounts (one per company) a DM is for.
 
     {"ident": one account, "body", "scope": its company id}, or {"ident":
@@ -54782,7 +54905,18 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
     remind = await _dm_state_get(UPCOMING_REMIND_STATE, dm_chat)
     if upcoming.is_remind_request(text) or (
             remind and (upcoming.is_yes(text) or upcoming.is_no(text))):
-        return {"ident": person[0], "body": text, "scope": DM_SCOPE_NEUTRAL}
+        # As the first of their accounts whose role keeps reminders (a CP
+        # account first in the list never takes a PM's reminder from him).
+        return {"ident": _dm_first_able(person, "remind_me"), "body": text,
+                "scope": DM_SCOPE_NEUTRAL}
+
+    # A change, or a photo that is not a sign-off (a walkthrough), is a PM's
+    # or an admin's (lib/dm_roles.py): only an account that may make it is a
+    # candidate, so a superintendent / CP account is never offered in a
+    # "Which company?" for one, and with one such account it is that one.
+    managed = (dm_actions.looks_like_request(text) and not has_image) \
+        or (has_image and not signoff)
+    actors = [a for a in person if not dm_roles.is_field(a.get("role"))] if managed else []
 
     async def open_flow() -> Optional[dict]:
         for kind in _DM_ACCT_FLOW_KINDS:
@@ -54820,6 +54954,11 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
         if len(accts) > 1:
             if brain and not write and not has_image:
                 return {"ident": None, "body": text, "scope": DM_SCOPE_MULTI}
+            if actors:
+                mine = {a["user_id"] for a in actors}
+                named = [j for j in named if j["acct"]["user_id"] in mine] or named
+                if len({j["acct"]["user_id"] for j in named}) == 1:
+                    return one(named[0]["acct"])
             await _dm_ask_account(dm_chat, [], text, lang, jobs=named, photo=has_image)
             return None
         acct = await open_flow()
@@ -54836,7 +54975,9 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
         # "thanks", "ok", "never mind" with nothing open: no company's, and
         # never worth a "Which company?".
         return {"ident": person[0], "body": text, "scope": DM_SCOPE_NEUTRAL}
-    await _dm_ask_account(dm_chat, person, text, lang, photo=has_image)
+    if len(actors) == 1:
+        return one(actors[0])
+    await _dm_ask_account(dm_chat, actors or person, text, lang, photo=has_image)
     return None
 
 
@@ -54851,7 +54992,11 @@ async def _dm_identity_of_optin(optin: dict) -> Optional[dict]:
             {"_id": to_query_id(str(optin["user_id"])), "is_deleted": {"$ne": True}})
     except Exception:
         return None
-    if not wa_dm.is_dm_eligible(user):
+    # Answered: admins, PMs, superintendents and CPs. Written to FIRST: only
+    # admins and PMs -- every proactive path checks wa_dm.is_dm_eligible on
+    # the account it sends as (send_whatsapp_dm, _brief_accounts,
+    # _upcoming_person_account), never this.
+    if not wa_dm.is_dm_assistant_eligible(user):
         return None
     company_id = str(user.get("company_id") or "").strip()
     if not company_id:
@@ -54871,10 +55016,18 @@ async def _dm_identity_of_optin(optin: dict) -> Optional[dict]:
 
 
 async def _dm_assistant_projects(user: dict, company_id: str, role: str) -> list:
-    """The jobs this person may ask about, each re-proven to be the company's."""
+    """The jobs this person may ask about, each re-proven to be the company's.
+
+    A PM on assigned jobs, a superintendent and a CP: their `assigned_projects`
+    and nothing else (ROLES_SCOPED_TO_ASSIGNED_PROJECTS, the same list the
+    app's logbook write gates hold them to), each one re-proven to be their
+    own company's live job -- an assignment to another company's job is not
+    answered here. An admin (or a PM with full access): every live job of the
+    company."""
     out = []
     try:
-        if role == ROLE_PM and not pm_has_full_access(user):
+        if (role == ROLE_PM and not pm_has_full_access(user)) \
+                or role in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
             for pid in user.get("assigned_projects") or []:
                 p = await _bot_project_scope(company_id, pid)
                 if p:
@@ -55167,7 +55320,9 @@ async def _brief_accounts(user: dict, optin: Optional[dict] = None) -> List[dict
             out.append(user)
             continue
         ident = await _dm_identity_of_optin(o)
-        if ident:
+        # The brief is written FIRST: a superintendent / CP account on the
+        # same number is answered when it asks, never put in a brief.
+        if ident and wa_dm.is_dm_eligible(ident["user"]):
             out.append(ident["user"])
     return out if any(str(u.get("_id")) == uid for u in out) else [user]
 
@@ -56216,6 +56371,10 @@ PHOTO_INDEX_TRIES = 3             # ticks a photo the model cannot read is tried
 PHOTO_INDEX_RECENT_DAYS = 7
 PHOTO_INDEX_SLICE_DAYS = 14       # how much history one tick looks at
 PHOTO_INDEX_FLOOR = "2024-01-01"  # nothing filed before this
+#: The second read of old rows (_photo_index_reread): its own switch,
+#: PHOTO_INDEX_REREAD_ENABLED=1, and this many vision calls a day at most.
+PHOTO_INDEX_REREAD_DAILY_CAP = 200
+PHOTO_INDEX_REREAD_STATE = "state:reread"
 PHOTO_SEND_MAX = 4                # a reply window allows wa_dm.REPLY_WINDOW_MAX_SENDS
 PHOTO_FIND_MAX = 12
 
@@ -56234,6 +56393,9 @@ async def _photo_index_call(raw: bytes, project_id: Any) -> Optional[dict]:
             resp = await client.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
+                # 300, as before visible_text / room_type: the largest answer
+                # parse_index keeps (300-char description, 10 tags, 8
+                # markings) measured 211 tokens with a code fence (cl100k).
                 json={"model": QWEN_MODEL, "max_tokens": 300, "temperature": 0,
                       "messages": [{"role": "user", "content": [
                           {"type": "image_url", "image_url": {
@@ -56295,13 +56457,68 @@ async def _photo_index_window(since: str, until: Optional[str], budget: int, rep
                     {"$inc": {"attempts": 1}, "$set": {"kind": "fail", "at": now}}, upsert=True)
                 return
             await db[PHOTO_INDEX].update_one({"_id": f"v1:{ph['key']}"}, {"$set": {
-                **v, "kind": "photo", "photo_key": ph["key"], "short": photo_search.short_id(ph["key"]),
+                **v, "prompt_v": photo_search.PROMPT_V,
+                "kind": "photo", "photo_key": ph["key"], "short": photo_search.short_id(ph["key"]),
                 "project_id": str(lg.get("project_id") or ""), "company_id": str(lg.get("company_id") or ""),
                 "log_id": ph["log_id"], "date": ph["date"], "sub": ph["sub"], "where": ph["where"],
                 "work": ph["work"], "at": now}}, upsert=True)
             report["indexed"] += 1
     await asyncio.gather(*(one(lg, ph) for lg, ph in pending[:max(0, budget)]), return_exceptions=True)
     return max(0, len(pending) - max(0, budget))
+
+
+async def _photo_index_reread(budget: int, report: dict, now: Optional[datetime] = None) -> None:
+    """A second read of photos described before `visible_text` was asked for,
+    only those whose log row names several levels or none (photo_place.
+    reread_targets), and only from what the tick has left. Only the two new
+    fields are written: what a search already finds does not move.
+
+    OFF unless PHOTO_INDEX_REREAD_ENABLED=1 (a paid call per photo, never on
+    by default), and at most PHOTO_INDEX_REREAD_DAILY_CAP calls a New York
+    day across every job, reserved before they are made. A row it will never
+    read (one level already named, or its tries used up) is marked
+    `reread_skip` and is not loaded again."""
+    if os.environ.get("PHOTO_INDEX_REREAD_ENABLED") != "1":
+        return
+    now = now or datetime.now(timezone.utc)
+    day = vision_meter.eastern_day(now)
+    state = await db[PHOTO_INDEX].find_one({"_id": PHOTO_INDEX_REREAD_STATE}) or {}
+    used = int(state.get("calls") or 0) if state.get("day") == day else 0
+    budget = min(max(0, budget), PHOTO_INDEX_REREAD_DAILY_CAP - used)
+    if budget <= 0:
+        report["reread_capped"] = True
+        return
+    v = photo_search.PROMPT_V
+    rows = await db[PHOTO_INDEX].find(
+        await unattended_project_filter({"kind": "photo", "prompt_v": {"$ne": v}, "reread_skip": {"$ne": v}}),
+        {"photo_key": 1, "log_id": 1, "where": 1, "date": 1, "project_id": 1, "reread_tries": 1}).to_list(20000)
+    wanted = photo_place.reread_targets(rows, len(rows), PHOTO_INDEX_TRIES)
+    keep = {r["_id"] for r in wanted}
+    never = [r["_id"] for r in rows if r["_id"] not in keep]
+    if never:
+        await db[PHOTO_INDEX].update_many({"_id": {"$in": never}}, {"$set": {"reread_skip": v}})
+        report["reread_skipped"] = len(never)
+    targets = wanted[:budget]
+    if not targets:
+        return
+    await db[PHOTO_INDEX].update_one(
+        {"_id": PHOTO_INDEX_REREAD_STATE},
+        {"$set": {"kind": "state", "day": day, "calls": used + len(targets), "at": now}}, upsert=True)
+    sem = asyncio.Semaphore(REPORT_JUDGE_AT_ONCE)
+
+    async def one(row: dict) -> None:
+        async with sem:
+            raw = await _photo_log_bytes(row)
+            v = await _photo_index_call(raw, row.get("project_id")) if raw else None
+            if v is None:
+                report["reread_failed"] = report.get("reread_failed", 0) + 1
+                await db[PHOTO_INDEX].update_one({"_id": row["_id"]}, {"$inc": {"reread_tries": 1}})
+                return
+            await db[PHOTO_INDEX].update_one({"_id": row["_id"]}, {"$set": {
+                "visible_text": v.get("visible_text") or [], "room_type": v.get("room_type") or "unknown",
+                "prompt_v": photo_search.PROMPT_V, "reread_at": datetime.now(timezone.utc)}})
+            report["reread"] = report.get("reread", 0) + 1
+    await asyncio.gather(*(one(r) for r in targets), return_exceptions=True)
 
 
 async def _photo_index_tick(now: Optional[datetime] = None, budget: int = PHOTO_INDEX_BUDGET) -> dict:
@@ -56324,6 +56541,9 @@ async def _photo_index_tick(now: Optional[datetime] = None, budget: int = PHOTO_
                     {"_id": "state:backfill"},
                     {"$set": {"kind": "state", "before": start, "at": now}}, upsert=True)
                 report["history_before"] = start
+        left = budget - report["indexed"] - report["failed"]
+        if left > 0:
+            await _photo_index_reread(left, report)
     except Exception as e:
         logger.error(f"[photo-index] tick failed: {type(e).__name__}: {e!r}")
     logger.info(f"[photo-index] {report}")
@@ -56383,8 +56603,10 @@ def _photo_send_jpeg(raw: bytes) -> Optional[bytes]:
         return None
 
 
-async def _dm_send_one_photo(dm_chat: str, short: str, jpeg: bytes, caption: str) -> bool:
-    """One photo to this DM chat, through the DM gate, like _dm_send_sheet."""
+async def _dm_send_one_photo(dm_chat: str, short: str, jpeg: bytes, caption: str, *, ask_floor: bool = False) -> bool:
+    """One photo to this DM chat, through the DM gate, like _dm_send_sheet.
+    `ask_floor`: this photo's floor is not on record, so the caption says a
+    reply can settle it, and the row remembers which photo was asked about."""
     verdict = await _dm_send_verdict(dm_chat, f"[photo {short}]", None)
     if not verdict["allowed"]:
         logger.info(f"[photo-index] photo refused ({verdict['reason']}) to {_log_chat(dm_chat)}")
@@ -56395,7 +56617,8 @@ async def _dm_send_one_photo(dm_chat: str, short: str, jpeg: bytes, caption: str
     if media_url:
         ok, body, err = await _waapi_send_dm_paced(
             f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
-            {"chatId": dm_chat, "mediaUrl": media_url, "caption": caption},
+            {"chatId": dm_chat, "mediaUrl": media_url,
+             "caption": f"{caption}\n{PHOTO_PLACE_ASK}" if ask_floor else caption},
             {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"})
         inner = body.get("data") if isinstance(body, dict) else None
         if ok and isinstance(inner, dict) and inner.get("status") == "error":
@@ -56410,6 +56633,7 @@ async def _dm_send_one_photo(dm_chat: str, short: str, jpeg: bytes, caption: str
         await db.whatsapp_messages.insert_one({
             "group_id": dm_chat, "is_dm": True, "sender": "bot", "body": f"[Photo] {caption}",
             "has_audio": False, "message_id": "", "from_me": True,
+            "photo_place_asked": short if ask_floor else None,
             **({"dm_company": _DM_SCOPE.get()} if _DM_SCOPE.get() else {}),
             "timestamp": now, "created_at": now})
     except Exception as e:
@@ -56430,6 +56654,12 @@ async def _dm_send_photos(ctx: dict, job: dict, args: dict) -> str:
     rows = await db[PHOTO_INDEX].find(
         {"project_id": pid, "kind": "photo", "short": {"$in": ids}}).to_list(len(ids))
     by_short = {r.get("short"): r for r in rows}
+    spaces, confirmed = await _photo_place_context(pid)
+    unsure = [r.get("short") for r in rows if photo_place.wants_floor(r, photo_place.infer(
+        r, spaces, confirmations=confirmed.get(str(r.get("photo_key"))) or ()))]
+    # One photo, or nothing: "reply with the floor" has to be about one picture.
+    ask = unsure[0] if len(unsure) == 1 else None
+    asked_about = None
     sent, missing = [], []
     for short in ids:
         row = by_short.get(short)
@@ -56460,9 +56690,10 @@ async def _dm_send_photos(ctx: dict, job: dict, args: dict) -> str:
             continue
         raw = await asyncio.to_thread(_report_photo_bytes, {"photo": photo["photo"], "key": photo["key"]})
         jpeg = await asyncio.to_thread(_photo_send_jpeg, raw) if raw else None
-        if jpeg and await _dm_send_one_photo(ctx["dm_chat"], short, jpeg, caption):
+        if jpeg and await _dm_send_one_photo(ctx["dm_chat"], short, jpeg, caption, ask_floor=short == ask):
             ctx["sent"].append(f"[photo {short}]")
             sent.append(caption)
+            asked_about = asked_about or (short if short == ask else None)
         else:
             missing.append(short)
     parts = [f"Sent {len(sent)} photo(s) to them: " + "; ".join(sent) + "." if sent
@@ -56471,7 +56702,1348 @@ async def _dm_send_photos(ctx: dict, job: dict, args: dict) -> str:
         parts.append(f"{len(missing)} could not be sent ({', '.join(missing)}).")
     if len(asked) > len(ids):
         parts.append(f"Only {PHOTO_SEND_MAX} go at a time; {len(asked) - len(ids)} were not sent.")
+    if asked_about:
+        parts.append(f"Photo {asked_about}'s floor is not on record; its caption says they can reply with the floor. "
+                     "Only if their next message is a floor, call confirm_photo_place.")
     return " ".join(parts)
+
+
+# ── WHERE A PHOTO WAS TAKEN (lib/photo_place.py) ────────────────────────────
+#
+# Inferred at read time. The only stored input is a person's answer, in
+# PHOTO_PLACE_CONFIRMATIONS: append-only, with who and when.
+PHOTO_PLACE_CONFIRMATIONS = "photo_place_confirmations"
+#: How long after a photo is sent a reply can still be about it.
+PHOTO_PLACE_ASK_MINUTES = 30
+PHOTO_PLACE_ASK = "Floor not on record. Reply with the floor if you know it."
+
+
+async def _photo_place_context(project_id: str) -> Tuple[dict, dict]:
+    """(the job's plan tags, {photo_key: its confirmations}), for photo_place.infer."""
+    pid = str(project_id)
+    try:
+        rows: list = []
+        for coll in ("plan_records", "plan_areas"):
+            rows += await db[coll].find({"project_id": pid, "unit": {"$nin": [None, ""]}},
+                                        {"unit": 1, "sheet_title": 1, "sheet_number": 1}).to_list(20000)
+        confirmed: Dict[str, list] = {}
+        for c in await db[PHOTO_PLACE_CONFIRMATIONS].find({"project_id": pid}).to_list(20000):
+            confirmed.setdefault(str(c.get("photo_key")), []).append(c)
+    except Exception as e:
+        # The log row alone still places a photo; a tag lookup never stops a send.
+        logger.warning(f"[photo-place] context not read: {type(e).__name__}: {e!r}")
+        return {}, {}
+    return photo_place.spaces_from_plan_rows(rows), confirmed
+
+
+async def _photo_place_record(row: dict, level: str, space: Optional[str], *, user_id: str, name: str, via: str) -> dict:
+    """Append one person's answer. Nothing is ever rewritten: a change of mind
+    is a newer row."""
+    doc = {"photo_key": row.get("photo_key"), "short": row.get("short"), "project_id": str(row.get("project_id") or ""),
+           "company_id": str(row.get("company_id") or ""), "level": level, "space": space or None,
+           "by_user_id": user_id, "by_name": name, "via": via, "at": datetime.now(timezone.utc)}
+    await db[PHOTO_PLACE_CONFIRMATIONS].insert_one(doc)
+    return doc
+
+
+class PhotoPlaceConfirmation(BaseModel):
+    photo: str                          # the short id find_photos and the assistant use
+    level: str                          # "3", "floor 3", "roof", or a token
+    space: Optional[str] = None
+
+
+@api_router.post("/projects/{project_id}/photo-place-confirmations",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def confirm_photo_place(project_id: str, body: PhotoPlaceConfirmation, current_user=Depends(get_current_user)):
+    """A person says where a daily-log photo was taken. Append-only."""
+    await _progress_route_project(project_id, current_user, write=True)
+    level = photo_place.level_token(body.level)
+    if not level:
+        raise HTTPException(status_code=422, detail="Name one level: a floor number, roof, or cellar.")
+    row = await db[PHOTO_INDEX].find_one({"project_id": str(project_id), "kind": "photo", "short": body.photo.strip().lower()})
+    if not row:
+        raise HTTPException(status_code=404, detail="Photo not found on this project.")
+    space = photo_place.tag_key(body.space)[:40] if body.space else None
+    doc = await _photo_place_record(row, level, space, user_id=str(current_user.get("id") or ""),
+                                    name=str(current_user.get("name") or current_user.get("full_name") or ""), via="api")
+    doc.pop("_id", None)
+    doc["at"] = doc["at"].isoformat()
+    return doc
+
+
+async def _dm_confirm_photo_place(ctx: dict, job: dict, args: dict) -> str:
+    """confirm_photo_place: the floor of a photo this chat was just asked about,
+    read from the person's OWN message rather than from the model's arguments."""
+    pid = str(job["id"])
+    # As require_approved on the app's route: only an approved account writes.
+    if not _dm_is_approved(ctx["ident"]):
+        return "Their account isn't approved for changes yet. Nothing was recorded."
+    if not await _bot_project_scope(ctx["ident"]["company_id"], pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    level = work_state.level_asked(ctx.get("text"))
+    if not level:
+        return "Their message doesn't name one floor, so nothing was recorded."
+    since = datetime.now(timezone.utc) - timedelta(minutes=PHOTO_PLACE_ASK_MINUTES)
+    asks = await db.whatsapp_messages.find(
+        {"group_id": ctx["dm_chat"], "is_dm": True, "sender": "bot", "photo_place_asked": {"$exists": True, "$nin": [None, ""]},
+         "created_at": {"$gte": since}}).sort("created_at", -1).to_list(1)
+    if not asks or not asks[0].get("photo_place_asked"):
+        return "No photo is waiting for a floor, so nothing was recorded."
+    row = await db[PHOTO_INDEX].find_one({"project_id": pid, "kind": "photo", "short": asks[0]["photo_place_asked"]})
+    if not row:
+        return "That photo isn't on this job, so nothing was recorded."
+    if ctx.get("dry_run"):
+        return f"Would record {work_state.level_label(level)}."
+    user = ctx["ident"].get("user") or {}
+    await _photo_place_record(row, level, None, user_id=str(ctx["ident"].get("user_id") or ""),
+                              name=str(user.get("name") or user.get("full_name") or ""), via="whatsapp")
+    return f"Recorded: that photo is on {work_state.level_label(level)}."
+
+
+# ── WHAT THE RECORDS SAY ABOUT A PIECE OF WORK (lib/work_state.py) ──────────
+#
+# Read-time only: the same sources the progress report loads, so there is no
+# stored state to drift from the filed logs.
+WORK_STATE_DAYS = 90
+#: Stored comparisons of two photos of one place (lib/photo_relations.py).
+PHOTO_RELATIONS = "photo_relations"
+PHOTO_RELATIONS_BUDGET = 10       # pairs asked per tick, across every job
+PHOTO_RELATIONS_TICK_MINUTES = 60
+from pymongo.errors import DuplicateKeyError as _DuplicateKeyError  # noqa: E402
+#: What people told the assistant about inspections (lib/inspection_reports.py).
+#: Append-only: nothing is edited or deleted; the newest statement wins.
+INSPECTION_REPORTS = inspection_reports.COLLECTION
+#: Circuit breaker, per project per day: past it the file is kept and not read.
+INSPECTION_DOC_DAILY_CAP = 40
+INSPECTION_DOC_MAX_BYTES = 25 * 1024 * 1024
+
+
+async def _work_state_answer(project: dict, company_id: str, work: str, level: str,
+                             *, today: Optional[_Date] = None) -> dict:
+    """{"ok": False, "why": ...} or {"ok": True, "answer": work_state.what_holds(...)}."""
+    nodes, _generic = work_state.classify(work)
+    token = work_state.level_asked(level)
+    if not nodes:
+        return {"ok": False, "why": f"I can't match \"{work}\" to a kind of work in the sequence yet."}
+    if not token:
+        return {"ok": False, "why": "Name one level: a floor number, roof, or cellar."}
+    now = datetime.now(timezone.utc)
+    today = today or now.astimezone(_MemoryZone("America/New_York")).date()
+    start = today - timedelta(days=WORK_STATE_DAYS - 1)
+    src = await _report_rows(project, company_id, start, today, now)
+    logs = src["logbooks"]
+    acts = progress_report._log_activities(logs, start, today)
+    pid = str(project.get("_id"))
+    index = await db[PHOTO_INDEX].find({"project_id": pid, "kind": "photo"}).to_list(20000)
+    # No system is pruned from the sequence: project_models defaults has_sprinkler
+    # and friends to False, so False there does not mean the building lacks it.
+    flags: Dict[str, Any] = {}
+    reg = report_regulatory.build(src["dob_rows"], src["dot_rows"], start, today, today=today, sync=src.get("sync"),
+                                  now=now, project_bins=src.get("project_bins") or ())
+    cov = reg.get("coverage") or {}
+    note = "" if cov.get("state") in ("verified", "partial") else (cov.get("note") or "DOB records could not be checked.")
+    # Only a comparison that SUPPORTS same place is shown. An unconfirmed one is
+    # left out, and it weakens nothing: the photos keep their own evidence.
+    rel = await db[PHOTO_RELATIONS].find({"project_id": pid, "level": token,
+                                          "same_place": photo_relations.SUPPORTED}).to_list(50)
+    rel = sorted(rel, key=lambda r: str(r.get("second")), reverse=True)
+    reports = await db[INSPECTION_REPORTS].find({"project_id": pid, "company_id": str(company_id)}).to_list(5000)
+    spaces, confirmed = await _photo_place_context(pid)
+    return {"ok": True, "answer": work_state.what_holds(
+        nodes[0], token, acts, index, today=today, schedule=src.get("schedule"), flags=flags,
+        log_ids={str(lg.get("_id")) for lg in logs}, stop_work=reg.get("swo_active") or [],
+        regulatory_note=note, relations=rel, logs_from=start, inspections=reports,
+        spaces=spaces, confirmations=confirmed, frame=await _project_place_frame(pid))}
+
+
+async def _dm_work_status(ctx: dict, job: dict, args: dict) -> str:
+    project = await _bot_project_scope(ctx["ident"]["company_id"], str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    try:
+        got = await _work_state_answer(project, str(ctx["ident"]["company_id"]),
+                                       str(args.get("work") or ""), str(args.get("level") or ""))
+    except Exception as e:
+        logger.warning(f"[work-state] failed: {type(e).__name__}: {e!r}")
+        return "The work records couldn't be read just now."
+    return work_state.as_text(got["answer"]) if got["ok"] else got["why"]
+
+
+#: The schedule file's plan against the filed logs, and a PROPOSED sequence
+#: (lib/progress_plan.py). A proposed sequence is the template over this job's
+#: levels; it never goes in project_schedules.
+PROPOSED_SEQUENCES = "proposed_sequences"
+#: A proposal's levels and first dates want more than one window of logs.
+SEQUENCE_LOG_DAYS = 365
+_APPROVE_WORD = re.compile(r"\bapprove[ds]?\b", re.I)
+_APPROVE_DENIED = re.compile(r"\b(?:not|don'?t|do\s+not|never|won'?t|no)\s+(?:\w+\s+){0,2}approve", re.I)
+
+
+async def _schedule_evidence(project: dict, company_id: str, days: int) -> tuple:
+    """(report sources, evidence rows, today, first day read)."""
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(_MemoryZone("America/New_York")).date()
+    start = today - timedelta(days=days - 1)
+    src = await _report_rows(project, company_id, start, today, now)
+    rows = work_state.evidence_rows(progress_report._log_activities(src["logbooks"], start, today))
+    return src, rows, today, start
+
+
+async def _dm_schedule_lookahead(ctx: dict, job: dict, args: dict) -> str:
+    cid = str(ctx["ident"]["company_id"])
+    project = await _bot_project_scope(cid, str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    try:
+        src, rows, today, start, items = await _forecast_inputs(project, cid)
+    except Exception as e:
+        logger.warning(f"[lookahead] failed: {type(e).__name__}: {e!r}")
+        return "The schedule records couldn't be read just now."
+    if not src.get("schedule"):
+        return f"No confirmed schedule is on file for {job['label']}, so there is no lookahead to give."
+    try:
+        days = int(args.get("days") or 7)
+    except (TypeError, ValueError):
+        days = 7
+    return schedule_forecast.lookahead_with_status(src["schedule"], items, rows, today=today, days=days, logs_from=start,
+                                                   project_id=str(project.get("_id")), job=job["label"],
+                                                   unreadable=src.get("progress_unreadable") or ())
+
+
+async def _dm_proposed_sequence(ctx: dict, job: dict, args: dict) -> str:
+    """Show the PROPOSED sequence, or approve the one already shown. Approval
+    needs their own latest message to say so, whatever the model passed."""
+    ident = ctx["ident"]
+    cid, pid = str(ident["company_id"]), str(job["id"])
+    project = await _bot_project_scope(cid, pid)
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    # A pending account (require_approved, which a DM never passes through)
+    # approves nothing, and its asking stores or rebuilds nothing: it views.
+    approved = _dm_is_approved(ident)
+    if args.get("approve") and not approved:
+        return "Their account isn't approved for changes yet. Nothing was approved."
+    try:
+        src, rows, _today, _start = await _schedule_evidence(project, cid, SEQUENCE_LOG_DAYS)
+    except Exception as e:
+        logger.warning(f"[proposed-sequence] failed: {type(e).__name__}: {e!r}")
+        return "The work records couldn't be read just now."
+    if src.get("schedule"):
+        return (f"{job['label']} has a confirmed schedule, so no PROPOSED sequence applies: "
+                "the file is the job's plan.")
+    uid, role = str(ident.get("user_id") or ""), ident.get("role")
+    name = (ident.get("user") or {}).get("name") or ident.get("name") or ""
+    now, key = datetime.now(timezone.utc), f"{cid}:{pid}"
+    coll, cf = db[PROPOSED_SEQUENCES], _company_id_filter(cid)
+    said = str(ctx.get("text") or "")
+    approving = bool(args.get("approve")) and bool(_APPROVE_WORD.search(said)) and not _APPROVE_DENIED.search(said)
+    # Approval is the official one: a PM's or an admin's (owner ruling
+    # 2026-11-09), refused here as well as at the tool gate. A field role
+    # VIEWS: nothing is stored or rebuilt by their asking.
+    field = not dm_roles.may_approve_sequence(role)
+    if field and args.get("approve"):
+        return dm_roles.refusal(role, "approving a sequence")
+    stored = await coll.find_one({"_id": key, "company_id": cf})
+    if stored and stored.get("status") == "approved":
+        return progress_plan.proposed_text(stored, job["label"])
+    if field or not approved:
+        plan = progress_plan.propose_sequence(rows)
+        shown = stored if stored and stored.get("levels") == plan["levels"] else {**plan, "status": "proposed"}
+        return progress_plan.proposed_text(shown, job["label"]).replace(
+            'To approve it, say "approve the sequence".',
+            "A PM or an admin can approve it." if field
+            else "Their account has to be approved before they can approve it.")
+    if approving and stored:
+        if ctx.get("dry_run"):
+            return "(eval) Would approve the PROPOSED sequence for " + job["label"] + "."
+        await coll.update_one(
+            {"_id": key, "company_id": cf, "status": "proposed"},
+            {"$set": {"status": "approved", "approved_by": uid, "approved_by_name": name, "approved_at": now, "updated_at": now},
+             "$push": {"history": progress_plan.history_entry("approved", uid, role, now)}})
+        return progress_plan.proposed_text(await coll.find_one({"_id": key, "company_id": cf}), job["label"])
+    plan = progress_plan.propose_sequence(rows)
+    if ctx.get("dry_run") or not plan["levels"]:
+        return progress_plan.proposed_text({**plan, "status": "proposed"}, job["label"])
+    if stored and stored.get("levels") != plan["levels"]:
+        await coll.update_one(
+            {"_id": key, "company_id": cf, "status": "proposed"},
+            {"$set": {"levels": plan["levels"], "graph_version": plan["graph_version"], "updated_at": now},
+             "$push": {"history": progress_plan.history_entry("rebuilt", uid, role, now, replaced=stored.get("levels"))}})
+    elif not stored:
+        await coll.update_one({"_id": key}, {"$setOnInsert": {
+            "company_id": cid, "project_id": pid, "status": "proposed", "levels": plan["levels"],
+            "graph_version": plan["graph_version"], "created_by": uid, "created_at": now, "updated_at": now,
+            "history": [progress_plan.history_entry("proposed", uid, role, now)]}}, upsert=True)
+    return progress_plan.proposed_text({**plan, "status": "proposed"}, job["label"])
+
+
+# ── AN INSPECTION SOMEONE TOLD US ABOUT (lib/inspection_reports.py) ─────────
+
+async def _dm_report_inspection(ctx: dict, job: dict, args: dict) -> str:
+    """Written at once, no yes/no: their words, kept as reported by them. Every
+    refusal below writes nothing and tells the model what to ask."""
+    ir, ident = inspection_reports, ctx["ident"]
+    turn = ctx.get("turn") or {}
+    own = turn.get("own_text")
+    if own is None and ctx.get("dry_run"):
+        own = ctx.get("text")                    # the eval hands in the message itself
+    if not _dm_is_approved(ident):
+        return "Their account isn't approved for changes yet. Nothing was recorded."
+    project = await _bot_project_scope(ident["company_id"], str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    if turn.get("forwarded"):
+        return "NOT RECORDED: this message was forwarded, so the words are someone else's. Ask who did the inspection."
+    inspection, quote = str(args.get("inspection") or "").strip(), str(args.get("quote") or "").strip()
+    if not inspection or not ir.quote_is_theirs(own, quote):
+        return ("NOT RECORDED: `quote` must be their own words, copied exactly from their message this turn, and it "
+                "must state something rather than ask it. Do not say it was noted.")
+    result = str(args.get("result") or "").strip().lower()
+    if result not in ir.RESULTS:
+        return "NOT RECORDED: the result isn't clear. Ask one short question: passed, failed, partial or scheduled?"
+    if len(ir.gates_named(inspection)) > 1:
+        return "NOT RECORDED: that names more than one inspection. Call report_inspection once for each."
+    said = args.get("levels")
+    levels = work_state.levels_named(", ".join(map(str, said)) if isinstance(said, list) else said)
+    # THE MODEL'S RESULT IS A CLAIM (owner ruling 2026-11-09): read again from
+    # their own sentence AND the rest of their message (a correction anywhere
+    # in it keeps it unresolved; another floor's result in its own sentence
+    # does not); stored only when the words state exactly that one.
+    checked = ir.validate_statement(own, quote, result, levels=levels)
+    if checked["question"]:
+        return ("NOT RECORDED: their sentence asks rather than states. Answer the question; do not say it was "
+                "noted.")
+    theirs = [str(own or "")] + [str(x) for x in turn.get("recent") or []]
+    # The floor must be named AS A LEVEL in the sentence the quote sits in ("3
+    # guys" is not floor 3, and floor 2's sentence is not floor 3's). Only when
+    # their message names no level at all (the one-word answer "Passed" to
+    # "passed or failed?") may their message just before it name the floor.
+    span = ir.statement_span(own, quote)
+    floor_ok = bool(levels) and all(work_state.level_said(lv, span) for lv in levels)
+    if not floor_ok and levels and not work_state.levels_said(own):
+        floor_ok = all(any(work_state.level_said(lv, t) for t in theirs[1:]) for lv in levels)
+    if not checked["agree"]:
+        return await _dm_inspection_unresolved(ctx, job, args, inspection, quote, levels if floor_ok else [],
+                                               checked)
+    if not floor_ok:
+        return "NOT RECORDED: the floor isn't clear from what they said. Ask one short question: which floor?"
+    now = datetime.now(timezone.utc)
+    # The date is the model's claim too: kept only when their own words say
+    # that day; otherwise the inspection date is UNKNOWN and the reply says so.
+    inspected_on, problem = ir.clean_date(args.get("date"), now.astimezone(_MemoryZone("America/New_York")).date(),
+                                          result, words=" ".join(theirs[:1]))
+    date_unknown = problem == "not_in_their_words"
+    if problem and not date_unknown:
+        return ("NOT RECORDED: date must be a real date as YYYY-MM-DD, and a result can't be for a day still to come. "
+                "Ask one short question: which day?")
+    user = ident.get("user") or {}
+    name = user.get("name") or user.get("full_name") or "the sender"
+    # A gate only they named: "the plumbing passed" is not the plumbing ROUGH.
+    gate = ir.gate_for(inspection)
+    if gate and not any(gate in ir.gates_named(t) for t in theirs):
+        gate = None
+    row = ir.new_row(
+        project_id=job["id"], company_id=ident["company_id"], gate=gate, inspection=inspection,
+        levels=levels, space=args.get("space"), result=result, inspected_on=inspected_on,
+        inspector=args.get("inspector"), reporter_user_id=ident.get("user_id"), reporter_name=name,
+        source=turn.get("source") or "text", quote=quote, message_id=turn.get("message_id"), created_at=now)
+    row.update(ir.audit(checked))
+    if checked.get("hearsay_from"):
+        row["hearsay_from"] = checked["hearsay_from"]      # the sender's report of what someone else said
+    if checked.get("relayed_from"):
+        row["relayed_from"] = checked["relayed_from"]      # relayed from the inspector / agency: still attested
+    line = ir.noted_line(name, inspection, [work_state.level_label(lv) for lv in levels], result, inspected_on,
+                         hearsay=checked.get("hearsay_from"), date_unknown=date_unknown,
+                         relayed=checked.get("relayed_from"))
+    tail = "" if row["gate"] else " (Kept as said: it matches no inspection step we track, so no step changed.)"
+    if ctx.get("dry_run"):
+        return f"(eval) Would record. {line}{tail} Answer with that one line."
+    try:
+        await db[INSPECTION_REPORTS].insert_one(row)
+    except _DuplicateKeyError:
+        pass                                     # this statement is already on record
+    except Exception as e:
+        logger.warning(f"[inspection-report] write failed: {type(e).__name__}: {e!r}")
+        return "NOT RECORDED: it couldn't be saved just now. Tell them to send it again."
+    return f"{line}{tail} Answer with that one line."
+
+
+async def _dm_inspection_unresolved(ctx: dict, job: dict, args: dict, inspection: str, quote: str,
+                                    levels: list, checked: dict) -> str:
+    """Their words kept, NO result stored (status unresolved, which changes no
+    gate), with the model's claim and why; the model asks one question."""
+    ir, ident = inspection_reports, ctx["ident"]
+    turn = ctx.get("turn") or {}
+    user = ident.get("user") or {}
+    labels = [work_state.level_label(lv) for lv in levels]
+    ask = ir.question_for(inspection, labels)
+    tail = (f"UNRESOLVED: their words were kept but no result was recorded ({checked['reason']}). "
+            f"Ask exactly this one question: \"{ask}\" Do not say it passed, failed or was noted.")
+    if ctx.get("dry_run"):
+        return "(eval) Would keep it as UNRESOLVED. " + tail
+    now = datetime.now(timezone.utc)
+    row = ir.new_row(
+        project_id=job["id"], company_id=ident["company_id"], gate=ir.gate_for(inspection), inspection=inspection,
+        levels=levels, space=args.get("space"), result=None, inspected_on=None, inspector=args.get("inspector"),
+        reporter_user_id=ident.get("user_id"), reporter_name=user.get("name") or user.get("full_name") or "the sender",
+        source=turn.get("source") or "text", quote=quote, message_id=turn.get("message_id"), created_at=now,
+        status=ir.UNRESOLVED, row_id=ir.report_id(turn.get("message_id"), job["id"], inspection, levels,
+                                                  f"{ir.UNRESOLVED}:{checked.get('model_result')}"))
+    row.update(ir.audit(checked))
+    try:
+        await db[INSPECTION_REPORTS].insert_one(row)
+    except _DuplicateKeyError:
+        pass                                     # this statement is already on record
+    except Exception as e:
+        logger.warning(f"[inspection-report] unresolved write failed: {type(e).__name__}: {e!r}")
+    return tail
+
+
+def _inspection_doc_caption(parsed: dict, body: Any) -> str:
+    """The words sent with a file. With no caption the body can be its base64
+    preview, which is not words."""
+    b = " ".join(str(body or "").split())
+    return "" if len(b) > 200 and " " not in b else b
+
+
+def _inspection_doc_asked(parsed: dict, body: Any) -> bool:
+    """A photo or document in a DM whose words clearly name an inspection or
+    sign-off. Decides only that it is worth looking at; costs nothing."""
+    is_doc = parsed.get("media_type") == "document"
+    if parsed.get("has_audio") or not (parsed.get("has_image") or is_doc):
+        return False
+    return inspection_reports.names_signoff(
+        f"{_inspection_doc_caption(parsed, body)} {parsed.get('file_name') or '' if is_doc else ''}")
+
+
+async def _inspection_doc_job(ident: dict, dm_chat: str, caption: str) -> Optional[dict]:
+    """The job a sign-off is for: named in its caption, their only job, or the
+    one this chat is on. None when that isn't one job: never a guess."""
+    jobs = await _dm_jobs(ident) if ident.get("projects") else []
+    by_id = {j["id"]: j for j in jobs}
+    ids = wa_assistant.find_jobs(caption, jobs) if caption else []
+    if not ids and caption:
+        named = wa_assistant.job_named(caption, jobs, in_sentence=True)
+        ids = [named] if named else []
+    if ids:
+        return by_id.get(ids[0]) if len(ids) == 1 else None
+    if len(jobs) == 1:
+        return jobs[0]
+    cur = await _dm_state_get("dm_job", dm_chat)
+    return by_id.get(str(cur.get("project_id"))) if cur else None
+
+
+async def _inspection_doc_bytes(parsed: dict) -> Optional[bytes]:
+    """The file as sent: a photo's original, or a document from WhatsApp's CDN
+    and then WaAPI's download-media."""
+    if parsed.get("has_image"):
+        return await download_image(parsed)
+    note: dict = {}
+    doc = await _wa_cdn_photo(wa_media_ref(parsed.get("raw")), note, kind="document")
+    if doc:
+        return doc
+    message_id = parsed.get("message_id_serialized") or parsed.get("message_id") or ""
+    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and message_id):
+        return None
+    try:
+        async with ServerHttpClient(timeout=45) as client_http:
+            resp = await client_http.post(
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/download-media",
+                headers={"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"},
+                json={"messageId": message_id})
+            j = resp.json() if 200 <= resp.status_code < 300 and resp.content else {}
+    except Exception as e:
+        logger.warning(f"[inspection-doc] download failed: {type(e).__name__}")
+        return None
+    return next((b for is_media, b in _wa_media_blobs(j) if is_media), None)
+
+
+def _inspection_doc_page(raw: bytes) -> Tuple[Optional[bytes], str, str]:
+    """(the page to read as a JPEG, or None; the file's extension; its type)."""
+    if raw.startswith(b"%PDF"):
+        page = _render_pdf_page(raw, 1, 150)
+        return (_vision_jpeg(page)[0] if page else None), "pdf", "application/pdf"
+    return _vision_jpeg(raw)[0], "jpg", "image/jpeg"
+
+
+def _inspection_doc_ocr(page: bytes) -> str:
+    """The page's printed words, a line each (RapidOCR, lib/plan_ocr), or ""
+    when OCR is not available here or reads nothing. Blocking: run in a thread."""
+    try:
+        return inspection_reports.ocr_lines(plan_ocr._boxes(page))
+    except Exception as e:
+        logger.warning(f"[inspection-doc] OCR failed: {type(e).__name__}")
+        return ""
+
+
+async def _inspection_doc_claim_call(project_id: str) -> bool:
+    """Count one sign-off read in the vision meter ONLY while the project's
+    count for the day is under INSPECTION_DOC_DAILY_CAP; True when counted.
+
+    ONE conditional write (it was a read, then a separate count, so two
+    messages at once could both read 39 and both go). The filter matches
+    only a row still under the cap; with no row yet the upsert inserts it at
+    1; with the row AT the cap the upsert tries to insert the same _id and
+    the duplicate key is the refusal. Any other failure refuses too: a cap
+    that cannot be checked is not passed. The row is the one
+    record_vision_call writes, so the meter's count is unchanged."""
+    day = vision_meter.eastern_day()
+    now = datetime.now(timezone.utc)
+    try:
+        await db[vision_meter.COLLECTION].update_one(
+            {"_id": vision_meter.meter_key(day, project_id, VISION_INSPECTION_DOC),
+             "calls": {"$lt": INSPECTION_DOC_DAILY_CAP}},
+            {"$inc": {"calls": 1}, "$set": {"last_at": now},
+             "$setOnInsert": {"date": day, "project_id": project_id or None,
+                              "endpoint": VISION_INSPECTION_DOC, "first_at": now}},
+            upsert=True)
+        return True
+    except _DuplicateKeyError:
+        return False
+    except Exception as e:
+        logger.warning(f"[inspection-doc] cap check failed, not read: {type(e).__name__}")
+        return False
+
+
+async def _inspection_doc_read(page: bytes, project_id: str, today: _Date) -> Optional[dict]:
+    """One metered vision call: the checked reading, or None (no key, the day's
+    cap reached, the call failed, an unusable answer)."""
+    if not QWEN_API_KEY:
+        return None
+    if not await _inspection_doc_claim_call(project_id):
+        logger.warning(f"[inspection-doc] daily cap reached project={project_id}")
+        return None
+    try:
+        async with ServerHttpClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
+                json={"model": QWEN_MODEL, "max_tokens": 300, "temperature": 0, "messages": [{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(page).decode()}},
+                    {"type": "text", "text": inspection_reports.DOCUMENT_PROMPT}]}]})
+            if resp.status_code >= 400:
+                logger.warning(f"[inspection-doc] vision HTTP {resp.status_code}")
+                return None
+            said = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"[inspection-doc] vision failed: {type(e).__name__}: {e!r}")
+        return None
+    return inspection_reports.parse_document(said, today)
+
+
+async def _inspection_doc_turn(ident: dict, dm_chat: str, parsed: dict, body: Any) -> bool:
+    """A sign-off sent in a DM, or False to leave the message exactly where it
+    was going. Stored as document_on_file with the original in R2: kept and
+    read, and still not verified."""
+    ir = inspection_reports
+    caption = _inspection_doc_caption(parsed, body)
+    if parsed.get("has_image"):
+        # A walkthrough in progress keeps its photos.
+        if _punch_photo_caption_ref(parsed, body):
+            return False
+        sess = await _punch_session(ident["user_id"])
+        if sess and sess.get("status") in PUNCH_STATE_OPEN:
+            return False
+    if not _dm_is_approved(ident):
+        return False
+    job = await _inspection_doc_job(ident, dm_chat, caption)
+    if not job:
+        await send_whatsapp_message(dm_chat, "Which job is this sign-off for? Send it again with the job in the caption.")
+        return True
+    pid = str(job["id"])
+    if not await _bot_project_scope(ident["company_id"], pid):
+        return False
+    mid = parsed.get("message_id_serialized") or parsed.get("message_id") or ""
+    rid = ir.document_id(mid, pid)
+    if rid and await db[INSPECTION_REPORTS].find_one({"_id": rid}, {"_id": 1}):
+        return True                              # a redelivered webhook: already read and answered
+    raw = await _inspection_doc_bytes(parsed)
+    if not raw or len(raw) > INSPECTION_DOC_MAX_BYTES:
+        await send_whatsapp_message(dm_chat, "I couldn't get that file. Send it again, as a PDF or a photo.")
+        return True
+    page, ext, ctype = await asyncio.to_thread(_inspection_doc_page, raw)
+    if not page:
+        await send_whatsapp_message(dm_chat, "I can only read a PDF or a photo of a sign-off. Send it as one of those.")
+        return True
+    now = datetime.now(timezone.utc)
+    read = await _inspection_doc_read(page, pid, now.astimezone(_MemoryZone("America/New_York")).date())
+    if read and not read["is_signoff"]:
+        return False                             # not a sign-off after all: on to the punch list or the assistant
+    read = read or {}
+    key = _punch_photo_key(pid, "inspection", mid or uuid.uuid4().hex)[:-3] + ext
+    try:
+        stored = await asyncio.to_thread(_upload_to_r2, raw, key, ctype)
+    except Exception as e:
+        logger.warning(f"[inspection-doc] R2 failed: {type(e).__name__}")
+        stored = None
+    if not stored:
+        await send_whatsapp_message(dm_chat, "I couldn't keep that file just now. Send it again in a moment, please.")
+        return True
+    file_name = parsed.get("file_name") or ""
+    inspection = read.get("inspection") or caption or file_name
+    on_page = work_state.levels_named(read.get("levels"))
+    captioned = work_state.places_in(caption)["levels"]
+    # The page and the caption disagreeing is not ours to settle.
+    levels = on_page if not captioned else captioned if not on_page else on_page if on_page == captioned else []
+    user = ident.get("user") or {}
+    name = user.get("name") or user.get("full_name") or "the sender"
+    gate = ir.gate_for(inspection)
+    # THE MODEL'S READING IS A CLAIM (owner ruling 2026-11-09): the result is
+    # read again from the page's own printed words (RapidOCR), else from the
+    # line the model quoted, and kept only when they state that one result.
+    ocr = await asyncio.to_thread(_inspection_doc_ocr, page) if read else ""
+    checked = ir.validate_document(ocr, read.get("quote"), read.get("result"))
+    if not read:
+        checked["reason"] = "the page could not be read"
+    row = ir.new_row(
+        project_id=pid, company_id=ident["company_id"], gate=gate, inspection=inspection, levels=levels,
+        space=work_state.places_in(caption)["space"], result=checked["result"],
+        # The model's date only when the page's own text (or the caption) says that day.
+        inspected_on=read.get("date") if ir.date_in_words(read.get("date"), f"{ocr}\n{caption}",
+                                                          now.astimezone(_MemoryZone("America/New_York")).date()) else None,
+        inspector=read.get("inspector"), reporter_user_id=ident.get("user_id"), reporter_name=name, source="document",
+        quote=read.get("quote") or caption or file_name, message_id=mid, created_at=now,
+        status=ir.DOCUMENT if checked["agree"] else ir.UNRESOLVED,
+        r2_key=key, file_name=file_name, read_ok=bool(read), row_id=rid)
+    row.update(ir.audit(checked))
+    try:
+        await db[INSPECTION_REPORTS].insert_one(row)
+    except _DuplicateKeyError:
+        return True
+    except Exception as e:
+        logger.warning(f"[inspection-doc] write failed: {type(e).__name__}: {e!r}")
+        await send_whatsapp_message(dm_chat, "I couldn't keep that file just now. Send it again in a moment, please.")
+        return True
+    shown = read.get("inspection") or (caption if gate else None)
+    labels = [work_state.level_label(lv) for lv in levels]
+    reply = (ir.document_line(name, job["label"], shown, labels, checked["result"], gate) if checked["agree"]
+             else ir.document_unresolved_line(name, job["label"], shown, labels, checked["reason"]))
+    await send_whatsapp_message(dm_chat, reply)
+    await _dm_log_answer(ident, pid, caption or file_name, reply, "inspection_doc")
+    return True
+
+
+async def _photo_compare_call(raw_a: bytes, raw_b: bytes, project_id: Any, *, meter: bool = True) -> Optional[dict]:
+    """One vision call over two photos, or None. `meter` is turned off by the
+    read-only benchmark alone, which counts its own calls and may not write."""
+    if not QWEN_API_KEY or not raw_a or not raw_b:
+        return None
+    a, _e1 = await asyncio.to_thread(_vision_jpeg, raw_a)
+    b, _e2 = await asyncio.to_thread(_vision_jpeg, raw_b)
+    if not a or not b:
+        return None
+    if meter:
+        await record_vision_call(db, endpoint=VISION_PHOTO_COMPARE, project_id=str(project_id) if project_id else None)
+    content = [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(x).decode()}}
+               for x in (a, b)] + [{"type": "text", "text": photo_relations.COMPARE_PROMPT}]
+    try:
+        async with ServerHttpClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
+                json={"model": QWEN_MODEL, "max_tokens": 300, "temperature": 0,
+                      "messages": [{"role": "user", "content": content}]})
+            if resp.status_code >= 400:
+                logger.warning(f"[photo-relations] vision HTTP {resp.status_code}")
+                return None
+            said = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"[photo-relations] vision failed: {type(e).__name__}: {e!r}")
+        return None
+    return photo_relations.parse_compare(said)
+
+
+async def _photo_log_bytes(row: dict) -> Optional[bytes]:
+    """A photo's bytes, re-read from its log: only while the log is filed."""
+    lg = await db.logbooks.find_one({"_id": to_query_id(str(row.get("log_id")))})
+    if not lg or lg.get("is_deleted") or not logbook_is_filed(lg) or logbook_is_withdrawn(lg):
+        return None
+    photo = next((p for p in progress_report.log_photos(lg) if p["key"] == row.get("photo_key")), None)
+    if not photo:
+        return None
+    return await asyncio.to_thread(_report_photo_bytes, {"photo": photo["photo"], "key": photo["key"]})
+
+
+async def _photo_relations_tick(now: Optional[datetime] = None, budget: int = PHOTO_RELATIONS_BUDGET) -> dict:
+    """OFF unless PHOTO_RELATIONS_ENABLED=1 AND both thresholds have been set
+    from a benchmark on real photos: how well anything tells one place from
+    another has not been measured. Geometry and the model each only ADD
+    support (photo_relations.combine); a miss is stored as unconfirmed, never
+    as a different place. Never raises."""
+    report = {"pairs": 0, "failed": 0, "supported": 0}
+    if not QWEN_API_KEY or os.environ.get("PHOTO_RELATIONS_ENABLED") != "1" or not photo_relations.automatic_ready():
+        return report
+    now = now or datetime.now(timezone.utc)
+    try:
+        rows = await db[PHOTO_INDEX].find({"kind": "photo"}).sort("date", -1).to_list(5000)
+        done = [str(d["_id"]) for d in await db[PHOTO_RELATIONS].find({}, {"_id": 1}).to_list(200000)]
+        by_project: Dict[str, list] = {}
+        for r in rows:
+            by_project.setdefault(str(r.get("project_id")), []).append(r)
+        for pid, raw_rows in by_project.items():
+            left = budget - report["pairs"] - report["failed"]
+            if left <= 0:
+                break
+            spaces, confirmed = await _photo_place_context(pid)
+            photos = work_state.photo_rows(raw_rows, spaces=spaces, confirmations=confirmed)
+            for pair in photo_relations.pick_pairs(photos, done, left):
+                a, b = pair["first"], pair["second"]
+                raw_a, raw_b = await _photo_log_bytes(a), await _photo_log_bytes(b)
+                if not raw_a or not raw_b:
+                    report["failed"] += 1
+                    continue
+                geometry = await asyncio.to_thread(photo_geometry.match, raw_a, raw_b)
+                base_row = {"project_id": pid, "company_id": str(a.get("company_id") or ""),
+                            "level": a["levels"][0], "space": a.get("space"), "first": str(a.get("short")),
+                            "second": str(b.get("short")), "first_date": a.get("date"), "second_date": b.get("date"),
+                            "geometry": geometry, "prompt_version": photo_relations.PROMPT_VERSION, "at": now}
+                v = await _photo_compare_call(raw_a, raw_b, pid)
+                if v is None:
+                    report["failed"] += 1
+                    continue
+                verdict = photo_relations.combine(v, geometry)
+                await db[PHOTO_RELATIONS].insert_one({"_id": pair["pair_id"], **v, **verdict, **base_row, "model": QWEN_MODEL})
+                report["pairs"] += 1
+                report["supported"] += verdict["same_place"] == photo_relations.SUPPORTED
+    except Exception as e:
+        logger.error(f"[photo-relations] tick failed: {type(e).__name__}: {e!r}")
+    logger.info(f"[photo-relations] {report}")
+    return report
+
+
+async def _photo_relations_job() -> None:
+    try:
+        await _photo_relations_tick()
+    except Exception as e:
+        logger.error(f"[photo-relations] job failed: {type(e).__name__}: {e!r}")
+
+
+# ── PROGRESS EVIDENCE (lib/evidence_sources.py) ─────────────────────────────
+#
+# ONE loader for every progress source, as lib/evidence.py items. Read-time
+# only, nothing stored. Returns (items, coverage): the shape is documented at
+# the top of lib/evidence_sources.py. The filed daily logs, check-ins, DOB rows
+# and confirmed schedule come from _report_rows (amendment chains resolved, the
+# company check made there). A source that cannot be read is named in
+# coverage["unreadable"] and gives no items: unknown, never "nothing happened".
+from lib import evidence_sources  # noqa: E402
+
+PROGRESS_LOGBOOK_TYPES = ("concrete_operations", "site_superintendent_log")
+
+
+async def _progress_evidence(project: dict, company_id: str, start: _Date, end: _Date,
+                             keep: Optional[dict] = None) -> tuple:
+    now = datetime.now(timezone.utc)
+    src = await _report_rows(project, company_id, start, end, now)
+    if keep is not None:
+        keep["sources"] = src          # the schedule and the rest, read once
+    pid, cid = str(project.get("_id")), str(company_id)
+    unreadable: List[str] = []
+
+    async def _read(name: str, query):
+        try:
+            return await query()
+        except Exception as e:
+            logger.warning(f"[progress-evidence] {name} read failed: {type(e).__name__}: {e!r}")
+            unreadable.append(name)
+            return None
+
+    days = {"$gte": start.isoformat(), "$lte": end.isoformat()}
+    index = await _read("photo_index", lambda: db[PHOTO_INDEX].find(
+        {"project_id": pid, "kind": "photo", "date": days}).to_list(20000)) or []
+    spaces, confirmed = await _photo_place_context(pid)
+    reports = await _read("inspection_reports", lambda: db[INSPECTION_REPORTS].find(
+        {"project_id": pid, "company_id": cid}).to_list(5000)) or []
+    # A pour log is a STANDING record (a slab poured Jul 1 is still poured):
+    # read up to `end` with no lower bound. The superintendent's daily walk is
+    # day-by-day presence: the window only. (lib/evidence_sources.in_window.)
+    books = await _read("logbooks", lambda: db.logbooks.find(
+        {"project_id": pid, "log_type": "concrete_operations", "is_deleted": {"$ne": True},
+         "date": {"$lte": end.isoformat()}}).to_list(5000)) or []
+    books += await _read("logbooks", lambda: db.logbooks.find(
+        {"project_id": pid, "log_type": {"$in": [t for t in PROGRESS_LOGBOOK_TYPES if t != "concrete_operations"]},
+         "is_deleted": {"$ne": True}, "date": days}).to_list(5000)) or []
+    heads = [c["head"] for c in collapse_amendment_chains(books)
+             if logbook_is_filed(c["head"]) and not logbook_is_withdrawn(c["head"])]
+    closed = await _read("punch_items", lambda: db[punch.COLLECTION].find(
+        {"project_id": pid, "status": "closed"}).to_list(5000)) or []
+    logs = src["logbooks"]
+    # ONE frame for every source (lib/evidence_sources binds each to it); a
+    # failed read is named in coverage["unreadable"] by collect().
+    frame = await _project_place_frame(pid)
+    if keep is not None:
+        keep["frame"] = frame
+    if frame.get("unreadable"):
+        logger.warning(f"[progress-evidence] {pid}: the project's level frame could not be read; no record is placed")
+    return evidence_sources.collect(
+        pid, start=start, end=end, activities=progress_report._log_activities(logs, start, end),
+        photo_index=index, log_ids={str(lg.get("_id")) for lg in logs}, spaces=spaces, confirmations=confirmed,
+        inspections=reports, dob_rows=src["dob_rows"], bins=src.get("project_bins") or (), logbooks=heads,
+        punch_items=closed, checkins=src["checkins"], schedule=src.get("schedule"), unreadable=unreadable,
+        frame=frame)
+
+
+# ── PROJECT PROGRESS (lib/project_progress.py) ──────────────────────────────
+#
+# One status of the whole building from evidence items (lib/evidence.py), read
+# at request time: nothing is stored. GET /api/projects/{project_id}/progress
+# and the assistant's project_status tool read the same build.
+from lib import evidence as _evidence, project_progress  # noqa: E402
+from lib.plans.level_suggestion import suggest_levels as _suggest_levels  # noqa: E402
+
+#: How far back the whole-building status reads (the report loader's window).
+PROJECT_PROGRESS_DAYS = 365
+
+
+async def _progress_plan_tokens(pid: str) -> list:
+    """The level tokens the job's drawings name (the answer says where each level came from)."""
+    try:
+        rows = await db.document_page_index.find({"project_id": pid}, {"sheet_number": 1, "sheet_title": 1,
+                                                                       "floor": 1, "floors": 1}).to_list(3000)
+        plan_tokens = [lv["token"] for lv in _suggest_levels(rows)["levels"]]
+    except Exception as e:
+        # The project fields and the records still name levels; the answer says where each came from.
+        logger.warning(f"[progress] plan levels not read: {type(e).__name__}: {e!r}")
+        plan_tokens = []
+    return plan_tokens
+
+
+async def _project_progress(project: dict, company_id: str, *, job: str = "", today: Optional[_Date] = None,
+                            keep: Optional[dict] = None) -> dict:
+    """`keep`: a dict the caller gets back filled with what the model was built
+    from ("items", "sources", "start"), so a report adds the forecast to the
+    SAME read instead of a second one."""
+    now = datetime.now(timezone.utc)
+    today = today or now.astimezone(_MemoryZone("America/New_York")).date()
+    # Every source, through the one loader (lib/evidence_sources.py).
+    start = today - timedelta(days=PROJECT_PROGRESS_DAYS - 1)
+    keep = {} if keep is None else keep
+    items, coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    keep.update(items=items, start=start)
+    plan_tokens = await _progress_plan_tokens(str(project.get("_id")))
+    return project_progress.build(items, today=today, project=project, plan_tokens=plan_tokens,
+                                  schedule=keep["sources"].get("schedule"), job=job or str(project.get("name") or ""),
+                                  unreadable=(coverage or {}).get("unreadable") or (), frame=keep.get("frame"))
+
+
+@api_router.get("/projects/{project_id}/progress",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_progress(project_id: str, current_user=Depends(get_current_user)):
+    """The whole building's status from the records. Read-only; counts of
+    level-and-work cells, never a percent complete."""
+    cid = str(get_user_company_id(current_user) or "")
+    project = await _progress_route_project(project_id, current_user, write=False)
+    try:
+        model = await _project_progress(project, cid)
+    except ReportSourceUnavailable:
+        raise HTTPException(status_code=503, detail="The progress records could not be read, so no status is shown.")
+    out = project_progress.to_json(model)
+    out["project_id"] = str(project_id)
+    return out
+
+
+def _project_status_tool(job_prop: dict) -> dict:
+    """The brain's tool spec; registered beside the brain's other tools."""
+    return {"name": "project_status", "description": (
+        "The status of a whole job from the records: overall ('how is 588 doing'), one sub ('where is Arkon at') "
+        "or one floor ('how is floor 3'). Counts of level-and-work cells by status (done needs a person's statement "
+        "or stronger), what is open on the record per level, and records that disagree. Never a percent complete."),
+        "input_schema": {"type": "object", "properties": {
+            "job": job_prop,
+            "scope": {"type": "string", "enum": ["overall", "sub", "floor"]},
+            "name": {"type": "string", "description": "The sub's name (scope sub) or the floor (scope floor), as they said it."}},
+            "required": ["scope"]}}
+
+
+async def _dm_project_status(ctx: dict, job: dict, args: dict) -> str:
+    cid = str(ctx["ident"]["company_id"])
+    project = await _bot_project_scope(cid, str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    try:
+        model = await _project_progress(project, cid, job=str(job.get("label") or ""))
+    except Exception as e:
+        logger.warning(f"[progress] failed: {type(e).__name__}: {e!r}")
+        return "The progress records couldn't be read just now."
+    return project_progress.as_text(model, str(args.get("scope") or "overall"), args.get("name"))
+
+
+# ── SCHEDULE FORECAST (lib/forecast.py) ─────────────────────────────────────
+# Facts at attested or stronger, the confirmed file's dates and logic, the
+# logs' reported spans and LeveLog's estimates, each in its own group. The
+# evidence is every source, through _progress_evidence.
+from lib import forecast as schedule_forecast  # noqa: E402
+
+
+def _forecast_window(items: list, logbooks: list, today: _Date) -> tuple:
+    """(log rows, items, first day) the schedule forecast reads, the SAME for
+    the assistant and a report: day-by-day activity (crew rows, photos,
+    check-ins, the superintendent's walk) from the last WORK_STATE_DAYS only;
+    standing records (pours, DOB sign-offs, punch closeouts, inspections,
+    schedule actuals) whole, as the loader reads them (evidence_sources.in_window)."""
+    start = today - timedelta(days=WORK_STATE_DAYS - 1)
+    kept = [i for i in items if evidence_sources.in_window(i, start, today)]
+    rows = work_state.evidence_rows(progress_report._log_activities(logbooks, start, today))
+    return rows, kept, start
+
+
+async def _forecast_inputs(project: dict, company_id: str) -> tuple:
+    """(report sources, log rows, today, first day read, evidence items): every
+    source through the one loader (_progress_evidence), read once. The window
+    limits only reported / observed activity: standing records (pours, DOB
+    sign-offs, punch closeouts, inspections, schedule actuals) are read whole,
+    so a marker older than the window still counts. The sources that could not
+    be read ride along as src["progress_unreadable"]."""
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(_MemoryZone("America/New_York")).date()
+    start = today - timedelta(days=WORK_STATE_DAYS - 1)
+    keep: dict = {}
+    items, coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    src = {**keep["sources"], "progress_unreadable": list((coverage or {}).get("unreadable") or ())}
+    rows, items, start = _forecast_window(items, src["logbooks"], today)
+    return src, rows, today, start, items
+
+
+async def _dm_schedule_status(ctx: dict, job: dict, args: dict) -> str:
+    """"Are we on schedule?": the four groups of lib/forecast.py, read only."""
+    cid = str(ctx["ident"]["company_id"])
+    project = await _bot_project_scope(cid, str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    try:
+        src, rows, today, _start, items = await _forecast_inputs(project, cid)
+    except Exception as e:
+        logger.warning(f"[schedule-status] failed: {type(e).__name__}: {e!r}")
+        return "The schedule records couldn't be read just now."
+    if not src.get("schedule"):
+        return (f"No confirmed schedule is on file for {job['label']}, so there are no planned dates to compare "
+                "against and no forecast to give.")
+    fc = schedule_forecast.forecast(src["schedule"], items, rows, today=today, project_id=str(project.get("_id")),
+                                    unreadable=src.get("progress_unreadable") or ())
+    return schedule_forecast.status_text(fc, job["label"])
+
+
+# ── TARGETED CONFIRMATIONS (lib/confirmation_queue.py) ──────────────────────
+#
+# The few questions worth asking a superintendent or CP about a job: where the
+# sources disagree or a planned / booked thing has nothing on record. Rules,
+# words and the reply reader: lib/confirmation_queue.py. Here: the job's
+# evidence items (the one progress loader, _progress_evidence, plus the logs'
+# own "done"s and earlier answers), who may be asked, and the stored rows.
+#
+# SHADOW. CONFIRMATIONS_MODE = off | shadow | live, default off. Shadow
+# computes nightly and stores what it WOULD ask in `confirmation_candidates`
+# (append-only; status and Correct / Wrong are appended events in
+# `confirmation_events`); it calls no send or queue function. "live" is
+# refused (read as shadow) unless CONFIRMATIONS_LIVE_ALLOWED=1, which is set
+# nowhere. An admin marks rows Correct / Wrong at
+# GET /projects/{id}/confirmations and POST .../{candidate_id}/review;
+# scripts/confirmation_shadow_report.py reads the precision.
+
+from lib import confirmation_queue  # noqa: E402
+#: The window of logs, photos and reports read for a job.
+CONFIRM_LOG_DAYS = 35
+_CONFIRM_DONE = re.compile(r"\b(?:complete[d]?|done|finished)\b", re.I)
+_CONFIRM_NOT_DONE = re.compile(r"\b(?:not|in)[\s-]?(?:yet\s+)?(?:complete[d]?|done|finished)\b|\bincomplete\b", re.I)
+
+
+def _confirm_day(v: Any) -> Optional[_Date]:
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, _Date):
+        return v
+    try:
+        return _Date.fromisoformat(str(v)[:10]) if v else None
+    except ValueError:
+        return None
+
+
+def _confirm_log_items(rows: list, pid: str) -> tuple:
+    """(the log rows that say DONE in their own words, as reported items;
+    {day: levels the filed logs name}) from work_state.evidence_rows. The
+    loader (lib/evidence_sources) keeps every crew row in_progress; a "done"
+    is added here only from the row's words, never from a generic trade."""
+    items, logged = [], {}
+    for r in rows:
+        if not r.get("levels"):
+            continue
+        logged.setdefault(r["date"], set()).update(r["levels"])
+        work = str(r.get("work") or "")
+        if not _CONFIRM_DONE.search(work) or _CONFIRM_NOT_DONE.search(work) or r.get("generic"):
+            continue
+        for node in r.get("nodes") or []:
+            items.append(_evidence.item(
+                "reported", "done", source="daily_log",
+                ref=r.get("log_id") or f"log:{r['date']}", project_id=pid, node=node, levels=r["levels"],
+                space=r.get("space"), sub=r.get("sub") or None, on=r["date"], quote=work,
+                shared=len(r["levels"]) > 1))
+    return items, logged
+
+
+def _confirm_answer_items(rows: list) -> list:
+    """Earlier answers: the attested items they became."""
+    out = []
+    for r in rows:
+        it = r.get("item")
+        if isinstance(it, dict) and it.get("claim") in _evidence.CLAIMS:
+            out.append({**it, "on": _confirm_day(it.get("on"))})
+    return out
+
+
+def _confirm_schedule(schedule: Optional[dict], place: Optional[dict] = None) -> list:
+    """The CONFIRMED schedule file's activities, each with the work and the
+    levels its name states (the same reading work_state uses)."""
+    out = []
+    for a in (schedule or {}).get("activities") or []:
+        if a.get("kind") == "summary":
+            continue
+        name = str(a.get("name") or "")
+        nodes = work_state.classify(name, name)[0]
+        levels = work_state.places_in(name, place)["levels"]
+        if not nodes or not levels:
+            continue
+        out.append({"id": a.get("id"), "name": name, "nodes": nodes, "levels": levels,
+                    "planned_start": _confirm_day(a.get("current_start") or a.get("baseline_start")),
+                    "actual_start": a.get("actual_start")})
+    return out
+
+
+async def _confirmation_inputs(project: dict, company_id: str) -> tuple:
+    """(evidence items, frame) for one job: the one progress loader
+    (_progress_evidence), the logs' own "done"s, and earlier answers. None
+    when a source could not be read: a question premised on "nothing on
+    record" would then be about our blindness, not the job."""
+    pid = str(project.get("_id"))
+    today = datetime.now(timezone.utc).astimezone(_MemoryZone("America/New_York")).date()
+    start = today - timedelta(days=CONFIRM_LOG_DAYS - 1)
+    keep: dict = {}
+    items, coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    if coverage.get("unreadable"):
+        logger.warning(f"[confirm] {pid} skipped: unreadable {coverage['unreadable']}")
+        return None
+    src = keep["sources"]
+    # The same place frame the loader read levels with (lib/location_binder).
+    place = keep.get("frame") or await _project_place_frame(pid)
+    rows = work_state.evidence_rows(progress_report._log_activities(src["logbooks"], start, today), place)
+    done, logged = _confirm_log_items(rows, pid)
+    answers = await db.confirmation_answers.find({"project_id": pid, "company_id": str(company_id)}).to_list(5000)
+    items = list(items) + done + _confirm_answer_items(answers)
+    frame = {"project_id": pid, "today": today, "logs_from": start, "logged_levels": logged,
+             "schedule": _confirm_schedule(src.get("schedule"), place)}
+    return items, frame
+
+
+async def _confirmation_people(company_id: str) -> list:
+    """Who may be asked in this company: a live superintendent or CP of the
+    company, with an ACTIVE WhatsApp opt-in (their own YES) for it."""
+    try:
+        users = await db.users.find(
+            {"company_id": _company_id_filter(company_id), "is_deleted": {"$ne": True},
+             "role": {"$in": list(confirmation_queue.TARGET_ROLES)}}).to_list(500)
+        ids = [str(u.get("_id")) for u in users]
+        optins = await db[WA_OPTINS].find({"user_id": {"$in": ids}, "status": "active"}).to_list(1000) if ids else []
+    except Exception as e:
+        logger.warning(f"[confirm] people read failed: {type(e).__name__}")
+        return []
+    opted = {}
+    for o in optins:
+        if wa_security.same_company(o.get("company_id"), company_id):
+            opted.setdefault(str(o.get("user_id")), []).append(o)
+    return [{"user_id": str(u.get("_id")), "name": u.get("name") or u.get("full_name") or "",
+             "role": str(u.get("role") or "").lower(), "opted_in": str(u.get("_id")) in opted,
+             "assigned_projects": [str(p) for p in u.get("assigned_projects") or []],
+             "phones": sorted({d for o in opted.get(str(u.get("_id")), [])
+                               for d in (o.get("phone"), o.get("chat_digits")) if d}),
+             "chats": sorted({o.get("chat_id") for o in opted.get(str(u.get("_id")), []) if o.get("chat_id")})}
+            for u in users]
+
+
+async def _confirmation_said_today(people: list, since: datetime) -> dict:
+    """{user_id: [their words today]}: group and DM messages from their
+    numbers since New York midnight (a voice note's transcript included)."""
+    out: Dict[str, list] = {}
+    for p in people:
+        if not p.get("opted_in"):
+            continue
+        keys = list(p.get("phones") or []) + list(p.get("chats") or [])
+        if not keys:
+            continue
+        try:
+            msgs = await db.whatsapp_messages.find(
+                {"created_at": {"$gte": since},
+                 "$or": [{"sender": {"$in": keys}}, {"sender_jid": {"$in": keys}},
+                         {"is_dm": True, "group_id": {"$in": keys}, "sender": {"$ne": "bot"}}]}).to_list(500)
+        except Exception:
+            continue
+        out[p["user_id"]] = [m.get("body") for m in msgs] + [(m.get("voice") or {}).get("transcript") for m in msgs]
+    return out
+
+
+async def _confirmations_tick(now: Optional[datetime] = None) -> dict:
+    """Nightly. Shadow: stores what it would ask, sends and queues nothing.
+    Live (refused unless allowed): the same rows, each person's one message
+    queued for the morning (confirmation_queue.SEND_AT) through the Shabbos /
+    retry queue."""
+    now = now or datetime.now(timezone.utc)
+    m = confirmation_queue.mode()
+    report = {"mode": m, "projects": 0, "candidates": 0, "messages": 0, "rows": 0, "queued": 0, "skipped": {}}
+    refused = confirmation_queue.live_refused() if confirmation_queue.live_requested() else None
+    if refused:
+        # Said, never silent: live asked for and refused runs as shadow, and
+        # every row it stores carries why (the shadow report prints it).
+        logger.warning(f"[confirm] {refused}")
+        report["live_refused"] = refused
+    if m == "off":
+        return report
+    day = wa_chase.today(now)
+    projects = await db.projects.find(await unattended_project_filter({**ACTIVE_PROJECT_FILTER})).to_list(2000)
+    cands, people, keeps, names, company_of = [], {}, {}, {}, {}
+    for p in projects:
+        pid, cid = str(p.get("_id")), str(p.get("company_id") or "")
+        if not cid:
+            continue
+        if cid not in people:
+            people[cid] = await _confirmation_people(cid)
+        if not any(confirmation_queue.eligible(x, pid) is None for x in people[cid]):
+            report["skipped"]["nobody_to_ask"] = report["skipped"].get("nobody_to_ask", 0) + 1
+            continue
+        try:
+            got = await _confirmation_inputs(p, cid)
+        except Exception as e:
+            logger.warning(f"[confirm] {pid} not read: {type(e).__name__}: {e!r}")
+            got = None
+        if got is None:
+            report["skipped"]["job_not_read"] = report["skipped"].get("job_not_read", 0) + 1
+            continue
+        items, frame = got
+        report["projects"] += 1
+        found = confirmation_queue.candidates(items, frame)
+        report["candidates"] += len(found)
+        cands += found
+        keeps[pid] = await _shabbos_applies(cid, pid)
+        names[pid] = wa_assistant.street_label(p)
+        company_of[pid] = cid
+    everyone = [x for xs in people.values() for x in xs]
+    history = await db.confirmation_candidates.find(
+        {"day": {"$gt": (day - timedelta(days=confirmation_queue.REPEAT_DAYS)).isoformat()}}).to_list(20000)
+    since = datetime.combine(day, datetime.min.time()).replace(tzinfo=_MemoryZone("America/New_York"))
+    said = await _confirmation_said_today(everyone, since.astimezone(timezone.utc))
+    plan = confirmation_queue.plan(cands, everyone, day=day, history=history, said_today=said, keeps_shabbos=keeps)
+    for s in plan["skipped"]:
+        report["skipped"][s["why"]] = report["skipped"].get(s["why"], 0) + 1
+    # Live: "queued" until the queue DELIVERS it (_confirmation_delivered
+    # appends "sent"); never "sent" on the strength of a queue row.
+    status = "queued" if m == "live" else "shadow"
+    for msg in plan["messages"]:
+        text = confirmation_queue.message_text(msg["name"], msg["items"], names)
+        report["messages"] += 1
+        if m == "live":
+            ids = [confirmation_queue.candidate_id(day, msg["user_id"], c["project_id"], c["thing"]) for c in msg["items"]]
+            await _quiet_enqueue({"via": "dm", "user_id": msg["user_id"], "message": text, "kind": "confirmation",
+                                  "window": day.isoformat(), "project_id": None, "confirmation_ids": ids,
+                                  "confirmation_day": day.isoformat()},
+                                 company_id=company_of.get(str(msg["items"][0]["project_id"])), project_id=None,
+                                 kind="confirmation", until=plan["send_at"], now=now)
+            report["queued"] += 1
+        for pos, c in enumerate(msg["items"], 1):
+            cand_id = confirmation_queue.candidate_id(day, msg["user_id"], c["project_id"], c["thing"])
+            if await db.confirmation_candidates.find_one({"_id": cand_id}, {"_id": 1}):
+                continue
+            await db.confirmation_candidates.insert_one({
+                "_id": cand_id, "day": day.isoformat(), "project_id": str(c["project_id"]),
+                "company_id": company_of.get(str(c["project_id"]), ""), "target_user_id": msg["user_id"],
+                "target_name": msg["name"], "trigger": c["trigger"], "thing": c["thing"], "node": c["node"],
+                "level": c["level"], "question": c["question"], "options": c["options"],
+                "evidence": c["evidence"], "score": c["score"], "position": pos, "text": text,
+                "would_send_at": plan["send_at"], "status": status, "mode": m, "created_at": now,
+                **({"live_refused": refused} if refused else {})})
+            report["rows"] += 1
+    logger.info(f"[confirm] {report}")
+    return report
+
+
+async def _confirmations_job() -> None:
+    try:
+        await _confirmations_tick()
+    except Exception as e:
+        logger.error(f"[confirm] job failed: {type(e).__name__}: {e!r}")
+
+
+async def _confirmation_delivered(spec: dict, now: datetime) -> None:
+    """The morning queue delivered a confirmation message: ONLY now is each of
+    its questions "sent" (an appended event, with the delivery time). Never
+    raises: the message is out either way."""
+    ids = [str(i) for i in spec.get("confirmation_ids") or ()]
+    if not ids:
+        return
+    try:
+        for cid in ids:
+            row = await db.confirmation_candidates.find_one({"_id": cid}, {"project_id": 1, "company_id": 1})
+            if not row:
+                continue
+            await db.confirmation_events.insert_one({
+                "candidate_id": cid, "project_id": row.get("project_id"), "company_id": row.get("company_id"),
+                "kind": "sent", "by": str(spec.get("user_id") or ""), "at": now})
+    except Exception as e:
+        logger.warning(f"[confirm] delivery not recorded: {type(e).__name__}")
+
+
+async def _confirmation_take_reply(ident: dict, dm_chat: str, text: Any,
+                                   now: Optional[datetime] = None) -> bool:
+    """A DM that answers today's confirmation message, read by fixed rules
+    first. True when it was read (and answered); False leaves the turn to the
+    DM brain unchanged. Off and shadow: always False (nothing was asked).
+    Only questions DELIVERED to this person today count: a "sent" event that
+    the queue appended after delivering (_confirmation_delivered), dated
+    today. A queued question, or a row merely marked sent, was never seen."""
+    if confirmation_queue.mode() != "live":
+        return False
+    now = now or datetime.now(timezone.utc)
+    uid = str((ident or {}).get("user_id") or "")
+    if not uid or not str(text or "").strip():
+        return False
+    day = wa_chase.today(now)
+    rows = await db.confirmation_candidates.find(
+        {"target_user_id": uid, "day": day.isoformat(), "status": {"$in": ["queued", "sent"]}}).to_list(10)
+    if not rows:
+        return False
+    events = await db.confirmation_events.find({"candidate_id": {"$in": [r["_id"] for r in rows]}}).to_list(200)
+
+    def delivered(r: dict) -> bool:
+        return any(e.get("candidate_id") == r["_id"] and e.get("kind") == "sent" and isinstance(e.get("at"), datetime)
+                   and _utc(e["at"]) <= now and wa_chase.today(_utc(e["at"])) == day and str(e.get("by") or uid) == uid
+                   for e in events)
+    rows = [r for r in rows if delivered(r)]
+    if not rows:
+        return False
+    rows.sort(key=lambda r: int(r.get("position") or 0))
+    parsed = confirmation_queue.parse_reply(text, rows)
+    if not parsed["answers"]:
+        return False
+    user = (ident or {}).get("user") or {}
+    name = str(user.get("name") or user.get("full_name") or "")
+    unresolved = []
+    for a in parsed["answers"]:
+        row = rows[a["index"] - 1]
+        if confirmation_queue.current(row, [e for e in events if e.get("candidate_id") == row["_id"]])["status"] != "sent":
+            continue
+        answer_id = str(uuid.uuid4())
+        check = confirmation_queue.inspection_check(a) if row["trigger"] in confirmation_queue.INSPECTION_TRIGGERS else None
+        item = confirmation_queue.answer_item(row, a, answer_id=answer_id, person=name, on=day, check=check)
+        if check is not None:
+            gate = row.get("node") if row.get("node") in confirmation_queue.GATES else None
+            await db[INSPECTION_REPORTS].insert_one(inspection_reports.new_row(
+                project_id=row["project_id"], company_id=row["company_id"], gate=gate,
+                inspection=confirmation_queue.node_words(row.get("node")), levels=[row["level"]], space=None,
+                result=check.get("result"), inspected_on=None, inspector=None, reporter_user_id=uid,
+                reporter_name=name, source="confirmation", quote=a["words"], message_id=answer_id, created_at=now,
+                status=inspection_reports.ATTESTED if check.get("agree") else inspection_reports.UNRESOLVED)
+                | inspection_reports.audit(check))
+            if not check.get("agree"):
+                unresolved.append(a["index"])
+        await db.confirmation_answers.insert_one({
+            "_id": answer_id, "candidate_id": row["_id"], "project_id": row["project_id"],
+            "company_id": row["company_id"], "user_id": uid, "name": name, "question": row["question"],
+            "words": a["words"], "answer": a["answer"], "reason": a.get("reason"), "percent": a.get("percent"),
+            "status": "unresolved" if item is None else "attested",
+            "item": None if item is None else {**item, "on": day.isoformat()}, "at": now})
+        await db.confirmation_events.insert_one({
+            "candidate_id": row["_id"], "project_id": row["project_id"], "company_id": row["company_id"],
+            "kind": "answered", "answer_id": answer_id, "by": uid, "at": now})
+    await send_whatsapp_message(dm_chat, confirmation_queue.ack_text(parsed["answers"], parsed["unread"], unresolved))
+    return True
+
+
+def _confirmation_view(r: dict, events: list) -> dict:
+    """One candidate for the admin: what it would ask, why, and its verdict."""
+    cur = confirmation_queue.current(r, events)
+    return {"id": r.get("_id"), "day": r.get("day"), "trigger": r.get("trigger"), "level": r.get("level"),
+            "question": r.get("question"), "options": [o.get("label") for o in r.get("options") or []],
+            "evidence": r.get("evidence") or [], "score": r.get("score"), "to": r.get("target_name") or "",
+            "text": r.get("text") or "", "status": cur["status"], "verdict": cur["verdict"],
+            "would_send_at": _iso_utc(r["would_send_at"]) if isinstance(r.get("would_send_at"), datetime) else None}
+
+
+@api_router.get("/projects/{project_id}/confirmations",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_confirmations(project_id: str, current_user=Depends(get_current_user)):
+    """Admin only: the questions targeted confirmations would ask on this job
+    (shadow: none was sent), newest first, with review precision."""
+    company_id = await _attention_admin_project(project_id, current_user)
+    q = {"project_id": str(project_id), "company_id": str(company_id)}
+    rows = await db.confirmation_candidates.find(q).sort([("created_at", -1)]).to_list(200)
+    events = await db.confirmation_events.find(q).to_list(20000)
+    by: Dict[str, list] = {}
+    for e in events:
+        by.setdefault(str(e.get("candidate_id")), []).append(e)
+    views = [_confirmation_view(r, by.get(str(r.get("_id")), [])) for r in rows]
+    return {"entries": views, "precision": confirmation_queue.precision(v["verdict"] for v in views),
+            "mode": confirmation_queue.mode(), "shadow": confirmation_queue.mode() != "live"}
+
+
+@api_router.post("/projects/{project_id}/confirmations/{candidate_id}/review",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def review_project_confirmation(project_id: str, candidate_id: str, body: dict,
+                                      current_user=Depends(get_current_user)):
+    """Admin only: Correct / Wrong on one would-ask question ({"verdict"}), or
+    {"dismiss": true}. Appended; the newest verdict counts."""
+    company_id = await _attention_admin_project(project_id, current_user)
+    body = body if isinstance(body, dict) else {}
+    verdict, dismiss = body.get("verdict"), body.get("dismiss") is True
+    if verdict not in confirmation_queue.VERDICTS and not dismiss:
+        raise HTTPException(status_code=422, detail="verdict: correct or wrong, or dismiss: true")
+    q = {"_id": str(candidate_id), "project_id": str(project_id), "company_id": str(company_id)}
+    row = await db.confirmation_candidates.find_one(q)
+    if not row:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    now = datetime.now(timezone.utc)
+    await db.confirmation_events.insert_one({
+        "candidate_id": str(candidate_id), "project_id": str(project_id), "company_id": str(company_id),
+        "kind": "dismissed" if dismiss else "review", "verdict": None if dismiss else verdict,
+        "by": actor_id(current_user), "at": now})
+    events = await db.confirmation_events.find({"candidate_id": str(candidate_id)}).to_list(500)
+    return _confirmation_view(row, events)
+
+
+# ── LOCATION BINDER (lib/location_binder.py) ────────────────────────────────
+#
+# The levels and plan tags ONE project has, from what exists: its storey count
+# and has_* flags, its indexed plan sheets (as the level suggestion reads them),
+# its plan tags (plan_records / plan_areas, as photo_place reads them), and the
+# levels at least two of its filed daily logs name. Read-only: nothing is
+# stored, so there is no second copy to drift. A failed read is an EMPTY frame
+# marked `unreadable`: the loader names it in coverage["unreadable"]
+# ("place_frame"), every answer says so, and places are then CONSTRAINED, never
+# guessed (work_state.places_in binds against no levels: "floor 9" places
+# nothing). A frame that was read and holds no level changes nothing.
+from lib import location_binder  # noqa: E402
+
+PLACE_FRAME_LOGS = 5000
+
+
+async def _project_place_frame(project_id: str) -> dict:
+    """{levels, spaces, basis, known, excluded}: see location_binder.frame_from."""
+    pid = str(project_id)
+    try:
+        project = await db.projects.find_one(
+            {"_id": to_query_id(pid), "is_deleted": {"$ne": True}},
+            {"building_stories": 1, "has_sub_cellar": 1, "has_cellar": 1, "has_mezzanine": 1, "has_roof_bulkhead": 1})
+        # An IGNORED file's pages are not part of the model, as in the level suggestion.
+        ignored = [str(f["_id"]) for f in await db.project_files.find(
+            {"project_id": pid, "drawing_track": IGNORED_TRACK}, {"_id": 1}).to_list(200)]
+        pages = await db.document_page_index.find(
+            {"project_id": pid, **({"file_id": {"$nin": ignored}} if ignored else {})},
+            {"sheet_number": 1, "sheet_title": 1, "floor": 1, "floors": 1}).to_list(3000)
+        logs = await db.logbooks.find(
+            {"project_id": pid, "log_type": "daily_jobsite", "is_deleted": {"$ne": True}},
+            {"data.activities.work_locations": 1}).to_list(PLACE_FRAME_LOGS)
+        spaces, _confirmed = await _photo_place_context(pid)
+    except Exception as e:
+        logger.warning(f"[place-frame] not read: {type(e).__name__}: {e!r}")
+        return {"levels": [], "spaces": {}, "basis": {}, "known": False, "excluded": {}, "unreadable": True}
+    locations = [[a.get("work_locations") for a in ((lg.get("data") or {}).get("activities") or [])
+                  if isinstance(a, dict)] for lg in logs]
+    return location_binder.frame_from(project, pages, locations, spaces)
 
 
 # ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
@@ -56603,6 +58175,34 @@ def _report_image(c: dict) -> Optional[str]:
         return None
 
 
+async def _report_progress(rep: dict, project: dict, company_id: str, now: datetime) -> None:
+    """The larger report's status by floor and schedule forecast, from the SAME
+    _project_progress model the assistant answers from, as of the period's end.
+    A model that cannot be read is said so on the page, never shown as nothing
+    on record; the rest of the report still goes."""
+    today = min(rep["end"], now.astimezone(_MemoryZone("America/New_York")).date())
+    keep: dict = {}
+    rep["progress_model"], rep["forecast"] = None, None
+    try:
+        rep["progress_model"] = await _project_progress(project, company_id, job=rep["job"], today=today, keep=keep)
+    except Exception as e:
+        logger.warning(f"[report] progress model not read: {type(e).__name__}: {e!r}")
+        rep["progress_unavailable"] = True
+        return
+    sched = (keep.get("sources") or {}).get("schedule")
+    if not sched:
+        return
+    try:
+        # The assistant's window and the model's unreadable sources: the report
+        # and the assistant give the same markers from the same record.
+        rows, items, _start = _forecast_window(keep["items"], keep["sources"]["logbooks"], today)
+        fc = schedule_forecast.forecast(sched, items, rows, today=today, project_id=str(project.get("_id")),
+                                        unreadable=rep["progress_model"].get("unreadable") or ())
+        rep["forecast"] = schedule_forecast.report_section(fc)
+    except Exception as e:                  # a schedule that cannot be read is no forecast
+        logger.warning(f"[report] forecast not built: {type(e).__name__}: {e!r}")
+
+
 async def build_project_report(company_id: str, projects: List[dict], start: _Date, end: _Date, *,
                                now: Optional[datetime] = None, by: str = "",
                                source: str = "app", key: Optional[str] = None,
@@ -56633,6 +58233,8 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
             job=wa_assistant.street_label(p), address=str(p.get("address") or ""), gc=gc,
             start=start, end=end, now=now, kind=kind, **rows)
         rep["photos"] = await _report_photos(rep, str(p.get("_id")))
+        if (end - start).days + 1 >= progress_report_render.GANTT_MIN_DAYS:
+            await _report_progress(rep, p, company_id, now)
         reps.append(rep)
     images = {}
     for rep in reps:
@@ -57423,7 +59025,15 @@ async def upload_baseline_schedule(project_id: str, file: UploadFile = File(...)
     project = await _bot_project_scope(company_id, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    name = _sanitize_upload_filename(file.filename or "schedule")
+    raw_name = file.filename or "schedule"
+    name = _sanitize_upload_filename(raw_name)
+    # The sanitizer appends ".pdf" to any name not ending in it (it was written
+    # for drawings). A schedule keeps its own extension: a CSV is known only by
+    # it, so "588.csv" became "588.csv.pdf" and every CSV upload was refused.
+    from pathlib import PurePosixPath
+    own = PurePosixPath(str(raw_name).replace("\\", "/")).suffix.lower()
+    if own in SCHEDULE_EXTS and own != ".pdf" and name.lower().endswith(own + ".pdf"):
+        name = name[:-len(".pdf")]
     if not name.lower().endswith(SCHEDULE_EXTS):
         raise HTTPException(status_code=400, detail="Upload an .xer, .xml, .xlsx, .csv or .pdf schedule")
     data = await file.read()
@@ -57855,6 +59465,8 @@ def _upcoming_city_events(dob_rows: list, dot_rows: list, today: _Date) -> list:
         if r.get("record_type") == "permit":
             if "REVOKED" in str(r.get("permit_status") or "").upper():
                 continue
+            if dob_signoffs.row_signed_off(r):
+                continue                     # signed off: its expiry is not a deadline
             num = r.get("job_number") or rid
             ev = upcoming.city_event("permit_expiration", "DOB", f"dob:{rid}",
                                      r.get("expiration_date"), f"DOB permit expires · #{num}",
@@ -58044,7 +59656,8 @@ async def _upcoming_person_account(person: str) -> Tuple[Optional[dict], List[st
     lead, companies = None, []
     for o in rows:
         ident = await _dm_identity_of_optin(o)
-        if not ident:
+        # A reminder is sent first: as an admin / PM account only.
+        if not ident or not wa_dm.is_dm_eligible(ident["user"]):
             continue
         lead = lead or ident
         if ident["company_id"] not in companies:
@@ -60542,6 +62155,10 @@ def _dm_is_admin(ident: dict) -> bool:
 #: sub's punch contact. A new job and a job's settings need an admin (or a
 #: PM with full access).
 _DM_PM_ACTIONS = ("add_person", "add_sub", "set_punch_contact", "set_trade")
+#: A superintendent / CP asked for a change (owner ruling 2026-11-09).
+DM_FIELD_CHANGE_TEXT = ("That change is for your PM or admin, so nothing was changed. I can take an "
+                        "inspection result or a sign-off, find photos, and tell you about progress "
+                        "and the schedule on your jobs.")
 
 
 async def _dm_action_model(text: str, jobs: List[str]) -> Optional[dict]:
@@ -60748,6 +62365,9 @@ async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool,
         p["quoted"] = dm_actions.redact(quoted)[:500]     # (a): the job of the message replied to
     if p["action"] not in ("unsupported",) and not _dm_is_approved(ident):
         await _dm_say(dm_chat, p["lang"], "not_approved")
+        return True
+    if p["action"] not in ("unsupported",) and dm_roles.change_refusal(ident.get("role")):
+        await _dm_say_raw(dm_chat, DM_FIELD_CHANGE_TEXT)
         return True
     if p["action"] == "undo":
         await _dm_action_undo(ident, dm_chat, p["lang"])
@@ -61377,6 +62997,12 @@ async def _dm_action_do(ident: dict, dm_chat: str, p: dict) -> None:
     if not _dm_is_approved(ident):
         await _dm_say(dm_chat, lang, "not_approved")
         return
+    # A superintendent / CP makes no change to job data, whatever led here
+    # (a "yes" to a held change, a picked account): the last gate before the
+    # write (owner ruling 2026-11-09).
+    if dm_roles.change_refusal(ident.get("role")):
+        await _dm_say_raw(dm_chat, DM_FIELD_CHANGE_TEXT)
+        return
     if a not in _DM_PM_ACTIONS and not _dm_is_admin(ident):
         await _dm_say(dm_chat, lang, "admin_only")
         return
@@ -61653,6 +63279,15 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     new job never asks it."""
     # This turn's evidence for the answer log, before anything it starts.
     _answer_turn_begin()
+    # A reply to today's targeted confirmation (live only; never in shadow).
+    if await _confirmation_take_reply(ident, dm_chat, heard or body):
+        return
+    if not brain and not person and dm_roles.is_field(ident.get("role")):
+        # The old pipeline is an admin / PM path (changes, company reports,
+        # the brief): a superintendent / CP is answered by the brain, with
+        # its per-tool role gate, or not at all.
+        await send_whatsapp_message(dm_chat, dm_roles.FIELD_UNAVAILABLE_TEXT)
+        return
     if brain:
         # The DM brain (flag dm_brain_v2): one model, tools, guardrails.
         # `person`: a read across all of a person's companies (each job and
@@ -62617,6 +64252,53 @@ _DM_BRAIN_EXTRA_TOOLS = [
          "pages": {"type": "string", "description": "PDF page numbers of the file, e.g. '3-5' or '2, 7'."},
          "whole_file": {"type": "boolean", "description": "The whole file the sheet is in."}},
          "required": []}},
+    {"name": "work_status", "description": (
+        "What the records say about a kind of work on one level of a job, and what normally has to come before it: "
+        "'what's holding up drywall on floor 3', 'where is plumbing rough on 4'. Returns the work reported by the "
+        "daily logs, the inspections that normally come first and what people reported about them, schedule dates if a schedule is confirmed, stop-work "
+        "orders and photos."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "work": {"type": "string", "description": "The work, in their words: 'drywall', 'electric rough', 'framing'."},
+         "level": {"type": "string", "description": "One level: '3', 'floor 3', 'roof', 'cellar'."}},
+         "required": ["work", "level"]}},
+    {"name": "schedule_lookahead", "description": (
+        "What the job's CONFIRMED schedule file plans in the next 7 or 14 days, each activity's predecessors as the "
+        "file links them, beside what the logs report, and activities past their planned finish with no report. "
+        "From the file's dates and logic; it ends with the schedule status groups, where any estimate is labelled "
+        "ESTIMATE with its basis. No rate, forecast or estimated date beyond those lines."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "days": {"type": "integer", "description": "7 or 14. Default 7."}},
+         "required": []}},
+    {"name": "schedule_status", "description": (
+        "'Are we on schedule?', 'when will we finish?': the job's CONFIRMED schedule file against what is on record, in "
+        "four separate groups: start / done markers at attested or stronger, the file's dates and logic (including "
+        "what is past its planned finish with no done evidence, and the later work linked to it), the logs' reported "
+        "spans, and LeveLog's estimates with their basis, only where enough completed evidence supports one."),
+     "input_schema": {"type": "object", "properties": {"job": _JOB_PROP}, "required": []}},
+    {"name": "proposed_sequence", "description": (
+        "A PROPOSED order of work per level, for a job with no confirmed schedule: the standard sequence over the "
+        "levels the logs name. Shows it, or approves the one already shown."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "approve": {"type": "boolean", "description": "True ONLY when their latest message says to approve it."}},
+         "required": []}},
+    {"name": "report_inspection", "description": (
+        "Record an inspection they TELL you passed, failed, partly passed or is booked: 'plumbing rough passed on 3', "
+        "'hydro failed floor 5', the same in a voice note. Not for a question. One call per inspection. Written at "
+        "once, no confirmation, as reported by them, not verified; saying it again corrects it. Floor or result "
+        "unclear: ask one short question and do not call this. Answer with the one line it returns."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "inspection": {"type": "string", "description": "Which inspection, in their words: 'plumbing rough', 'hydro', 'firestopping'."},
+         "levels": {"type": "string", "description": "The floor or floors they said: '3', 'floors 3-4', '3 and 5', 'roof', 'cellar'."},
+         "space": {"type": "string", "description": "An apartment or room, only if they said one."},
+         "result": {"type": "string", "enum": ["passed", "failed", "partial", "scheduled"]},
+         "date": {"type": "string", "description": "The inspection's date as YYYY-MM-DD, only if they said one ('today' resolved)."},
+         "inspector": {"type": "string", "description": "The inspector or agency, only if they said one."},
+         "quote": {"type": "string", "description": "Their exact words stating it, copied from their message this turn, same language."}},
+         "required": ["inspection", "levels", "result", "quote"]}},
     {"name": "find_photos", "description": (
         "Search a job's daily-log photos by what they show: 'front of the building', 'roof', "
         "'scaffold', 'Arkon framing'. Returns each match's id, date, sub and a description of the "
@@ -62634,6 +64316,10 @@ _DM_BRAIN_EXTRA_TOOLS = [
          "job": _JOB_PROP,
          "ids": {"type": "array", "items": {"type": "string"}, "description": "Ids from find_photos."}},
          "required": ["ids"]}},
+    {"name": "confirm_photo_place", "description": (
+        "Record the floor of a photo you just sent. ONLY when send_photos said its floor is not on record and "
+        "their very next message is a floor. The floor is read from their message."),
+     "input_schema": {"type": "object", "properties": {"job": _JOB_PROP}, "required": []}},
     {"name": "sheet_info", "description": (
         "Which file and drawing set a sheet is on (its page), its title, and what the drawing "
         "list says about it and its series (listed but not uploaded). For 'what file is it on'."),
@@ -62689,13 +64375,19 @@ _DM_BRAIN_EXTRA_TOOLS = [
          "time": {"type": "string", "description": "HH:MM, 24h, if they gave one."}},
          "required": ["what", "date"]}},
 ]
+_DM_BRAIN_EXTRA_TOOLS.append(_project_status_tool(_JOB_PROP))
 
 _DM_BRAIN_TOOL_CACHE: Optional[list] = None
 
 
-def _dm_brain_tools() -> list:
+def _dm_brain_tools(field: bool = False) -> list:
     """Every tool the brain can call: the agent's read tools (with a `job`)
-    and the brain's own, in a fixed order, as OpenAI function tools."""
+    and the brain's own, in a fixed order, as OpenAI function tools.
+
+    `field`: a superintendent / CP turn -- only lib/dm_roles.FIELD_TOOLS are
+    SHOWN. Showing is not the gate: _dm_brain_exec_one refuses per call."""
+    if field:
+        return [t for t in _dm_brain_tools() if t["function"]["name"] in dm_roles.FIELD_TOOLS]
     global _DM_BRAIN_TOOL_CACHE
     if _DM_BRAIN_TOOL_CACHE is not None:
         return _DM_BRAIN_TOOL_CACHE
@@ -63024,7 +64716,9 @@ async def _dm_do_set_trade(ident: dict, p: dict):
 #: Brain tools that read one job: the job names the account they act as.
 _DM_BRAIN_ONE_JOB = _DM_BRAIN_JOB_TOOLS + ("headcount", "dot_status", "send_sheet",
                                            "send_plan_file", "sheet_info",
-                                           "find_photos", "send_photos")
+                                           "find_photos", "send_photos", "work_status",
+                                           "schedule_lookahead", "schedule_status", "proposed_sequence", "report_inspection", "confirm_photo_place",
+                                           "project_status")
 
 
 async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
@@ -63036,11 +64730,18 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
     a change, the account whose job it names, and when that is not one
     company (no job, or the same street in two), nothing is written: the
     numbered "Which company?" / "Which one?" is set up and the model asks
-    it. Their brief and settings are the person's (the first account)."""
+    it, among the accounts whose role may make it. Their brief and settings
+    are the person's (the first account whose role may answer them)."""
     person = ctx.get("person")
     if not person:
         return await _dm_brain_exec_one(ctx, name, args)
     args = dict(args or {})
+    # Refused for every one of their accounts (all superintendent / CP): said
+    # here, before a "Which company?" is opened for a change none may make.
+    # Otherwise each call is checked again as the account it runs as.
+    refused = [dm_roles.tool_refusal(a.get("role"), name, args) for a in person]
+    if all(refused):
+        return refused[0]
     by_uid = {a["user_id"]: a for a in person}
     if name in _DM_BRAIN_ONE_JOB or (name in ("list_subs", "find_sub", "set_sub_trade")
                                      and args.get("job")):
@@ -63071,6 +64772,10 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             if mine:
                 outs.append(await _dm_brain_as(ctx, a, name, dict(args, jobs=mine)))
         return "\n".join(outs) or "They have no jobs."
+    # The accounts whose role may make this call: only they are candidates
+    # for a change with no one company, and a person-level tool runs as the
+    # first of them.
+    able = [a for a, r in zip(person, refused) if not r]
     if name in ("propose_change", "set_sub_trade"):
         hint = str(args.get("job") or "").strip()
         named = []
@@ -63081,8 +64786,15 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
                 ids = [jid] if jid else []
             named = [ctx["by_id"][i] for i in ids if i in ctx["by_id"]]
         accts = {j["acct"]["user_id"] for j in named}
+        if len(accts) > 1:
+            # The same street in two companies: only the ones it may change.
+            mine = {a["user_id"] for a in able}
+            named = [j for j in named if j["acct"]["user_id"] in mine] or named
+            accts = {j["acct"]["user_id"] for j in named}
         if len(accts) == 1:
             return await _dm_brain_as(ctx, named[0]["acct"], name, args)
+        if not accts and len(able) == 1:
+            return await _dm_brain_as(ctx, able[0], name, args)
         # A change with no one company: nothing is written; asked by number.
         lang = _dm_brain_lang(ctx["text"])
         lines = wa_dm.ACCOUNT_PICK_LINES.get(lang, wa_dm.ACCOUNT_PICK_LINES["en"])
@@ -63092,9 +64804,10 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             pids = [j["id"] for j in named]
             head = lines["which_job"]
         else:
+            options = able or person
             labels = [await _company_display_name(a.get("company_id")) or "another company"
-                      for a in person]
-            uids, pids, head = [a["user_id"] for a in person], [None] * len(person), \
+                      for a in options]
+            uids, pids, head = [a["user_id"] for a in options], [None] * len(options), \
                 lines["which_company"]
         asked = dm_actions.numbered(head, labels)
         if not ctx.get("dry_run") and not await _dm_question_open(
@@ -63115,11 +64828,12 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
     if name in ("answer_pending_change", "undo_last_change"):
         st = await _dm_state_get(DM_ACTION_STATE if name == "answer_pending_change"
                                  else DM_ACTION_LAST, ctx["dm_chat"])
-        acct = by_uid.get(str((st or {}).get("acct") or "")) or person[0]
+        acct = by_uid.get(str((st or {}).get("acct") or "")) or (able or person)[0]
         return await _dm_brain_as(ctx, acct, name, args)
     # Their brief, their settings, a reminder, dropping a question: the
-    # person's own -- answered as their first account.
-    return await _dm_brain_as(ctx, person[0], name, args)
+    # person's own -- answered as the first account whose role may answer
+    # it (a CP account listed first never refuses a PM his reminders).
+    return await _dm_brain_as(ctx, (able or person)[0], name, args)
 
 
 async def _dm_brain_as(ctx: dict, acct: dict, name: str, args: dict) -> str:
@@ -63142,11 +64856,21 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
     """One tool call from the brain, as ctx["ident"] (one company)."""
     ident, dm_chat = ctx["ident"], ctx["dm_chat"]
     args = dict(args or {})
+    # THE ROLE GATE, PER CALL (owner ruling 2026-11-09). A superintendent / CP
+    # calls the field tools only, and never approves a sequence; hiding a tool
+    # from the model is not this gate. Before anything is read or written.
+    refused = dm_roles.tool_refusal(ident.get("role"), name, args)
+    if refused:
+        logger.info(f"[dm-brain] tool refused for role: tool={name} "
+                    f"role={dm_roles.norm(ident.get('role'))} company={ident.get('company_id') or '?'}")
+        return refused
     dry = bool(ctx.get("dry_run"))
     now = datetime.now(timezone.utc)
     if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
                                                "send_plan_file", "sheet_info",
-                                               "find_photos", "send_photos"):
+                                               "find_photos", "send_photos", "work_status",
+                                               "schedule_lookahead", "schedule_status", "proposed_sequence", "report_inspection", "confirm_photo_place",
+                                               "project_status"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
             return why
@@ -63184,10 +64908,24 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
                 where = plan_sources.sheet_source_text(label, src, page.get("page_number"))
                 return f"Sent the image of {label} {title} to them." + (f" {where}" if where else "")
             return f"Found {label} but the image couldn't be sent (may still be rendering)."
+        if name == "work_status":
+            return await _dm_work_status(ctx, job, args)
+        if name == "schedule_lookahead":
+            return await _dm_schedule_lookahead(ctx, job, args)
+        if name == "project_status":
+            return await _dm_project_status(ctx, job, args)
+        if name == "schedule_status":
+            return await _dm_schedule_status(ctx, job, args)
+        if name == "proposed_sequence":
+            return await _dm_proposed_sequence(ctx, job, args)
+        if name == "report_inspection":
+            return await _dm_report_inspection(ctx, job, args)
         if name == "find_photos":
             return await _dm_find_photos(ctx, job, args)
         if name == "send_photos":
             return await _dm_send_photos(ctx, job, args)
+        if name == "confirm_photo_place":
+            return await _dm_confirm_photo_place(ctx, job, args)
         if name == "sheet_info":
             return await _dm_sheet_info(str(job["id"]), str(args.get("sheet") or ""))
         if name == "send_plan_file":
@@ -63382,7 +65120,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
     same lists sit on ctx (_trace, _rounds) so a turn that raises still
     leaves what it did."""
     client = _dm_brain_client()
-    tools = _dm_brain_tools()
+    tools = _dm_brain_tools(field=bool(ctx.get("field_only")))
     use = model or _DM_MODEL.get() or dm_brain.MODEL
     msgs = [{"role": "system", "content": system}] + [dict(m) for m in messages]
     trace: List[dict] = []
@@ -63573,12 +65311,15 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
                            active: Optional[str] = None,
                            t0: Optional[float] = None,
                            live: Optional[dict] = None,
-                           person: Optional[List[dict]] = None) -> dict:
+                           person: Optional[List[dict]] = None,
+                           turn: Optional[dict] = None) -> dict:
     """Build the context and run the brain for one message (the live path
     and the eval). {reply, trace, ...} plus `sent` (what tools sent).
     `t0`: the monotonic clock at the message's receipt (timing offsets).
     `live`: given, live["ctx"] is the turn's context -- what a turn that is
     given up (_dm_await_budget) had done, and when.
+    `turn`: what `text` isn't: the person's own words alone (`text` can carry a
+    quoted message and a voice marker), and their message id and source.
 
     `person` (2+ accounts, one per company): a read across all of them. The
     jobs are every account's, each named with its company; each tool call
@@ -63604,13 +65345,25 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
             company = (co or {}).get("name") or ""
         except Exception:
             company = ""
-    role = "admin" if ident.get("role") == "admin" else "project manager"
+    role = dm_roles.role_label(ident.get("role"))
+    # Superintendent / CP (owner ruling 2026-11-09): the field tools only,
+    # on their assigned jobs, said to the model; refused per call regardless.
+    accounts = person if multi else [ident]
+    field_only = all(dm_roles.is_field(a.get("role")) for a in accounts)
+    limits = ""
     if multi:
-        parts = []
+        parts, field_at = [], []
         for a in person:
             name = await _company_display_name(a.get("company_id")) or "another company"
-            parts.append(f"{'admin' if a.get('role') == 'admin' else 'project manager'} at {name}")
+            parts.append(f"{dm_roles.role_label(a.get('role'))} at {name}")
+            if dm_roles.is_field(a.get("role")):
+                field_at.append(name)
         role, company = "; ".join(parts), ""
+        if field_at and not field_only:
+            limits = (f"ROLE LIMITS: on their jobs at {', '.join(field_at)} they may only "
+                      f"{dm_roles.FIELD_CAN}; anything else there is for a PM or admin and is refused.")
+    if field_only:
+        limits = dm_roles.FIELD_PROMPT.format(label=dm_roles.role_label(ident.get("role")))
     if flows is None:
         if multi:
             flows = []
@@ -63627,11 +65380,12 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
                     else by_id.get(active)) if active and active in by_id else None,
         open_flows=flows,
         now_label=datefmt.strftime(_memory_ny(now), "%a %b %-d %Y, %-I:%M %p"))
-    system = dm_brain.SYSTEM_PROMPT + "\n\n" + context
+    system = dm_brain.SYSTEM_PROMPT + "\n\n" + context + (f"\n{limits}" if limits else "")
     messages = dm_brain.turn_messages(dm_brain.history_messages(history, now), text)
     ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
            "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
-           "used_job": None, "t0": t0, "person": person if multi else None}
+           "used_job": None, "t0": t0, "person": person if multi else None, "turn": turn,
+           "field_only": field_only}
     if live is not None:
         live["ctx"] = ctx
     _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phones": [
@@ -63728,6 +65482,11 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
     live: dict = {}
     task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history,
                                                   now=now, t0=t0, live=live,
+                                                  turn={"own_text": text, "message_id": message_id,
+                                                        "source": "voice" if heard else "text",
+                                                        "forwarded": bool(inbound.get("forwarded")),
+                                                        "recent": [r.get("body") for r in history
+                                                                   if str(r.get("sender") or "") != "bot"]},
                                                   **({"person": person} if person else {})))
     # "typing…" in their chat while the brain works, sent again every 8 s --
     # the only "working on it" signal (no 👀 reaction: Oct 27). Until the
@@ -65528,6 +67287,19 @@ async def _handle_dob_status(project_id: str, *,
             lines.append(f"  - {desc}")
     else:
         lines.append("\nNo recent violations on file.")
+    # SIGN-OFFS (Nov 9, 11:37 PM). Asked what inspections had happened on 588,
+    # the assistant said DOB sign-offs "aren't in anything I can read": this
+    # tool printed BIN, BBL and violations only, and active_permits keeps only
+    # issued permits, so the four Letters of Completion stored in dob_logs
+    # reached no tool. Every signed-off filing is listed here, with what it
+    # covers, DOB's date and the record number, then what public data lacks.
+    filings = await db.dob_logs.find({
+        "project_id": project_id,
+        "company_id": _company_id_filter(company_id),
+        "record_type": {"$in": ["permit", "job_status"]},
+        "is_deleted": {"$ne": True},
+    }).to_list(1000)
+    lines += dob_signoffs.signoff_section(filings)
     return "\n".join(lines)
 
 
@@ -66041,7 +67813,10 @@ async def _handle_start_permit_renewal(
     for p in permits:
         stat = str(p.get("permit_status") or "").strip().lower()
         exp = _parse_iso(p.get("expiration_date"))
-        if stat in active_status and (exp is None or exp > now):
+        # A filing DOB has signed off (its job-filing twin says 'LOC Issued', or
+        # the electrical job is complete) is finished work, not an active permit.
+        if stat in active_status and (exp is None or exp > now) \
+                and not dob_signoffs.row_signed_off(p):
             active.append((p, exp))
 
     if not active:
@@ -66210,7 +67985,10 @@ async def _handle_active_permits(project_id: str, *,
     for p in permits:
         stat = str(p.get("permit_status") or "").strip().lower()
         exp = _parse_iso(p.get("expiration_date"))
-        if stat in active_status and (exp is None or exp > now):
+        # A filing DOB has signed off (its job-filing twin says 'LOC Issued', or
+        # the electrical job is complete) is finished work, not an active permit.
+        if stat in active_status and (exp is None or exp > now) \
+                and not dob_signoffs.row_signed_off(p):
             active.append((p, exp))
 
     if not active:
@@ -66677,6 +68455,21 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db[PHOTO_INDEX], keys=[("project_id", 1), ("kind", 1), ("date", -1)],
         name="photo_index_by_project")
+    # The re-read's query (_photo_index_reread): old prompt_v, not marked skipped.
+    await _ensure_index_resilient(
+        db[PHOTO_INDEX], keys=[("kind", 1), ("prompt_v", 1), ("reread_skip", 1)],
+        name="photo_index_by_prompt_v")
+    # same_place, the field _work_state_answer filters on (same_area is the
+    # model's raw answer, stored beside it and never queried).
+    await _ensure_index_resilient(
+        db[PHOTO_RELATIONS], keys=[("project_id", 1), ("level", 1), ("same_place", 1)],
+        name="photo_relations_by_place")
+    await _ensure_index_resilient(
+        db[PHOTO_PLACE_CONFIRMATIONS], keys=[("project_id", 1), ("photo_key", 1)],
+        name="photo_place_confirmations_by_project")
+    await _ensure_index_resilient(
+        db[INSPECTION_REPORTS], keys=[("project_id", 1), ("gate", 1), ("created_at", -1)],
+        name="inspection_reports_by_gate")
     await _ensure_index_resilient(
         db[WA_CONNECT_CODES], keys=[("user_id", 1)],
         name="whatsapp_connect_codes_by_user")
@@ -73889,7 +75682,13 @@ _AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "dob_status",
-            "description": "Return DOB status, permits, and recent violations for the project.",
+            "description": (
+                "Return the project's DOB record: every DOB sign-off (Letter of Completion "
+                "-- what work the filing covers, DOB's sign-off date, the record number), "
+                "recent violations, BIN/BBL, and which inspections public data does not "
+                "hold. Use for 'what inspections happened', 'what's signed off', 'did the "
+                "foundation get signed off', 'DOB status', 'violations'."
+            ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
@@ -73918,7 +75717,8 @@ _AGENT_TOOLS = [
                 "SP (sprinkler), etc. Use for 'active permits', 'what permits are open', "
                 "'show me permits', 'permit status', 'is the GC permit active', 'permits "
                 "expiring', or any question about issued / non-expired DOB job filings. Do "
-                "NOT use for violations — violations are in dob_status."
+                "NOT use for violations or for sign-offs / completed work / inspections — "
+                "those are in dob_status."
             ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
@@ -74267,7 +76067,7 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "project manager's right hand: brief, specific, and always one step ahead.\n\n"
     "CAPABILITIES (via tools):\n"
     "  • Active permits + who's expiring + renewal (active_permits, start_permit_renewal)\n"
-    "  • DOB violations + complaints + 311 + BIN (dob_status)\n"
+    "  • DOB sign-offs + violations + complaints + 311 + BIN (dob_status)\n"
     "  • Open items / punch list / materials (open_items, material_status)\n"
     "  • Crew roster + who's on site (list_workers, who_on_site)\n"
     "  • Project metadata — address/BIN/BBL (project_info)\n"
@@ -74279,7 +76079,8 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "    active_permits. Never query_plan for these.\n"
     "  • 'renew <permit>', 'start renewal', 'yes renew', 'renew the plumbing one' → "
     "    start_permit_renewal with permit_hint.\n"
-    "  • 'violation', 'DOB status', 'complaints', '311', 'BIN' → dob_status.\n"
+    "  • 'violation', 'DOB status', 'complaints', '311', 'BIN', 'sign-off', "
+    "'what inspections happened' → dob_status.\n"
     "  • 'open items', 'punch list', 'to-do', 'outstanding' → open_items.\n"
     "  • 'who's on site', 'how many workers', 'trade count' → who_on_site.\n"
     "  • 'list workers', 'all carpenters', 'roster' → list_workers.\n"
@@ -76615,7 +78416,7 @@ def _b64_sha(b: bytes) -> str:
     return base64.b64encode(hashlib.sha256(b).digest()).decode()
 
 
-async def _wa_cdn_photo(ref: dict, note: dict) -> Optional[bytes]:
+async def _wa_cdn_photo(ref: dict, note: dict, kind: str = "image") -> Optional[bytes]:
     """The original from WhatsApp's CDN: the encrypted file at the message's
     directPath, checked against its encFilehash, decrypted with its mediaKey,
     checked against its filehash. None (and why, in `note`) otherwise."""
@@ -76639,10 +78440,10 @@ async def _wa_cdn_photo(ref: dict, note: dict) -> Optional[bytes]:
         note["cdn"] = "the file did not match its hash"
         return None
     try:
-        img = _decrypt_whatsapp_media(enc, str(ref["mediaKey"]), "image")
+        img = _decrypt_whatsapp_media(enc, str(ref["mediaKey"]), kind)
     except Exception:
         img = None
-    if not img or not img.startswith(_IMAGE_MAGIC):
+    if not img or (kind == "image" and not img.startswith(_IMAGE_MAGIC)):
         note["cdn"] = "could not be decrypted"
         return None
     if ref.get("filehash") and _b64_sha(img) != ref["filehash"]:
@@ -80577,7 +82378,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
         except (TypeError, ValueError):
             wa_ts = 0
         _WA_INBOUND.set({"received": received_at or started, "started": started,
-                         "wa_ts": wa_ts})
+                         "wa_ts": wa_ts, "forwarded": bool(parsed.get("forwarded"))})
 
         # ── A NOTIFICATION IS NOT A MESSAGE ────────────────────────────────
         #
@@ -81434,9 +83235,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                 return
 
         # ── LEVELOG ASSISTANT IN A DM ─────────────────────────────────────
-        # Only an opted-in Admin or PM, found through the opt-in for THIS
-        # chat (so a @lid sender resolves), whose phone is still the one on
-        # their profile. Anyone else — unknown number, CP, superintendent,
+        # Only an opted-in Admin, PM, superintendent or CP (the last two on
+        # their assigned jobs, with lib/dm_roles.py's tools), found through
+        # the opt-in for THIS chat (so a @lid sender resolves), whose phone
+        # is still the one on their profile. Anyone else — unknown number,
         # not opted in — gets the same one line and no data. The old path
         # looked the sender's digits up in whatsapp_contacts, which a @lid
         # sender never matched, checked no role, and picked one project.
@@ -81656,7 +83458,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                             "english": body, "lang": vresult.language_detected,
                             "confidence": vresult.confidence}
 
-        if not (parsed.get("has_image") or body):
+        # A sign-off sent as a photo or document (lib/inspection_reports.py):
+        # only when its words clearly name one, and only with the brain on.
+        signoff = dm_brain_on and _inspection_doc_asked(parsed, body)
+        if not (parsed.get("has_image") or body or signoff):
             return
         # Which account this message is for: one company's (everything below
         # then acts for that company only), or -- the brain only -- a read
@@ -81665,7 +83470,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
         cross = False
         if multi:
             routed = await _dm_route_accounts(person, dm_chat, body or "", brain=dm_brain_on,
-                                              has_image=bool(parsed.get("has_image")))
+                                              has_image=bool(parsed.get("has_image") or signoff),
+                                              signoff=bool(signoff))
             if routed is None:
                 return
             body = routed["body"]
@@ -81683,10 +83489,29 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
         else:
             turn = _dm_enter(ident, str(ident.get("company_id")), False)
         try:
+            if signoff and not cross:
+                try:
+                    if await _inspection_doc_turn(ident, dm_chat, parsed, body or ""):
+                        return
+                except Exception as e:
+                    logger.warning(f"[inspection-doc] dm turn failed: {type(e).__name__}: {e!r}")
+            # A superintendent / CP (owner ruling 2026-11-09): a photo is
+            # kept only as a sign-off (above). A walkthrough sends a punch
+            # list to subs -- a PM's or admin's flow -- so it is never
+            # started for them, and the old pipeline (an admin / PM path,
+            # with changes and company reports) never answers them.
+            if not cross and dm_roles.is_field(ident.get("role")):
+                if not dm_brain_on:
+                    await send_whatsapp_message(dm_chat, dm_roles.FIELD_UNAVAILABLE_TEXT)
+                    return
+                if parsed.get("has_image"):
+                    await send_whatsapp_message(dm_chat, dm_roles.FIELD_PHOTO_TEXT)
+                    return
             # A walkthrough (punch list) turn: photos, their words, the draft,
             # edits, assigning, the due day, send; and punch questions / "P23 ok".
             # A walk is one company's: never started from a read across them.
-            if (parsed.get("has_image") or body) and not cross:
+            if (parsed.get("has_image") or body) and not cross \
+                    and not dm_roles.is_field(ident.get("role")):
                 try:
                     if await _punch_dm_turn(ident, dm_chat, parsed, body or "", voice=dm_voice,
                                             brain=dm_brain_on):
@@ -83110,7 +84935,9 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
     `state` is the one thing the Integrations screen shows
     (wa_dm.connect_state); the app polls this while the screen is open, so a
     START that arrives flips it to "connected" without a reload."""
-    eligible = wa_dm.is_dm_eligible(current_user)
+    # May CONNECT (and ask): admins, PMs, superintendents, CPs. The morning
+    # brief row below is for those the bot writes to first (admins, PMs).
+    eligible = wa_dm.is_dm_assistant_eligible(current_user)
     uid = str(current_user.get("id") or current_user.get("_id") or "")
     phone = current_user.get("phone") or ""
     digits = wa_dm.phone_digits(phone)
@@ -83163,7 +84990,8 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
                      if state == wa_dm.CONNECT_CONNECTED else None),
         # The morning brief row is shown only to an eligible, connected user.
         "brief": (await _brief_settings(uid)
-                  if state == wa_dm.CONNECT_CONNECTED else None),
+                  if state == wa_dm.CONNECT_CONNECTED and wa_dm.is_dm_eligible(current_user)
+                  else None),
     }
 
 
@@ -90308,6 +92136,26 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=7),
+    )
+    # Few targeted photo comparisons; does nothing unless PHOTO_RELATIONS_ENABLED=1.
+    scheduler.add_job(
+        _photo_relations_job,
+        IntervalTrigger(minutes=PHOTO_RELATIONS_TICK_MINUTES),
+        id='photo_relations',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=11),
+    )
+    # Targeted confirmations, nightly (lib/confirmation_queue.py). Off by
+    # default; SHADOW stores what it would ask and sends nothing.
+    scheduler.add_job(
+        _confirmations_job,
+        CronTrigger(hour=3, minute=40, timezone="America/New_York"),
+        id='targeted_confirmations',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.add_job(
         _photo_pipeline_job,

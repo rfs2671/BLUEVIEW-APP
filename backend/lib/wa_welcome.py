@@ -49,14 +49,32 @@ _BODY = (
     "I also post new DOB violations to each job's GC WhatsApp group.\n"
     "English, Spanish or Yiddish, text or voice note."
 )
+# A superintendent or CP (owner ruling, 2026-11-09): their assigned jobs, the
+# field tools of lib/dm_roles.py, and nothing that is a PM's or admin's.
+_FIELD_BODY = (
+    "You're connected for your assigned jobs. I'm your Levelog Assistant — text me "
+    "like you'd text the office.\n"
+    "\n"
+    "Ask me:\n"
+    "• What's holding up a piece of work (\"what's holding up drywall on 3\")\n"
+    "• Job photos (\"send me the roof photos\")\n"
+    "• The schedule's next 7 or 14 days\n"
+    "• A plan question, or \"show me\" a sheet\n"
+    "\n"
+    "Tell me an inspection result (\"plumbing rough passed on 3\"), or send the sign-off "
+    "as a photo or PDF with the inspection and floor in the caption.\n"
+    "\n"
+    "Changes to a job and reports are for your PM or admin.\n"
+    "English, Spanish or Yiddish, text or voice note."
+)
 _CARD_LINE = "Save my contact below 👇"
 _STOP_LINE = "Reply STOP anytime to turn me off."
 
 
-def welcome_text(name: Optional[str], *, with_card: bool = True) -> str:
+def welcome_text(name: Optional[str], *, with_card: bool = True, field: bool = False) -> str:
     """"Hey <first name> 👋" and what they can do. `with_card`: the contact
-    card follows, so the text points at it."""
+    card follows, so the text points at it. `field`: a superintendent or CP."""
     first = first_name(name or "")
     hey = f"Hey {first} 👋" if first else "Hey there 👋"
     tail = f"{_CARD_LINE}\n{_STOP_LINE}" if with_card else _STOP_LINE
-    return f"{hey}\n{_BODY}\n{tail}"
+    return f"{hey}\n{_FIELD_BODY if field else _BODY}\n{tail}"

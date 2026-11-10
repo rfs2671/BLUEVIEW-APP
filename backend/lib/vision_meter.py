@@ -141,6 +141,19 @@ VISION_GROUP_PHOTO = "group_photo_describe"
 # stored words and calls no model.
 VISION_PHOTO_INDEX = "photo_index_describe"
 
+# ── TWO PHOTOS OF ONE PLACE, COMPARED ────────────────────────────────
+#
+# Few targeted pairs (lib/photo_relations.py), each asked once and stored. Off
+# unless PHOTO_RELATIONS_ENABLED=1.
+VISION_PHOTO_COMPARE = "photo_relation_compare"
+
+# ── A SIGN-OFF SENT IN A DM ──────────────────────────────────────────
+#
+# One call per document or photo whose caption names an inspection or sign-off
+# (lib/inspection_reports.py), read once and stored. Inbound WhatsApp drives it,
+# so it stops at INSPECTION_DOC_DAILY_CAP per project per day.
+VISION_INSPECTION_DOC = "inspection_doc_read"
+
 VISION_ENDPOINTS = frozenset({
     VISION_UPLOAD_OSHA,
     VISION_PARSE_CARD,
@@ -152,6 +165,8 @@ VISION_ENDPOINTS = frozenset({
     VISION_REPORT_PHOTO,
     VISION_GROUP_PHOTO,
     VISION_PHOTO_INDEX,
+    VISION_PHOTO_COMPARE,
+    VISION_INSPECTION_DOC,
 })
 
 COLLECTION = "vision_calls"

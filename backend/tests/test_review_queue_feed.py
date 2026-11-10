@@ -38,6 +38,8 @@ from tests._fake_mongo import FakeDb  # noqa: E402
 from tests.test_whatsapp_phase1_foundations import (  # noqa: E402
     ADMIN_PHONE, CO_A, CO_B, CP_PHONE, UNKNOWN_PHONE, _Ctx, _db)
 
+DEMO_PHONE = "15550001007"
+
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
 
 #: Any write on the review queue, however the collection is named.
@@ -288,21 +290,30 @@ class Registration(unittest.TestCase):
         _run(server._open_dm_reply_window(phone))
         _run(server._handle_dm_start(f"{phone}@c.us"))
 
-    def test_a_cp_start_queues_one_item_with_last4_only(self):
-        with _Ctx() as c:
-            self._start(c, CP_PHONE)
-            self._start(c, CP_PHONE)
+    def test_a_refused_role_start_queues_one_item_with_last4_only(self):
+        """A role that may not use the assistant (here a demo account; a CP
+        connects since the owner's 2026-11-09 ruling, tests/test_dm_roles.py)."""
+        db = _db()
+        db.users.rows.append({"_id": "u_demo", "company_id": CO_A, "role": "demo", "phone": "+" + DEMO_PHONE})
+        with _Ctx(db) as c:
+            self._start(c, DEMO_PHONE)
+            self._start(c, DEMO_PHONE)
         rows = _rows(c.db)
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual((row["kind"], row["company_id"], row["project_id"]),
                          (rq.KIND_REGISTRATION_REFUSAL, CO_A, None))
         self.assertEqual((row["reason"], row["priority"]), ("registration", "normal"))
-        self.assertEqual(row["evidence"], {"reason": "role_not_eligible", "user_id": "u_cp",
-                                           "chat_last4": CP_PHONE[-4:], "role": "cp"})
+        self.assertEqual(row["evidence"], {"reason": "role_not_eligible", "user_id": "u_demo",
+                                           "chat_last4": DEMO_PHONE[-4:], "role": "demo"})
         self.assertEqual(row["summary"],
-                         f"START refused (role_not_eligible) for a cp from chat …{CP_PHONE[-4:]}")
-        _no_full_phone(self, rows, CP_PHONE)
+                         f"START refused (role_not_eligible) for a demo from chat …{DEMO_PHONE[-4:]}")
+        _no_full_phone(self, rows, DEMO_PHONE)
+
+    def test_a_cp_start_connects_and_queues_nothing(self):
+        with _Ctx() as c:
+            self._start(c, CP_PHONE)
+        self.assertEqual(_rows(c.db), [])
 
     def test_an_unknown_number_queues_nothing(self):
         with _Ctx() as c:
