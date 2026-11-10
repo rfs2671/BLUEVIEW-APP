@@ -131,6 +131,10 @@ def bind_levels(levels: Sequence[str], frame: Optional[Dict[str, Any]]) -> Tuple
     if frame.get("unreadable"):
         return [], sorted(set(levels)), "the project's levels could not be read, so no level is placed"
     have = set(frame.get("levels") or ())
+    ground = frame.get("ground_level")
+    if LS.GROUND in levels and LS.GROUND not in have and ground in have:
+        # The frame says the first floor is at grade with nothing below it.
+        levels = sorted({ground if lv == LS.GROUND else lv for lv in levels}, key=LS._sort_key)
     if all(lv in have for lv in levels):
         return list(levels), [], None
     out = sorted(lv for lv in set(levels) if lv not in have)
@@ -145,7 +149,8 @@ def place_text(text: Any, frame: Optional[Dict[str, Any]]) -> Tuple[List[str], L
     from lib import location_binder as LB
     if not _frame_binds(frame):
         return W.places_in(LB._units(str(text or ""))[1])["levels"], [], None
-    b = LB.bind(text, [] if frame.get("unreadable") else frame.get("levels"), frame.get("spaces"))
+    b = LB.bind(text, [] if frame.get("unreadable") else frame.get("levels"), frame.get("spaces"),
+                ground_level=frame.get("ground_level"))
     if b["certainty"] != LB.NONE:
         return list(b["levels"]), [], None
     if not b["candidates"]:
@@ -322,7 +327,9 @@ def dob_nodes(text: Any) -> List[str]:
 _DOB_FLOOR = re.compile(r"\bfloor\s+number\(s\)[\s-]*(\d{1,3})\b", re.I)
 _DOB_NAMED = ((re.compile(r"\bsub[\s-]?cellar\b", re.I), LS.SUB_CELLAR), (re.compile(r"\bcellar\b", re.I), LS.CELLAR),
               (re.compile(r"\bmezzanine\b", re.I), LS.MEZZANINE), (re.compile(r"\broof\b", re.I), LS.ROOF),
-              (re.compile(r"\bbulkhead\b", re.I), LS.BULKHEAD))
+              (re.compile(r"\bbulkhead\b", re.I), LS.BULKHEAD),
+              # GROUND, bound to a floor only by a frame that says so (bind_levels).
+              (re.compile(r"\bground\s+floor\b", re.I), LS.GROUND))
 
 
 def dob_levels(work_on_floor: Any) -> List[str]:

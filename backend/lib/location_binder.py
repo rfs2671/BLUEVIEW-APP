@@ -24,7 +24,28 @@ THE OWNER'S RULE: never a specific place without sufficient evidence. So a unit
 name never implies its floor (4A is not assumed to be on the fourth floor); only
 a plan sheet titled for ONE level places a tag. Ground is not floor 1 (the
 investor table's ruling): GROUND binds only on a project whose levels include
-it. A tag matches on WORD BOUNDARIES only: "3B" is not in "13B" or "3BR".
+it, or whose frame says its first floor is at grade with no cellar or
+sub-cellar below (frame_from's `ground_level`; set only from has_cellar=False,
+has_sub_cellar=False and first_floor_at_grade=True, never from silence). Even
+then only "ground floor" / "planta baja" map: "ground level" and "grade" name
+the site as often as a floor. A tag matches on WORD BOUNDARIES only: "3B" is
+not in "13B" or "3BR".
+
+NEVER A STRICT SUBSET (588, 2026-11-10). "1-2-3rd floor" and "1st/2nd 3rd fl"
+were bound to the 3rd floor alone: a wrong single-floor claim, the worst
+outcome. Runs of floor numbers ("1-2-3rd", "1st, 2nd & 3rd", "segundo y tercer
+piso") are read whole, and every ordinal the words hold must be in the answer
+or there is no answer (R_UNREAD: "3rd floor moving up to 4th", "Nov 4th 3rd
+floor", "2nd coat on the 3rd floor"). A character no reader knows between two
+floor numbers ("1st�4th", an export's lost dash) abstains too.
+
+SEVERAL TRADES, SEVERAL FLOORS. "Framers on the 3rd-4th floors, Plumber on the
+1st-4th, HVAC on the 1st-2nd" has no single answer: the union puts framers on
+floor 1. `bind` abstains (R_TRADES) when two or more clauses each name a trade
+and a place and the places differ; `bind_clauses` returns each clause's own.
+Not wired into a reader yet: the daily-log readers (work_state.evidence_rows,
+evidence_sources' crew rows) carry ONE level set per row, and a row would have
+to become one row per clause. Until then those rows abstain.
 
 `frame_from` builds a project's level list from what exists (storey count,
 has_* flags, plan sheets, levels named by at least two filed logs) and says
@@ -72,6 +93,16 @@ R_BELOW = "below_grade_unsettled"
 R_SITEWIDE = "sitewide"
 R_AREA_ONLY = "area_without_level"
 R_NOTHING = "no_place_named"
+#: A floor the words name (an ordinal) that no reader placed: "3rd floor moving
+#: up to 4th". The answer would be a strict subset of what was said, so none.
+R_UNREAD = "level_named_not_read"
+#: Different trades on different floors in one sentence ("Framers on the 3rd-4th
+#: floors, Plumber on the 1st-4th"). The union would give every trade every
+#: floor; bind_clauses reads each clause instead.
+R_TRADES = "several_trades_several_levels"
+#: GROUND bound to the project's first floor because its frame says the first
+#: floor is at grade and nothing is below it.
+R_GROUND = "ground_is_first_floor"
 
 #: A level named by fewer filed logs than this is not taken as one of the
 #: building's: one typo ("floor 14" on a four-storey job) is not a storey.
@@ -116,6 +147,93 @@ _CORRIDOR_NO = re.compile(r"\b(?:corridor|corr|hallway|hall|pasillo)\.?\s*#?\s*(
 _FROM_VOCAB = {"G": LS.GROUND, "CELLAR": LS.CELLAR, "SUBCELLAR": LS.SUB_CELLAR, "B": LS.CELLAR,
                "MEZZ": LS.MEZZANINE, "ROOF": LS.ROOF, "FDN": LS.FOUNDATION}
 _VOCAB_UNSETTLED = ("UG", "EX")
+
+# ── LISTS AND RUNS OF ORDINALS ─────────────────────────────────────────────
+#: The readers above see a list when each number carries the level word, or the
+#: word sits at one end of a list they know. They read "1-2-3rd floor" and
+#: "1st/2nd 3rd fl" as the 3rd floor alone: a strict subset of what was said.
+#: A RUN is two or more floor numbers joined by separators, with a level word
+#: at either end (or the run is the whole text). A dash, "to", "thru", "al", "a"
+#: between two numbers is a span; anything else is a list.
+_EN_ORD_WORD = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7,
+                "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11, "twelfth": 12}
+_ITEM = (rf"(?:\d{{1,2}}(?:\s*(?:st|nd|rd|th)\b|(?:er|ro|do|to|vo|no|mo)\b|°|º)?"
+         rf"|\b(?:{'|'.join(sorted(_EN_ORD_WORD, key=len, reverse=True))}|{_ES_WORDS})\b)")
+_SPAN_SEP = r"(?:-|–|—|\bto\b|\bthru\b|\bthrough\b|\bal\b|\ba\b)"
+_LIST_SEP = r"(?:,|&|/|\+|\band\b|\by\b)"
+#: Whitespace alone joins two items only when the second is an ordinal ("1st/2nd 3rd").
+_SEP = rf"(?:\s*(?:{_SPAN_SEP}|{_LIST_SEP})\s*(?:and\s+|y\s+)?|\s+(?=\d{{1,2}}\s*(?:st|nd|rd|th)\b))"
+_RUN = rf"{_ITEM}(?:{_SEP}{_ITEM})+"
+_LVL_WORD = r"(?:floors?|flrs?|fls?|fl|levels?|lvls?|pisos?|stor(?:y|ey|ies|eys)|niveles|nivel)"
+_RUNS = (re.compile(rf"\b{_LVL_WORD}\.?\s*#?\s*({_RUN})(?![\w/])", re.I),
+         re.compile(rf"(?<![\w/])({_RUN})\s*{_LVL_WORD}\b", re.I),
+         re.compile(rf"^\s*({_RUN})\s*\.?\s*$", re.I),
+         # "3rd floor and 4th", "1st fl - 2nd": the word after the first item. The
+         # tail is ordinals only and ends the clause, so "3rd floor and 2nd coat"
+         # is not read as a list (the 2nd stays unread, and the answer is none).
+         re.compile(rf"(?<![\w/])(\d{{1,2}}\s*(?:st|nd|rd|th)\s*{_LVL_WORD}\.?(?:\s*(?:{_SPAN_SEP}|{_LIST_SEP})\s*"
+                    rf"(?:and\s+)?\d{{1,2}}\s*(?:st|nd|rd|th))+)(?=\s*(?:$|[,.;:)]))", re.I))
+_ITEM_RX = re.compile(_ITEM, re.I)
+#: "2do piso", "piso 4to": a Spanish numeric ordinal beside piso.
+_ES_NUM_FLOOR = re.compile(r"(?<![\w/])(\d{1,2})(?:er|ro|do|to|vo|no|mo|°|º)\s*pisos?\b"
+                           r"|\bpisos?\s*(\d{1,2})(?:er|ro|do|to|vo|no|mo|°|º)(?!\w)", re.I)
+#: Every ordinal the words hold: "3rd", "4th", "2do", and an ordinal WORD when a
+#: level word is in the text ("first and second floor"; Spanish "segundo" only
+#: beside piso, since "un segundo" is a second of time).
+_ORD_NUM = re.compile(r"(?<!\w)(\d{1,2})(?:\s*(?:st|nd|rd|th)|er|ro|do|to|vo|no|mo)\b", re.I)
+_ORD_WORD = re.compile(rf"\b({'|'.join(_EN_ORD_WORD)}|{_ES_WORDS})\b", re.I)
+_HAS_LVL_WORD = re.compile(rf"\b{_LVL_WORD}\b", re.I)
+_GARBLED = re.compile(r"\d(?:st|nd|rd|th)?\s*[^\w\s,&/+\-–—.;:()'\"#°º]\s*\d", re.I)
+
+
+def _item_n(item: str) -> Optional[int]:
+    s = item.strip().lower()
+    m = re.match(r"\d{1,2}", s)
+    if m:
+        return int(m.group(0))
+    return _EN_ORD_WORD.get(s) or _ES_ORDINAL.get(s)
+
+
+def _runs(text: str) -> Set[int]:
+    """Every floor number a run names: "1-2-3rd floor" is 1, 2, 3."""
+    out: Set[int] = {int(m.group(1) or m.group(2)) for m in _ES_NUM_FLOOR.finditer(text)}
+    for k, rx in enumerate(_RUNS):
+        for m in rx.finditer(text):
+            run = m.group(1)
+            items = list(_ITEM_RX.finditer(run))
+            seps = [run[a.end():b.start()] for a, b in zip(items, items[1:])]
+            if all(not s.strip() for s in seps):
+                continue        # "Nov 4th 3rd floor": spaces alone do not make a list
+            if k == 2 and re.search(r"\d\s*/\s*\d", run):
+                continue        # a bare "2/3" is a date as often as two floors
+            prev = None
+            for i, it in enumerate(items):
+                n = _item_n(it.group(0))
+                if n is None:
+                    prev = None
+                    continue
+                sep = re.sub(rf"\b{_LVL_WORD}\b\.?", " ", run[items[i - 1].end():it.start()], flags=re.I) if i else ""
+                if prev is not None and re.fullmatch(rf"\s*{_SPAN_SEP}\s*", sep, re.I):
+                    lo, hi = sorted((prev, n))
+                    out |= set(range(lo, hi + 1))
+                out.add(n)
+                prev = n
+    return out
+
+
+def _ordinals_named(text: str) -> Set[int]:
+    """Every floor number the words name as an ordinal. A result missing one is
+    a strict subset of what was said."""
+    out = {int(m.group(1)) for m in _ORD_NUM.finditer(text)}
+    if _HAS_LVL_WORD.search(text):
+        out |= {_item_n(m.group(1)) or 0 for m in _ORD_WORD.finditer(text)}
+    return {n for n in out if n}
+
+
+#: "ground floor", "ground fl", "planta baja": a FLOOR at grade. "Ground level",
+#: "grade" and "at grade" name the site as often as a floor, and stay unmapped.
+_GROUND_FLOOR = re.compile(r"\bground\s+(?:floor|flr|fl)\b|\bplanta\s+baja\b", re.I)
+_GROUND_OTHER = re.compile(r"\bground\s+level\b", re.I)
 
 # ── DOB work_on_floor ──────────────────────────────────────────────────────
 #: One entry: "<kind>-<number>-<job reference...>". The number after "Floor
@@ -168,7 +286,7 @@ def read(text: Any, *, source: str = FREE_TEXT) -> Dict[str, Any]:
     {levels, units, area, choice, unsettled: [reasons], corridor: [levels]}."""
     t = " ".join(str(text or "").split())
     out: Dict[str, Any] = {"levels": [], "units": [], "area": None, "choice": False, "unsettled": [],
-                           "corridor": [], "text": t}
+                           "corridor": [], "text": t, "unread": [], "ground_floor": False, "garbled": False}
     if not t:
         return out
     if source == PHOTO_VISIBLE_TEXT:
@@ -204,7 +322,10 @@ def read(text: Any, *, source: str = FREE_TEXT) -> Dict[str, Any]:
             levels |= {_floor(n) or "" for n in range(lo, hi + 1)}
     for m in _ES_FLOOR.finditer(rest):
         levels.add(_floor(_ES_ORDINAL[(m.group(1) or m.group(2)).lower()]) or "")
-    if _ES_GROUND.search(rest):
+    for n in _runs(rest):
+        levels.add(_floor(n) or "")
+    out["ground_floor"] = bool(_GROUND_FLOOR.search(rest)) and not _GROUND_OTHER.search(rest)
+    if _ES_GROUND.search(rest) or out["ground_floor"]:
         levels.add(LS.GROUND)
     if LS._AMBIGUOUS_BELOW.search(rest.lower()):
         out["unsettled"].append(R_BELOW)
@@ -221,6 +342,12 @@ def read(text: Any, *, source: str = FREE_TEXT) -> Dict[str, Any]:
     out["corridor"] = sort_levels(_floor(int(m.group(1))) or "" for m in _CORRIDOR_NO.finditer(rest)) if not levels else []
     out["corridor"] = [c for c in out["corridor"] if c]
     out["levels"] = sort_levels(lv for lv in levels if lv)
+    # An ordinal no reader placed: answering without it would narrow.
+    out["unread"] = sort_levels(f"{LS.FLOOR_PREFIX}{n}" for n in _ordinals_named(rest)
+                                if f"{LS.FLOOR_PREFIX}{n}" not in out["levels"])
+    # "1st�4th": a character no reader knows between two floor numbers (an
+    # export ate the dash). A span or a list: not settled, so not read.
+    out["garbled"] = bool(_GARBLED.search(rest))
     return out
 
 
@@ -258,9 +385,21 @@ def _result(levels: Sequence[str], space: Optional[str], area: Optional[str], ce
 
 
 def bind(text: Any, project_levels: Optional[Iterable[str]], project_spaces: Any = None, *,
-         source: str = FREE_TEXT) -> Dict[str, Any]:
+         source: str = FREE_TEXT, ground_level: Optional[str] = None) -> Dict[str, Any]:
     """{levels, space, area, certainty: exact|constrained|none, reason,
-    candidates, spaces_read, source}. See the module docstring. Total."""
+    candidates, spaces_read, source}. See the module docstring. Total.
+
+    `ground_level`: the frame's statement that GROUND is this level (frame_from
+    sets it only when the project says the first floor is at grade with nothing
+    below). Without it "ground floor" abstains on a frame that lacks GROUND.
+
+    A sentence giving different trades different floors abstains (R_TRADES):
+    the union would put every trade on every floor. bind_clauses reads it."""
+    return _bind(text, project_levels, project_spaces, source=source, ground_level=ground_level, split=True)
+
+
+def _bind(text: Any, project_levels: Optional[Iterable[str]], project_spaces: Any, *, source: str,
+          ground_level: Optional[str], split: bool) -> Dict[str, Any]:
     r = read(text, source=source)
     frame = set(project_levels or ())
     spaces = _spaces(project_spaces)
@@ -268,14 +407,24 @@ def bind(text: Any, project_levels: Optional[Iterable[str]], project_spaces: Any
         if source != PHOTO_VISIBLE_TEXT else [u for u in r["units"] if u in spaces]
     levels, area = list(r["levels"]), r["area"]
     cands = levels + r["corridor"]
+    grounded = False
 
-    def no(reason: str) -> Dict[str, Any]:
-        return _result([], None, area, NONE, reason, cands, source, tags)
+    def no(reason: str, extra: Sequence[str] = ()) -> Dict[str, Any]:
+        return _result([], None, area, NONE, reason, list(cands) + list(extra), source, tags)
 
     if not frame:
         return no(R_NO_FRAME)
     if r["choice"] and (levels or tags or r["units"] or re.search(r"\d", r["text"])):
         return no(R_CHOICE)
+    if split and source in (FREE_TEXT, LOG_ROW, PHOTO_WHERE) and _mixed_trades(r["text"], frame, project_spaces,
+                                                                             ground_level):
+        return no(R_TRADES)
+    if r["unread"] or r["garbled"]:
+        return no(R_UNREAD, r["unread"])
+    if (LS.GROUND in levels and LS.GROUND not in frame and ground_level and ground_level in frame
+            and r["ground_floor"]):
+        levels = sort_levels(ground_level if lv == LS.GROUND else lv for lv in levels)
+        grounded = True
     if len(tags) > 1:
         return no(R_SPACES)
     space = tags[0] if tags else None
@@ -297,9 +446,9 @@ def bind(text: Any, project_levels: Optional[Iterable[str]], project_spaces: Any
         return no(R_UNIT_UNKNOWN) if not levels else _result(levels, None, area, EXACT if len(levels) == 1 else CONSTRAINED,
                                                              R_UNIT_UNKNOWN, cands, source, tags)
     if levels:
+        one = R_GROUND if grounded else R_SPACE if space else R_LEVEL
         return _result(levels, space, area, EXACT if len(levels) == 1 else CONSTRAINED,
-                       R_SPACE if space and len(levels) == 1 else R_LEVEL if len(levels) == 1 else R_LEVELS,
-                       cands, source, tags)
+                       one if len(levels) == 1 else R_LEVELS, cands, source, tags)
     if space:
         return _result([], space, area, EXACT, R_SPACE, cands, source, tags)
     if area == EXTERIOR:
@@ -313,13 +462,119 @@ def bind(text: Any, project_levels: Optional[Iterable[str]], project_spaces: Any
     return no(R_AREA_ONLY if area else R_NOTHING)
 
 
+# ── CLAUSES: several trades, several floors, one sentence ─────────────────
+
+#: A comma starts a new clause unless a floor number follows it ("1st, 2nd &
+#: 3rd floors" is one list). ";" always does; ". " before a letter does.
+_SENTENCE_SPLIT = re.compile(r"\s*;\s*|(?<![Ff]l)(?<![Aa]pt)(?<![Nn]o)\.\s+(?=[A-Za-z])")
+_COMMA_SPLIT = re.compile(rf",\s*(?!(?:and\s+|&\s*|y\s+)?(?:{_ITEM})(?![A-Za-z]))", re.I)
+_LABEL_PREFIX = re.compile(r"^\s*[A-Z][A-Z ]{2,}:\s*")
+_NOT_TRADE = re.compile(
+    rf"(?:\b{_LVL_WORD}\b\.?|(?<!\w)\d{{1,2}}(?:\s*(?:st|nd|rd|th)|er|ro|do|to|vo|no|mo)?\b|#"
+    rf"|\b(?:{'|'.join(_EN_ORD_WORD)}|{_ES_WORDS})\b|\b(?:roof(?:top)?|mezz(?:anine)?|cellar|basement|bulkhead"
+    r"|ground|planta\s+baja|on|at|in|of|the|to|thru|through|from|and|en|el|la|los|las|del|de|al|y|a)\b|[-–—&+])",
+    re.I)
+
+
+def _names_a_place(clause: str) -> bool:
+    r = read(clause)
+    return bool(r["levels"] or r["unread"] or r["corridor"] or _ORD_NUM.search(clause))
+
+
+def _top_level_commas(sentence: str) -> List[str]:
+    """Split on commas outside parentheses ("(layout, track and studs)" is one)."""
+    out, depth, start = [], 0, 0
+    for m in re.finditer(r"[()]|" + _COMMA_SPLIT.pattern, sentence, re.I):
+        if m.group(0) == "(":
+            depth += 1
+        elif m.group(0) == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            out.append(sentence[start:m.start()])
+            start = m.end()
+    return out + [sentence[start:]]
+
+
+def _clauses(text: Any) -> List[str]:
+    """Sentences, then their top-level comma parts. A part that names no place
+    is the lead-in of the next part in its sentence ("Quality Plumbing worked on
+    rough-in, Plumbing on the 1st through 4th floors" is one clause)."""
+    t = _LABEL_PREFIX.sub("", " ".join(str(text or "").split())).strip()
+    out: List[str] = []
+    for sentence in _SENTENCE_SPLIT.split(t):
+        held = ""
+        for part in _top_level_commas(sentence or ""):
+            part = part.strip(" .")
+            if not part:
+                continue
+            joined = f"{held}, {part}" if held else part
+            if _names_a_place(part):
+                out.append(joined)
+                held = ""
+            else:
+                held = joined
+        if held:
+            out.append(held)
+    return out
+
+
+def _trade_text(clause: str) -> str:
+    """The clause's words with its place words taken out: "Framers on the
+    3rd-4th floors" -> "Framers"."""
+    s = re.sub(r"\(\s*\)", " ", _NOT_TRADE.sub(" ", clause))
+    return " ".join(s.split()).strip(" ,./:")
+
+
+def _elide(clause: str, sentence_has_level_word: bool) -> str:
+    """"Plumber on the 1st" in a sentence that said "floors" once: the ordinal
+    is a floor. Only inside a sentence that named the level word."""
+    if sentence_has_level_word and not _HAS_LVL_WORD.search(clause) and not _GARBLED.search(clause):
+        return _ORD_NUM.sub(lambda m: m.group(0) + " fl", clause)
+    return clause
+
+
+def _frame_parts(frame: Any) -> Tuple[List[str], Any, Optional[str]]:
+    if isinstance(frame, dict):
+        return ([] if frame.get("unreadable") else list(frame.get("levels") or ()), frame.get("spaces"),
+                frame.get("ground_level"))
+    return list(frame or ()), None, None
+
+
+def bind_clauses(text: Any, frame: Any, *, source: str = FREE_TEXT) -> List[Dict[str, Any]]:
+    """[{trade_text, text, levels, certainty, reason}] one per clause, each
+    bound on its own. "Framers on the 3rd-4th floors, Plumber on the 1st-4th"
+    is framers on 3-4 and plumbers on 1-4, never both on 1-4. `frame`: the
+    frame_from dict (or a plain level list). A clause with no place abstains."""
+    levels, spaces, ground = _frame_parts(frame)
+    parts = _clauses(text) or [" ".join(str(text or "").split())]
+    has_word = bool(_HAS_LVL_WORD.search(" ".join(parts)))
+    out = []
+    for c in parts:
+        b = _bind(_elide(c, has_word), levels, spaces, source=source, ground_level=ground, split=False)
+        out.append({"trade_text": _trade_text(c), "text": c, "levels": b["levels"] if b["certainty"] != NONE else [],
+                    "certainty": b["certainty"], "reason": b["reason"]})
+    return out
+
+
+def _mixed_trades(text: str, levels: Iterable[str], spaces: Any, ground: Optional[str]) -> bool:
+    """Two or more clauses that each name a trade and a place, and the places
+    differ."""
+    parts = _clauses(text)
+    if len(parts) < 2:
+        return False
+    placed = [c for c in bind_clauses(text, {"levels": list(levels), "spaces": spaces, "ground_level": ground})
+              if c["certainty"] != NONE and c["levels"] and re.search(r"[A-Za-z]{3,}", c["trade_text"])]
+    return len(placed) >= 2 and len({tuple(c["levels"]) for c in placed}) > 1
+
+
 def place(text: Any, frame: Dict[str, Any], *, source: str = FREE_TEXT) -> Dict[str, Any]:
     """work_state.places_in's shape, bound to a project: {"levels", "space"}.
     An abstention is no level. With no plan tags in the frame the space is the
     one places_in has always read, so nothing changes where nothing is known."""
     # An UNREADABLE frame (server _project_place_frame failed) binds against
     # no levels: an abstention, never the words' own guess.
-    b = bind(text, [] if frame.get("unreadable") else frame.get("levels"), frame.get("spaces"), source=source)
+    b = bind(text, [] if frame.get("unreadable") else frame.get("levels"), frame.get("spaces"), source=source,
+             ground_level=frame.get("ground_level"))
     levels = b["levels"] if b["certainty"] != NONE else []
     space = b["space"] if frame.get("spaces") else W.places_in(text)["space"]
     return {"levels": levels, "space": space}
@@ -385,8 +640,16 @@ def frame_from(project: Optional[Dict[str, Any]], page_rows: Iterable[Dict[str, 
     if basis:
         for t in EVERY_BUILDING:
             basis[t].append("every_building")
+    # GROUND is the first floor only on the project's own say-so: no cellar and
+    # no sub-cellar (False, not unset), the first floor at grade, and no plan
+    # sheet or log naming a level below it.
+    ground, ground_basis = None, []
+    first = f"{LS.FLOOR_PREFIX}1"
+    if (p.get("has_cellar") is False and p.get("has_sub_cellar") is False and p.get("first_floor_at_grade") is True
+            and first in basis and not any(t in basis for t in (LS.CELLAR, LS.SUB_CELLAR, LS.GROUND))):
+        ground, ground_basis = first, ["has_cellar=False", "has_sub_cellar=False", "first_floor_at_grade"]
     return {"levels": sort_levels(basis), "spaces": spaces or {}, "basis": {k: v for k, v in basis.items()},
-            "known": known, "excluded": excluded}
+            "known": known, "excluded": excluded, "ground_level": ground, "ground_basis": ground_basis}
 
 
 # ── SCORING AGAINST A PERSON'S LABEL ───────────────────────────────────────
