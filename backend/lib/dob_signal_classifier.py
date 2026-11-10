@@ -44,6 +44,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
+from lib.dob_signoffs import is_signed_off
+
 
 # ── Permit ────────────────────────────────────────────────────────
 
@@ -56,6 +58,11 @@ def _classify_permit(log: dict) -> str:
         return "permit_revoked"
     if "RENEWED" in status:
         return "permit_renewed"
+    # 'LOC ISSUED' / 'CO ISSUED' / 'CERTIFICATE OF OPERATION ISSUED' are DOB
+    # signing the work OFF; the substring test below read them as a permit
+    # being issued. They take the generic permit kind (lib/dob_signoffs).
+    if is_signed_off(status):
+        return "permit"
     if "ISSUED" in status or "ACTIVE" in status:
         return "permit_issued"
     # Unknown status → fall back to record_type so the UI still
