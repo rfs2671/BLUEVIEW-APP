@@ -13,7 +13,7 @@ company's (server.py _dm_assistant_projects); a role alone never opens a job.
 
 They may: report inspections, send evidence (sign-offs, photos), ask about
 progress (work_status, find / send photos) and read the schedule
-(schedule_lookahead, viewing a PROPOSED sequence).
+(schedule_lookahead, schedule_status, viewing a PROPOSED sequence).
 
 Reserved to a PM or an admin: approving a PROPOSED sequence (the official
 schedule approval), every tool that changes project data (propose_change,
@@ -47,7 +47,7 @@ FIELD_TOOLS = frozenset({
     # inspections and evidence (the floor of a photo they were just sent)
     "report_inspection", "confirm_photo_place",
     # the schedule (proposed_sequence: viewing only, approve is refused below)
-    "schedule_lookahead", "proposed_sequence",
+    "schedule_lookahead", "schedule_status", "proposed_sequence",
     # drawings
     "search_plans", "sheet_info", "send_sheet", "send_plan_file", "check_drawing_set",
     # drops nothing but their own open question
