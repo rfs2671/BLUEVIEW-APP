@@ -150,7 +150,7 @@ def place_text(text: Any, frame: Optional[Dict[str, Any]]) -> Tuple[List[str], L
     if not _frame_binds(frame):
         return W.places_in(LB._units(str(text or ""))[1])["levels"], [], None
     b = LB.bind(text, [] if frame.get("unreadable") else frame.get("levels"), frame.get("spaces"),
-                ground_level=frame.get("ground_level"))
+                ground_level=frame.get("ground_level"), frame_complete=bool(frame.get("complete")))
     if b["certainty"] != LB.NONE:
         return list(b["levels"]), [], None
     if not b["candidates"]:

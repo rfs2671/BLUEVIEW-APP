@@ -197,6 +197,11 @@ def floors_in(text: Any) -> List[int]:
         if a:
             lo = int(a)
             hi = int(b) if b else lo
+            # "floors 1 & 3" / "floors 1 and 3" is a LIST, two floors; only a
+            # dash or "to" is a span. (Read as a span it put work on floor 2.)
+            if b and re.search(r"&|\band\b", str(text)[m.end(1):m.start(2)], re.I):
+                out.extend((lo, hi))
+                continue
             out.extend(range(min(lo, hi), max(lo, hi) + 1))
     return sorted(set(n for n in out if 0 < n < 100))
 

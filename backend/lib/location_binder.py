@@ -39,6 +39,20 @@ or there is no answer (R_UNREAD: "3rd floor moving up to 4th", "Nov 4th 3rd
 floor", "2nd coat on the 3rd floor"). A character no reader knows between two
 floor numbers ("1st�4th", an export's lost dash) abstains too.
 
+ROUND 2: THE RULE IS ON THE RESULT (adversarial review 1). `_structural` cuts
+the words into chains of level material; every number, ordinal and level noun
+in a chain that touches a level word is STATED, a span word between two
+numbers states the floors between, and an answer missing any stated level is
+none ("floors 2 3 4" is read whole or not at all). A span to the roof, and an
+open range ("2nd floor and up", "above 2nd floor", "floors 2+"), expand against
+the frame only when it is complete (frame_from: a storey count on record) and
+only where the frame fixes the order (a mezzanine of unknown height stops it);
+the answer then says R_EXPANDED. "upper floors", "under/below/between",
+"top floor", and any exclusion ("not", "except", "menos") abstain. Two chains
+with words between them that bind differently ("Framers 3rd floor plumbers 1st
+floor") abstain (R_TRADES); bind_clauses splits on and / y / while / & when
+both sides name a trade and a place.
+
 SEVERAL TRADES, SEVERAL FLOORS. "Framers on the 3rd-4th floors, Plumber on the
 1st-4th, HVAC on the 1st-2nd" has no single answer: the union puts framers on
 floor 1. `bind` abstains (R_TRADES) when two or more clauses each name a trade
@@ -116,7 +130,7 @@ _DASH = r"(?:-|–|—|to|thru|through|al|a)"
 _RANGE_NUM = re.compile(rf"\b(?:floors?|flrs?|fls?|levels?|lvls?|pisos?)\.?\s*#?\s*(\d{{1,2}})\s*{_DASH}\s*(\d{{1,2}})\b",
                         re.I)
 #: "1st-4th", "1st to 4th floor", "2nd thru 3rd fl".
-_RANGE_ORD = re.compile(rf"\b(\d{{1,2}})\s*{_ORD}\s*(?:fl(?:oo)?r?s?\.?\s*)?(?:-|–|—|to|thru|through)\s*(\d{{1,2}})\s*{_ORD}\b",
+_RANGE_ORD = re.compile(rf"\b(\d{{1,2}})\s*{_ORD}\s*(?:fl(?:oo)?r?s?\.?\s*)?(?:-|–|—|(?:up\s+)?to|thru|through|until|till)\s*(\d{{1,2}})\s*{_ORD}\b",
                         re.I)
 #: "1-4 floors", "2 thru 5 levels": the level word after the range.
 _RANGE_AFTER = re.compile(rf"\b(\d{{1,2}})\s*(?:-|–|—|to|thru|through)\s*(\d{{1,2}})\s*(?:floors?|flrs?|fls?|levels?|lvls?|pisos?)\b",
@@ -159,7 +173,7 @@ _EN_ORD_WORD = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "s
                 "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11, "twelfth": 12}
 _ITEM = (rf"(?:\d{{1,2}}(?:\s*(?:st|nd|rd|th)\b|(?:er|ro|do|to|vo|no|mo)\b|°|º)?"
          rf"|\b(?:{'|'.join(sorted(_EN_ORD_WORD, key=len, reverse=True))}|{_ES_WORDS})\b)")
-_SPAN_SEP = r"(?:-|–|—|\bto\b|\bthru\b|\bthrough\b|\bal\b|\ba\b)"
+_SPAN_SEP = r"(?:-|–|—|\b(?:up\s+)?to\b|\bthru\b|\bthrough\b|\buntil\b|\btill\b|\bal\b|\ba\b)"
 _LIST_SEP = r"(?:,|&|/|\+|\band\b|\by\b)"
 #: Whitespace alone joins two items only when the second is an ordinal ("1st/2nd 3rd").
 _SEP = rf"(?:\s*(?:{_SPAN_SEP}|{_LIST_SEP})\s*(?:and\s+|y\s+)?|\s+(?=\d{{1,2}}\s*(?:st|nd|rd|th)\b))"
@@ -172,7 +186,10 @@ _RUNS = (re.compile(rf"\b{_LVL_WORD}\.?\s*#?\s*({_RUN})(?![\w/])", re.I),
          # tail is ordinals only and ends the clause, so "3rd floor and 2nd coat"
          # is not read as a list (the 2nd stays unread, and the answer is none).
          re.compile(rf"(?<![\w/])(\d{{1,2}}\s*(?:st|nd|rd|th)\s*{_LVL_WORD}\.?(?:\s*(?:{_SPAN_SEP}|{_LIST_SEP})\s*"
-                    rf"(?:and\s+)?\d{{1,2}}\s*(?:st|nd|rd|th))+)(?=\s*(?:$|[,.;:)]))", re.I))
+                    rf"(?:and\s+)?\d{{1,2}}\s*(?:st|nd|rd|th))+)(?=\s*(?:$|[,.;:)]))", re.I),
+         # "floors 2 3 4": bare numbers after the level word, spaces only, ending
+         # the clause. "floor 3 2 guys" does not end there, so the 2 stays unread.
+         re.compile(rf"\b{_LVL_WORD}\.?\s*#?\s*(\d{{1,2}}(?:\s+\d{{1,2}})+)(?=\s*(?:$|[,.;:)&]))", re.I))
 _ITEM_RX = re.compile(_ITEM, re.I)
 #: "2do piso", "piso 4to": a Spanish numeric ordinal beside piso.
 _ES_NUM_FLOOR = re.compile(r"(?<![\w/])(\d{1,2})(?:er|ro|do|to|vo|no|mo|°|º)\s*pisos?\b"
@@ -202,7 +219,7 @@ def _runs(text: str) -> Set[int]:
             run = m.group(1)
             items = list(_ITEM_RX.finditer(run))
             seps = [run[a.end():b.start()] for a, b in zip(items, items[1:])]
-            if all(not s.strip() for s in seps):
+            if k != 4 and all(not s.strip() for s in seps):
                 continue        # "Nov 4th 3rd floor": spaces alone do not make a list
             if k == 2 and re.search(r"\d\s*/\s*\d", run):
                 continue        # a bare "2/3" is a date as often as two floors
@@ -348,7 +365,180 @@ def read(text: Any, *, source: str = FREE_TEXT) -> Dict[str, Any]:
     # "1st�4th": a character no reader knows between two floor numbers (an
     # export ate the dash). A span or a list: not settled, so not read.
     out["garbled"] = bool(_GARBLED.search(rest))
+    out["rest"] = rest
     return out
+
+
+# ── ACCOUNTING: every level the words state, held against the answer ───────
+#: Round 2 (adversarial review 1, C2/M10): per-phrase readers kept missing
+#: phrasings ("floors 2 3 4" -> 2, "1st floor to roof" -> {1, ROOF}, "above 2nd
+#: floor" -> 2). So the check is on the RESULT: the words are cut into tokens,
+#: every number, ordinal and level noun in a chain that touches a level word is
+#: a STATED level, and an answer missing one is no answer. Spans to a named
+#: level and open-ended ranges expand against the frame only when the frame is
+#: complete (its storey count is known); otherwise they abstain.
+
+#: A dotted or timed number ("BC 3301.13.13", "8:00") is one token and no floor.
+_TOKEN = re.compile(r"\d+(?:[.:]\d+)+|\d+\s*(?:st|nd|rd|th)\b|\d+(?:er|ro|do|to|vo|no|mo)\b|\d+|[^\W\d_]+\.?|\S",
+                    re.I)
+_NAMED_LEVEL = {"roof": LS.ROOF, "rooftop": LS.ROOF, "techo": LS.ROOF, "azotea": LS.ROOF, "mezz": LS.MEZZANINE,
+                "mezzanine": LS.MEZZANINE, "mezzanina": LS.MEZZANINE, "cellar": LS.CELLAR, "basement": LS.CELLAR,
+                "sotano": LS.CELLAR, "sótano": LS.CELLAR, "bulkhead": LS.BULKHEAD}
+_LVL_WORDS = {"floor", "floors", "fl", "fls", "flr", "flrs", "level", "levels", "lvl", "lvls", "piso", "pisos",
+              "story", "storey", "stories", "storeys", "nivel", "niveles"}
+_CONNECT = {"and", "y", "to", "thru", "through", "al", "a", "up", "until", "till", "hasta", "the", "on", "at", "in",
+            "of", "el", "la", "los", "las", "en", "del", "de", "from", "desde"}
+_CONNECT_PUNCT = set(",&/+-–—#.;:()|'")
+_SPAN_WORDS = {"to", "thru", "through", "al", "a", "until", "till", "hasta"}
+_FLOORREF = (rf"(?:(\d{{1,2}})\s*(?:st|nd|rd|th|er|ro|do|to|vo|no|mo)?"
+             rf"|\b({'|'.join(_EN_ORD_WORD)}|{_ES_WORDS})\b)")
+_LVL_OPT = r"(?:\s*(?:floors?|flrs?|fls?|fl|levels?|pisos?)\b\.?)?"
+_TO = r"\s*(?:-|–|—|\bup\s+to\b|\bto\b|\bthru\b|\bthrough\b|\bal\b|\ba\b|\bhasta\b|\buntil\b|\btill\b)\s*(?:the\s+|el\s+|la\s+)?"
+_NAMED_RX = r"\b(roof(?:top)?|techo|azotea|mezz\w*|bulkhead|cellar|basement|s[oó]tano)\b"
+_SPAN_NAMED = (re.compile(rf"{_FLOORREF}{_LVL_OPT}{_TO}{_NAMED_RX}", re.I),
+               re.compile(rf"{_NAMED_RX}{_TO}(?:floors?\s+|pisos?\s+)?{_FLOORREF}", re.I),
+               re.compile(rf"{_NAMED_RX}{_TO}{_NAMED_RX}", re.I))
+_OPEN_UP = (re.compile(rf"{_FLOORREF}{_LVL_OPT}\s*(?:(?:and|&|y)\s*)?(?:up\b(?!\s*(?:to|thru|through|until)\b)|above\b"
+                       rf"|higher\b|(?:para\s+|hacia\s+)?arriba\b)", re.I),
+            re.compile(r"(\d{1,2})\s*(?:st|nd|rd|th)?(?:\s*(?:floors?|fl)\b\.?)?\s*\+(?!\s*\d)()", re.I))
+_OPEN_ABOVE = (re.compile(rf"\b(?:above|over|encima\s+del?|sobre)\s+(?:the\s+|el\s+)?(?:floors?\s+|pisos?\s+)?{_FLOORREF}",
+                          re.I),
+               re.compile(rf"\b(?:floors?|levels?|pisos?)\s+(?:above|over)\s+(?:the\s+)?{_FLOORREF}", re.I))
+_RELATIVE = re.compile(r"\b(?:under|underneath|underside|beneath|below|between|bajo|debajo|entre|upper|lower"
+                       r"|bottom|above|encima|arriba|abajo)\b|(?<!roof )\btop\b", re.I)
+_NEGATION = re.compile(r"\b(?:not|except|excluding|exclude|excl|other\s+than|minus|but|excepto|menos|salvo|sin)\b",
+                       re.I)
+
+R_OPEN = "open_or_named_span_needs_a_complete_frame"
+R_RELATIVE = "relative_place"
+R_NEGATION = "a_level_excluded"
+#: A span or open range expanded against a COMPLETE frame: declared, never silent.
+R_EXPANDED = "expanded_against_the_frame"
+
+
+def _ref_n(m: "re.Match[str]", a: int = 1) -> Optional[int]:
+    if m.group(a):
+        return int(m.group(a))
+    w = m.group(a + 1)
+    return _item_n(w) if w else None
+
+
+def _chains(rest: str) -> List[Dict[str, Any]]:
+    """Maximal runs of level material: numbers, ordinals, level words, level
+    nouns and the words that join them. A chain touching a level word, an
+    ordinal or a level noun STATES every number in it."""
+    has_word = bool(_HAS_LVL_WORD.search(rest))
+    chains: List[Dict[str, Any]] = []
+    cur: Optional[Dict[str, Any]] = None
+
+    def close():
+        if cur and cur["anchor"] and cur["stated"]:
+            cur["text"] = rest[cur["start"]:cur["end"]]
+            chains.append(cur)
+
+    for m in _TOKEN.finditer(rest):
+        tok = m.group(0)
+        low = tok.lower().rstrip(".")
+        kind, val = "word", None
+        if re.fullmatch(r"\d{1,2}", tok):
+            kind, val = "num", int(tok)
+        elif re.fullmatch(r"\d{1,2}\s*(?:st|nd|rd|th)|\d{1,2}(?:er|ro|do|to|vo|no|mo)", tok, re.I):
+            kind, val = "anchor", int(re.match(r"\d+", tok).group(0))
+        elif low in _LVL_WORDS:
+            kind = "anchor"
+        elif low in _NAMED_LEVEL:
+            kind, val = "anchor", _NAMED_LEVEL[low]
+        elif has_word and (low in _EN_ORD_WORD or low in _ES_ORDINAL):
+            kind, val = "anchor", _item_n(low)
+        elif low in _CONNECT or tok in _CONNECT_PUNCT:
+            kind = "connect"
+        if kind == "word":
+            close()
+            cur = None
+            continue
+        if cur is None:
+            if kind == "connect":
+                continue
+            cur = {"start": m.start(), "end": m.end(), "anchor": False, "stated": set()}
+        cur["end"] = m.end() if kind != "connect" else cur["end"]
+        cur["anchor"] = cur["anchor"] or kind == "anchor"
+        if kind == "connect" and (tok in "-–—" or low in _SPAN_WORDS):
+            cur["span"] = True
+        elif kind == "connect" and (tok in ",&/+" or low in ("and", "y")):
+            cur["span"] = False
+        if isinstance(val, int):
+            # "1st floor up to 3rd floor": a span between two numbers states every floor between.
+            if cur.get("span") and cur.get("last") is not None:
+                lo, hi = sorted((cur["last"], val))
+                cur["stated"] |= {f"{LS.FLOOR_PREFIX}{n}" for n in range(lo, hi + 1)}
+            cur["last"], cur["span"] = val, False
+        if val is not None:
+            cur["stated"].add(val if isinstance(val, str) else f"{LS.FLOOR_PREFIX}{val}")
+    close()
+    return chains
+
+
+def _expand(lo: int, frame: Set[str], *, inclusive: bool, to_roof: bool) -> Optional[List[str]]:
+    """The frame's levels from floor `lo` up, or None when the frame cannot say
+    (a mezzanine whose place in the order is unknown, a floor the frame lacks)."""
+    nums = sorted(n for n in (LS.floor_number(t) for t in frame) if n is not None)
+    if not nums or f"{LS.FLOOR_PREFIX}{lo}" not in frame:
+        return None
+    start = lo if inclusive else lo + 1
+    out = [f"{LS.FLOOR_PREFIX}{n}" for n in nums if n >= start]
+    if LS.MEZZANINE in frame:
+        if not (inclusive and lo == nums[0]):
+            return None          # where the mezzanine sits is not in the frame
+        out.append(LS.MEZZANINE)
+    if to_roof:
+        if LS.ROOF not in frame:
+            return None
+        out.append(LS.ROOF)
+    return out or None
+
+
+def _structural(r: Dict[str, Any], levels: List[str], frame: Set[str], complete: bool
+                ) -> Tuple[List[str], Optional[str], List[str], bool]:
+    """(levels, abstention reason or None, extra candidates, expanded)."""
+    rest = r.get("rest") or ""
+    chains = _chains(rest)
+    stated = set().union(*(c["stated"] for c in chains)) if chains else set()
+    if (stated or levels) and _NEGATION.search(rest):
+        return levels, R_NEGATION, sorted(stated), False
+    expanded = False
+    for rx in _SPAN_NAMED:
+        for m in rx.finditer(rest):
+            named = [g for g in m.groups() if g and re.fullmatch(_NAMED_RX, g, re.I)]
+            if len(named) != 1 or not re.match(r"roof|techo|azotea", named[0], re.I):
+                return levels, R_OPEN, sorted(stated), False     # mezzanine, cellar, two named ends
+            lo = _ref_n(m, 1) if m.re is _SPAN_NAMED[0] else _ref_n(m, 2)
+            bare = re.search(r"\d", m.group(0)) and not (_ORD_NUM.search(m.group(0)) or _HAS_LVL_WORD.search(rest))
+            spread = _expand(lo, frame, inclusive=True, to_roof=True) if (complete and lo and not bare) else None
+            if spread is None:
+                return levels, R_OPEN, sorted(stated), False
+            levels, expanded = sort_levels(set(levels) | set(spread)), True
+    for rx, inclusive in ((_OPEN_UP[0], True), (_OPEN_UP[1], True), (_OPEN_ABOVE[0], False), (_OPEN_ABOVE[1], False)):
+        for m in rx.finditer(rest):
+            lo = _ref_n(m, 1)
+            spread = _expand(lo, frame, inclusive=inclusive, to_roof=False) if (complete and lo) else None
+            if spread is None:
+                return levels, R_OPEN, sorted(stated), False
+            if not inclusive:
+                levels = [lv for lv in levels if lv != f"{LS.FLOOR_PREFIX}{lo}"]
+                stated.discard(f"{LS.FLOOR_PREFIX}{lo}")
+            levels, expanded = sort_levels(set(levels) | set(spread)), True
+    if not expanded and (stated or levels or _HAS_LVL_WORD.search(rest)) and _RELATIVE.search(rest):
+        return levels, R_RELATIVE, sorted(stated), False
+    missing = sorted(stated - set(levels) - {LS.GROUND})
+    if missing:
+        return levels, R_UNREAD, missing, False
+    # Two places with words between them that bind differently: which words go
+    # with which place is not settled by one answer ("Framers 3rd floor
+    # plumbers 1st floor"). bind_clauses splits them where a joining word does.
+    valued = [set(read(c["text"])["levels"]) | c["stated"] for c in chains]
+    if len(valued) >= 2 and len({frozenset(v) for v in valued}) > 1:
+        return levels, R_TRADES, sorted(stated), False
+    return levels, None, [], expanded
 
 
 # ── BINDING ────────────────────────────────────────────────────────────────
@@ -385,7 +575,8 @@ def _result(levels: Sequence[str], space: Optional[str], area: Optional[str], ce
 
 
 def bind(text: Any, project_levels: Optional[Iterable[str]], project_spaces: Any = None, *,
-         source: str = FREE_TEXT, ground_level: Optional[str] = None) -> Dict[str, Any]:
+         source: str = FREE_TEXT, ground_level: Optional[str] = None,
+         frame_complete: bool = False) -> Dict[str, Any]:
     """{levels, space, area, certainty: exact|constrained|none, reason,
     candidates, spaces_read, source}. See the module docstring. Total.
 
@@ -394,12 +585,18 @@ def bind(text: Any, project_levels: Optional[Iterable[str]], project_spaces: Any
     below). Without it "ground floor" abstains on a frame that lacks GROUND.
 
     A sentence giving different trades different floors abstains (R_TRADES):
-    the union would put every trade on every floor. bind_clauses reads it."""
-    return _bind(text, project_levels, project_spaces, source=source, ground_level=ground_level, split=True)
+    the union would put every trade on every floor. bind_clauses reads it.
+
+    `frame_complete`: the frame's numbered floors are all of the building's
+    (frame_from: a storey count is on record). Only then does a span to the roof
+    or an open range ("2nd floor and up", "above 2nd floor") expand against it,
+    with reason R_EXPANDED; otherwise those abstain."""
+    return _bind(text, project_levels, project_spaces, source=source, ground_level=ground_level, split=True,
+                 complete=frame_complete)
 
 
 def _bind(text: Any, project_levels: Optional[Iterable[str]], project_spaces: Any, *, source: str,
-          ground_level: Optional[str], split: bool) -> Dict[str, Any]:
+          ground_level: Optional[str], split: bool, complete: bool = False) -> Dict[str, Any]:
     r = read(text, source=source)
     frame = set(project_levels or ())
     spaces = _spaces(project_spaces)
@@ -425,6 +622,11 @@ def _bind(text: Any, project_levels: Optional[Iterable[str]], project_spaces: An
             and r["ground_floor"]):
         levels = sort_levels(ground_level if lv == LS.GROUND else lv for lv in levels)
         grounded = True
+    expanded = False
+    if source != PHOTO_VISIBLE_TEXT:
+        levels, why, extra, expanded = _structural(r, levels, frame, complete)
+        if why:
+            return no(why, extra)
     if len(tags) > 1:
         return no(R_SPACES)
     space = tags[0] if tags else None
@@ -448,7 +650,7 @@ def _bind(text: Any, project_levels: Optional[Iterable[str]], project_spaces: An
     if levels:
         one = R_GROUND if grounded else R_SPACE if space else R_LEVEL
         return _result(levels, space, area, EXACT if len(levels) == 1 else CONSTRAINED,
-                       one if len(levels) == 1 else R_LEVELS, cands, source, tags)
+                       R_EXPANDED if expanded else one if len(levels) == 1 else R_LEVELS, cands, source, tags)
     if space:
         return _result([], space, area, EXACT, R_SPACE, cands, source, tags)
     if area == EXTERIOR:
@@ -495,6 +697,20 @@ def _top_level_commas(sentence: str) -> List[str]:
     return out + [sentence[start:]]
 
 
+_JOINER = re.compile(r"\s+(?:and|y|while|plus|&)\s+", re.I)
+
+
+def _split_joined(part: str) -> List[str]:
+    """"Framers on 3rd floor and plumbers on 1st floor" is two clauses: split on
+    and / y / while / & where BOTH sides name a trade and a place. "1st and 2nd
+    floor" has no trade on its left and stays one."""
+    for m in _JOINER.finditer(part):
+        left, right = part[:m.start()], part[m.end():]
+        if all(_names_a_place(x) and re.search(r"[^\W\d_]{3,}", _trade_text(x)) for x in (left, right)):
+            return [left] + _split_joined(right)
+    return [part]
+
+
 def _clauses(text: Any) -> List[str]:
     """Sentences, then their top-level comma parts. A part that names no place
     is the lead-in of the next part in its sentence ("Quality Plumbing worked on
@@ -503,7 +719,7 @@ def _clauses(text: Any) -> List[str]:
     out: List[str] = []
     for sentence in _SENTENCE_SPLIT.split(t):
         held = ""
-        for part in _top_level_commas(sentence or ""):
+        for part in (p for piece in _top_level_commas(sentence or "") for p in _split_joined(piece)):
             part = part.strip(" .")
             if not part:
                 continue
@@ -533,11 +749,11 @@ def _elide(clause: str, sentence_has_level_word: bool) -> str:
     return clause
 
 
-def _frame_parts(frame: Any) -> Tuple[List[str], Any, Optional[str]]:
+def _frame_parts(frame: Any) -> Tuple[List[str], Any, Optional[str], bool]:
     if isinstance(frame, dict):
         return ([] if frame.get("unreadable") else list(frame.get("levels") or ()), frame.get("spaces"),
-                frame.get("ground_level"))
-    return list(frame or ()), None, None
+                frame.get("ground_level"), bool(frame.get("complete")))
+    return list(frame or ()), None, None, False
 
 
 def bind_clauses(text: Any, frame: Any, *, source: str = FREE_TEXT) -> List[Dict[str, Any]]:
@@ -545,12 +761,13 @@ def bind_clauses(text: Any, frame: Any, *, source: str = FREE_TEXT) -> List[Dict
     bound on its own. "Framers on the 3rd-4th floors, Plumber on the 1st-4th"
     is framers on 3-4 and plumbers on 1-4, never both on 1-4. `frame`: the
     frame_from dict (or a plain level list). A clause with no place abstains."""
-    levels, spaces, ground = _frame_parts(frame)
+    levels, spaces, ground, complete = _frame_parts(frame)
     parts = _clauses(text) or [" ".join(str(text or "").split())]
     has_word = bool(_HAS_LVL_WORD.search(" ".join(parts)))
     out = []
     for c in parts:
-        b = _bind(_elide(c, has_word), levels, spaces, source=source, ground_level=ground, split=False)
+        b = _bind(_elide(c, has_word), levels, spaces, source=source, ground_level=ground, split=False,
+                  complete=complete)
         out.append({"trade_text": _trade_text(c), "text": c, "levels": b["levels"] if b["certainty"] != NONE else [],
                     "certainty": b["certainty"], "reason": b["reason"]})
     return out
@@ -574,7 +791,7 @@ def place(text: Any, frame: Dict[str, Any], *, source: str = FREE_TEXT) -> Dict[
     # An UNREADABLE frame (server _project_place_frame failed) binds against
     # no levels: an abstention, never the words' own guess.
     b = bind(text, [] if frame.get("unreadable") else frame.get("levels"), frame.get("spaces"), source=source,
-             ground_level=frame.get("ground_level"))
+             ground_level=frame.get("ground_level"), frame_complete=bool(frame.get("complete")))
     levels = b["levels"] if b["certainty"] != NONE else []
     space = b["space"] if frame.get("spaces") else W.places_in(text)["space"]
     return {"levels": levels, "space": space}
@@ -649,7 +866,9 @@ def frame_from(project: Optional[Dict[str, Any]], page_rows: Iterable[Dict[str, 
             and first in basis and not any(t in basis for t in (LS.CELLAR, LS.SUB_CELLAR, LS.GROUND))):
         ground, ground_basis = first, ["has_cellar=False", "has_sub_cellar=False", "first_floor_at_grade"]
     return {"levels": sort_levels(basis), "spaces": spaces or {}, "basis": {k: v for k, v in basis.items()},
-            "known": known, "excluded": excluded, "ground_level": ground, "ground_basis": ground_basis}
+            "known": known, "excluded": excluded, "ground_level": ground, "ground_basis": ground_basis,
+            # Every numbered floor is known only when the project states its storey count.
+            "complete": bool(stories)}
 
 
 # ── SCORING AGAINST A PERSON'S LABEL ───────────────────────────────────────
