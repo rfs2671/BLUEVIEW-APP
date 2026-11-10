@@ -13,7 +13,9 @@ THE OWNER'S RULE: never a specific location without sufficient evidence. So:
                  matches a REAL tag from this job's plans; or a legible floor
                  marking agrees with the levels the row names
     lent         reserved: a confirmed same-place photo lending its place.
-                 Disabled until a benchmark on real photos sets LEND_MIN_INLIERS
+                 Disabled until a benchmark on real photos sets LEND_MIN_INLIERS.
+                 It only ever fills a place nothing else assigned: a lent place
+                 below the threshold (a geometry miss) changes nothing at all
     constrained  the row names several levels ("floors 1-4"): those are the
                  candidates and none is chosen
     suggested    something points at a level and nothing corroborates it: a

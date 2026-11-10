@@ -6,12 +6,21 @@ among photos whose place is inferred with sufficient certainty (lib/photo_place)
 to ONE level, in one space when one is known, of the same kind of view, room and
 work. A photo filed under "floors 1-4" is never a candidate.
 
+A MISS IS UNCONFIRMED, NEVER DIFFERENT. Construction changes how a place looks:
+studs become board and most feature points stop existing. So the deterministic
+geometry check (lib/photo_geometry) can only ADD support. The same holds for a
+vision answer that is not a confident yes. `combine` returns `supported` or
+`unconfirmed`, and nothing here ever concludes "different location". Nothing
+here removes or weakens a photo's own evidence (its log place, plan-tag text,
+description): a comparison is stored beside the photos and read only when it
+supports them.
+
 NOTHING RUNS AUTOMATICALLY YET. Floor + trade + general view is not enough to
-call two photos one place, so a pair is only asked of the model when the
-deterministic geometry check (lib/photo_geometry) agrees, and that check needs a
-threshold measured on real labeled photos. `GEOMETRY_MIN_INLIERS` is None until
-scripts/photo_relation_benchmark.py has produced one; while it is None
-`pick_pairs` returns nothing and PHOTO_RELATIONS_ENABLED alone starts nothing.
+call two photos one place, and how well geometry or the model tells places apart
+has not been measured. `GEOMETRY_MIN_INLIERS` and `VISION_MIN_CONFIDENCE` are
+None until scripts/photo_relation_benchmark.py has been run on real labeled
+photos. While either is None, `pick_pairs` returns nothing and
+PHOTO_RELATIONS_ENABLED alone starts nothing.
 
 A pair is asked of the vision model once and stored by its two photo keys
 (`pair_id`). The answer is an AI observation: `same_area` may be "unsure", and
@@ -35,6 +44,10 @@ PROMPT_VERSION = "v1"
 #: Set ONLY from a real benchmark run. None: no automatic comparison at all.
 GEOMETRY_MIN_INLIERS: Optional[int] = None
 GEOMETRY_MIN_RATIO: float = 0.0
+#: The confidence a vision "yes" must reach to count as support. Set ONLY from
+#: a real benchmark run.
+VISION_MIN_CONFIDENCE: Optional[float] = None
+SUPPORTED, UNCONFIRMED = "supported", "unconfirmed"
 MIN_QUALITY = 4.0
 #: Two photos a day or two apart rarely show a change worth a paid call.
 MIN_GAP_DAYS = 3
@@ -58,8 +71,8 @@ def pair_id(key_a: str, key_b: str) -> str:
 
 
 def automatic_ready() -> bool:
-    """Has a benchmark on real photos set a geometry threshold?"""
-    return GEOMETRY_MIN_INLIERS is not None
+    """Has a benchmark on real photos set both thresholds?"""
+    return GEOMETRY_MIN_INLIERS is not None and VISION_MIN_CONFIDENCE is not None
 
 
 def geometry_agrees(g: Optional[Dict[str, Any]]) -> bool:
@@ -68,6 +81,24 @@ def geometry_agrees(g: Optional[Dict[str, Any]]) -> bool:
     if GEOMETRY_MIN_INLIERS is None or not g or not g.get("ok"):
         return False
     return int(g.get("inliers") or 0) >= GEOMETRY_MIN_INLIERS and float(g.get("ratio") or 0) >= GEOMETRY_MIN_RATIO
+
+
+def vision_supports(v: Optional[Dict[str, Any]]) -> bool:
+    """A confident "yes" from the model, above the benchmarked confidence."""
+    return bool(v) and VISION_MIN_CONFIDENCE is not None and v.get("same_area") == "yes" \
+        and float(v.get("confidence") or 0) >= VISION_MIN_CONFIDENCE
+
+
+def combine(vision: Optional[Dict[str, Any]], geometry: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """{"same_place": supported | unconfirmed, "support": [signals]}.
+
+    Each signal can only add support. A geometry miss, a failed measurement, an
+    "unsure" or no answer adds nothing and takes nothing away. When the model
+    says "no" while geometry agrees, the two disagree and the pair stays
+    unconfirmed. There is no "different" outcome."""
+    support = [name for name, ok in (("vision", vision_supports(vision)), ("geometry", geometry_agrees(geometry))) if ok]
+    disputed = bool(vision) and vision.get("same_area") == "no"
+    return {"same_place": SUPPORTED if support and not disputed else UNCONFIRMED, "support": support}
 
 
 def _group_key(p: Dict[str, Any]) -> Optional[tuple]:

@@ -56644,8 +56644,10 @@ async def _work_state_answer(project: dict, company_id: str, work: str, level: s
                                   now=now, project_bins=src.get("project_bins") or ())
     cov = reg.get("coverage") or {}
     note = "" if cov.get("state") in ("verified", "partial") else (cov.get("note") or "DOB records could not be checked.")
-    rel = await db[PHOTO_RELATIONS].find({"project_id": pid, "level": token, "same_area": "yes",
-                                          "confidence": {"$gte": 0.7}}).to_list(50)
+    # Only a comparison that SUPPORTS same place is shown. An unconfirmed one is
+    # left out, and it weakens nothing: the photos keep their own evidence.
+    rel = await db[PHOTO_RELATIONS].find({"project_id": pid, "level": token,
+                                          "same_place": photo_relations.SUPPORTED}).to_list(50)
     rel = sorted(rel, key=lambda r: str(r.get("second")), reverse=True)
     spaces, confirmed = await _photo_place_context(pid)
     return {"ok": True, "answer": work_state.what_holds(
@@ -56709,11 +56711,12 @@ async def _photo_log_bytes(row: dict) -> Optional[bytes]:
 
 
 async def _photo_relations_tick(now: Optional[datetime] = None, budget: int = PHOTO_RELATIONS_BUDGET) -> dict:
-    """OFF unless PHOTO_RELATIONS_ENABLED=1 AND a geometry threshold has been
-    set from a benchmark on real photos: how well anything tells one place from
-    another has not been measured. A pair reaches the model only after the
-    geometry agrees. Never raises."""
-    report = {"pairs": 0, "failed": 0, "geometry_rejected": 0}
+    """OFF unless PHOTO_RELATIONS_ENABLED=1 AND both thresholds have been set
+    from a benchmark on real photos: how well anything tells one place from
+    another has not been measured. Geometry and the model each only ADD
+    support (photo_relations.combine); a miss is stored as unconfirmed, never
+    as a different place. Never raises."""
+    report = {"pairs": 0, "failed": 0, "supported": 0}
     if not QWEN_API_KEY or os.environ.get("PHOTO_RELATIONS_ENABLED") != "1" or not photo_relations.automatic_ready():
         return report
     now = now or datetime.now(timezone.utc)
@@ -56724,7 +56727,7 @@ async def _photo_relations_tick(now: Optional[datetime] = None, budget: int = PH
         for r in rows:
             by_project.setdefault(str(r.get("project_id")), []).append(r)
         for pid, raw_rows in by_project.items():
-            left = budget - report["pairs"] - report["failed"] - report["geometry_rejected"]
+            left = budget - report["pairs"] - report["failed"]
             if left <= 0:
                 break
             spaces, confirmed = await _photo_place_context(pid)
@@ -56740,16 +56743,14 @@ async def _photo_relations_tick(now: Optional[datetime] = None, budget: int = PH
                             "level": a["levels"][0], "space": a.get("space"), "first": str(a.get("short")),
                             "second": str(b.get("short")), "first_date": a.get("date"), "second_date": b.get("date"),
                             "geometry": geometry, "prompt_version": photo_relations.PROMPT_VERSION, "at": now}
-                if not photo_relations.geometry_agrees(geometry):
-                    await db[PHOTO_RELATIONS].insert_one({"_id": pair["pair_id"], "same_area": "not_asked", **base_row})
-                    report["geometry_rejected"] += 1
-                    continue
                 v = await _photo_compare_call(raw_a, raw_b, pid)
                 if v is None:
                     report["failed"] += 1
                     continue
-                await db[PHOTO_RELATIONS].insert_one({"_id": pair["pair_id"], **v, **base_row, "model": QWEN_MODEL})
+                verdict = photo_relations.combine(v, geometry)
+                await db[PHOTO_RELATIONS].insert_one({"_id": pair["pair_id"], **v, **verdict, **base_row, "model": QWEN_MODEL})
                 report["pairs"] += 1
+                report["supported"] += verdict["same_place"] == photo_relations.SUPPORTED
     except Exception as e:
         logger.error(f"[photo-relations] tick failed: {type(e).__name__}: {e!r}")
     logger.info(f"[photo-relations] {report}")

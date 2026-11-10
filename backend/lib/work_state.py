@@ -437,12 +437,14 @@ def as_text(ans: Dict[str, Any]) -> str:
                 + (" (a report filed for several floors)" if f["shared"] else "") for f in facts[:5]]
     shown = {p["id"]: p for s in [t] + ans["work"] for p in s["photos"]}
     if shown:
-        out.append("Photos (ids for send_photos):")
+        out.append("Photos, each an observation of what it shows and never a verification (ids for send_photos):")
         out += [f"- {p['id']} {p['date']} {p.get('sub') or ''}: {p['shows']}"
                 + (f" (placed: {p['how_placed']})" if p["only_this_level"] and p.get("how_placed") else "")
                 + ("" if p["only_this_level"] else " (filed for several floors)") for p in list(shown.values())[:6]]
     for r in ans["relations"][:3]:
-        out.append(f"AI photo comparison, unconfirmed ({r['first']} vs {r['second']}): " + "; ".join(r.get("changes") or ["no change named"]))
+        by = ", ".join(r.get("support") or []) or "the model"
+        out.append(f"AI photo comparison, an observation and not a verification, supported by {by} "
+                   f"({r['first']} vs {r['second']}): " + "; ".join(r.get("changes") or ["no change named"]))
     c = ans["counts"]
     out.append(f"Records read: {c['log_rows']} log entries, {c['on_this_level']} naming this level, "
                f"{c['without_a_level']} naming no level at all.")

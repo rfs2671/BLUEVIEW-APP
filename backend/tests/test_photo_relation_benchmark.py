@@ -1,7 +1,9 @@
-"""The benchmark's arithmetic, its candidate pairs and its promise not to write.
+"""The benchmark's candidate pairs, its arithmetic, and its promises: no label a
+person did not write, no "different" from a signal that merely did not match,
+and no write to Mongo.
 
 What it can't show here is the answer: there are no real labeled photos in this
-repository, so no precision on a real pair is asserted anywhere below.
+repository, so no rate on a real pair is asserted anywhere below.
 """
 
 from __future__ import annotations
@@ -37,74 +39,90 @@ WRITES = {"insert_one", "insert_many", "update_one", "update_many", "delete_one"
           "bulk_write", "find_one_and_update", "find_one_and_replace", "find_one_and_delete", "record_vision_call"}
 
 
-def _r(key, where="floor 3", day="2026-10-01", view="interior", log="L1", sub="A", work="Drywall", quality=8.0):
+def _r(key, where="floor 3", day="2026-10-01", view="interior", log="L1", sub="A", work="Drywall", quality=8.0, **kw):
     return {"photo_key": key, "short": key, "where": where, "date": day, "view": view, "log_id": log, "sub": sub, "work": work,
-            "quality": quality, "description": f"d {key}", "kind": "photo"}
+            "quality": quality, "description": f"d {key}", "kind": "photo", **kw}
 
 
-def _lab(label, inliers=0, epipolar=0, ok=True, cls=B.PROBABLE_SAME, same="", conf=""):
-    return {"label": label, "inliers": inliers, "epipolar_inliers": epipolar, "geometry_ok": ok, "candidate_class": cls,
-            "vision_same": same, "vision_confidence": conf}
+def _lab(label, inliers=0, epipolar=0, ok=True, kind=B.SAME_CREW_DAY, same="", conf="", gap=0):
+    return {"label": label, "inliers": inliers, "epipolar_inliers": epipolar, "geometry_ok": ok, "candidate_kind": kind,
+            "vision_same": same, "vision_confidence": conf, "stage_gap": gap}
 
 
 class TheCandidates(unittest.TestCase):
 
-    def _pairs(self, rows):
-        return B.build_candidates(rows, per_class=50)
+    def _pairs(self, rows, n=50):
+        return B.build_candidates(rows, per_kind=n)
 
-    def _of(self, pairs, cls):
-        return [p for p in pairs if p["candidate_class"] == cls]
+    def _of(self, pairs, kind):
+        return [p for p in pairs if p["candidate_kind"] == kind]
 
-    def test_known_different_is_two_different_single_levels(self):
-        rows = [_r("a", where="floor 3"), _r("b", where="floor 4"), _r("c", where="floor 3", day="2026-10-02")]
-        pairs = self._of(self._pairs(rows), B.KNOWN_DIFFERENT)
+    def test_no_pair_carries_a_label(self):
+        rows = [_r("a", where="floor 3"), _r("b", where="floor 4"), _r("c"), _r("d", day="2026-10-20", log="L2")]
+        pairs = self._pairs(rows)
         self.assertTrue(pairs)
-        for p in pairs:
-            self.assertNotEqual(p["level_a"], p["level_b"])
-            self.assertEqual(p["label"], "different")
+        self.assertEqual({p["label"] for p in pairs}, {""})
+        self.assertIn("candidate_kind", B.FIELDS)
 
-    def test_a_shared_row_is_never_known_different(self):
+    def test_different_level_is_two_different_single_levels(self):
+        pairs = self._of(self._pairs([_r("a", where="floor 3"), _r("b", where="floor 4"), _r("c", where="floor 3", day="2026-10-02")]),
+                         B.DIFFERENT_LEVEL)
+        self.assertTrue(pairs)
+        self.assertTrue(all(p["level_a"] != p["level_b"] for p in pairs))
+
+    def test_a_shared_row_is_never_a_different_level(self):
         rows = [_r("a", where="floors 1-4"), _r("b", where="floor 3"), _r("c", where="floor 5")]
-        ids = {i for p in self._of(self._pairs(rows), B.KNOWN_DIFFERENT) for i in (p["key_a"], p["key_b"])}
+        ids = {i for p in self._of(self._pairs(rows), B.DIFFERENT_LEVEL) for i in (p["key_a"], p["key_b"])}
         self.assertNotIn("a", ids)
 
-    def test_two_kinds_of_view_are_not_a_different_pair(self):
-        rows = [_r("a", where="floor 3", view="basement"), _r("b", where="floor 4", view="interior")]
-        self.assertEqual(self._of(self._pairs(rows), B.KNOWN_DIFFERENT), [])
-
-    def test_outside_photos_are_left_out(self):
-        rows = [_r("a", where="floor 3", view="building_front"), _r("b", where="floor 4", view="building_front")]
-        self.assertEqual(self._pairs(rows), [])
-
-    def test_probable_same_is_one_crew_row_on_one_day_and_unlabeled(self):
-        rows = [_r("a"), _r("b"), _r("c", sub="Other"), _r("d", log="L2")]
-        pairs = self._of(self._pairs(rows), B.PROBABLE_SAME)
-        self.assertEqual([{p["key_a"], p["key_b"]} for p in pairs], [{"a", "b"}])
-        self.assertEqual(pairs[0]["label"], "")
-
-    def test_same_level_later_needs_the_days_between(self):
-        rows = [_r("a", log="L1"), _r("b", day="2026-10-02", log="L2"), _r("c", day="2026-10-15", log="L3")]
-        pairs = self._of(self._pairs(rows), B.SAME_LEVEL_LATER)
-        self.assertTrue(pairs)
-        self.assertTrue(all({p["key_a"], p["key_b"]} != {"a", "b"} for p in pairs))
-        self.assertEqual({p["label"] for p in pairs}, {""})
-
-    def test_a_poor_photo_is_left_out(self):
+    def test_outside_and_poor_photos_are_left_out(self):
+        self.assertEqual(self._pairs([_r("a", view="building_front"), _r("b", where="floor 4", view="building_front")]), [])
         self.assertEqual(self._pairs([_r("a", quality=1), _r("b", quality=1)]), [])
 
-    def test_the_same_photos_give_the_same_pairs(self):
-        rows = [_r(f"k{i}", where=f"floor {i % 3 + 1}", day=f"2026-10-{i + 1:02d}", log=f"L{i}") for i in range(12)]
-        self.assertEqual(self._pairs(rows), self._pairs(rows))
+    def test_same_crew_day(self):
+        pairs = self._of(self._pairs([_r("a"), _r("b"), _r("c", sub="Other"), _r("d", log="L2")]), B.SAME_CREW_DAY)
+        self.assertEqual([{p["key_a"], p["key_b"]} for p in pairs], [{"a", "b"}])
 
-    def test_each_class_is_bounded_and_a_pair_appears_once(self):
+    def test_the_stage_of_a_row(self):
+        for work, stage in (("Framing", 0), ("Domestic water rough", 1), ("Drywall", 2), ("Prime and paint", 3),
+                            ("Framing, drywall", None), ("Cleanup", None)):
+            with self.subTest(work=work):
+                self.assertEqual(B.stage_of({"work": work}), stage)
+
+    def test_across_stages_spreads_over_the_stage_gaps(self):
+        works = ["Framing", "Domestic water rough", "Drywall", "Prime and paint"]
+        rows = [_r(f"k{i}", day=f"2026-{(i % 9) + 1:02d}-{(i % 27) + 1:02d}", log=f"L{i}", work=works[i % 4]) for i in range(80)]
+        pairs = self._of(B.build_candidates(rows, per_kind=8), B.ACROSS_STAGES)
+        gaps = {p["stage_gap"] for p in pairs}
+        self.assertLessEqual({0, 1, 2, 3}, gaps, "every gap represented, not just near-identical shots")
+        self.assertTrue(all(B._gap_ok({"date": p["date_a"]}, {"date": p["date_b"]}) for p in pairs))
+
+    def test_a_hard_negative_on_one_apartment_line(self):
+        rows = [_r("a", where="floor 3 apt 3B"), _r("b", where="floor 4 apt 4B", log="L2"), _r("c", where="floor 4 apt 4C", log="L3")]
+        pairs = self._of(self._pairs(rows), B.SAME_LINE_OTHER_FLOOR)
+        self.assertEqual({frozenset((p["space_a"], p["space_b"])) for p in pairs}, {frozenset(("3B", "4B"))})
+        self.assertEqual({p["label"] for p in pairs}, {""})
+
+    def test_a_unit_read_in_the_photo_counts_for_the_line(self):
+        self.assertEqual(B.unit_of({"where": "floors 1-4", "visible_text": ["APT 4B"]}), "4B")
+        self.assertIsNone(B.unit_of({"where": "Apt 3B", "visible_text": ["4B"]}), "two units is none")
+
+    def test_a_hard_negative_of_similar_rooms_on_one_floor(self):
+        rows = [_r("a", where="floor 3 apt 3B", room_type="bathroom"), _r("b", where="floor 3 apt 3C", room_type="bathroom", log="L2"),
+                _r("c", where="floor 3 apt 3D", room_type="kitchen", log="L3")]
+        pairs = self._of(self._pairs(rows), B.SIMILAR_ROOM_SAME_FLOOR)
+        self.assertEqual({frozenset((p["key_a"], p["key_b"])) for p in pairs}, {frozenset(("a", "b"))})
+
+    def test_the_same_photos_give_the_same_pairs_and_each_kind_is_bounded(self):
         rows = [_r(f"k{i}", where=f"floor {i % 3 + 1}", day=f"2026-10-{i % 20 + 1:02d}", log=f"L{i}") for i in range(60)]
-        pairs = B.build_candidates(rows, per_class=7)
-        for cls in (B.KNOWN_DIFFERENT, B.SAME_LEVEL_LATER):
-            self.assertLessEqual(len(self._of(pairs, cls)), 7)
+        self.assertEqual(B.build_candidates(rows, per_kind=7), B.build_candidates(rows, per_kind=7))
+        pairs = B.build_candidates(rows, per_kind=7)
+        for kind in B.KINDS:
+            self.assertLessEqual(len(self._of(pairs, kind)), 7)
         self.assertEqual(len({p["pair_id"] for p in pairs}), len(pairs))
 
     def test_the_earlier_photo_comes_first(self):
-        p = B._pair(_r("b", day="2026-11-01"), _r("a", day="2026-10-01"), B.SAME_LEVEL_LATER)
+        p = B._pair(_r("b", day="2026-11-01"), _r("a", day="2026-10-01"), B.ACROSS_STAGES)
         self.assertEqual((p["key_a"], p["key_b"]), ("a", "b"))
 
     def test_a_link_points_at_the_photo_in_its_log(self):
@@ -113,43 +131,96 @@ class TheCandidates(unittest.TestCase):
         self.assertIsNone(B.photo_address(log, "missing"))
 
 
-class TheArithmetic(unittest.TestCase):
+class OnlyAPersonsLabelCounts(unittest.TestCase):
 
-    def test_a_confusion_table(self):
+    def _csv(self, labels):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = str(Path(tmp.name) / "p.csv")
+        B.write_pairs([{**{f: "" for f in B.FIELDS}, "key_a": "a", "key_b": "b", "label": x} for x in labels], path)
+        return path
+
+    def test_blank_and_unsure_are_not_scored(self):
+        keep, not_scored = B.read_labels(self._csv(["Same", "different", "", "unsure"]))
+        self.assertEqual(([r["label"] for r in keep], not_scored), (["same", "different"], 2))
+
+    def test_a_typo_refuses_the_file(self):
+        with self.assertRaises(B.BadLabel):
+            B.read_labels(self._csv(["same", "differnt"]))
+
+    def test_an_unlabeled_file_is_refused_before_anything_is_measured(self):
+        path = self._csv(["", "", "unsure"])
+        with patch.object(B, "measure", side_effect=AssertionError("measured")), redirect_stdout(io.StringIO()) as out:
+            rc = _run(B.run_evaluate(path, vision=False, max_calls=0, out_path=None, ceiling=0.05))
+        self.assertEqual(rc, 2)
+        self.assertIn("Refused: no row has a label a person filled in", out.getvalue())
+
+    def test_the_csv_columns(self):
+        with open(self._csv(["same"]), newline="", encoding="utf-8") as fh:
+            self.assertEqual(csv.DictReader(fh).fieldnames, B.FIELDS)
+
+
+class TheTwoErrors(unittest.TestCase):
+
+    def test_false_positives_and_misses_are_apart_with_their_rates(self):
         rows = [_lab("same", 50), _lab("same", 5), _lab("different", 40), _lab("different", 2), _lab("different", 1)]
-        self.assertEqual(B.confusion(rows, lambda r: r["inliers"] >= 10),
-                         {"tp": 1, "fp": 1, "fn": 1, "tn": 2, "precision": 0.5, "recall": 0.5})
+        self.assertEqual(B.errors(rows, lambda r: r["inliers"] >= 10),
+                         {"false_positives": 1, "different": 3, "fp_rate": 0.3333, "missed": 1, "same": 2, "miss_rate": 0.5})
+
+    def test_a_miss_is_unconfirmed_and_never_a_false_positive(self):
+        e = B.errors([_lab("different", 0), _lab("different", 0, ok=False)], lambda r: r["inliers"] >= 10)
+        self.assertEqual(e["false_positives"], 0)
 
     def test_a_rate_with_no_denominator_is_none(self):
-        c = B.confusion([_lab("different", 0)], lambda r: False)
-        self.assertEqual((c["precision"], c["recall"]), (None, None))
+        e = B.errors([_lab("different", 0)], lambda r: False)
+        self.assertEqual((e["fp_rate"], e["miss_rate"]), (0.0, None))
 
-    def test_the_report_warns_when_labels_are_few(self):
-        out = "\n".join(B.report([_lab("same", 50), _lab("different", 0)], 3, 0))
-        self.assertIn("TOO FEW to set a threshold", out)
-        self.assertIn("Left out, no usable label: 3", out)
+    def test_combined_mirrors_the_live_rule(self):
+        rows = [_lab("same", 99, same="no", conf=0.9), _lab("same", 0, same="yes", conf=0.9), _lab("same", 99, same="unsure", conf=0.1)]
+        combined = {s: says for f, s, _r, says in B.signals(rows) if f == "combined"}
+        said = combined["inliers>=15 or yes>=0.7"]
+        self.assertEqual([said(r) for r in rows], [False, True, True], "a model's no is not overruled by geometry")
 
-    def test_enough_labels_do_not_warn(self):
-        rows = [_lab("same", 50)] * B.FEW_LABELS + [_lab("different", 0)] * B.FEW_LABELS
-        self.assertNotIn("TOO FEW", "\n".join(B.report(rows, 0, 0)))
+    def test_the_report_names_both_errors_and_each_signal(self):
+        rows = [_lab("same", 50, same="yes", conf=0.9, gap=2), _lab("different", 0, same="no", conf=0.9, gap=0)]
+        out = "\n".join(B.report(rows, 3, 2))
+        for piece in ("Same-place FALSE POSITIVES", "MISSED same-place matches", "geometry ", "vision ", "combined ",
+                      "stage gap 2:", "stage gap 0:", "Not scored (blank or unsure): 3", "Vision calls made: 2.",
+                      "TOO FEW to set a threshold", "says UNCONFIRMED"):
+            self.assertIn(piece, out)
 
-    def test_unmeasured_pairs_are_named(self):
-        self.assertIn("1 pair(s) could not be measured", "\n".join(B.report([_lab("same", 0, ok=False)], 0, 0)))
+    def test_an_unmeasured_pair_is_unconfirmed_not_different(self):
+        self.assertIn("counted as unconfirmed by geometry, never as different", "\n".join(B.report([_lab("same", 0, ok=False)], 0, 0)))
 
-    def test_vision_appears_only_when_it_was_asked(self):
-        self.assertNotIn("Vision on", "\n".join(B.report([_lab("same", 1)], 0, 0)))
-        out = "\n".join(B.report([_lab("same", 1, same="yes", conf=0.9), _lab("different", 1, same="unsure", conf=0.9)], 0, 2))
-        self.assertIn("Vision on 2 pair(s)", out)
-        self.assertIn("Vision calls made: 2.", out)
 
-    def test_the_csv_round_trip_keeps_only_real_labels(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = str(Path(tmp) / "p.csv")
-            B.write_pairs([{**{f: "" for f in B.FIELDS}, "key_a": "a", "key_b": "b", "label": x} for x in ("Same", "different", "", "maybe")], path)
-            with open(path, newline="", encoding="utf-8") as fh:
-                self.assertEqual(csv.DictReader(fh).fieldnames, B.FIELDS)
-            keep, left = B.read_labels(path)
-        self.assertEqual(([r["label"] for r in keep], left), (["same", "different"], 2))
+class TheVerdict(unittest.TestCase):
+
+    def _many(self, fp_at_10):
+        same = [_lab("same", 60)] * B.FEW_LABELS
+        other = [_lab("different", 12)] * fp_at_10 + [_lab("different", 2)] * (B.FEW_LABELS - fp_at_10)
+        return same + other
+
+    def _verdict(self, rows, ceiling):
+        return "\n".join(B.report(rows, 0, 0, ceiling=ceiling))
+
+    def test_no_ceiling_no_verdict(self):
+        self.assertIn("Verdict: none. Pass --fp-ceiling", self._verdict(self._many(0), None))
+
+    def test_it_picks_the_setting_under_the_ceiling_with_the_fewest_misses(self):
+        out = self._verdict(self._many(3), 0.0)
+        self.assertIn("geometry: WOULD ENABLE at inliers>=15: false positives 0/30", out)
+
+    def test_a_ceiling_nothing_meets_is_said(self):
+        rows = [_lab("same", 60)] * B.FEW_LABELS + [_lab("different", 200)] * B.FEW_LABELS
+        self.assertIn("geometry: WOULD NOT ENABLE: no setting keeps false positives", self._verdict(rows, 0.01))
+
+    def test_too_few_labels_never_enables(self):
+        self.assertIn("geometry: WOULD NOT ENABLE: fewer than", self._verdict([_lab("same", 60), _lab("different", 0)], 0.5))
+
+    def test_the_ceiling_is_a_rate(self):
+        with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()), patch("sys.stderr", io.StringIO()):
+            B.parse_args(["evaluate", "p.csv", "--fp-ceiling", "5"])
+        self.assertEqual(B.parse_args(["evaluate", "p.csv", "--fp-ceiling", "0.02"]).fp_ceiling, 0.02)
 
 
 class VisionNeedsBothFlags(unittest.TestCase):

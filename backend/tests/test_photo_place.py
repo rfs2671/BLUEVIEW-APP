@@ -459,6 +459,11 @@ class TheLevelHistory(unittest.TestCase):
 
 class ThePairs(unittest.TestCase):
 
+    def setUp(self):
+        vision = patch.object(R, "VISION_MIN_CONFIDENCE", 0.7)
+        vision.start()
+        self.addCleanup(vision.stop)
+
     def _rows(self, *pics):
         return W.photo_rows(list(pics), spaces=SPACES)
 
@@ -468,6 +473,8 @@ class ThePairs(unittest.TestCase):
 
     def test_nothing_is_picked_until_a_threshold_exists(self):
         self.assertIsNone(R.GEOMETRY_MIN_INLIERS)
+        with patch.object(R, "VISION_MIN_CONFIDENCE", None), patch.object(R, "GEOMETRY_MIN_INLIERS", 10):
+            self.assertEqual(R.pick_pairs(self._rows(self._pic("a", day="2026-10-01"), self._pic("b")), [], 10), [])
         self.assertEqual(R.pick_pairs(self._rows(self._pic("a", day="2026-10-01"), self._pic("b")), [], 10), [])
 
     def test_a_photo_with_a_stale_levels_field_but_no_sufficient_place_is_not_used(self):
@@ -510,55 +517,151 @@ class ThePairs(unittest.TestCase):
 
 
 class TheComparisonSweep(_Brain):
+    """Geometry and the model each only ADD support. Nothing is ever "different"."""
 
     def _seed(self):
         self.db[server.PHOTO_INDEX].rows += [_idx("k/a.jpg", day="2026-10-01"), _idx("k/b.jpg", day="2026-11-05")]
 
-    def _tick(self, calls, inliers, threshold):
+    def _tick(self, calls, inliers, threshold, said="yes", conf=0.9, vision_at=0.7):
         async def compare(a, b, pid):
             calls.append(pid)
-            return {"same_area": "yes", "confidence": 0.9, "changes": [], "installed": [], "possible_rework": []}
+            return {"same_area": said, "confidence": conf, "changes": ["board hung"] if said == "yes" else [],
+                    "installed": [], "possible_rework": []}
 
         async def raw(row):
             return b"x"
         geometry = lambda a, b: {"ok": True, "reason": "", "inliers": inliers, "ratio": 0.5}  # noqa: E731
         with patch.dict("os.environ", {"PHOTO_RELATIONS_ENABLED": "1"}), patch.object(server, "QWEN_API_KEY", "x"), \
                 patch.object(server, "_photo_compare_call", compare), patch.object(server, "_photo_log_bytes", raw), \
-                patch.object(server.photo_geometry, "match", geometry), patch.object(R, "GEOMETRY_MIN_INLIERS", threshold):
+                patch.object(server.photo_geometry, "match", geometry), patch.object(R, "GEOMETRY_MIN_INLIERS", threshold), \
+                patch.object(R, "VISION_MIN_CONFIDENCE", vision_at):
             return _run(server._photo_relations_tick())
+
+    def _row(self):
+        return self.db[server.PHOTO_RELATIONS].rows[0]
 
     def test_the_switch_alone_starts_nothing(self):
         self._seed()
-        calls = []
-        with _Ctx(db=self.db):
-            out = self._tick(calls, 500, None)
-        self.assertEqual((calls, out["pairs"], self.db[server.PHOTO_RELATIONS].rows), ([], 0, []))
+        for geometry_at, vision_at in ((None, 0.7), (50, None), (None, None)):
+            calls = []
+            with self.subTest(geometry_at=geometry_at, vision_at=vision_at), _Ctx(db=self.db):
+                out = self._tick(calls, 500, geometry_at, vision_at=vision_at)
+            self.assertEqual((calls, out["pairs"], self.db[server.PHOTO_RELATIONS].rows), ([], 0, []))
 
-    def test_geometry_that_does_not_agree_costs_no_vision_call_and_is_not_retried(self):
+    def test_a_geometry_miss_is_unconfirmed_and_does_not_stop_the_model(self):
         self._seed()
         calls = []
         with _Ctx(db=self.db):
-            first = self._tick(calls, 3, 50)
-            second = self._tick(calls, 3, 50)
-        self.assertEqual((calls, first["geometry_rejected"], second["geometry_rejected"]), ([], 1, 0))
-        self.assertEqual(self.db[server.PHOTO_RELATIONS].rows[0]["same_area"], "not_asked")
+            self._tick(calls, 3, 50, said="unsure", conf=0.4)
+        self.assertEqual(calls, [THOMAS], "geometry gates nothing")
+        self.assertEqual((self._row()["same_place"], self._row()["support"]), (R.UNCONFIRMED, []))
 
-    def test_a_rejected_pair_never_reaches_the_answer(self):
+    def test_a_geometry_miss_takes_nothing_from_a_confident_model(self):
         self._seed()
         with _Ctx(db=self.db):
             self._tick([], 3, 50)
-        self.assertEqual(self.db[server.PHOTO_RELATIONS].rows[0]["same_area"], "not_asked")
-        self.assertNotEqual(self.db[server.PHOTO_RELATIONS].rows[0].get("confidence"), 0.9)
+        self.assertEqual((self._row()["same_place"], self._row()["support"]), (R.SUPPORTED, ["vision"]))
 
-    def test_geometry_that_agrees_is_asked_once_and_kept_with_its_numbers(self):
+    def test_geometry_adds_support(self):
+        self._seed()
+        with _Ctx(db=self.db):
+            self._tick([], 80, 50)
+        self.assertEqual((self._row()["same_place"], self._row()["support"]), (R.SUPPORTED, ["vision", "geometry"]))
+        self.assertEqual(self._row()["geometry"]["inliers"], 80)
+
+    def test_a_pair_is_asked_once(self):
         self._seed()
         calls = []
         with _Ctx(db=self.db):
-            self._tick(calls, 80, 50)
-            self._tick(calls, 80, 50)
+            self._tick(calls, 3, 50)
+            self._tick(calls, 3, 50)
         self.assertEqual(calls, [THOMAS])
-        row = self.db[server.PHOTO_RELATIONS].rows[0]
-        self.assertEqual((row["same_area"], row["level"], row["geometry"]["inliers"]), ("yes", F3, 80))
+
+    def test_no_stored_row_ever_says_different(self):
+        self._seed()
+        with _Ctx(db=self.db):
+            self._tick([], 3, 50, said="no", conf=0.95)
+        self.assertEqual(self._row()["same_place"], R.UNCONFIRMED)
+        self.assertNotIn(self._row()["same_place"], ("different", "no"))
+
+
+class AMissWeakensNothing(_Brain):
+    """Owner's ruling: a missing geometric match never erases or weakens valid
+    progress evidence, and reported / observed / verified / schedule stay apart."""
+    DAY = (datetime.now(timezone.utc).date() - timedelta(days=3)).isoformat()
+
+    def setUp(self):
+        super().setUp()
+        self.db.logbooks.rows.append({"_id": "L1", "log_type": "daily_jobsite", "project_id": THOMAS, "company_id": CO_A,
+                                      "status": "submitted", "date": self.DAY,
+                                      "data": {"activities": [{"company": "Arkon", "trade": "Carpenter",
+                                                               "work_description": "Drywall", "work_locations": "floor 3"}]}})
+        self.db[server.PHOTO_INDEX].rows += [_idx("k/a.jpg", day=self.DAY), _idx("k/b.jpg", day=self.DAY)]
+        for r in self.db[server.PHOTO_INDEX].rows:
+            r["log_id"], r["description"] = "L1", "Drywall hung on metal studs."
+
+    def _answer(self):
+        with _Ctx(db=self.db):
+            got = _run(server._work_state_answer({"_id": THOMAS, "company_id": CO_A}, CO_A, "drywall", "3"))
+        return got["answer"]
+
+    def _strip(self, ans):
+        return {k: v for k, v in ans["target"].items()}
+
+    def _relation(self, same_place, support):
+        self.db[server.PHOTO_RELATIONS].rows.append({
+            "_id": "v1:k/a.jpg|k/b.jpg", "project_id": THOMAS, "level": F3, "first": "a", "second": "b",
+            "same_area": "unsure", "confidence": 0.3, "same_place": same_place, "support": support,
+            "geometry": {"ok": True, "inliers": 2, "ratio": 0.01}, "changes": []})
+
+    def test_an_unconfirmed_comparison_changes_nothing_in_the_answer(self):
+        before = self._answer()
+        self._relation(R.UNCONFIRMED, [])
+        after = self._answer()
+        self.assertEqual(self._strip(after), self._strip(before))
+        self.assertEqual(after["relations"], [])
+        self.assertEqual(W.as_text(after), W.as_text(before))
+
+    def test_the_photos_keep_their_place_their_report_and_their_observation(self):
+        self._relation(R.UNCONFIRMED, [])
+        t = self._answer()["target"]
+        self.assertEqual((t["status"], t["observed"], len(t["photos"])), ("reported_recent", True, 2))
+        self.assertTrue(all(p["only_this_level"] and "the log row names Floor 3" in p["how_placed"] for p in t["photos"]))
+
+    def test_the_four_kinds_of_evidence_stay_apart(self):
+        self._relation(R.SUPPORTED, ["vision"])
+        ans = self._answer()
+        t = ans["target"]
+        self.assertEqual((t["status"], t["verified"], t["percent"], t["schedule"]), ("reported_recent", None, None, []))
+        self.assertEqual(len(ans["relations"]), 1, "a supported comparison is shown, beside the record")
+        out = W.as_text(ans)
+        self.assertIn("an observation and not a verification, supported by vision", out)
+        self.assertIn("Photos, each an observation of what it shows and never a verification", out)
+        self.assertIn("Drywall on Floor 3: reported", out)
+        self.assertIn("No confirmed schedule is on file", out)
+
+    def test_a_lent_place_below_the_threshold_changes_nothing(self):
+        photo = {"where": "floors 1-4", "visible_text": ["APT 4A"], "description": "Board on studs."}
+        with patch.object(P, "LEND_MIN_INLIERS", 100):
+            for own in (dict(photo), {"where": "floors 1-4"}, {"where": ""}):
+                with self.subTest(own=own):
+                    self.assertEqual(P.infer(own, SPACES, lent={"level": F3, "inliers": 5}), P.infer(own, SPACES))
+
+    def test_combine_has_no_different_outcome(self):
+        with patch.object(R, "GEOMETRY_MIN_INLIERS", 50), patch.object(R, "VISION_MIN_CONFIDENCE", 0.7):
+            seen = {R.combine(v, g)["same_place"]
+                    for v in (None, {"same_area": "no", "confidence": 1.0}, {"same_area": "unsure", "confidence": 0.5},
+                              {"same_area": "yes", "confidence": 0.9}, {"same_area": "yes", "confidence": 0.2})
+                    for g in (None, {"ok": False}, {"ok": True, "inliers": 0, "ratio": 0}, {"ok": True, "inliers": 99, "ratio": 0.9})}
+        self.assertEqual(seen, {R.SUPPORTED, R.UNCONFIRMED})
+
+    def test_geometry_alone_supports_unless_the_model_said_no(self):
+        g = {"ok": True, "inliers": 99, "ratio": 0.9}
+        with patch.object(R, "GEOMETRY_MIN_INLIERS", 50), patch.object(R, "VISION_MIN_CONFIDENCE", 0.7):
+            self.assertEqual(R.combine({"same_area": "unsure", "confidence": 0.5}, g), {"same_place": R.SUPPORTED, "support": ["geometry"]})
+            self.assertEqual(R.combine({"same_area": "no", "confidence": 0.9}, g)["same_place"], R.UNCONFIRMED)
+        self.assertEqual(R.combine({"same_area": "yes", "confidence": 1.0}, g), {"same_place": R.UNCONFIRMED, "support": []},
+                         "no thresholds, no support")
 
 
 class ThePlaceContext(_Brain):

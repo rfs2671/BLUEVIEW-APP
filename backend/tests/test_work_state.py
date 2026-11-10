@@ -212,9 +212,10 @@ class TheQuestion(unittest.TestCase):
 class ThePairs(unittest.TestCase):
 
     def setUp(self):
-        threshold = patch.object(R, "GEOMETRY_MIN_INLIERS", 10)
-        threshold.start()
-        self.addCleanup(threshold.stop)
+        for name, value in (("GEOMETRY_MIN_INLIERS", 10), ("VISION_MIN_CONFIDENCE", 0.7)):
+            threshold = patch.object(R, name, value)
+            threshold.start()
+            self.addCleanup(threshold.stop)
 
     def _rows(self, *pics):
         return W.photo_rows(pics)
@@ -319,7 +320,7 @@ class TheSweep(_Brain):
             return b"x"
         with patch.dict("os.environ", {"PHOTO_RELATIONS_ENABLED": env}), patch.object(server, "QWEN_API_KEY", "x"), \
                 patch.object(server, "_photo_compare_call", compare), patch.object(server, "_photo_log_bytes", raw), \
-                patch.object(R, "GEOMETRY_MIN_INLIERS", 10), \
+                patch.object(R, "GEOMETRY_MIN_INLIERS", 10), patch.object(R, "VISION_MIN_CONFIDENCE", 0.7), \
                 patch.object(server.photo_geometry, "match", lambda a, b: {"ok": True, "inliers": 50, "ratio": 0.5, "reason": ""}):
             return asyncio.run(server._photo_relations_tick())
 
