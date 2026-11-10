@@ -296,6 +296,7 @@ def _idx(key, where="floor 3", day="2026-11-05", view="interior", project=THOMAS
             "log_id": "L1", "project_id": project, "company_id": CO_A, **kw}
 
 
+@patch.dict(os.environ, {"PHOTO_INDEX_REREAD_ENABLED": "1"})   # the re-read is off by default
 class TheSweep(_Brain):
 
     def _tick(self, said=None, **kw):
@@ -686,7 +687,9 @@ class TheApi(_Brain):
 
     def _call(self, level="floor 6", photo=None, space=None):
         body = server.PhotoPlaceConfirmation(photo=photo or S.short_id(_key(1)), level=level, space=space)
-        return _run(server.confirm_photo_place(THOMAS, body, current_user={"id": "u9", "name": "Roy"}))
+        # A company admin: the handler re-scopes the project to the caller's company.
+        return _run(server.confirm_photo_place(THOMAS, body, current_user={"id": "u9", "name": "Roy", "role": "admin",
+                                                                           "company_id": CO_A}))
 
     def test_an_answer_is_appended_with_who_and_when(self):
         self.db[server.PHOTO_INDEX].rows.append(_idx(_key(1)))

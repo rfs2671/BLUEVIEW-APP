@@ -9669,6 +9669,45 @@ async def require_project_access(
     return await _assert_project_access(project_id, current_user)
 
 
+def project_assignment_ok(project_id: Any, current_user: dict) -> bool:
+    """A superintendent / CP (ROLES_SCOPED_TO_ASSIGNED_PROJECTS) only on a
+    project in his `assigned_projects`; any other role is not decided here.
+
+    project_access_ok admits them on every project of their company (branch
+    2, kept for the live accounts it serves), so a route that holds them to
+    their assignments has to ask this as well. It is the same list the
+    logbook write gates and the DM assistant (_dm_assistant_projects) read."""
+    role = str((current_user or {}).get("role") or "").strip().lower()
+    if role not in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
+        return True
+    held = {str(p) for p in ((current_user or {}).get("assigned_projects") or [])}
+    return str(project_id) in held
+
+
+async def _progress_route_project(project_id: str, current_user: dict, *, write: bool) -> dict:
+    """THE GATE FOR THE PROGRESS ENGINE'S ROUTES (owner ruling 2026-11-09).
+    Applied in the handler as well as by the route's dependencies, so a call
+    that does not pass through FastAPI is held to the same rule.
+
+    In order: a site device / kiosk token never writes here (it may read the
+    one project it was provisioned for); a superintendent / CP only on an
+    assigned project; the project re-read inside the caller's own company
+    (_bot_project_scope, as the DM tools do), 404 otherwise; and the ordinary
+    three-branch rule on that document."""
+    user = current_user or {}
+    device = bool(user.get("site_mode")) or str(user.get("role") or "").strip().lower() == "site_device"
+    if write and device:
+        raise HTTPException(status_code=403, detail="A site device can't record this.")
+    if not project_assignment_ok(project_id, user):
+        raise HTTPException(status_code=403, detail="Not assigned to this project")
+    project = await _bot_project_scope(str(get_user_company_id(user) or ""), project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project_access_ok(project, project_id, user):
+        raise HTTPException(status_code=403, detail="Not authorized for this project")
+    return project
+
+
 #: The routes that admit the platform operator on a project's admin actions
 #: (operator ruling 2026-10-23, option 2). ONLY routes whose bodies take no
 #: company from the person acting: an operator has no company, so a route
@@ -18619,6 +18658,9 @@ _PROJECT_OWNED_COLLECTIONS = [
     # Messages waiting for the end of Shabbos / Yom Tov (whole texts, photo
     # keys): never delivered for a job that is gone.
     "wa_quiet_queue",
+    # The progress engine: inspections people reported, the floor a person
+    # gave a photo, and stored comparisons of two photos of one place.
+    "inspection_reports", "photo_place_confirmations", "photo_relations",
 ]
 
 
@@ -45980,6 +46022,11 @@ async def check_permit_expirations():
             exp_str = permit.get("expiration_date", "")
             if not exp_str:
                 continue
+            # A permit DOB has signed off is finished work: no renewal is
+            # due and it is not EXPIRED (lib/dob_signoffs.py, the same test
+            # every "is this permit still live" read makes).
+            if dob_signoffs.row_signed_off(permit):
+                continue
             try:
                 from dateutil import parser as dateparser
                 exp_date = dateparser.parse(str(exp_str))
@@ -54777,8 +54824,17 @@ def _dm_is_short_answer(text: str) -> bool:
             or bool(re.fullmatch(r"#?\s*\d{1,2}\s*[.)]?", t)))
 
 
+def _dm_first_able(person: List[dict], tool: str, args: Optional[dict] = None) -> dict:
+    """The first of a person's accounts whose role may make this call
+    (lib/dm_roles.py), else their first: a person-level tool (reminders, the
+    brief, settings) is answered as an account that may answer it."""
+    return next((a for a in person if not dm_roles.tool_refusal(a.get("role"), tool, args)),
+                person[0])
+
+
 async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
-                             brain: bool, has_image: bool = False) -> Optional[dict]:
+                             brain: bool, has_image: bool = False,
+                             signoff: bool = False) -> Optional[dict]:
     """Which of a person's accounts (one per company) a DM is for.
 
     {"ident": one account, "body", "scope": its company id}, or {"ident":
@@ -54847,7 +54903,18 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
     remind = await _dm_state_get(UPCOMING_REMIND_STATE, dm_chat)
     if upcoming.is_remind_request(text) or (
             remind and (upcoming.is_yes(text) or upcoming.is_no(text))):
-        return {"ident": person[0], "body": text, "scope": DM_SCOPE_NEUTRAL}
+        # As the first of their accounts whose role keeps reminders (a CP
+        # account first in the list never takes a PM's reminder from him).
+        return {"ident": _dm_first_able(person, "remind_me"), "body": text,
+                "scope": DM_SCOPE_NEUTRAL}
+
+    # A change, or a photo that is not a sign-off (a walkthrough), is a PM's
+    # or an admin's (lib/dm_roles.py): only an account that may make it is a
+    # candidate, so a superintendent / CP account is never offered in a
+    # "Which company?" for one, and with one such account it is that one.
+    managed = (dm_actions.looks_like_request(text) and not has_image) \
+        or (has_image and not signoff)
+    actors = [a for a in person if not dm_roles.is_field(a.get("role"))] if managed else []
 
     async def open_flow() -> Optional[dict]:
         for kind in _DM_ACCT_FLOW_KINDS:
@@ -54885,6 +54952,11 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
         if len(accts) > 1:
             if brain and not write and not has_image:
                 return {"ident": None, "body": text, "scope": DM_SCOPE_MULTI}
+            if actors:
+                mine = {a["user_id"] for a in actors}
+                named = [j for j in named if j["acct"]["user_id"] in mine] or named
+                if len({j["acct"]["user_id"] for j in named}) == 1:
+                    return one(named[0]["acct"])
             await _dm_ask_account(dm_chat, [], text, lang, jobs=named, photo=has_image)
             return None
         acct = await open_flow()
@@ -54901,7 +54973,9 @@ async def _dm_route_accounts(person: List[dict], dm_chat: str, text: str, *,
         # "thanks", "ok", "never mind" with nothing open: no company's, and
         # never worth a "Which company?".
         return {"ident": person[0], "body": text, "scope": DM_SCOPE_NEUTRAL}
-    await _dm_ask_account(dm_chat, person, text, lang, photo=has_image)
+    if len(actors) == 1:
+        return one(actors[0])
+    await _dm_ask_account(dm_chat, actors or person, text, lang, photo=has_image)
     return None
 
 
@@ -56295,6 +56369,10 @@ PHOTO_INDEX_TRIES = 3             # ticks a photo the model cannot read is tried
 PHOTO_INDEX_RECENT_DAYS = 7
 PHOTO_INDEX_SLICE_DAYS = 14       # how much history one tick looks at
 PHOTO_INDEX_FLOOR = "2024-01-01"  # nothing filed before this
+#: The second read of old rows (_photo_index_reread): its own switch,
+#: PHOTO_INDEX_REREAD_ENABLED=1, and this many vision calls a day at most.
+PHOTO_INDEX_REREAD_DAILY_CAP = 200
+PHOTO_INDEX_REREAD_STATE = "state:reread"
 PHOTO_SEND_MAX = 4                # a reply window allows wa_dm.REPLY_WINDOW_MAX_SENDS
 PHOTO_FIND_MAX = 12
 
@@ -56313,7 +56391,10 @@ async def _photo_index_call(raw: bytes, project_id: Any) -> Optional[dict]:
             resp = await client.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
-                json={"model": QWEN_MODEL, "max_tokens": 420, "temperature": 0,
+                # 300, as before visible_text / room_type: the largest answer
+                # parse_index keeps (300-char description, 10 tags, 8
+                # markings) measured 211 tokens with a code fence (cl100k).
+                json={"model": QWEN_MODEL, "max_tokens": 300, "temperature": 0,
                       "messages": [{"role": "user", "content": [
                           {"type": "image_url", "image_url": {
                               "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
@@ -56384,14 +56465,43 @@ async def _photo_index_window(since: str, until: Optional[str], budget: int, rep
     return max(0, len(pending) - max(0, budget))
 
 
-async def _photo_index_reread(budget: int, report: dict) -> None:
+async def _photo_index_reread(budget: int, report: dict, now: Optional[datetime] = None) -> None:
     """A second read of photos described before `visible_text` was asked for,
     only those whose log row names several levels or none (photo_place.
     reread_targets), and only from what the tick has left. Only the two new
-    fields are written: what a search already finds does not move."""
+    fields are written: what a search already finds does not move.
+
+    OFF unless PHOTO_INDEX_REREAD_ENABLED=1 (a paid call per photo, never on
+    by default), and at most PHOTO_INDEX_REREAD_DAILY_CAP calls a New York
+    day across every job, reserved before they are made. A row it will never
+    read (one level already named, or its tries used up) is marked
+    `reread_skip` and is not loaded again."""
+    if os.environ.get("PHOTO_INDEX_REREAD_ENABLED") != "1":
+        return
+    now = now or datetime.now(timezone.utc)
+    day = vision_meter.eastern_day(now)
+    state = await db[PHOTO_INDEX].find_one({"_id": PHOTO_INDEX_REREAD_STATE}) or {}
+    used = int(state.get("calls") or 0) if state.get("day") == day else 0
+    budget = min(max(0, budget), PHOTO_INDEX_REREAD_DAILY_CAP - used)
+    if budget <= 0:
+        report["reread_capped"] = True
+        return
+    v = photo_search.PROMPT_V
     rows = await db[PHOTO_INDEX].find(
-        await unattended_project_filter({"kind": "photo", "prompt_v": {"$ne": photo_search.PROMPT_V}}),
+        await unattended_project_filter({"kind": "photo", "prompt_v": {"$ne": v}, "reread_skip": {"$ne": v}}),
         {"photo_key": 1, "log_id": 1, "where": 1, "date": 1, "project_id": 1, "reread_tries": 1}).to_list(20000)
+    wanted = photo_place.reread_targets(rows, len(rows), PHOTO_INDEX_TRIES)
+    keep = {r["_id"] for r in wanted}
+    never = [r["_id"] for r in rows if r["_id"] not in keep]
+    if never:
+        await db[PHOTO_INDEX].update_many({"_id": {"$in": never}}, {"$set": {"reread_skip": v}})
+        report["reread_skipped"] = len(never)
+    targets = wanted[:budget]
+    if not targets:
+        return
+    await db[PHOTO_INDEX].update_one(
+        {"_id": PHOTO_INDEX_REREAD_STATE},
+        {"$set": {"kind": "state", "day": day, "calls": used + len(targets), "at": now}}, upsert=True)
     sem = asyncio.Semaphore(REPORT_JUDGE_AT_ONCE)
 
     async def one(row: dict) -> None:
@@ -56406,8 +56516,7 @@ async def _photo_index_reread(budget: int, report: dict) -> None:
                 "visible_text": v.get("visible_text") or [], "room_type": v.get("room_type") or "unknown",
                 "prompt_v": photo_search.PROMPT_V, "reread_at": datetime.now(timezone.utc)}})
             report["reread"] = report.get("reread", 0) + 1
-    await asyncio.gather(*(one(r) for r in photo_place.reread_targets(rows, budget, PHOTO_INDEX_TRIES)),
-                         return_exceptions=True)
+    await asyncio.gather(*(one(r) for r in targets), return_exceptions=True)
 
 
 async def _photo_index_tick(now: Optional[datetime] = None, budget: int = PHOTO_INDEX_BUDGET) -> dict:
@@ -56645,6 +56754,7 @@ class PhotoPlaceConfirmation(BaseModel):
                  dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def confirm_photo_place(project_id: str, body: PhotoPlaceConfirmation, current_user=Depends(get_current_user)):
     """A person says where a daily-log photo was taken. Append-only."""
+    await _progress_route_project(project_id, current_user, write=True)
     level = photo_place.level_token(body.level)
     if not level:
         raise HTTPException(status_code=422, detail="Name one level: a floor number, roof, or cellar.")
@@ -56663,6 +56773,9 @@ async def _dm_confirm_photo_place(ctx: dict, job: dict, args: dict) -> str:
     """confirm_photo_place: the floor of a photo this chat was just asked about,
     read from the person's OWN message rather than from the model's arguments."""
     pid = str(job["id"])
+    # As require_approved on the app's route: only an approved account writes.
+    if not _dm_is_approved(ctx["ident"]):
+        return "Their account isn't approved for changes yet. Nothing was recorded."
     if not await _bot_project_scope(ctx["ident"]["company_id"], pid):
         return wa_security.BOT_SCOPE_REFUSAL
     level = work_state.level_asked(ctx.get("text"))
@@ -56802,6 +56915,11 @@ async def _dm_proposed_sequence(ctx: dict, job: dict, args: dict) -> str:
     project = await _bot_project_scope(cid, pid)
     if not project:
         return wa_security.BOT_SCOPE_REFUSAL
+    # A pending account (require_approved, which a DM never passes through)
+    # approves nothing, and its asking stores or rebuilds nothing: it views.
+    approved = _dm_is_approved(ident)
+    if args.get("approve") and not approved:
+        return "Their account isn't approved for changes yet. Nothing was approved."
     try:
         src, rows, _today, _start = await _schedule_evidence(project, cid, SEQUENCE_LOG_DAYS)
     except Exception as e:
@@ -56825,11 +56943,13 @@ async def _dm_proposed_sequence(ctx: dict, job: dict, args: dict) -> str:
     stored = await coll.find_one({"_id": key, "company_id": cf})
     if stored and stored.get("status") == "approved":
         return progress_plan.proposed_text(stored, job["label"])
-    if field:
+    if field or not approved:
         plan = progress_plan.propose_sequence(rows)
         shown = stored if stored and stored.get("levels") == plan["levels"] else {**plan, "status": "proposed"}
         return progress_plan.proposed_text(shown, job["label"]).replace(
-            'To approve it, say "approve the sequence".', "A PM or an admin can approve it.")
+            'To approve it, say "approve the sequence".',
+            "A PM or an admin can approve it." if field
+            else "Their account has to be approved before they can approve it.")
     if approving and stored:
         if ctx.get("dry_run"):
             return "(eval) Would approve the PROPOSED sequence for " + job["label"] + "."
@@ -57034,20 +57154,43 @@ def _inspection_doc_ocr(page: bytes) -> str:
         return ""
 
 
+async def _inspection_doc_claim_call(project_id: str) -> bool:
+    """Count one sign-off read in the vision meter ONLY while the project's
+    count for the day is under INSPECTION_DOC_DAILY_CAP; True when counted.
+
+    ONE conditional write (it was a read, then a separate count, so two
+    messages at once could both read 39 and both go). The filter matches
+    only a row still under the cap; with no row yet the upsert inserts it at
+    1; with the row AT the cap the upsert tries to insert the same _id and
+    the duplicate key is the refusal. Any other failure refuses too: a cap
+    that cannot be checked is not passed. The row is the one
+    record_vision_call writes, so the meter's count is unchanged."""
+    day = vision_meter.eastern_day()
+    now = datetime.now(timezone.utc)
+    try:
+        await db[vision_meter.COLLECTION].update_one(
+            {"_id": vision_meter.meter_key(day, project_id, VISION_INSPECTION_DOC),
+             "calls": {"$lt": INSPECTION_DOC_DAILY_CAP}},
+            {"$inc": {"calls": 1}, "$set": {"last_at": now},
+             "$setOnInsert": {"date": day, "project_id": project_id or None,
+                              "endpoint": VISION_INSPECTION_DOC, "first_at": now}},
+            upsert=True)
+        return True
+    except _DuplicateKeyError:
+        return False
+    except Exception as e:
+        logger.warning(f"[inspection-doc] cap check failed, not read: {type(e).__name__}")
+        return False
+
+
 async def _inspection_doc_read(page: bytes, project_id: str, today: _Date) -> Optional[dict]:
     """One metered vision call: the checked reading, or None (no key, the day's
     cap reached, the call failed, an unusable answer)."""
     if not QWEN_API_KEY:
         return None
-    try:
-        spent = await db[vision_meter.COLLECTION].find_one(
-            {"_id": vision_meter.meter_key(vision_meter.eastern_day(), project_id, VISION_INSPECTION_DOC)})
-    except Exception:
-        spent = None
-    if int((spent or {}).get("calls") or 0) >= INSPECTION_DOC_DAILY_CAP:
+    if not await _inspection_doc_claim_call(project_id):
         logger.warning(f"[inspection-doc] daily cap reached project={project_id}")
         return None
-    await record_vision_call(db, endpoint=VISION_INSPECTION_DOC, project_id=project_id)
     try:
         async with ServerHttpClient(timeout=60.0) as client:
             resp = await client.post(
@@ -57344,9 +57487,7 @@ async def get_project_progress(project_id: str, current_user=Depends(get_current
     """The whole building's status from the records. Read-only; counts of
     level-and-work cells, never a percent complete."""
     cid = str(get_user_company_id(current_user) or "")
-    project = await _bot_project_scope(cid, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await _progress_route_project(project_id, current_user, write=False)
     try:
         model = await _project_progress(project, cid)
     except ReportSourceUnavailable:
@@ -64063,7 +64204,8 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
     a change, the account whose job it names, and when that is not one
     company (no job, or the same street in two), nothing is written: the
     numbered "Which company?" / "Which one?" is set up and the model asks
-    it. Their brief and settings are the person's (the first account)."""
+    it, among the accounts whose role may make it. Their brief and settings
+    are the person's (the first account whose role may answer them)."""
     person = ctx.get("person")
     if not person:
         return await _dm_brain_exec_one(ctx, name, args)
@@ -64104,6 +64246,10 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             if mine:
                 outs.append(await _dm_brain_as(ctx, a, name, dict(args, jobs=mine)))
         return "\n".join(outs) or "They have no jobs."
+    # The accounts whose role may make this call: only they are candidates
+    # for a change with no one company, and a person-level tool runs as the
+    # first of them.
+    able = [a for a, r in zip(person, refused) if not r]
     if name in ("propose_change", "set_sub_trade"):
         hint = str(args.get("job") or "").strip()
         named = []
@@ -64114,8 +64260,15 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
                 ids = [jid] if jid else []
             named = [ctx["by_id"][i] for i in ids if i in ctx["by_id"]]
         accts = {j["acct"]["user_id"] for j in named}
+        if len(accts) > 1:
+            # The same street in two companies: only the ones it may change.
+            mine = {a["user_id"] for a in able}
+            named = [j for j in named if j["acct"]["user_id"] in mine] or named
+            accts = {j["acct"]["user_id"] for j in named}
         if len(accts) == 1:
             return await _dm_brain_as(ctx, named[0]["acct"], name, args)
+        if not accts and len(able) == 1:
+            return await _dm_brain_as(ctx, able[0], name, args)
         # A change with no one company: nothing is written; asked by number.
         lang = _dm_brain_lang(ctx["text"])
         lines = wa_dm.ACCOUNT_PICK_LINES.get(lang, wa_dm.ACCOUNT_PICK_LINES["en"])
@@ -64125,9 +64278,10 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             pids = [j["id"] for j in named]
             head = lines["which_job"]
         else:
+            options = able or person
             labels = [await _company_display_name(a.get("company_id")) or "another company"
-                      for a in person]
-            uids, pids, head = [a["user_id"] for a in person], [None] * len(person), \
+                      for a in options]
+            uids, pids, head = [a["user_id"] for a in options], [None] * len(options), \
                 lines["which_company"]
         asked = dm_actions.numbered(head, labels)
         if not ctx.get("dry_run") and not await _dm_question_open(
@@ -64148,11 +64302,12 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
     if name in ("answer_pending_change", "undo_last_change"):
         st = await _dm_state_get(DM_ACTION_STATE if name == "answer_pending_change"
                                  else DM_ACTION_LAST, ctx["dm_chat"])
-        acct = by_uid.get(str((st or {}).get("acct") or "")) or person[0]
+        acct = by_uid.get(str((st or {}).get("acct") or "")) or (able or person)[0]
         return await _dm_brain_as(ctx, acct, name, args)
     # Their brief, their settings, a reminder, dropping a question: the
-    # person's own -- answered as their first account.
-    return await _dm_brain_as(ctx, person[0], name, args)
+    # person's own -- answered as the first account whose role may answer
+    # it (a CP account listed first never refuses a PM his reminders).
+    return await _dm_brain_as(ctx, (able or person)[0], name, args)
 
 
 async def _dm_brain_as(ctx: dict, acct: dict, name: str, args: dict) -> str:
@@ -67774,9 +67929,18 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db[PHOTO_INDEX], keys=[("project_id", 1), ("kind", 1), ("date", -1)],
         name="photo_index_by_project")
+    # The re-read's query (_photo_index_reread): old prompt_v, not marked skipped.
     await _ensure_index_resilient(
-        db[PHOTO_RELATIONS], keys=[("project_id", 1), ("level", 1), ("same_area", 1)],
+        db[PHOTO_INDEX], keys=[("kind", 1), ("prompt_v", 1), ("reread_skip", 1)],
+        name="photo_index_by_prompt_v")
+    # same_place, the field _work_state_answer filters on (same_area is the
+    # model's raw answer, stored beside it and never queried).
+    await _ensure_index_resilient(
+        db[PHOTO_RELATIONS], keys=[("project_id", 1), ("level", 1), ("same_place", 1)],
         name="photo_relations_by_place")
+    await _ensure_index_resilient(
+        db[PHOTO_PLACE_CONFIRMATIONS], keys=[("project_id", 1), ("photo_key", 1)],
+        name="photo_place_confirmations_by_project")
     await _ensure_index_resilient(
         db[INSPECTION_REPORTS], keys=[("project_id", 1), ("gate", 1), ("created_at", -1)],
         name="inspection_reports_by_gate")
@@ -82780,7 +82944,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
         cross = False
         if multi:
             routed = await _dm_route_accounts(person, dm_chat, body or "", brain=dm_brain_on,
-                                              has_image=bool(parsed.get("has_image") or signoff))
+                                              has_image=bool(parsed.get("has_image") or signoff),
+                                              signoff=bool(signoff))
             if routed is None:
                 return
             body = routed["body"]
