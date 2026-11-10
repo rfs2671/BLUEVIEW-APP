@@ -149,15 +149,21 @@ _VERB = {
     "electrical_complete": "electrical job marked complete by DOB",
 }
 
-#: What public data does not hold, said every time sign-offs are listed, so
+#: What these records do not hold, said every time sign-offs are listed, so
 #: an empty list is never read as "no inspections happened".
+#:
+#: It used to say DOB NOW inspection results were "not in NYC public data".
+#: They are public (the DOB NOW: Inspections portal; 588's plumbing rough
+#: passed there on 2026-11-05): LeveLog had not READ them. That source is now
+#: named with whether it was checked (lib/source_coverage, server dob_status).
 INSPECTIONS_NOT_PUBLIC = (
-    "Not in NYC public data, so not in these records: DOB NOW inspection results "
-    "(plumbing rough, fire alarm and other trade inspections) and DEP water-main "
-    "inspections. Missing here does not mean they did not happen. An inspection "
-    "posted in the job's WhatsApp group (what passed and the date, or the sign-off "
-    "sheet with a caption) is kept in the project history as reported by the team, "
-    "not DOB-verified.")
+    "Sign-offs are not inspection results: trade inspection results (plumbing rough "
+    "and underground, and the like) are on the DOB NOW: Inspections portal, and "
+    "electrical (DOB NOW: Inspections Plus), DEP water-main, FDNY fire-alarm and TR1 "
+    "special inspections are in sources LeveLog does not read. Missing here does not "
+    "mean they did not happen. An inspection posted in the job's WhatsApp group (what "
+    "passed and the date, or the sign-off sheet with a caption) is kept in the project "
+    "history as reported by the team, not DOB-verified.")
 
 
 def _day(v: Any) -> Optional[date]:

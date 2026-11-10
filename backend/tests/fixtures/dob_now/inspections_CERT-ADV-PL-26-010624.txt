@@ -1,0 +1,42 @@
+3041|updatePanel|ctl00_PlaceHolderMain_InspectionList_inspectionUpdatePanel|
+        <div id="ctl00_PlaceHolderMain_InspectionList_upcomingPanel">
+                <div id="divInspectionListUpcoming" class="ACA_Page ACA_Hide">
+                    <h1 class="font13px">
+                        <span id="ctl00_PlaceHolderMain_InspectionList_lblInspectionUpcoming"><FONT style="TEXT-ALIGN: left">Upcoming Inspections:</FONT></span>
+                    </h1>
+                    <div id="ctl00_PlaceHolderMain_InspectionList_AccelaHeightSeparate2" style="height:10px;clear:both;width:100%;">&nbsp;</div>
+                    <a id='ctl00_PlaceHolderMain_InspectionList_gvListUpcoming_4ValidateGridView_anchor' name='ctl00_PlaceHolderMain_InspectionList_gvListUpcoming_4ValidateGridView_anchor'></a><div class="ACA_Grid_OverFlow">
+	<table class="ACA_GridView"  cellspacing="0" border="0" border="1" id="ctl00_PlaceHolderMain_InspectionList_gvListUpcoming">
+		<tr class="ACA_SmLabel ACA_SmLabel_FontSize">
+			<td>
+                            <div class="ACA_TabRow_Italic">
+                                <span id="ctl00_PlaceHolderMain_InspectionList_gvListUpcoming_ctl01_lblEmptyUpcoming" class="ACA_Body_Text ACA_Body_Text_FontSize">You have not added any inspections.<br/>Click the link above to schedule or request one.</span>
+                            </div>
+                        </td>
+		</tr>
+	</table>
+</div>
+                </div>
+</div>
+        <div id="ctl00_PlaceHolderMain_InspectionList_completedPanel">
+                <div id="divInspectionListCompleted" class="ACA_Page ACA_Hide">
+                    <div id="ctl00_PlaceHolderMain_InspectionList_AccelaHeightSeparate5" style="height:20px;clear:both;width:100%;">&nbsp;</div>
+                    <h1 class="font13px">
+                        <span id="ctl00_PlaceHolderMain_InspectionList_lblInspectionCompleted"><FONT style="TEXT-ALIGN: left">Completed Inspections:</FONT></span>
+                    </h1>
+                    <div id="ctl00_PlaceHolderMain_InspectionList_AccelaHeightSeparate6" style="height:10px;clear:both;width:100%;">&nbsp;</div>
+                    <a id='ctl00_PlaceHolderMain_InspectionList_gvListCompleted_4ValidateGridView_anchor' name='ctl00_PlaceHolderMain_InspectionList_gvListCompleted_4ValidateGridView_anchor'></a><div class="ACA_Grid_OverFlow">
+	<table class="ACA_GridView"  cellspacing="0" border="0" border="1" id="ctl00_PlaceHolderMain_InspectionList_gvListCompleted">
+		<tr class="ACA_SmLabel ACA_SmLabel_FontSize">
+			<td>
+                            <div class="ACA_TabRow_Italic">
+                                <span id="ctl00_PlaceHolderMain_InspectionList_gvListCompleted_ctl01_lblEmptyCompleted" class="ACA_Body_Text ACA_Body_Text_FontSize">There are no completed inspections on this record.</span>
+                            </div>
+                        </td>
+		</tr>
+	</table>
+</div>
+                </div>
+</div>
+        <input type="submit" name="ctl00$PlaceHolderMain$InspectionList$btnRefreshGridView" value="" id="ctl00_PlaceHolderMain_InspectionList_btnRefreshGridView" class="ACA_Hide" />
+    |9|hiddenField|__VIEWSTATE|SANITIZED|

@@ -1,0 +1,57 @@
+4829|updatePanel|ctl00_PlaceHolderMain_InspectionList_inspectionUpdatePanel|
+        <div id="ctl00_PlaceHolderMain_InspectionList_upcomingPanel">
+                <div id="divInspectionListUpcoming" class="ACA_Page ACA_Hide">
+                    <h1 class="font13px">
+                        <span id="ctl00_PlaceHolderMain_InspectionList_lblInspectionUpcoming"><FONT style="TEXT-ALIGN: left">Upcoming Inspections:</FONT></span>
+                    </h1>
+                    <div id="ctl00_PlaceHolderMain_InspectionList_AccelaHeightSeparate2" style="height:10px;clear:both;width:100%;">&nbsp;</div>
+                    <a id='ctl00_PlaceHolderMain_InspectionList_gvListUpcoming_4ValidateGridView_anchor' name='ctl00_PlaceHolderMain_InspectionList_gvListUpcoming_4ValidateGridView_anchor'></a><div class="ACA_Grid_OverFlow">
+	<table class="ACA_GridView"  cellspacing="0" border="0" border="1" id="ctl00_PlaceHolderMain_InspectionList_gvListUpcoming">
+		<tr class="ACA_SmLabel ACA_SmLabel_FontSize">
+			<td>
+                            <div class="ACA_TabRow_Italic">
+                                <span id="ctl00_PlaceHolderMain_InspectionList_gvListUpcoming_ctl01_lblEmptyUpcoming" class="ACA_Body_Text ACA_Body_Text_FontSize">You have not added any inspections.<br/>Click the link above to schedule or request one.</span>
+                            </div>
+                        </td>
+		</tr>
+	</table>
+</div>
+                </div>
+</div>
+        <div id="ctl00_PlaceHolderMain_InspectionList_completedPanel">
+                <div id="divInspectionListCompleted" class="ACA_Page ACA_Hide">
+                    <div id="ctl00_PlaceHolderMain_InspectionList_AccelaHeightSeparate5" style="height:20px;clear:both;width:100%;">&nbsp;</div>
+                    <h1 class="font13px">
+                        <span id="ctl00_PlaceHolderMain_InspectionList_lblInspectionCompleted"><FONT style="TEXT-ALIGN: left">Completed Inspections:</FONT> (1)</span>
+                    </h1>
+                    <div id="ctl00_PlaceHolderMain_InspectionList_divInspectionStatusRecordCount">
+                        <span id="ctl00_PlaceHolderMain_InspectionList_lblInspectionStatusRecordCount">Spot Check - Pass-Final - 1</span>
+                    </div>
+                    <div id="ctl00_PlaceHolderMain_InspectionList_AccelaHeightSeparate6" style="height:10px;clear:both;width:100%;">&nbsp;</div>
+                    <a id='ctl00_PlaceHolderMain_InspectionList_gvListCompleted_4ValidateGridView_anchor' name='ctl00_PlaceHolderMain_InspectionList_gvListCompleted_4ValidateGridView_anchor'></a><div class="ACA_Grid_OverFlow">
+	<table class="ACA_GridView"  cellspacing="0" border="0" border="1" id="ctl00_PlaceHolderMain_InspectionList_gvListCompleted">
+		<tr class="InspectionListRow">
+			<td class="ACA_AlignLeftOrRightTop">
+                                    <table cellpadding="0" cellspacing="0" border="0">
+                                        <tr>
+                                            <td class="ACA_Width45em">
+                                                <SPAN style="FONT-FAMILY: Arial; COLOR: #333; FONT-SIZE: 1.1em; FONT-WEIGHT: bold">Spot Check - Pass-Final </SPAN><SPAN style="FONT-FAMILY: Arial; COLOR: #333; FONT-SIZE: 1.2em">Spot Check (7672759)</SPAN><BR><SPAN style="FONT-FAMILY: Arial; COLOR: #333; FONT-SIZE: 1.1em">Resulted&nbsp;on 09/01/2026 at 09:00 AM</SPAN>
+                                            </td>
+                                            <td>
+                                                &nbsp;&nbsp;
+                                            </td>
+                                            <td valign="top">
+                                                <div class="ACA_LinkButton">
+                                                    <span id="ctl00_PlaceHolderMain_InspectionList_gvListCompleted_ctl02_lblOnlyOneAction"><a id='845323683' href='javascript:void(0)' onclick="showInspectionPopupDialog('/CitizenAccessBuildings/Inspection/InspectionDetails.aspx?agencyCode=BUILDINGS&RecordAltID=ADV-PL-26-011521&RecordID1=DUB26&RecordID2=00000&RecordID3=09JTA&Module=DOB&PublicUserID=PUBLICUSER0&ScheduledType=Unknown&Action=ViewDetails&ID=7672759&IsFromWizardPage=False&RequestDayOption=0&ContactChangeOption=Unknown&isPopup=Y&Status=Unknown&NavigationBeginPage=ViewDetails&TimeOption=Unknow','InspectionDetailsPageWidth','845323683')" title='View Details'>View Details</a></span>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+		</tr>
+	</table>
+</div>
+                </div>
+</div>
+        <input type="submit" name="ctl00$PlaceHolderMain$InspectionList$btnRefreshGridView" value="" id="ctl00_PlaceHolderMain_InspectionList_btnRefreshGridView" class="ACA_Hide" />
+    |9|hiddenField|__VIEWSTATE|SANITIZED|

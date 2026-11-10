@@ -57,6 +57,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from app.scheduling.graph_v1 import build_graph_v1
 from lib import evidence as E
 from lib import progress_plan as PP
+from lib import source_coverage as SC
 from lib import work_state as W
 from lib.plans import level_suggestion as LS
 
@@ -379,11 +380,15 @@ def build(items: Sequence[Dict[str, Any]], *, today: date, project: Optional[Dic
           plan_tokens: Iterable[str] = (), schedule: Optional[Dict[str, Any]] = None,
           design: Iterable[Dict[str, Any]] = (), flags: Optional[Dict[str, Any]] = None,
           extra_steps: Optional[Sequence[Dict[str, Any]]] = None, job: str = "",
-          unreadable: Iterable[str] = (), frame: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+          unreadable: Iterable[str] = (), frame: Optional[Dict[str, Any]] = None,
+          inspection_sources: Optional[Sequence[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """The status of the whole building from `items` (lib/evidence.py shape).
     `unreadable`: the sources the loader could not read (its coverage): what
     they would have said is unknown, and every answer says so. `frame`: the
-    project's levels (job_levels)."""
+    project's levels (job_levels). `inspection_sources`: lib/source_coverage
+    entries for every source of inspection results; an inspection "with no
+    record" is said with the sources that were NOT checked (default: the
+    team's reports as read, DOB NOW: Inspections not checked)."""
     items = [i for i in items if i.get("kind") in E.KINDS]
     levels = job_levels(project, plan_tokens, items, frame)
     seq = steps(flags, extra_steps)
@@ -432,6 +437,8 @@ def build(items: Sequence[Dict[str, Any]], *, today: date, project: Optional[Dic
         "building": building,
         "place_unknown": place_unknown,
         "unreadable": sorted(set(unreadable or ())),
+        "inspection_sources": list(inspection_sources) if inspection_sources is not None
+        else default_inspection_sources(unreadable, today),
         "levels_excluded": sorted({lv for i in items if i["kind"] != "estimate" for lv in i.get("levels") or ()
                                    if lv not in level_ids}, key=level_order),
         "outside_frame": [cell(items, lv, n, today) for lv, n in outside],
@@ -746,8 +753,31 @@ def _bottleneck_words(model: Dict[str, Any], level: str) -> str:
     if unknown and "inspection_reports" in (model.get("unreadable") or ()):
         bits.append("inspection reports could not be read, so what they say is unknown")
     elif unknown:
-        bits.append(f"{len(unknown)} inspection(s) with no record")
+        gone = SC.unchecked(model.get("inspection_sources") or ())
+        bits.append(f"{len(unknown)} inspection(s) with no record"
+                    + (" in the sources read (not checked: " + ", ".join(_short(s) for s in gone) + ")" if gone else ""))
     return "; ".join(bits)
+
+
+def _short(source: Dict[str, Any]) -> str:
+    return str(source.get("label") or source.get("key") or "").split(" (")[0]
+
+
+def default_inspection_sources(unreadable: Iterable[str], today: date) -> List[Dict[str, Any]]:
+    """What a progress answer read for inspections when the caller did not say:
+    the team's inspection reports (unless unreadable) and NOT DOB NOW:
+    Inspections."""
+    team = (SC.entry(SC.TEAM_REPORTS, SC.UNREACHABLE, why="could not be read")
+            if "inspection_reports" in set(unreadable or ()) else SC.entry(SC.TEAM_REPORTS, SC.CHECKED, as_of=today))
+    return [team, SC.entry(SC.DOB_NOW_INSPECTIONS, SC.NOT_CHECKED, why="not read for this answer")]
+
+
+def inspection_source_words(model: Dict[str, Any]) -> List[str]:
+    """Which inspection sources this answer read, said whenever one was not."""
+    srcs = model.get("inspection_sources") or ()
+    if not SC.unchecked(srcs):
+        return []
+    return SC.coverage_lines(srcs, topic="inspection results")
 
 
 def unreadable_words(model: Dict[str, Any]) -> List[str]:
@@ -791,7 +821,7 @@ def _frame_words(model: Dict[str, Any]) -> List[str]:
 
 def _overall_text(model: Dict[str, Any]) -> str:
     head = f"{model['job'] or 'This job'}, from the record as of {_day(model['today'])}. {NO_PERCENT}"
-    out = [head] + unreadable_words(model) + _frame_words(model)
+    out = [head] + unreadable_words(model) + inspection_source_words(model) + _frame_words(model)
     out.append("Cells: " + (_counts_words(model["counts"]) or "none") + ".")
     lines = []
     for lv in model["frame"]["levels"][:MAX_TEXT_LEVELS]:
@@ -860,7 +890,7 @@ def _sub_text(model: Dict[str, Any], name: str) -> str:
 def _level_text(model: Dict[str, Any], level: str) -> str:
     label = W.level_label(level)
     out = [f"{label} on {model['job'] or 'this job'}, from the record as of {_day(model['today'])}. {NO_PERCENT}",
-           f"Steps: {model['frame']['source']}."] + unreadable_words(model)
+           f"Steps: {model['frame']['source']}."] + unreadable_words(model) + inspection_source_words(model)
     unknown = []
     for s in model["frame"]["steps"]:
         c = model["cells"][(level, s["id"])]

@@ -128,6 +128,7 @@ from lib import dot_embargo  # noqa: E402
 from lib import dot_permits  # noqa: E402
 from lib import dot_summons  # noqa: E402
 from lib import dob_site_bins  # noqa: E402
+from lib import dob_now_inspections, dob_now_portal, source_coverage  # noqa: E402
 from lib import dob_alert_gate  # noqa: E402
 from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
@@ -44384,11 +44385,16 @@ def _plan_in_place_refresh(existing: dict, dob_log: dict, now: datetime):
 
 async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
                           answered: Optional[Dict[str, bool]] = None,
-                          fetched_bins: Optional[list] = None) -> list:
+                          fetched_bins: Optional[list] = None, listed_bins=()) -> list:
     """`records` plus everything filed under the job site's OTHER building BINs
     (lib/dob_site_bins). A BIN counts only when one of its jobs is also a job
     under the project's BIN; a neighbour's BIN is never fetched. Never raises: a
     failure leaves the sync exactly as it was.
+
+    `listed_bins`: the BINs a person listed on the project (`additional_bins`,
+    e.g. a demolished building's obsolete BIN). They are the site's by that
+    person's word, so they are fetched without the shared-job test, and before
+    the BINs only the records suggest.
 
     Each record added here is tagged `_site_bin` and each BIN fetched is
     appended to `fetched_bins`, so the first pass of a newly added BIN is
@@ -44397,9 +44403,11 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
         if not nyc_bin or _is_placeholder_bin(nyc_bin):
             return records
         added: list = []
-        for cand in dob_site_bins.candidate_bins(records, nyc_bin):
+        listed = [b for b in dict.fromkeys(re.sub(r"\D", "", str(x or "")) for x in listed_bins or ())
+                  if b and b != nyc_bin and not _is_placeholder_bin(b)]
+        for cand in listed + [b for b in dob_site_bins.candidate_bins(records, nyc_bin) if b not in listed]:
             found = await _query_dob_apis(cand, "", answered)
-            if dob_site_bins.shares_job(records, nyc_bin, found, cand):
+            if cand in listed or dob_site_bins.shares_job(records, nyc_bin, found, cand):
                 for r in found:
                     if isinstance(r, dict):
                         r["_site_bin"] = cand
@@ -44527,7 +44535,8 @@ async def run_dob_sync_for_project(project: dict) -> list:
 
     raw_records = await _query_dob_apis(nyc_bin, project_address, answered)
     site_bins: list = []
-    raw_records = await _with_site_bins(project_id, nyc_bin, raw_records, answered, site_bins)
+    raw_records = await _with_site_bins(project_id, nyc_bin, raw_records, answered, site_bins,
+                                        listed_bins=project.get("additional_bins") or ())
 
     # --- BIN auto-heal ---
     # Scan returned records for a real BIN. DOB's datasets expose the
@@ -57519,11 +57528,24 @@ async def _project_progress(project: dict, company_id: str, *, job: str = "", to
     start = today - timedelta(days=PROJECT_PROGRESS_DAYS - 1)
     keep = {} if keep is None else keep
     items, coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    # DOB NOW: Inspections results join the evidence only from a recent read
+    # (dob_status reads the portal; a status answer never waits on it). Either
+    # way the answer says whether that source was checked.
+    portal = await _dob_now_portal_check(project, list((keep.get("sources") or {}).get("dob_rows") or []), fetch=False)
+    if portal.get("state") in ("checked", "partial"):
+        got, _cov = dob_now_inspections.to_evidence(portal.get("records") or [], str(project.get("_id")),
+                                                    frame=keep.get("frame"))
+        items = list(items) + [i for i in got if i["on"] is None or i["on"] <= today]
+    unreadable = (coverage or {}).get("unreadable") or ()
+    sources = [s for s in await _inspection_sources(str(project.get("_id")), portal, team_reports_read=True,
+                                                    unreadable=unreadable)
+               if s["key"] in (source_coverage.DOB_NOW_INSPECTIONS, source_coverage.TEAM_REPORTS,
+                               source_coverage.DOB_OPEN_DATA)]
     keep.update(items=items, start=start)
     plan_tokens = await _progress_plan_tokens(str(project.get("_id")))
     return project_progress.build(items, today=today, project=project, plan_tokens=plan_tokens,
                                   schedule=keep["sources"].get("schedule"), job=job or str(project.get("name") or ""),
-                                  unreadable=(coverage or {}).get("unreadable") or (), frame=keep.get("frame"))
+                                  unreadable=unreadable, frame=keep.get("frame"), inspection_sources=sources)
 
 
 @api_router.get("/projects/{project_id}/progress",
@@ -67300,7 +67322,91 @@ async def _handle_dob_status(project_id: str, *,
         "is_deleted": {"$ne": True},
     }).to_list(1000)
     lines += dob_signoffs.signoff_section(filings)
+    # DOB NOW: INSPECTIONS (2026-11-10). The 588 plumbing results -- rough
+    # passed on floors 1-4, mezzanine and roof (inspection 7755632, Nov 5), the
+    # floor-1 underground self-certified Sep 1 -- are on the public portal, and
+    # this tool said they were "not in public data". The portal is read only
+    # while its reader is on (lib/dob_now_portal, off by default); either way
+    # the answer names every inspection source and whether it was checked, so
+    # an empty list is never a "none" about a source nobody read.
+    portal = await _dob_now_portal_check(project, filings)
+    lines += dob_now_inspections.answer_lines(portal)
+    lines += source_coverage.coverage_lines(await _inspection_sources(project_id, portal, team_reports_read=False))
     return "\n".join(lines)
+
+
+#: How long one dob_status answer may spend reading DOB NOW: Inspections.
+DOB_NOW_PORTAL_BUDGET = 150
+
+
+def _dob_now_portal_reader():
+    """The portal reader (tests swap in a fake session)."""
+    return dob_now_portal.Portal()
+
+
+async def _dob_now_portal_check(project: dict, dob_rows: list, *, fetch: bool = True) -> dict:
+    """DOB NOW: Inspections for every BIN of the site (lib/dob_now_portal).
+    Not read while DOB_NOW_PORTAL_ENABLED is off: the result then SAYS not
+    checked. `fetch` False: only a recent read (kept in process, nothing is
+    stored) is used, so a status answer never waits on the portal."""
+    bins = dob_now_portal.site_bins(project, dob_rows)
+    if not dob_now_portal.enabled():
+        return dob_now_portal.not_checked(
+            bins, f"the DOB NOW: Inspections reader is off ({dob_now_portal.FLAG}); turning it on is the owner's call")
+    hit = dob_now_portal.cached(bins)
+    if hit:
+        return hit
+    if not fetch:
+        return dob_now_portal.not_checked(bins, "not read for this answer (dob_status reads it)")
+    try:
+        res = await asyncio.wait_for(asyncio.to_thread(dob_now_portal.check_bins, bins, _dob_now_portal_reader()),
+                                     timeout=DOB_NOW_PORTAL_BUDGET)
+    except asyncio.TimeoutError:
+        return {"state": "unreachable", "bins": bins, "records": [], "unreachable": [],
+                "why": f"the portal did not finish within {DOB_NOW_PORTAL_BUDGET}s"}
+    except Exception as e:
+        logger.warning(f"[dob-now] portal read failed: {type(e).__name__}")
+        return {"state": "unreachable", "bins": bins, "records": [], "unreachable": [],
+                "why": f"the read failed ({type(e).__name__})"}
+    dob_now_portal.remember(bins, res)
+    return res
+
+
+async def _inspection_sources(project_id: str, portal: Optional[dict], *, team_reports_read: bool,
+                              unreadable=()) -> list:
+    """Every source an inspections answer rests on, and whether it was read
+    (lib/source_coverage). Open Data counts as checked only when LeveLog's DOB
+    sync has completed the permit and job-filing datasets for this job."""
+    sources = []
+    try:
+        state = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id}) or {}
+    except Exception as e:
+        logger.warning(f"[dob-now] sync state not read: {type(e).__name__}")
+        state = None
+    stamps = [((state or {}).get("sources") or {}).get(s, {}).get("synced_at")
+              for s in (source_sync.DOB_PERMITS, source_sync.DOB_JOB_FILINGS)]
+    if state is None:
+        sources.append(source_coverage.entry(source_coverage.DOB_OPEN_DATA, source_coverage.UNREACHABLE,
+                                             why="LeveLog's DOB sync state could not be read"))
+    elif all(isinstance(s, datetime) for s in stamps):
+        sources.append(source_coverage.entry(source_coverage.DOB_OPEN_DATA, source_coverage.CHECKED,
+                                             as_of=min(stamps)))
+    else:
+        sources.append(source_coverage.entry(
+            source_coverage.DOB_OPEN_DATA, source_coverage.NOT_LOADED,
+            why="LeveLog's DOB sync has not completed the permit and job-filing datasets for this job; "
+                "what is listed is what it holds"))
+    sources.append(dob_now_portal.coverage_entry(portal))
+    if team_reports_read and "inspection_reports" not in set(unreadable or ()):
+        sources.append(source_coverage.entry(source_coverage.TEAM_REPORTS, source_coverage.CHECKED,
+                                             as_of=datetime.now(timezone.utc)))
+    elif team_reports_read:
+        sources.append(source_coverage.entry(source_coverage.TEAM_REPORTS, source_coverage.UNREACHABLE,
+                                             why="the inspection reports could not be read"))
+    else:
+        sources.append(source_coverage.entry(source_coverage.TEAM_REPORTS, source_coverage.NOT_CHECKED,
+                                             why="not read by this tool; search_project_history reads them"))
+    return sources + source_coverage.not_read_by_levelog()
 
 
 # ── WHAT A DAY'S LOG ACTUALLY CONTAINS ────────────────────────────────────
@@ -75685,8 +75791,9 @@ _AGENT_TOOLS = [
             "description": (
                 "Return the project's DOB record: every DOB sign-off (Letter of Completion "
                 "-- what work the filing covers, DOB's sign-off date, the record number), "
-                "recent violations, BIN/BBL, and which inspections public data does not "
-                "hold. Use for 'what inspections happened', 'what's signed off', 'did the "
+                "recent violations, BIN/BBL, DOB NOW: Inspections results when that portal "
+                "was read, and which inspection sources were and were not checked. Use for "
+                "'what inspections happened', 'what's signed off', 'did the "
                 "foundation get signed off', 'DOB status', 'violations'."
             ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
