@@ -120,7 +120,9 @@ def trade_family(company: str, trade: str = "") -> str:
 
 # ── WORK AND PLACE ────────────────────────────────────────────────────────
 
-_SLAB_WORDS = re.compile(r"\bslab\b|vapou?r\s+barrier|\bmesh\b|\bgravel\b", re.I)
+#: Slab-on-grade work by the concrete crew. "Under-slab MEP" is another
+#: trade's work under the slab, not slab work.
+_SLAB_WORDS = re.compile(r"(?<!under-)(?<!under )\bslab\b|vapou?r\s+barrier|\bmesh\b|\bgravel\b", re.I)
 _UNDER = re.compile(r"under[\s-]?ground|under[\s-]?slab|\bexcavat\w*", re.I)
 _INSPECT = re.compile(r"\binspection\b", re.I)
 _OWN_LEVEL = re.compile(r"\broof\b(?!\s+protection)", re.I)
@@ -183,11 +185,71 @@ def _phrases(text: str) -> List[str]:
     return [p.strip() for p in re.split(r"[,/;]|\band\b", str(text or "")) if p.strip()]
 
 
+# ── WHO SAID IT, AND WHEN IT EXISTED ──────────────────────────────────────
+
+#: The author of every crew row of the GC's Daily Jobsite Log, and of the
+#: photos filed with those rows (the place on a photo is the row's place, typed
+#: by the same person). One author is ONE source, whichever sub a row names.
+CP_LOG = "GC daily jobsite log (typed and signed by the CP)"
+GATE = "gate (NFC check-in)"
+WALK = "punch walk (a person on site, WhatsApp)"
+_FILED_DOC = re.compile(r"^(daily_jobsite|toolbox_talk|preshift_signin|osha_log|scaffold_maintenance|"
+                        r"site_superintendent_log|subcontractor_orientation)/(\w+)")
+_SIGNED = re.compile(r"([A-Z][a-z]+ \d{1,2}, \d{4})")
+
+
+def _when(text: Any) -> Optional[datetime]:
+    t = str(text or "")
+    try:
+        return datetime.fromisoformat(t[:19].replace(" ", "T")) if re.match(r"\d{4}-\d{2}-\d{2}", t) else None
+    except ValueError:
+        return None
+
+
+def _signed(text: Any) -> Optional[datetime]:
+    m = _SIGNED.search(str(text or ""))
+    try:
+        return datetime.strptime(m.group(1), "%B %d, %Y").replace(hour=23, minute=59) if m else None
+    except ValueError:
+        return None
+
+
+def doc_index(records: Iterable[Dict[str, Any]]) -> Dict[str, datetime]:
+    """filed document id -> when it was signed / last amended (the later)."""
+    out: Dict[str, datetime] = {}
+    for r in records:
+        f = r.get("fields") or {}
+        m = _FILED_DOC.match(str((r.get("provenance") or {}).get("line_or_offset") or ""))
+        if not m:
+            continue
+        when = [w for w in (_signed(f.get("cp_signature_claimed")), _when(f.get("amended_on"))) if w]
+        if when:
+            out[m.group(2)] = max(when + ([out[m.group(2)]] if m.group(2) in out else []))
+    return out
+
+
+def existed_on(r: Dict[str, Any], docs: Dict[str, datetime]) -> Optional[datetime]:
+    """When this record EXISTED (never the date of the work it describes):
+    a filed document's row -> its document's signature / amendment time; a
+    row that carries its own creation time -> that; anything else -> the time
+    it was captured (a report's tiles exist from the report's generation)."""
+    m = _FILED_DOC.match(str((r.get("provenance") or {}).get("line_or_offset") or ""))
+    if m and m.group(2) in docs:
+        return docs[m.group(2)]
+    f = r.get("fields") or {}
+    for k in ("created_at_utc", "created_at", "at_utc", "when_utc", "time_utc"):
+        w = _when(f.get(k))
+        if w:
+            return w
+    return _when((r.get("provenance") or {}).get("transcript_timestamp"))
+
+
 # ── ROWS -> ITEMS ─────────────────────────────────────────────────────────
 
 def _work_items(r: Dict[str, Any], model: Dict[str, Any], pid: str, trades: Dict[str, str], *,
                 kind: str, on: date, ref: str, text: str, location: Any, note: str,
-                claim: str = "in_progress") -> List[Dict[str, Any]]:
+                claim: str = "in_progress", said: Optional[datetime] = None,
+                by: Optional[str] = CP_LOG) -> List[Dict[str, Any]]:
     company = _canon(r.get("company"))
     fam = trade_family(company, trades.get(company, ""))
     out, seen = [], set()
@@ -202,7 +264,8 @@ def _work_items(r: Dict[str, Any], model: Dict[str, Any], pid: str, trades: Dict
         c = "present" if node in (CI.UNDERGROUND_GATE, "gate_plumbing_rough") else claim
         out.append(E.item(kind, c, source="photo_index" if kind == "observed" else "logbooks",
                           ref=f"{ref}:{node}", project_id=pid, node=node, levels=levels, candidates=cands,
-                          space=space, sub=company or None, on=on, said_at=datetime(on.year, on.month, on.day, 23, 59),
+                          space=space, sub=company or None, on=on, by=by,
+                          said_at=said or datetime(on.year, on.month, on.day, 23, 59),
                           quote=text[:200], shared=len(levels) > 1,
                           note=f"{CI.FILED_LOCATION}{location or '(none)'}; trade: {trades.get(company, fam) or '?'}; {note}"))
     return out
@@ -239,8 +302,9 @@ def items_from_records(records: Sequence[Dict[str, Any]], model: Dict[str, Any],
     cls = {str(r.get("id")): audit_class(audit.get(str(r.get("id")))) for r in records}
     originals = [r for r in records if cls[str(r.get("id"))] == "original"]
     derived = [r for r in records if cls[str(r.get("id"))] == "derived"]
-    items, meta = _items(originals, model, project_id, trades, readme_dups=False)
-    summ, _ = _items(derived, model, project_id, trades, readme_dups=False)
+    docs = doc_index(records)
+    items, meta = _items(originals, model, project_id, trades, readme_dups=False, docs=docs)
+    summ, _ = _items(derived, model, project_id, trades, readme_dups=False, docs=docs)
     meta["summary_context"] = [{"ref": i["ref"], "on": i.get("on"), "sub": i.get("sub"), "node": i.get("node"),
                                 "levels": i.get("levels"), "quote": (i.get("quote") or "")[:120],
                                 "derived_class": (audit.get(i["ref"].split(":")[0]) or {}).get("derived_class"),
@@ -251,7 +315,8 @@ def items_from_records(records: Sequence[Dict[str, Any]], model: Dict[str, Any],
 
 
 def _items(records: Sequence[Dict[str, Any]], model: Dict[str, Any], project_id: str, trades: Dict[str, str], *,
-           readme_dups: bool) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+           readme_dups: bool, docs: Optional[Dict[str, datetime]] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    docs = doc_index(records) if docs is None else docs
     items: List[Dict[str, Any]] = []
     skipped: Dict[str, int] = defaultdict(int)
     for r in records:
@@ -261,6 +326,7 @@ def _items(records: Sequence[Dict[str, Any]], model: Dict[str, Any], project_id:
         t, f = r.get("type"), r.get("fields") or {}
         d = _d(r.get("date"))
         rid = str(r.get("id"))
+        said = existed_on(r, docs)
         if t == "daily_log_activity" and f.get("kind") == "period_work_item":
             if f.get("first"):
                 a, b = _d(f.get("first")), _d(f.get("last"))
@@ -270,7 +336,7 @@ def _items(records: Sequence[Dict[str, Any]], model: Dict[str, Any], project_id:
                 if day and not (tag == "last" and day == a):
                     items += _work_items(r, model, project_id, trades, kind="reported", on=day, ref=f"{rid}:{tag}",
                                          text=r.get("description") or "", location=r.get("location_text"),
-                                         note=f"report period row, {tag} printed date; days between unknown")
+                                         note=f"report period row, {tag} printed date; days between unknown", said=said)
             continue
         if t == "daily_log_activity" and f.get("kind") == "crew_day_activity_ids" and d:
             continue                                        # the same crew rows, re-read as ids: not a second record
@@ -281,7 +347,8 @@ def _items(records: Sequence[Dict[str, Any]], model: Dict[str, Any], project_id:
                 continue
             items += _work_items(r, model, project_id, trades, kind="reported", on=d, ref=rid, text=text,
                                  location=r.get("location_text"),
-                                 note="amended document" if f.get("amended_doc") else "filed daily log crew row")
+                                 note="amended document" if f.get("amended_doc") else "filed daily log crew row",
+                                 said=said)
             continue
         if t == "photo" and d and r.get("company") and (f.get("kind") in ("report_visual_progress_tile", "progress")):
             text = r.get("description") or ""
@@ -289,21 +356,32 @@ def _items(records: Sequence[Dict[str, Any]], model: Dict[str, Any], project_id:
                 text = str(f.get("sees") or "")
             items += _work_items(r, model, project_id, trades, kind="observed", on=d, ref=rid, text=text,
                                  location=r.get("location_text"),
-                                 note="photo filed with this crew's log row; caption by a vision model, unverified")
+                                 note="photo filed with this crew's log row; caption by a vision model, unverified",
+                                 said=said)
             continue
         if t == "photo" and "walk_item" in f and d:
             tag = str(f.get("floor_tag") or "")
-            levels, cands, _ = place(f"floor {tag}" if tag and tag.isdigit() else tag, model)
+            # The walk's floor / area / trade TAGS are set by the bot that bound
+            # each photo (independent audit 2026-11-10: "floor/area/trade tags
+            # are bot-inferred"), so a tag is never a person's word: the place
+            # is only what the person's own caption names. A row may say the
+            # tag was set by a person (`floor_tag_by: "person"`); then it counts.
+            guessed = f.get("floor_tag_by") != "person"
+            caption = str(f.get("caption_text") or "")
+            src_text = caption if guessed else (f"floor {tag}" if tag and tag.isdigit() else tag)
+            levels, cands, _ = place(src_text, model)
             items.append(E.item("observed", "present", source="photo_index", ref=rid, project_id=project_id,
-                                levels=levels, candidates=cands, on=d, quote=str(f.get("caption_text") or "")[:160],
-                                note=f"punch-walk photo; floor tag '{tag}'"))
+                                levels=levels, candidates=cands, on=d, quote=caption[:160], by=WALK, said_at=said,
+                                note=(f"punch-walk photo; floor tag '{tag}' was GUESSED by the bot, so the place is "
+                                      f"only what the caption says" if guessed else
+                                      f"punch-walk photo; floor tag '{tag}' set by the person")))
             continue
         if t == "checkin_aggregate" and d and isinstance(f.get("by_company"), dict) and "doc" not in f \
                 and f.get("kind") not in ("preshift_signin_doc",):
             for co, n in f["by_company"].items():
                 if n and _canon(co) not in ("Not yet assigned", "(no company)"):
                     items.append(E.item("reported", "present", source="checkins", ref=f"{rid}:{_canon(co)}",
-                                        project_id=project_id, sub=_canon(co), on=d,
+                                        project_id=project_id, sub=_canon(co), on=d, by=GATE, said_at=said,
                                         note=f"gate check-ins: {n}"))
             continue
         if t == "inspection_statement" and d:
@@ -312,6 +390,7 @@ def _items(records: Sequence[Dict[str, Any]], model: Dict[str, Any], project_id:
                 g = model.get("ground_level")
                 items.append(E.item("reported", "present", source="logbooks", ref=rid, project_id=project_id,
                                     node=CI.UNDERGROUND_GATE, levels=[g] if g else [], on=d, quote=q[:200],
+                                    by=CP_LOG, said_at=said,
                                     note="a log field names a DOB underground plumbing inspection visit; no result stated"))
             elif r.get("origin") == "operator_statement" and isinstance(f.get("results"), dict):
                 for what, res in f["results"].items():

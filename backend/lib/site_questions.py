@@ -452,7 +452,7 @@ def _work_questions(ctx) -> List[Dict[str, Any]]:
         if a["kind"] != "work" or aid not in window:
             continue
         st = _state_of(ctx, aid)
-        if st["status"] == "done" or st["evidence"] == "verified_public_record":
+        if (st["status"] == "done" and st["evidence"] != "inferred") or st["evidence"] == "verified_public_record":
             continue
         if st["status"] == "not_started" and st["evidence"] == "inferred":
             continue                     # an inference: _inference_questions asks it, if anyone can check
@@ -813,8 +813,8 @@ def floor_matters(q: Dict[str, Any]) -> bool:
 
 def answered_predecessors(ctx) -> List[Dict[str, Any]]:
     """What a question about the three-week window would otherwise re-ask:
-    every predecessor of a window activity that a VERIFIED public record (or
-    an inference standing on one) already settles, with that record."""
+    every predecessor of a window activity that a VERIFIED public record
+    already settles, with that record. An inference never settles one."""
     S = ctx["sched"]
     window = set(S.window())
     seen, out = set(), []
@@ -822,7 +822,9 @@ def answered_predecessors(ctx) -> List[Dict[str, Any]]:
         if l["to"] not in window or l["from"] in seen:
             continue
         st = _state_of(ctx, l["from"])
-        if st["status"] != "done" or st["evidence"] not in ("verified_public_record", "inferred"):
+        # Only a verified public record answers a question. An inference that
+        # work is done is a reason to ASK, never to suppress the question.
+        if st["status"] != "done" or st["evidence"] != "verified_public_record":
             continue
         seen.add(l["from"])
         a = S.by_id[l["from"]]

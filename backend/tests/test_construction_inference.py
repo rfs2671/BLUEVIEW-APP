@@ -141,6 +141,26 @@ class RoughInPlace(unittest.TestCase):
         self.assertEqual(i["confidence"], "medium")
         self.assertEqual(i["contradictions"], [con])
 
+    def test_one_author_naming_two_subs_is_one_source(self):
+        # Review 2, C1: the CP's daily log names the plumber and the concrete
+        # crew; one person typed and signed both rows.
+        cp = "GC daily log (CP)"
+        rows = [E.item("reported", "in_progress", source="logbooks", ref="U1", project_id=PID,
+                       node=CI.UNDERGROUND["plumbing"], levels=["FLOOR_1"], sub="Plumber Co", on=d(1, 5), by=cp),
+                E.item("reported", "in_progress", source="logbooks", ref="S1", project_id=PID, node=CI.SLAB_ON_GRADE,
+                       levels=["FLOOR_1"], sub="Concrete Co", on=d(1, 12), by=cp, quote="pour slab")]
+        self.assertEqual([x for x in run(rows)["inferences"] if x["node"] == "underground_plumbing"], [])
+        gate = E.item("reported", "present", source="logbooks", ref="V1", project_id=PID, node=CI.UNDERGROUND_GATE,
+                      levels=["FLOOR_1"], on=d(1, 10), by="DOB inspector's visit noted by the super")
+        self.assertEqual(len([x for x in run(rows + [gate])["inferences"] if x["node"] == "underground_plumbing"]), 1)
+
+    def test_an_amendment_and_its_original_are_one_event(self):
+        cp = "GC daily log (CP)"
+        a = E.item("reported", "in_progress", source="logbooks", ref="A1", project_id=PID, node="rough_plumbing",
+                   levels=["FLOOR_2"], sub="Plumber Co", on=d(2, 1), by=cp)
+        b = dict(a, ref="A2")                                    # the amended document's copy of the row
+        self.assertEqual([s["ref"] for s in CI.one_per_record([CI.signal(a, "x"), CI.signal(b, "x")])], ["A1"])
+
     def test_one_record_is_never_two_signals(self):
         rows = [rep("R9:first:rough_plumbing", "rough_plumbing", ["FLOOR_2"], d(2, 1)),
                 rep("R9:last:rough_plumbing", "rough_plumbing", ["FLOOR_2"], d(2, 8)),
@@ -225,7 +245,8 @@ class SlabOnGrade(unittest.TestCase):
         self.assertEqual([x["on"] for x in out["inferences"] if x["node"] == "underground_plumbing"], [d(1, 12)])
         kinds = [c["kind"] for c in out["contradictions"]]
         self.assertNotIn("under_slab_after_pour", kinds)
-        self.assertIn("concrete_frame_in_a_cfs_building", kinds)
+        merged = [c for c in out["contradictions"] if c["kind"] == "foundation_words_not_in_the_model"][0]
+        self.assertIn("concrete_frame_in_a_cfs_building", merged["parts"])
 
     def test_no_slab_on_grade_no_rule(self):
         m = dict(MODEL, slab_on_grade=False)
@@ -236,10 +257,47 @@ class SlabOnGrade(unittest.TestCase):
         self.assertEqual([c["kind"] for c in out["contradictions"]], ["pour_without_a_cast_slab"])
 
     def test_framing_before_the_ground_slab_is_out_of_order(self):
-        out = run(self.rows() + [rep("F1", "framing", ["FLOOR_1"], d(1, 2), sub="Frame Co")])
-        c = [c for c in out["contradictions"] if c["kind"] == "stage_out_of_order"]
+        # Review 2, M6: compared with THE pour, not with the first slab-word
+        # row (a chip dump the same day as the framing hid it), and each row
+        # classified by its own words.
+        chips = rep("X1", CI.SLAB_ON_GRADE, ["FLOOR_1"], d(1, 2), sub="Concrete Co", quote="pour cellar slab")
+        gravel = rep("G1", CI.SLAB_ON_GRADE, ["FLOOR_1"], d(1, 9), sub="Concrete Co", quote="Slab gravel")
+        out = run(self.rows() + [chips, gravel, rep("F1", "framing", ["FLOOR_1"], d(1, 2), sub="Frame Co",
+                                                     quote="Framing (layout, track and studs)"),
+                                 rep("F2", "framing", ["FLOOR_1"], d(1, 3), sub="Frame Co",
+                                     quote="Wall framing, sheathing")])
+        c = [c for c in out["contradictions"] if c["kind"] == "framing_before_slab_pour"]
         self.assertEqual(c[0]["levels"], ["FLOOR_1"])
-        self.assertTrue(c[0]["candidate_explanations"])
+        self.assertIn("1 row(s) name exterior / perimeter wall framing; 1 do not say where", c[0]["what"])
+        self.assertIn("S1", c[0]["refs"])
+        inf = [x for x in out["inferences"] if x["node"] == "underground_plumbing"][0]
+        self.assertIn("framing_before_slab_pour", [k["kind"] for k in inf["contradictions"]])
+
+    def test_an_elevator_in_a_building_without_one(self):
+        out = run([E.item("observed", "present", source="photo_index", ref="W1", project_id=PID, on=d(2, 1),
+                          quote="Elevator beam pockets", note="punch-walk photo; floor tag 'roof' set by the person")])
+        self.assertEqual(out["contradictions"][0]["kind"], "walk_does_not_fit_this_building")
+        self.assertEqual(out["contradictions"][0]["parts"], ["names_an_elevator"])
+
+    def test_one_walks_impossibles_are_one_issue_and_counts_are_records(self):
+        walk = [E.item("observed", "present", source="photo_index", ref=f"W{n}", project_id=PID, on=d(2, 1),
+                       candidates=[lv], quote=q, note="punch-walk photo; floor tag set by the person")
+                for n, (lv, q) in enumerate((("FLOOR_5", "stairs"), ("FLOOR_7", "Compound and sheetrock not done")))]
+        chips = [rep("R7:foundation", "foundation", [], d(1, 1), quote="Pile caps, pour cellar slab"),
+                 rep("R7:slab_on_grade", CI.SLAB_ON_GRADE, ["FLOOR_1"], d(1, 1), quote="Pile caps, pour cellar slab")]
+        cons = run(walk + chips)["contradictions"]
+        kinds = sorted(c["kind"] for c in cons)
+        self.assertEqual(kinds, ["foundation_words_not_in_the_model", "walk_does_not_fit_this_building"])
+        merged = [c for c in cons if c["kind"] == "foundation_words_not_in_the_model"][0]
+        self.assertTrue(merged["what"].startswith("1 foundation-phase record(s)"), merged["what"])
+        self.assertEqual(merged["parts"], ["names_a_cellar", "piles_not_on_drawings"])
+        walk_issue = [c for c in cons if c["kind"] == "walk_does_not_fit_this_building"][0]
+        self.assertIn("sheetrock / compound while no board is on record", walk_issue["what"])
+
+    def test_a_gas_rough_pass_implies_gas_rough_only(self):
+        gate = E.item("verified", "done", source="dob_now_inspections", ref="7755632:001:GAS ROUGH", project_id=PID,
+                      node="gate_plumbing_rough", levels=["FLOOR_1"], on=d(2, 20), quote="GAS ROUGH PASSED (floor 001)")
+        self.assertEqual([i["node"] for i in run([gate])["implications"]], ["rough_gas"])
 
 
 class Contradictions(unittest.TestCase):
@@ -253,8 +311,10 @@ class Contradictions(unittest.TestCase):
     def test_a_cellar_and_piles_on_a_slab_on_grade_building(self):
         out = run([rep("C1", CI.SLAB_ON_GRADE, ["FLOOR_1"], d(1, 2), quote="Cellar slab rebar"),
                    rep("C2", "foundation", [], d(1, 1), quote="Pile caps, footings")])
-        kinds = sorted(c["kind"] for c in out["contradictions"])
-        self.assertEqual(kinds, ["names_a_cellar", "piles_not_on_drawings"])
+        [c] = out["contradictions"]
+        self.assertEqual((c["kind"], c["parts"]), ("foundation_words_not_in_the_model",
+                                                   ["names_a_cellar", "piles_not_on_drawings"]))
+        self.assertTrue(c["what"].startswith("2 foundation-phase record(s)"))
 
     def test_work_naming_the_roof_filed_on_floors(self):
         row = rep("R1", "rough_plumbing", ["ROOF"], d(2, 1), quote="Roof MEP",

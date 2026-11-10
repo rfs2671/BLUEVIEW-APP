@@ -230,13 +230,17 @@ def one_per_record(signals: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Never two signals from one underlying record: a report period row
     becomes two dated items ("first", "last") and a crew row one item per
     phrase, but it is still one record ("R0139:first:x" and "R0139:last:x"
-    are R0139). The first signal of each record is kept."""
-    seen, out = set(), []
+    are R0139). The first signal of each record, and of each event, is kept."""
+    seen, events, out = set(), set(), []
     for s in signals:
         base = str(s.get("ref") or "").split(":", 1)[0]
-        if base in seen:
+        # One EVENT is one author's word about one crew, work and day: an
+        # amendment and its original, or a sheet listing a sub twice, are one.
+        event = (E.independence_key(s), str(s.get("sub") or "").lower(), s.get("node"), s.get("on"))
+        if base in seen or event in events:
             continue
         seen.add(base)
+        events.add(event)
         out.append(s)
     return out
 
@@ -283,6 +287,21 @@ NOT_IMPLIED_BY_A_ROUGH_PASS = (
     "insulation / energy (TR8) inspection", "fire-stopping special inspection")
 
 
+def parts_passed(g: Dict[str, Any], model: Dict[str, Any]) -> Tuple[str, ...]:
+    """The rough-in PARTS a passed plumbing gate covers: a cell that names its
+    part (a DOB floor-table "GAS ROUGH") implies that part only; storm piping
+    has no part node, so a "ST DRN ROUGH" pass implies plumbing rough-in in
+    general; a pass that names no part implies every part the model has."""
+    q = f"{g.get('ref') or ''} {g.get('quote') or ''}".upper()
+    if "GAS" in q:
+        return ("rough_gas",)
+    if "WS " in q or "WATER" in q or "SANITARY" in q:
+        return ("rough_water", "rough_dwv")
+    if "ST DRN" in q or "STORM" in q:
+        return (PLUMBING_GENERIC,)
+    return PLUMBING if model.get("systems", {}).get("gas") else ("rough_dwv", "rough_water")
+
+
 def implications(facts: Sequence[Dict[str, Any]], model: Dict[str, Any]) -> List[Dict[str, Any]]:
     """A passed (verified / confirmed) rough or underground inspection on a
     level means the inspected installation existed there on that day. That is
@@ -294,7 +313,7 @@ def implications(facts: Sequence[Dict[str, Any]], model: Dict[str, Any]) -> List
         if g.get("claim") != "done" or g.get("kind") not in ("verified", "confirmed"):
             continue
         if g.get("node") == "gate_plumbing_rough":
-            nodes = PLUMBING if model.get("systems", {}).get("gas") else ("rough_dwv", "rough_water")
+            nodes = parts_passed(g, model)
         elif g.get("node") == UNDERGROUND_GATE and g.get("kind") == "verified":
             nodes = (UNDERGROUND["plumbing"],)
         else:
@@ -318,6 +337,12 @@ _SLAB = re.compile(r"\bslab\b", re.I)
 _CELLAR = re.compile(r"\bcellar\b|\bbasement\b", re.I)
 _PILE = re.compile(r"\bpiles?\b|\bpile\s+caps?\b|\bgrade\s+beams?\b", re.I)
 _ROOF_WORD = re.compile(r"\broof\b", re.I)
+_ELEVATOR = re.compile(r"\belevators?\b|\bhoistway\b", re.I)
+
+
+def _n_records(rows: Iterable[Dict[str, Any]]) -> int:
+    """Distinct underlying records (R0753:foundation and R0753:slab are one)."""
+    return len({str(r.get("ref") or "").split(":", 1)[0] for r in rows})
 _CONCRETE_FRAME = re.compile(r"\b(?:pour|formwork|rebar)\w*\b[^,;]{0,20}\b(?:columns?|shear\s+walls?)\b"
                              r"|\b(?:columns?|shear\s+walls?)\b[^,;]{0,20}\b(?:pour|formwork|rebar)\w*\b", re.I)
 
@@ -334,7 +359,7 @@ def contradictions(items: Sequence[Dict[str, Any]], model: Dict[str, Any], *,
                 bad[lv].append(i)
     for lv, rows in sorted(bad.items()):
         out.append(_contradiction(
-            "impossible_level", f"{len(rows)} record(s) name {lv}, which this building does not have "
+            "impossible_level", f"{_n_records(rows)} record(s) name {lv}, which this building does not have "
             f"(levels: {', '.join(model.get('levels') or [])})", (r["ref"] for r in rows), levels=[lv],
             explanations=["the record was bound to the wrong project", "the floor tag is wrong"]))
     # Concrete where the model has no cast slab.
@@ -352,16 +377,26 @@ def contradictions(items: Sequence[Dict[str, Any]], model: Dict[str, Any], *,
         rows = [i for i in items if _CONCRETE_FRAME.search(i.get("quote") or "")]
         if rows:
             out.append(_contradiction(
-                "concrete_frame_in_a_cfs_building", f"{len(rows)} record(s) name concrete columns / shear walls; the "
+                "concrete_frame_in_a_cfs_building", f"{_n_records(rows)} record(s) name concrete columns / shear walls; the "
                 "structural model is a cold-formed steel frame with CFS braced shear walls", (r["ref"] for r in rows),
                 explanations=["activity chips remembered from another job were re-used",
-                              "foundation-wall work was named with frame words"]))
+                              "foundation-wall work was named with frame words",
+                              "the drawings disagree among themselves (drawings contradiction C7: the A-500 legend "
+                              "shows poured-concrete shear walls; the structural set is CFS)"]))
+    # An elevator named in a building the model says has none.
+    if (model.get("systems") or {}).get("elevator") is False:
+        rows = [i for i in items if _ELEVATOR.search(i.get("quote") or "")]
+        if rows:
+            out.append(_contradiction(
+                "names_an_elevator", f"{_n_records(rows)} record(s) name an elevator; the building has none",
+                (r["ref"] for r in rows), explanations=["the record belongs to another building",
+                                                       "a word for something else (a hoist, a beam pocket)"]))
     # A cellar named on a building with none.
     if not model.get("below_grade_levels"):
         rows = [i for i in items if _CELLAR.search(i.get("quote") or "") and i.get("source") != "dob_logs"]
         if rows:
             out.append(_contradiction(
-                "names_a_cellar", f"{len(rows)} record(s) name a cellar; the building model has none "
+                "names_a_cellar", f"{_n_records(rows)} record(s) name a cellar; the building model has none "
                 "(slab on grade)", (r["ref"] for r in rows),
                 explanations=["'cellar slab' is the crew's name for the ground slab on grade",
                               "the record belongs to another building"]))
@@ -370,7 +405,7 @@ def contradictions(items: Sequence[Dict[str, Any]], model: Dict[str, Any], *,
         rows = [i for i in items if _PILE.search(i.get("quote") or "")]
         if rows:
             out.append(_contradiction(
-                "piles_not_on_drawings", f"{len(rows)} record(s) name piles / pile caps / grade beams; the structural "
+                "piles_not_on_drawings", f"{_n_records(rows)} record(s) name piles / pile caps / grade beams; the structural "
                 "model shows spread footings and a slab on grade, no piles", (r["ref"] for r in rows),
                 explanations=["support-of-excavation piles at the neighbours (an SOE filing exists)",
                               "foundation drawings (not provided) differ"]))
@@ -395,6 +430,53 @@ def contradictions(items: Sequence[Dict[str, Any]], model: Dict[str, Any], *,
                 "headcount_log_vs_gate", f"{h.get('sub')} on {h.get('date')}: {lc} on the daily log, {gc} at the gate",
                 h.get("refs") or (), on=h.get("date") if isinstance(h.get("date"), date) else None))
     return out
+
+
+def group_issues(cons: List[Dict[str, Any]], items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Contradictions whose every record comes from ONE punch walk are one
+    issue ("this walk does not fit this building"), not one per floor. The
+    rest pass through unchanged."""
+    walk = {str(i.get("ref")).split(":", 1)[0]: (_on(i), i) for i in items
+            if str(i.get("note") or "").startswith("punch-walk")}
+    groups: Dict[Any, List[Dict[str, Any]]] = defaultdict(list)
+    out = []
+    for c in cons:
+        bases = {r.split(":", 1)[0] for r in c.get("refs") or ()}
+        days = {walk[b][0] for b in bases if b in walk}
+        if bases and bases <= set(walk) and len(days) == 1:
+            groups[days.pop()].append(c)
+        else:
+            out.append(c)
+    for day, cs in sorted(groups.items(), key=lambda kv: str(kv[0])):
+        refs = sorted({r for c in cs for r in c["refs"]})
+        board = [r for r in refs if re.search(r"sheet\s?rock|compound|drywall", walk[r.split(":")[0]][1].get("quote") or "", re.I)]
+        out.append(_contradiction(
+            "walk_does_not_fit_this_building",
+            f"the punch walk of {day} does not fit this building: " + "; ".join(c["what"] for c in cs)
+            + (f"; {len(board)} item(s) speak of sheetrock / compound while no board is on record anywhere"
+               if board else ""), refs, levels=sorted({lv for c in cs for lv in c.get("levels") or ()}),
+            on=day, explanations=["the walk (or part of it) is of another building, bound to this project",
+                                  "the bot's floor tags are wrong"]))
+        out[-1]["parts"] = [c["kind"] for c in cs]
+    # The foundation-phase rows that name a cellar, piles / pile caps / grade
+    # beams and concrete columns / shear walls are one issue: crews' activity
+    # words for elements the building model does not have (one row, R0753 on
+    # 588, names all three). A walk's own records stay with the walk.
+    vocab = [c for c in out if c["kind"] in FOUNDATION_WORD_KINDS]
+    if len(vocab) > 1:
+        out = [c for c in out if c["kind"] not in FOUNDATION_WORD_KINDS]
+        refs = sorted({r for c in vocab for r in c["refs"] if r.split(":", 1)[0] not in walk})
+        merged = _contradiction(
+            "foundation_words_not_in_the_model",
+            f"{len({r.split(':', 1)[0] for r in refs})} foundation-phase record(s) name elements the building model "
+            "does not have: " + "; ".join(c["what"] for c in vocab), refs,
+            explanations=sorted({e for c in vocab for e in c.get("candidate_explanations") or ()}))
+        merged["parts"] = [c["kind"] for c in vocab]
+        out.append(merged)
+    return out
+
+
+FOUNDATION_WORD_KINDS = ("names_a_cellar", "piles_not_on_drawings", "concrete_frame_in_a_cfs_building")
 
 
 FILED_LOCATION = "filed location: "
@@ -448,8 +530,8 @@ def order_contradictions(stage_map: Dict[str, Dict[str, Any]], model: Dict[str, 
                                ("finish", "insulation"), ("finish", "board")):
             if later not in firsts:
                 continue
-            if earlier == "slab" and not (model.get("slab_on_grade") and lv == model.get("ground_level")):
-                continue
+            if earlier == "slab":
+                continue                     # framing_before_slab_pour reads the actual pour
             if earlier in firsts and firsts[later] < firsts[earlier]:
                 out.append(_contradiction(
                     "stage_out_of_order", f"{later} on {lv} first recorded {firsts[later]}, before {earlier} "
@@ -464,6 +546,37 @@ def order_contradictions(stage_map: Dict[str, Dict[str, Any]], model: Dict[str, 
                     explanations=["fixtures set during rough-in (tubs, shower valves) were called trim/fixtures",
                                   f"{earlier} on {lv} is unrecorded"]))
     return out
+
+
+_PERIMETER = re.compile(r"\bexterior\b|\bperimeter\b|\bsheathing\b|\bex\.?\s*\d|\bfoundation\s+wall", re.I)
+
+
+def framing_before_slab_pour(facts: Sequence[Dict[str, Any]], model: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Framing recorded on the ground level before the slab-on-grade pour
+    (slab_pour). Each row is CLASSIFIED by its own words, never guessed:
+    "names exterior / perimeter wall framing" (sheathing, exterior, a lot-line
+    exception "ex. 4", foundation wall) - framing that can stand on the
+    footings / foundation walls before the slab - or "does not say where"
+    (could be perimeter work or a mis-dated row; the record does not say)."""
+    g = model.get("ground_level")
+    pour = slab_pour(facts, model)
+    if not (model.get("slab_on_grade") and g and pour):
+        return []
+    rows = sorted((i for i in facts if i.get("node") == "framing" and g in (i.get("levels") or ()) and _on(i)
+                   and _on(i) < _on(pour) and i.get("claim") in E.WORK_CLAIMS), key=_on)
+    if not rows:
+        return []
+    named = [i for i in rows if _PERIMETER.search(i.get("quote") or "")]
+    silent = [i for i in rows if i not in named]
+    return [_contradiction(
+        "framing_before_slab_pour",
+        f"framing on {g} recorded on {len({_on(i) for i in rows})} day(s) {_on(rows[0])}..{_on(rows[-1])}, before the "
+        f"slab-on-grade pour of {_on(pour)}: {len({i['ref'].split(':')[0] for i in named})} row(s) name exterior / "
+        f"perimeter wall framing; {len({i['ref'].split(':')[0] for i in silent})} do not say where",
+        [i["ref"] for i in rows] + [pour["ref"]], levels=[g], node=SLAB_ON_GRADE, on=_on(rows[0]),
+        explanations=["perimeter / exterior walls framed on the foundation walls before the slab (the rows that "
+                      "say so)", "a mis-dated row, or the slab was poured earlier than recorded (the rows that do "
+                      "not say where)"])]
 
 
 # ── RULE: ROUGH-IN IN PLACE, PER LEVEL AND SYSTEM ─────────────────────────
@@ -675,6 +788,8 @@ def infer(items: Sequence[Dict[str, Any]], model: Dict[str, Any], *, as_of: date
     cons = contradictions(facts, model, headcounts=[h for h in headcounts or ()
                                                      if not isinstance(h.get("date"), date) or h["date"] <= as_of])
     cons += order_contradictions(stage_map, model)
+    cons += framing_before_slab_pour(dated, model)
+    cons = group_issues(cons, facts)
     infs: List[Dict[str, Any]] = []
     for system in ("plumbing", "electrical"):
         inf, c = under_slab(dated, model, system, as_of=as_of, project_id=project_id, cons=cons)
