@@ -56727,7 +56727,7 @@ async def _dm_schedule_lookahead(ctx: dict, job: dict, args: dict) -> str:
     if not project:
         return wa_security.BOT_SCOPE_REFUSAL
     try:
-        src, rows, today, start = await _schedule_evidence(project, cid, WORK_STATE_DAYS)
+        src, rows, today, start, items = await _forecast_inputs(project, cid)
     except Exception as e:
         logger.warning(f"[lookahead] failed: {type(e).__name__}: {e!r}")
         return "The schedule records couldn't be read just now."
@@ -56737,7 +56737,8 @@ async def _dm_schedule_lookahead(ctx: dict, job: dict, args: dict) -> str:
         days = int(args.get("days") or 7)
     except (TypeError, ValueError):
         days = 7
-    return progress_plan.lookahead_text(src["schedule"], rows, today=today, days=days, logs_from=start)
+    return schedule_forecast.lookahead_with_status(src["schedule"], items, rows, today=today, days=days, logs_from=start,
+                                                   project_id=str(project.get("_id")), job=job["label"])
 
 
 async def _dm_proposed_sequence(ctx: dict, job: dict, args: dict) -> str:
@@ -57326,6 +57327,44 @@ async def _dm_project_status(ctx: dict, job: dict, args: dict) -> str:
         logger.warning(f"[progress] failed: {type(e).__name__}: {e!r}")
         return "The progress records couldn't be read just now."
     return project_progress.as_text(model, str(args.get("scope") or "overall"), args.get("name"))
+
+
+# ── SCHEDULE FORECAST (lib/forecast.py) ─────────────────────────────────────
+# Facts at attested or stronger, the confirmed file's dates and logic, the
+# logs' reported spans and LeveLog's estimates, each in its own group. The
+# evidence is every source, through _progress_evidence.
+from lib import forecast as schedule_forecast  # noqa: E402
+
+
+async def _forecast_inputs(project: dict, company_id: str) -> tuple:
+    """(report sources, log rows, today, first day read, evidence items): every
+    source through the one loader (_progress_evidence), read once."""
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(_MemoryZone("America/New_York")).date()
+    start = today - timedelta(days=WORK_STATE_DAYS - 1)
+    keep: dict = {}
+    items, _coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    src = keep["sources"]
+    rows = work_state.evidence_rows(progress_report._log_activities(src["logbooks"], start, today))
+    return src, rows, today, start, items
+
+
+async def _dm_schedule_status(ctx: dict, job: dict, args: dict) -> str:
+    """"Are we on schedule?": the four groups of lib/forecast.py, read only."""
+    cid = str(ctx["ident"]["company_id"])
+    project = await _bot_project_scope(cid, str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    try:
+        src, rows, today, _start, items = await _forecast_inputs(project, cid)
+    except Exception as e:
+        logger.warning(f"[schedule-status] failed: {type(e).__name__}: {e!r}")
+        return "The schedule records couldn't be read just now."
+    if not src.get("schedule"):
+        return (f"No confirmed schedule is on file for {job['label']}, so there are no planned dates to compare "
+                "against and no forecast to give.")
+    fc = schedule_forecast.forecast(src["schedule"], items, rows, today=today, project_id=str(project.get("_id")))
+    return schedule_forecast.status_text(fc, job["label"])
 
 
 # ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
@@ -63504,11 +63543,18 @@ _DM_BRAIN_EXTRA_TOOLS = [
     {"name": "schedule_lookahead", "description": (
         "What the job's CONFIRMED schedule file plans in the next 7 or 14 days, each activity's predecessors as the "
         "file links them, beside what the logs report, and activities past their planned finish with no report. "
-        "From the file's dates and logic only: no rate, forecast or estimated date."),
+        "From the file's dates and logic; it ends with the schedule status groups, where any estimate is labelled "
+        "ESTIMATE with its basis. No rate, forecast or estimated date beyond those lines."),
      "input_schema": {"type": "object", "properties": {
          "job": _JOB_PROP,
          "days": {"type": "integer", "description": "7 or 14. Default 7."}},
          "required": []}},
+    {"name": "schedule_status", "description": (
+        "'Are we on schedule?', 'when will we finish?': the job's CONFIRMED schedule file against what is on record, in "
+        "four separate groups: start / done markers at attested or stronger, the file's dates and logic (including "
+        "what is past its planned finish with no done evidence, and the later work linked to it), the logs' reported "
+        "spans, and LeveLog's estimates with their basis, only where enough completed evidence supports one."),
+     "input_schema": {"type": "object", "properties": {"job": _JOB_PROP}, "required": []}},
     {"name": "proposed_sequence", "description": (
         "A PROPOSED order of work per level, for a job with no confirmed schedule: the standard sequence over the "
         "levels the logs name. Shows it, or approves the one already shown."),
@@ -63949,7 +63995,7 @@ async def _dm_do_set_trade(ident: dict, p: dict):
 _DM_BRAIN_ONE_JOB = _DM_BRAIN_JOB_TOOLS + ("headcount", "dot_status", "send_sheet",
                                            "send_plan_file", "sheet_info",
                                            "find_photos", "send_photos", "work_status",
-                                           "schedule_lookahead", "proposed_sequence", "report_inspection", "confirm_photo_place",
+                                           "schedule_lookahead", "schedule_status", "proposed_sequence", "report_inspection", "confirm_photo_place",
                                            "project_status")
 
 
@@ -64087,7 +64133,7 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
     if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
                                                "send_plan_file", "sheet_info",
                                                "find_photos", "send_photos", "work_status",
-                                               "schedule_lookahead", "proposed_sequence", "report_inspection", "confirm_photo_place",
+                                               "schedule_lookahead", "schedule_status", "proposed_sequence", "report_inspection", "confirm_photo_place",
                                                "project_status"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
@@ -64132,6 +64178,8 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
             return await _dm_schedule_lookahead(ctx, job, args)
         if name == "project_status":
             return await _dm_project_status(ctx, job, args)
+        if name == "schedule_status":
+            return await _dm_schedule_status(ctx, job, args)
         if name == "proposed_sequence":
             return await _dm_proposed_sequence(ctx, job, args)
         if name == "report_inspection":
