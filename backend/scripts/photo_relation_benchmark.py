@@ -1,15 +1,23 @@
 """READ-ONLY. How well can photos of one place be told from photos of another?
 
 Nothing compares photos automatically, and no photo lends its place, until this
-has been run on real photos labeled BY A PERSON and the thresholds have been set
-from what it prints (lib/photo_relations.GEOMETRY_MIN_INLIERS and
+has been run on real photos labeled BY TWO PEOPLE and the thresholds have been
+set from what it prints (lib/photo_relations.GEOMETRY_MIN_INLIERS and
 VISION_MIN_CONFIDENCE, lib/photo_place.LEND_MIN_INLIERS all stay None until then).
 
-Step 1, build candidate pairs. `label` is EMPTY on every row; `candidate_kind` is
+THE OWNER'S RULING: 30 negative examples cannot validate a 2% false-positive
+ceiling. Every rate is printed with its 95% intervals (exact Clopper-Pearson
+and Wilson, lib/benchmark_stats), and "would enable" needs the one-sided upper
+bound under the ceiling, enough independently labeled negatives for it, two
+projects, three construction-stage gaps among the same-place pairs, and hard
+negatives at least a third of the negatives. Otherwise it prints what is missing.
+
+Step 1, plan. Stratified candidate pairs across EVERY project with indexed
+photos, sized for the ceiling. Every label column is EMPTY; `candidate_kind` is
 only why the pair was picked, never an answer:
 
     railway run --service Blueview2 --environment production \\
-        python backend/scripts/photo_relation_benchmark.py candidates "588" --out pairs.csv
+        python backend/scripts/photo_relation_benchmark.py plan --fp-ceiling 0.02 --out pairs.csv
 
     different_level           interior photos filed under two different single levels
     same_crew_day             one crew row, one day: often the same spot, and easy
@@ -20,22 +28,28 @@ only why the pair was picked, never an answer:
     similar_room_same_floor   HARD NEGATIVE: one level, the same kind of room, in two
                               different units or for two different crews
 
-Step 2, a person fills `label` with same or different (or unsure). Nothing else
-is scored, and a row without a label is never scored.
+Step 2, a contact sheet to label from: pairs side by side, ids only (no names,
+no phone numbers, no log text), read from R2 and nothing else:
 
-Step 3, measure. Geometry costs nothing; vision only with both flags:
+    railway run ... python backend/scripts/photo_relation_benchmark.py sheet pairs.csv --out sheet.html
+
+Step 3, two people label INDEPENDENTLY, each in their own copy: one fills
+`label_a`, the other `label_b`, with same, different or unsure, by sheet_id.
+Merge the two columns into one file. Where they disagree, the pair is not scored
+until a person writes the answer in `label_resolved` (`sheet --disputed` shows
+only those). A pair with one label only is not scored either.
+
+Step 4, measure. Geometry costs nothing; vision only with both flags:
 
     railway run ... python backend/scripts/photo_relation_benchmark.py evaluate pairs.csv --fp-ceiling 0.02
     railway run ... python backend/scripts/photo_relation_benchmark.py evaluate pairs.csv --vision --max-calls 40 --fp-ceiling 0.02
 
 A SIGNAL THAT DOES NOT MATCH SAYS "UNCONFIRMED", NEVER "DIFFERENT": construction
 changes how a place looks. So the two errors are reported apart: a same-place
-FALSE POSITIVE (said same, a person says different) is the one that would put a
-photo in the wrong place; a MISSED same-place match only leaves a photo without
-extra support. Each is given as a count and a rate, per signal (geometry,
-vision, combined) and per construction-stage gap. The verdict "would enable"
-needs a false-positive ceiling the owner sets (--fp-ceiling); without one, no
-verdict is printed.
+FALSE POSITIVE (said same, the labels say different) is the one that would put
+a photo in the wrong place; a MISSED same-place match only leaves a photo
+without extra support. Each is given per signal (geometry, vision, combined)
+and per construction-stage gap, project and negative kind (hard or easy).
 
 It never writes to Mongo. Its vision calls are not metered (a meter is a write),
 so the count it prints is the spend to note down.
@@ -43,11 +57,14 @@ so the count it prints is the spend to note down.
 
 import argparse
 import asyncio
+import base64
 import csv
+import html
+import io
+import math
 import random
 import re
 import sys
-from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -55,6 +72,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from probe_helpers import FieldNotInSample, counted, require_fields  # noqa: E402
+from lib import benchmark_stats as S  # noqa: E402
 from lib import photo_geometry, progress_report  # noqa: E402
 from lib import photo_place  # noqa: E402
 from lib import photo_relations as R  # noqa: E402
@@ -62,24 +80,28 @@ from lib import project_report as base  # noqa: E402
 from lib import work_state as W  # noqa: E402
 
 DIFFERENT_LEVEL, SAME_CREW_DAY, ACROSS_STAGES = "different_level", "same_crew_day", "same_level_across_stages"
-SAME_LINE_OTHER_FLOOR, SIMILAR_ROOM_SAME_FLOOR = "same_line_other_floor", "similar_room_same_floor"
+SAME_LINE_OTHER_FLOOR, SIMILAR_ROOM_SAME_FLOOR = S.HARD_KINDS
 KINDS = (DIFFERENT_LEVEL, SAME_CREW_DAY, ACROSS_STAGES, SAME_LINE_OTHER_FLOOR, SIMILAR_ROOM_SAME_FLOOR)
-FIELDS = ["pair_id", "candidate_kind", "label", "stage_a", "stage_b", "stage_gap", "key_a", "key_b", "short_a", "short_b",
+FIELDS = ["pair_id", "sheet_id", "project_id", "candidate_kind", "label_a", "label_b", "label_resolved",
+          "stage_a", "stage_b", "stage_gap", "key_a", "key_b", "short_a", "short_b",
           "log_a", "log_b", "date_a", "date_b", "level_a", "level_b", "space_a", "space_b", "room_a", "room_b",
           "where_a", "where_b", "sub_a", "sub_b", "shows_a", "shows_b", "link_a", "link_b"]
-LABELS = ("same", "different")
-NOT_SCORED = ("", "unsure")
+LABEL_COLUMNS = ("label_a", "label_b", "label_resolved")
+BadLabel = S.BadLabel
 STAGES = ("framing", "rough_in", "board", "finish")
 NODE_STAGE = {"framing": 0, "rough_dwv": 1, "rough_water": 1, "rough_duct": 1, "rough_sprinkler": 1, "rough_gas": 1,
               "rough_electric": 1, "rough_lowvolt": 1, "insulation": 1, "drywall": 2, "ceiling_drop": 2,
               "prime": 3, "mep_trim": 3, "finishes": 3}
 INLIER_THRESHOLDS = (4, 6, 8, 10, 15, 20, 30, 50, 80, 120)
 CONFIDENCE_THRESHOLDS = (0.5, 0.7, 0.9)
+REFERENCE_SETTINGS = ("inliers>=15", "epipolar>=15", "yes, confidence>=0.7", "inliers>=15 or yes>=0.7")
 INSIDE_VIEWS = ("interior", "basement")
 MIN_QUALITY = 4.0
-#: Below this per side, a rate says very little and no verdict is given.
-FEW_LABELS = 30
 PER_GROUP = 3
+#: The plan's split. Hard negatives: half the negatives, over the two hard kinds.
+#: Same-place candidates: three quarters across stages, a quarter one crew-day.
+HARD_PLAN_SHARE = 0.5
+ACROSS_SHARE = 0.75
 _UNIT = re.compile(r"^(\d{1,2})([A-Z])$")
 
 
@@ -121,7 +143,9 @@ def _room(row: Dict[str, Any]) -> Optional[str]:
 def _pair(a: Dict[str, Any], b: Dict[str, Any], kind: str) -> Dict[str, Any]:
     first, second = sorted((a, b), key=lambda r: (str(r.get("date")), str(r.get("photo_key"))))
     sa, sb = stage_of(first), stage_of(second)
-    out = {"pair_id": "|".join(sorted((str(a["photo_key"]), str(b["photo_key"])))), "candidate_kind": kind, "label": "",
+    pid = "|".join(sorted((str(a["photo_key"]), str(b["photo_key"]))))
+    out = {"pair_id": pid, "sheet_id": S.sheet_id(pid), "project_id": str(first.get("project_id") or ""),
+           "candidate_kind": kind, "label_a": "", "label_b": "", "label_resolved": "",
            "stage_a": STAGES[sa] if sa is not None else "", "stage_b": STAGES[sb] if sb is not None else "",
            "stage_gap": abs(sb - sa) if sa is not None and sb is not None else "unknown", "link_a": "", "link_b": ""}
     for s, r in (("a", first), ("b", second)):
@@ -159,9 +183,9 @@ def _gap_ok(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
     return bool(da and db) and abs((db - da).days) >= R.MIN_GAP_DAYS
 
 
-def build_candidates(rows: Sequence[Dict[str, Any]], per_kind: int = 150, seed: int = 1109) -> List[Dict[str, Any]]:
-    """The pairs to label, every `label` empty. Seeded: the same photos give the
-    same pairs."""
+def build_candidates(rows: Sequence[Dict[str, Any]], per_kind: int = 150, seed: Any = 1109) -> List[Dict[str, Any]]:
+    """The pairs of ONE project to label, every label empty. Seeded: the same
+    photos give the same pairs."""
     rng = random.Random(seed)
     inside = _inside(rows)
     by_level: Dict[str, List[Dict[str, Any]]] = {}
@@ -209,6 +233,52 @@ def build_candidates(rows: Sequence[Dict[str, Any]], per_kind: int = 150, seed: 
     return out
 
 
+# ── THE PLAN: ACROSS EVERY PROJECT, SIZED FOR THE CEILING ──────────────────
+
+def kind_quotas(ceiling: float, expect_errors: int = 1, overdraw: float = 1.25, same_share: float = 0.5) -> Dict[str, int]:
+    """How many candidates of each kind to draw. Negatives: the exact count the
+    ceiling needs at `expect_errors` false positives, times `overdraw` (some
+    candidates will be labeled same, unsure or disputed). Half of them hard."""
+    negatives = math.ceil(S.required_negatives(ceiling, expect_errors) * overdraw)
+    hard = math.ceil(negatives * HARD_PLAN_SHARE)
+    same = math.ceil(negatives * same_share)
+    across = math.ceil(same * ACROSS_SHARE)
+    return {DIFFERENT_LEVEL: negatives - hard, SAME_LINE_OTHER_FLOOR: math.ceil(hard / 2),
+            SIMILAR_ROOM_SAME_FLOOR: hard // 2, ACROSS_STAGES: across, SAME_CREW_DAY: same - across}
+
+
+def plan_pairs(rows_by_project: Dict[str, Sequence[Dict[str, Any]]], quotas: Dict[str, int], seed: int = 1109) -> List[Dict[str, Any]]:
+    """Each kind's quota spread evenly over the projects that have candidates
+    of that kind (lib/benchmark_stats.allocate), and within a project over the
+    construction-stage gaps. Seeded per project, so adding a project does not
+    reshuffle the others' pools."""
+    pools: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    biggest = max(quotas.values() or [0])
+    for pid in sorted(rows_by_project):
+        cands = build_candidates([{**r, "project_id": pid} for r in rows_by_project[pid]], per_kind=biggest, seed=f"{seed}:{pid}")
+        pools[pid] = {k: [p for p in cands if p["candidate_kind"] == k] for k in KINDS}
+    rng = random.Random(seed)
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for kind in KINDS:
+        share = S.allocate({pid: len(pools[pid][kind]) for pid in pools}, quotas.get(kind, 0))
+        for pid in sorted(share, key=str):
+            out += _take(list(pools[pid][kind]), seen, share[pid], rng, spread_by="stage_gap")
+    return out
+
+
+def plan_report(pairs: Sequence[Dict[str, Any]], quotas: Dict[str, int], ceiling: float) -> List[str]:
+    kinds = S.tally(pairs, lambda p: p["candidate_kind"])
+    out = [f"Planned for a false-positive ceiling of {ceiling}: {sum(quotas.values())} pairs; drawn {len(pairs)}."]
+    for kind in KINDS:
+        got, want = kinds.get(kind, 0), quotas.get(kind, 0)
+        out.append(f"  {kind:<26} drawn {got:>4} of {want:<4}" + ("" if got >= want else f"  SHORT by {want - got}"))
+    out.append("  By project: " + ", ".join(f"{k} {n}" for k, n in sorted(S.tally(pairs, S.project).items())))
+    out.append("  By construction-stage gap: " + ", ".join(f"{k} {n}" for k, n in sorted(S.tally(pairs, S.stage_gap).items())))
+    out += [f"  PLAN CANNOT MEET: {m}" for m in S.plan_shortfalls(pairs, ceiling)]
+    return out
+
+
 def photo_address(logbook: Dict[str, Any], key: str) -> Optional[Tuple[int, int]]:
     """(activity index, photo index) of a photo key in its log, or None."""
     data = logbook.get("data") if isinstance(logbook.get("data"), dict) else {}
@@ -228,44 +298,34 @@ def write_pairs(pairs: Sequence[Dict[str, Any]], path: str) -> None:
         writer.writerows(pairs)
 
 
-class BadLabel(ValueError):
-    """A label that is neither a person's answer nor blank: a typo must not be
-    silently left out of the count."""
-
-
-def read_labels(path: str) -> Tuple[List[Dict[str, Any]], int]:
-    """(rows a person labeled same or different, rows not scored: blank or
-    unsure). Raises BadLabel on anything else."""
+def read_labels(path: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """(rows to score, each with its agreed or resolved `label`; a tally of the
+    rest and the labelers' agreement). Raises BadLabel on a typo, or on a file
+    without two labeler columns: one person's labels are not scored."""
     keep: List[Dict[str, Any]] = []
-    not_scored = 0
+    statuses: List[str] = []
+    both: List[Tuple[str, str]] = []
     with open(path, newline="", encoding="utf-8") as fh:
-        for n, row in enumerate(csv.DictReader(fh), 2):
-            label = str(row.get("label") or "").strip().lower()
-            if label in NOT_SCORED:
-                not_scored += 1
-            elif label in LABELS and row.get("key_a") and row.get("key_b"):
+        reader = csv.DictReader(fh)
+        absent = [c for c in ("label_a", "label_b") if c not in (reader.fieldnames or [])]
+        if absent:
+            raise BadLabel(f"no {' or '.join(absent)} column: two people label each pair independently, "
+                           "and one person's labels are never scored")
+        for n, row in enumerate(reader, 2):
+            status, label = S.resolve(row.get("label_a"), row.get("label_b"), row.get("label_resolved"), line=n)
+            a, b = (str(row.get(c) or "").strip().lower() for c in ("label_a", "label_b"))
+            both.append((a, b))
+            statuses.append(status)
+            if status == "scored":
+                if not (row.get("key_a") and row.get("key_b")):
+                    raise BadLabel(f"line {n}: a labeled pair without key_a and key_b")
                 keep.append({**row, "label": label})
-            else:
-                raise BadLabel(f"line {n}: label {row.get('label')!r} is not same, different, unsure or blank")
-    return keep, not_scored
+    tally = S.tally(statuses, lambda s: s)
+    tally["kappa"] = S.cohen_kappa(both)
+    return keep, tally
 
 
 # ── THE ARITHMETIC ─────────────────────────────────────────────────────────
-
-def _is_same(row: Dict[str, Any]) -> bool:
-    return row["label"] == "same"
-
-
-def errors(rows: Sequence[Dict[str, Any]], says_same: Callable[[Dict[str, Any]], bool]) -> Dict[str, Any]:
-    """The two errors, apart. A row the signal does not call same is
-    UNCONFIRMED by it, not called different."""
-    same = [r for r in rows if _is_same(r)]
-    other = [r for r in rows if not _is_same(r)]
-    fp = sum(1 for r in other if says_same(r))
-    missed = sum(1 for r in same if not says_same(r))
-    return {"false_positives": fp, "different": len(other), "fp_rate": round(fp / len(other), 4) if other else None,
-            "missed": missed, "same": len(same), "miss_rate": round(missed / len(same), 4) if same else None}
-
 
 def _vision_yes(r: Dict[str, Any], c: float) -> bool:
     return r.get("vision_same") == "yes" and float(r.get("vision_confidence") or 0) >= c
@@ -290,106 +350,160 @@ def signals(rows: Sequence[Dict[str, Any]]) -> List[Tuple[str, str, Sequence[Dic
     return out
 
 
-def _rate(v: Optional[float]) -> str:
-    return "-" if v is None else f"{v:.3f}"
-
-
 def verdict(results: Sequence[Tuple[str, str, Sequence[Dict[str, Any]], Dict[str, Any]]], ceiling: Optional[float]) -> List[str]:
-    """Per signal family: the setting with the fewest misses whose
-    false-positive rate is at or under the owner's ceiling, with enough labels
-    on each side. Advice only: nothing reads it."""
+    """Per signal family: of the settings whose one-sided upper bound is under
+    the ceiling, the one with the fewest misses, and everything the sample still
+    lacks. Advice only: nothing reads it."""
     if ceiling is None:
         return ["Verdict: none. Pass --fp-ceiling (the highest same-place false-positive rate you accept) to get one."]
-    out = [f"Verdict at a false-positive ceiling of {ceiling}:"]
+    out = [f"Verdict at a false-positive ceiling of {ceiling} (one-sided {S.CONFIDENCE:.0%} upper bound):"]
     for family in dict.fromkeys(f for f, _s, _r, _e in results):
-        mine = [(s, e) for f, s, _r, e in results if f == family]
-        if not mine or mine[0][1]["same"] < FEW_LABELS or mine[0][1]["different"] < FEW_LABELS:
-            out.append(f"  {family}: WOULD NOT ENABLE: fewer than {FEW_LABELS} labeled pairs on a side.")
+        mine = [(n, s, rows, e) for n, (f, s, rows, e) in enumerate(results) if f == family]
+
+        def upper(m: Tuple[int, str, Any, Dict[str, Any]]) -> float:
+            return 2.0 if m[3]["fp"]["upper"] is None else m[3]["fp"]["upper"]
+        passing = [m for m in mine if upper(m) < ceiling]
+        if passing:     # the fewest misses; on a tie the lower bound, then the earlier (looser) setting
+            _n, s, rows, e = min(passing, key=lambda m: (m[3]["miss"]["k"], upper(m), m[0]))
+        else:
+            _n, s, rows, e = min(mine, key=lambda m: (upper(m), m[3]["miss"]["k"], m[0]))
+        lacking = S.missing(rows, e["fp"], ceiling, miss=e["miss"])
+        if lacking:
+            out.append(f"  {family}: WOULD NOT ENABLE. Closest setting {s}: false positives {S.fmt(e['fp'])}. Missing:")
+            out += [f"    - {m}" for m in lacking]
             continue
-        ok = [(s, e) for s, e in mine if e["fp_rate"] is not None and e["fp_rate"] <= ceiling]
-        if not ok:
-            out.append(f"  {family}: WOULD NOT ENABLE: no setting keeps false positives at or under the ceiling.")
-            continue
-        s, e = min(ok, key=lambda x: (x[1]["miss_rate"], x[0]))
-        out.append(f"  {family}: WOULD ENABLE at {s}: false positives {e['false_positives']}/{e['different']} "
-                   f"({_rate(e['fp_rate'])}), missed {e['missed']}/{e['same']} ({_rate(e['miss_rate'])}).")
+        out.append(f"  {family}: WOULD ENABLE at {s}: false positives {S.fmt(e['fp'])}; missed {S.fmt(e['miss'])}. "
+                   f"Chosen among {len(mine)} settings on these same labels: confirm on a fresh sample before setting a constant.")
     return out
 
 
-def _gap(row: Dict[str, Any]) -> str:
-    """0 is a gap (the same stage), not a missing one."""
-    v = row.get("stage_gap")
-    return "unknown" if v is None or v == "" else str(v)
+def _kappa_line(k: Dict[str, Any]) -> str:
+    if not k["n"]:
+        return "Labeler agreement: no pair was labeled by both people."
+    kappa = "undefined (one answer only)" if k["kappa"] is None else f"{k['kappa']:.3f}"
+    return (f"Labeler agreement over {k['n']} pair(s) both labeled: Cohen's kappa {kappa}, "
+            f"observed {k['observed']:.3f}, chance {k['chance']:.3f}; {k['n'] - k['agreed']} disagreement(s).")
 
 
-def by_stage_gap(rows: Sequence[Dict[str, Any]], says_same: Callable[[Dict[str, Any]], bool]) -> List[str]:
-    gaps = sorted({_gap(r) for r in rows})
-    out = []
-    for gap in gaps:
-        e = errors([r for r in rows if _gap(r) == gap], says_same)
-        out.append(f"      stage gap {gap}: false positives {e['false_positives']}/{e['different']} ({_rate(e['fp_rate'])}), "
-                   f"missed {e['missed']}/{e['same']} ({_rate(e['miss_rate'])})")
-    return out
-
-
-def report(rows: Sequence[Dict[str, Any]], not_scored: int, vision_calls: int, *, ceiling: Optional[float] = None) -> List[str]:
-    same = sum(1 for r in rows if _is_same(r))
-    out = [f"Pairs a person labeled: {len(rows)} ({same} same, {len(rows) - same} different). "
-           f"Not scored (blank or unsure): {not_scored}."]
-    if same < FEW_LABELS or len(rows) - same < FEW_LABELS:
-        out.append(f"TOO FEW to set a threshold from: at least {FEW_LABELS} on each side, and they should span several jobs.")
+def report(rows: Sequence[Dict[str, Any]], tally: Dict[str, Any], vision_calls: int, *, ceiling: Optional[float] = None) -> List[str]:
+    same = sum(1 for r in rows if S.is_same(r))
+    out = [f"Pairs scored (two people agreed, or a person resolved): {len(rows)} ({same} same, {len(rows) - same} different).",
+           f"Not scored: blank {tally.get('blank', 0)}, one label only {tally.get('one_label', 0)} (needs a second, "
+           f"independent label), unsure {tally.get('unsure', 0)}, disputed {tally.get('disputed', 0)} "
+           "(excluded until label_resolved is filled).",
+           _kappa_line(tally.get("kappa") or S.cohen_kappa([]))]
     if rows:
-        require_fields(rows, "geometry_ok", "inliers", "epipolar_inliers", "stage_gap", "candidate_kind")
+        require_fields(rows, "geometry_ok", "inliers", "epipolar_inliers", "stage_gap", "candidate_kind", "project_id")
     unmeasured = sum(1 for r in rows if not r["geometry_ok"])
     if unmeasured:
         out.append(f"{unmeasured} pair(s) could not be measured: counted as unconfirmed by geometry, never as different.")
-    out.append("A signal that does not say same says UNCONFIRMED. The two errors, apart:")
-    results = []
-    for family, setting, seen, says in signals(rows):
-        e = errors(seen, says)
-        results.append((family, setting, seen, e))
+    out.append("A signal that does not say same says UNCONFIRMED. The two errors, apart, with 95% intervals:")
+    sigs = signals(rows)
+    results = [(f, s, seen, S.errors(seen, says)) for f, s, seen, says in sigs]
     out.append("  Same-place FALSE POSITIVES (said same, labeled different): would put a photo in the wrong place")
-    out += [f"    {f:<18} {s:<28} {e['false_positives']:>4}/{e['different']:<4} rate {_rate(e['fp_rate'])}" for f, s, _r, e in results]
+    out += [f"    {f:<18} {s:<28} {S.fmt(e['fp'])}" for f, s, _r, e in results]
     out.append("  MISSED same-place matches (labeled same, not said same): a photo left without extra support")
-    out += [f"    {f:<18} {s:<28} {e['missed']:>4}/{e['same']:<4} rate {_rate(e['miss_rate'])}" for f, s, _r, e in results]
-    out.append("  By construction-stage gap (0 = same stage), per signal at its reference setting:")
-    for family, setting, seen, says in signals(rows):
-        if setting in ("inliers>=15", "epipolar>=15", "yes, confidence>=0.7", "inliers>=15 or yes>=0.7"):
-            out.append(f"    {family} {setting}:")
-            out += by_stage_gap(seen, says)
-    kinds = Counter(str(r.get("candidate_kind")) for r in rows)
-    out.append("  Labeled pairs by candidate kind: " + ", ".join(f"{k} {n}" for k, n in sorted(kinds.items())))
+    out += [f"    {f:<18} {s:<28} {S.fmt(e['miss'])}" for f, s, _r, e in results]
+    for name, key in S.STRATA:
+        out.append(f"  By {name}, per signal at its reference setting:")
+        for family, setting, seen, says in sigs:
+            if setting in REFERENCE_SETTINGS:
+                out.append(f"    {family} {setting}:")
+                for stratum, e in S.by_stratum(seen, says, key):
+                    out.append(f"      {name} {stratum}: false positives {S.fmt(e['fp'])}; missed {S.fmt(e['miss'])}")
+    c = S.coverage(rows)
+    projects = c["projects"]
+    out.append(f"  Sample: {c['negatives']} negatives ({c['hard']} hard) from {len(projects)} project(s); "
+               f"{c['same']} same-place pairs over stage gaps {', '.join(c['stage_gaps']) or 'none'}.")
+    out.append("  Labeled pairs by candidate kind: " + ", ".join(f"{k} {n}" for k, n in sorted(S.tally(rows, S.kind).items())))
+    if ceiling is not None:
+        out.append(f"  Labeled negatives a ceiling of {ceiling} needs: " + ", ".join(
+            f"{S.required_negatives(ceiling, k)} at {k} false positive(s)" for k in (0, 1, 2)))
     out += verdict(results, ceiling)
     out.append(f"Vision calls made: {vision_calls}.")
     return out
 
 
+# ── THE CONTACT SHEET (R2 reads only) ──────────────────────────────────────
+
+def thumbnail(raw: Optional[bytes], side: int = 360) -> Optional[str]:
+    """A small JPEG data URI, upright, or None when the bytes are not an image."""
+    if not raw:
+        return None
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(raw)) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((side, side))
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=70)
+    except Exception:
+        return None
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def build_sheet(rows: Sequence[Dict[str, Any]], fetch: Callable[[str], Optional[bytes]], side: int = 360) -> str:
+    """Pairs side by side. IDS ONLY: the pair's number and sheet_id, never the
+    log text, a name, a company or a phone number. A photo with only an inline
+    copy is not in R2 and is shown as missing rather than read from the log."""
+    cells = []
+    for n, row in enumerate(rows, 1):
+        sid = row.get("sheet_id") or S.sheet_id(row.get("pair_id") or f"{row.get('key_a')}|{row.get('key_b')}")
+        imgs = []
+        for s in "ab":
+            key = str(row.get(f"key_{s}") or "")
+            uri = None if not key or key.startswith("inline:") else thumbnail(fetch(key), side)
+            imgs.append(f'<img src="{uri}" alt="photo {s.upper()}">' if uri else '<div class="none">not in R2</div>')
+        cells.append(f'<section><h2>#{n} <code>{html.escape(sid)}</code></h2><div class="two">{"".join(imgs)}</div></section>')
+    return ("<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">"
+            "<title>Photo pair sheet</title><style>body{font:14px system-ui;margin:16px;background:#fff;color:#111}"
+            "section{margin:0 0 24px}.two{display:flex;gap:8px;flex-wrap:wrap}img{max-width:100%;height:auto}"
+            ".none{width:200px;height:150px;display:flex;align-items:center;justify-content:center;background:#eee}"
+            "h2{font-size:15px;margin:0 0 6px}</style></head><body>"
+            f"<p>{len(rows)} pair(s). Label each by sheet_id: same, different or unsure. Same means the same physical "
+            "area, even at another construction stage.</p>" + "".join(cells) + "</body></html>")
+
+
+def run_sheet(path: str, out: str, *, side: int, disputed: bool, fetch: Optional[Callable[[str], Optional[bytes]]] = None) -> int:
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    if disputed:
+        rows = [r for n, r in enumerate(rows, 2)
+                if S.resolve(r.get("label_a"), r.get("label_b"), r.get("label_resolved"), line=n)[0] == "disputed"]
+    if fetch is None:
+        import server
+
+        def fetch(key: str) -> Optional[bytes]:
+            return server._r2_fetch(key)[0]
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(build_sheet(rows, fetch, side))
+    print(f"Contact sheet of {len(rows)} pair(s) written to {out}: ids only, photos read from R2.")
+    return 0
+
+
 # ── THE RUNS (read-only) ───────────────────────────────────────────────────
 
-async def _project(job: str) -> Optional[Dict[str, Any]]:
+async def run_plan(out: str, *, ceiling: float, expect_errors: int, overdraw: float, same_share: float, seed: int) -> int:
     import server
-    rows = await server.db.projects.find({"is_deleted": {"$ne": True}}, {"name": 1, "address": 1}).to_list(2000)
-    require_fields(rows, "name")
-    hits = [p for p in rows if job.lower() in f"{p.get('name')} {p.get('address')}".lower()]
-    if len(hits) != 1:
-        print(f"{len(hits)} jobs match {job!r}: {[p.get('name') for p in hits][:10]}")
-        return None
-    return hits[0]
-
-
-async def run_candidates(job: str, out: str, per_kind: int, seed: int) -> None:
-    import server
-    project = await _project(job)
-    if not project:
-        return
-    rows = await server.db[server.PHOTO_INDEX].find({"project_id": str(project["_id"]), "kind": "photo"}).to_list(20000)
-    require_fields(rows, "photo_key", "log_id", "view", "quality", "where", "date", "sub", "work", "description", "short")
+    projects = await server.db.projects.find({"is_deleted": {"$ne": True}}, {"_id": 1}).to_list(5000)
+    live = {str(p["_id"]) for p in projects}
+    rows = await server.db[server.PHOTO_INDEX].find({"kind": "photo"}).to_list(500000)
+    if not rows:
+        print("No indexed photos: nothing to plan from.")
+        return 2
+    require_fields(rows, "photo_key", "project_id", "log_id", "view", "quality", "where", "date", "sub", "work",
+                   "description", "short")
     try:
         # Every row searched, not a sample: v2 rows may all be recent ones.
         v2 = str(counted(rows, "prompt_v", lambda v: v == 2, limit=len(rows)))
     except FieldNotInSample:
         v2 = "none"            # prompt_v is written only by the v2 read: no row has had one
-    pairs = build_candidates(rows, per_kind=per_kind, seed=seed)
+    by_project: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        if str(r.get("project_id")) in live:
+            by_project.setdefault(str(r.get("project_id")), []).append(r)
+    quotas = kind_quotas(ceiling, expect_errors, overdraw, same_share)
+    pairs = plan_pairs(by_project, quotas, seed)
     logs = {}
     for log_id in {p[f"log_{s}"] for p in pairs for s in "ab"}:
         lg = await server.db.logbooks.find_one({"_id": server.to_query_id(str(log_id))}, {"date": 1, "data.activities": 1})
@@ -401,12 +515,11 @@ async def run_candidates(job: str, out: str, per_kind: int, seed: int) -> None:
             if addr:
                 p[f"link_{s}"] = server._report_photo_url(str(p[f"log_{s}"]), addr[0], addr[1], "")
     write_pairs(pairs, out)
-    if pairs:
-        require_fields(pairs, "candidate_kind")
-    per = Counter(p["candidate_kind"] for p in pairs)
-    print(f"Job: {project.get('name')}. Index rows read: {len(rows)} ({v2} read with the v2 prompt: room type and "
-          f"legible text exist only on those). Pairs written to {out}: {dict(per)}.")
-    print("Every `label` is empty. Fill it with same, different or unsure, then run: evaluate", out)
+    print(f"Index rows read: {len(rows)} over {len(by_project)} live project(s) ({v2} read with the v2 prompt: room "
+          f"type and legible text exist only on those). Seed {seed}. Pairs written to {out}.")
+    print("\n".join(plan_report(pairs, quotas, ceiling)))
+    print("Every label column is empty. Two people fill label_a and label_b independently; then run: evaluate", out)
+    return 0
 
 
 async def measure(pairs: Sequence[Dict[str, Any]], *, vision: bool, max_calls: int) -> Tuple[List[Dict[str, Any]], int]:
@@ -422,8 +535,10 @@ async def measure(pairs: Sequence[Dict[str, Any]], *, vision: bool, max_calls: i
         raw_a = await server._photo_log_bytes(a) if a else None
         raw_b = await server._photo_log_bytes(b) if b else None
         g = await asyncio.to_thread(photo_geometry.match, raw_a, raw_b) if raw_a and raw_b else photo_geometry._empty("photo not found")
-        row = {**p, "geometry_ok": g["ok"], "geometry_reason": g["reason"], "inliers": g["inliers"], "ratio": g["ratio"],
-               "epipolar_inliers": g["epipolar_inliers"], "epipolar_ratio": g["epipolar_ratio"], "vision_same": "", "vision_confidence": ""}
+        project_id = p.get("project_id") or str((a or b or {}).get("project_id") or "")
+        row = {**p, "project_id": project_id, "geometry_ok": g["ok"], "geometry_reason": g["reason"], "inliers": g["inliers"],
+               "ratio": g["ratio"], "epipolar_inliers": g["epipolar_inliers"], "epipolar_ratio": g["epipolar_ratio"],
+               "vision_same": "", "vision_confidence": ""}
         if vision and calls < max_calls and raw_a and raw_b:
             calls += 1
             v = await server._photo_compare_call(raw_a, raw_b, a.get("project_id"), meter=False)
@@ -435,16 +550,16 @@ async def measure(pairs: Sequence[Dict[str, Any]], *, vision: bool, max_calls: i
 
 async def run_evaluate(path: str, *, vision: bool, max_calls: int, out_path: Optional[str], ceiling: Optional[float]) -> int:
     try:
-        pairs, not_scored = read_labels(path)
+        pairs, tally = read_labels(path)
     except BadLabel as e:
         print(f"Refused: {e}.")
         return 2
     if not pairs:
-        print(f"Refused: no row has a label a person filled in (same or different). {not_scored} row(s) are blank or unsure, "
-              "and an unlabeled row is never scored.")
+        print("Refused: no pair has two agreeing labels (or a resolved one) of same or different. "
+              f"{_kappa_line(tally['kappa'])} An unscored pair is never measured.")
         return 2
     rows, calls = await measure(pairs, vision=vision, max_calls=max_calls)
-    print("\n".join(report(rows, not_scored, calls, ceiling=ceiling)))
+    print("\n".join(report(rows, tally, calls, ceiling=ceiling)))
     if out_path and rows:
         with open(out_path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
@@ -454,14 +569,27 @@ async def run_evaluate(path: str, *, vision: bool, max_calls: int, out_path: Opt
     return 0
 
 
+def _rate_arg(parser: argparse.ArgumentParser, v: Optional[float], name: str) -> None:
+    if v is not None and not 0 < v < 1:
+        parser.error(f"{name} is a rate: above 0 and below 1")
+
+
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark same-place photo matching. Read-only.")
     sub = parser.add_subparsers(dest="command", required=True)
-    cand = sub.add_parser("candidates")
-    cand.add_argument("job")
-    cand.add_argument("--out", default="photo_relation_pairs.csv")
-    cand.add_argument("--per-kind", type=int, default=150)
-    cand.add_argument("--seed", type=int, default=1109)
+    plan = sub.add_parser("plan", help="stratified candidate pairs across every project, labels empty")
+    plan.add_argument("--fp-ceiling", type=float, required=True)
+    plan.add_argument("--expect-errors", type=int, default=1,
+                      help="false positives to size for: the plan holds enough negatives for the ceiling at this many")
+    plan.add_argument("--overdraw", type=float, default=1.25)
+    plan.add_argument("--same-share", type=float, default=0.5, help="same-place candidates per negative")
+    plan.add_argument("--seed", type=int, default=1109)
+    plan.add_argument("--out", default="photo_relation_pairs.csv")
+    sheet = sub.add_parser("sheet", help="a local HTML contact sheet of the pairs, ids only, R2 reads only")
+    sheet.add_argument("pairs")
+    sheet.add_argument("--out", default="photo_relation_sheet.html")
+    sheet.add_argument("--side", type=int, default=360)
+    sheet.add_argument("--disputed", action="store_true", help="only the pairs the two labelers disagree on")
     ev = sub.add_parser("evaluate")
     ev.add_argument("labels")
     ev.add_argument("--vision", action="store_true", help="also ask the paid vision model; requires --max-calls")
@@ -472,16 +600,20 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.command == "evaluate" and args.vision and args.max_calls <= 0:
         parser.error("--vision requires --max-calls N (N > 0)")
-    if args.command == "evaluate" and args.fp_ceiling is not None and not 0 <= args.fp_ceiling < 1:
-        parser.error("--fp-ceiling is a rate: at least 0 and below 1")
+    if args.command in ("evaluate", "plan"):
+        _rate_arg(parser, args.fp_ceiling, "--fp-ceiling")
+    if args.command == "plan" and (args.expect_errors < 0 or args.overdraw < 1 or args.same_share <= 0):
+        parser.error("--expect-errors >= 0, --overdraw >= 1 and --same-share > 0")
     return args
 
 
 def main(argv: Sequence[str]) -> int:
     args = parse_args(argv)
-    if args.command == "candidates":
-        asyncio.run(run_candidates(args.job, args.out, args.per_kind, args.seed))
-        return 0
+    if args.command == "plan":
+        return asyncio.run(run_plan(args.out, ceiling=args.fp_ceiling, expect_errors=args.expect_errors,
+                                    overdraw=args.overdraw, same_share=args.same_share, seed=args.seed))
+    if args.command == "sheet":
+        return run_sheet(args.pairs, args.out, side=args.side, disputed=args.disputed)
     return asyncio.run(run_evaluate(args.labels, vision=args.vision, max_calls=args.max_calls,
                                     out_path=args.out, ceiling=args.fp_ceiling))
 
