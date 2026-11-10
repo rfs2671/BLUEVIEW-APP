@@ -655,6 +655,11 @@ class AMissWeakensNothing(_Brain):
                     for g in (None, {"ok": False}, {"ok": True, "inliers": 0, "ratio": 0}, {"ok": True, "inliers": 99, "ratio": 0.9})}
         self.assertEqual(seen, {R.SUPPORTED, R.UNCONFIRMED})
 
+    def test_a_yes_below_the_benchmarked_confidence_adds_nothing(self):
+        with patch.object(R, "GEOMETRY_MIN_INLIERS", 50), patch.object(R, "VISION_MIN_CONFIDENCE", 0.7):
+            self.assertEqual(R.combine({"same_area": "yes", "confidence": 0.69}, None), {"same_place": R.UNCONFIRMED, "support": []})
+            self.assertEqual(R.combine({"same_area": "yes", "confidence": 0.7}, None)["support"], ["vision"])
+
     def test_geometry_alone_supports_unless_the_model_said_no(self):
         g = {"ok": True, "inliers": 99, "ratio": 0.9}
         with patch.object(R, "GEOMETRY_MIN_INLIERS", 50), patch.object(R, "VISION_MIN_CONFIDENCE", 0.7):

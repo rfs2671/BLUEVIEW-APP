@@ -103,6 +103,19 @@ class TheCandidates(unittest.TestCase):
         self.assertEqual({frozenset((p["space_a"], p["space_b"])) for p in pairs}, {frozenset(("3B", "4B"))})
         self.assertEqual({p["label"] for p in pairs}, {""})
 
+    def test_two_lines_are_not_one(self):
+        rows = [_r("a", where="floor 3 apt 3B"), _r("b", where="floor 4 apt 4C", log="L2")]
+        self.assertEqual(self._of(self._pairs(rows), B.SAME_LINE_OTHER_FLOOR), [])
+
+    def test_a_rare_stage_gap_is_not_crowded_out(self):
+        """Forty framing photos and four finish photos on one level: most pairs
+        are framing against framing, and the quota still reaches the rare gap."""
+        rows = [_r(f"f{i}", day=f"2026-{i % 9 + 1:02d}-{i % 27 + 1:02d}", log=f"F{i}", work="Framing") for i in range(40)]
+        rows += [_r(f"p{i}", day=f"2026-1{i % 3}-{i + 1:02d}", log=f"P{i}", work="Prime and paint") for i in range(4)]
+        pairs = self._of(B.build_candidates(rows, per_kind=6), B.ACROSS_STAGES)
+        gaps = [p["stage_gap"] for p in pairs]
+        self.assertEqual((gaps.count(0), gaps.count(3)), (3, 3), gaps)
+
     def test_a_unit_read_in_the_photo_counts_for_the_line(self):
         self.assertEqual(B.unit_of({"where": "floors 1-4", "visible_text": ["APT 4B"]}), "4B")
         self.assertIsNone(B.unit_of({"where": "Apt 3B", "visible_text": ["4B"]}), "two units is none")
