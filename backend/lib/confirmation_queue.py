@@ -169,7 +169,7 @@ def facts(items: Iterable[Dict[str, Any]], today: Optional[date] = None) -> List
     yet" only while it is fresh."""
     out = []
     for i in items:
-        if i.get("kind") == "estimate" or i.get("claim") in _FACT_EXCLUDE:
+        if i.get("kind") in E.NON_FACTS or i.get("claim") in _FACT_EXCLUDE:
             continue
         if i.get("claim") == "not_yet" and today is not None:
             d = _on(i)

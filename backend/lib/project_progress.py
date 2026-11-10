@@ -384,7 +384,10 @@ def build(items: Sequence[Dict[str, Any]], *, today: date, project: Optional[Dic
     `unreadable`: the sources the loader could not read (its coverage): what
     they would have said is unknown, and every answer says so. `frame`: the
     project's levels (job_levels)."""
-    items = [i for i in items if i.get("kind") in E.KINDS]
+    # An inference (lib/construction_inference) is carried apart, never a
+    # cell's item: it never decides, supports or counts toward a status.
+    inferences_set_apart = sum(1 for i in items if i.get("kind") == "inferred")
+    items = [i for i in items if i.get("kind") in E.KINDS and i.get("kind") != "inferred"]
     levels = job_levels(project, plan_tokens, items, frame)
     seq = steps(flags, extra_steps)
     dix = _design_index(design)
@@ -444,6 +447,7 @@ def build(items: Sequence[Dict[str, Any]], *, today: date, project: Optional[Dic
     model["conflicts"] = conflicts(items, model)
     model["timeline"] = timeline(items, model)
     model["estimates"] = sum(1 for i in items if i["kind"] == "estimate")
+    model["inferences_set_apart"] = inferences_set_apart
     return model
 
 
