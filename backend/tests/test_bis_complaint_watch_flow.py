@@ -91,6 +91,9 @@ class _BIS:
             return _Resp(200, (FIX / "property_3255205.html").read_text(encoding="latin-1"))
         if "ComplaintsByAddressServlet" in url and "allbin=3255205" in url:
             return _Resp(200, (FIX / "list_3255205.html").read_text(encoding="latin-1"))
+        if "ECBQueryByLocationServlet" in url:
+            b = url.split("allbin=")[1][:7]
+            return _Resp(200, (FIX / f"ecb_{b}.html").read_text(encoding="latin-1"))
         if "ComplaintsByAddressServlet" in url and "allbin=3423445" in url:
             return _Resp(200, (FIX / "list_3423445.html").read_text(encoding="latin-1"))
         if "OverviewForComplaintServlet" in url:
@@ -142,7 +145,7 @@ class Shadow(unittest.TestCase):
         s = _run(db, _BIS(), "shadow", emails=emails)
         self.assertEqual(emails, [])
         self.assertFalse([d for d in db.dob_logs.docs if d["raw_dob_id"] in ("3A88489", "3A88492")])
-        led = {d["complaint_number"]: d for d in db.complaint_watch_ledger.docs}
+        led = {d["complaint_number"]: d for d in db.complaint_watch_ledger.docs if "complaint_number" in d}
         self.assertEqual((led["3A88489"]["status"], led["3A88492"]["status"]), ("would_alert", "would_alert"))
         self.assertEqual(led["3A88489"]["priority"], "high")
         self.assertEqual(sorted(b["bin"] for b in s["bins"]), ["3255205", "3423445"])
@@ -198,8 +201,9 @@ class Live(unittest.TestCase):
         client = _BIS()
         _run(db, client, "live", now=NOW + timedelta(minutes=10), emails=emails)
         self.assertEqual((len(db.dob_logs.docs), len(db.complaint_watch_ledger.docs), emails), (n_rows, n_led, []))
-        # a quiet pass is one property page + one list page per BIN: no detail fetches
-        self.assertEqual(len(client.urls), 3, client.urls)
+        # a quiet pass: one property page, one complaint list and one ECB list
+        # per BIN -- no detail fetches
+        self.assertEqual(len(client.urls), 5, client.urls)
 
     def test_the_open_data_row_next_day_refreshes_the_same_row(self):
         db, emails = _seed(), []
@@ -241,3 +245,52 @@ class Off(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EcbDiscovery(unittest.TestCase):
+    """The summons half of the watch, on the real 546 ECB pages."""
+
+    def test_first_pass_stores_the_history_and_alerts_none(self):
+        db, emails = _seed(), []
+        _run(db, _BIS(), "live", emails=emails)
+        ecb = [d for d in db.dob_logs.docs if d.get("dataset") == "bis-ecb"]
+        self.assertEqual(len(ecb), 20)                       # 19 on 3255205 + 1 on 3423445
+        self.assertTrue(all(d["bin_first_pass"] for d in ecb))
+        self.assertEqual([e for e in emails if e[0] in {d["raw_dob_id"] for d in ecb}], [])
+        w = db.source_sync_state.docs[0]["watch"]["bis_ecb"]
+        self.assertEqual((w["last_success_at"], w["last_error"]), (NOW, None))
+
+    def test_a_summons_bis_has_and_levelog_does_not_is_found_and_emailed_once(self):
+        db, emails = _seed(), []
+        db.source_sync_state.docs[0]["watch"] = {"bis_ecb": {"bins_first_synced": ["3255205", "3423445"]}}
+        from lib import bis_violations as bv
+        for r in bv.parse_ecb_list((FIX / "ecb_3255205.html").read_text(encoding="latin-1"))["rows"]:
+            if r["ecb_number"] not in ("39556260N", "39556258Y"):      # LeveLog lacks the two open ones
+                db.dob_logs.docs.append({"_id": f"od_{r['ecb_number']}", "project_id": "p546",
+                                         "record_type": "violation", "raw_dob_id": r["ecb_number"],
+                                         "dataset": "6bgk-3dad", "is_deleted": False})
+        db.dob_logs.docs.append({"_id": "od_35716973H", "project_id": "p546", "record_type": "violation",
+                                 "raw_dob_id": "35716973H", "dataset": "6bgk-3dad", "is_deleted": False})
+        _run(db, _BIS(), "live", emails=emails)
+        found = sorted(d["raw_dob_id"] for d in db.dob_logs.docs if d.get("dataset") == "bis-ecb")
+        self.assertEqual(found, ["39556258Y", "39556260N"])
+        self.assertEqual(sorted(e for e in emails if e[0] in found),
+                         [("39556258Y", "bis", "new"), ("39556260N", "bis", "new")])
+        emails.clear()
+        _run(db, _BIS(), "live", now=NOW + timedelta(minutes=10), emails=emails)
+        self.assertEqual(emails, [])
+
+    def test_an_ecb_outage_does_not_fail_the_complaint_watch(self):
+        db, emails = _seed(), []
+
+        class _EcbDown(_BIS):
+            async def get(self, url, **kw):
+                if "ECBQueryByLocationServlet" in url:
+                    self.urls.append(url)
+                    return _Resp(503, "down")
+                return await super().get(url, **kw)
+        _run(db, _EcbDown(), "live", emails=emails)
+        w = db.source_sync_state.docs[0]["watch"]
+        self.assertEqual(w["bis_complaints"]["last_success_at"], NOW)
+        self.assertNotIn("last_success_at", w["bis_ecb"])
+        self.assertIn("HTTP 503", w["bis_ecb"]["last_error"])

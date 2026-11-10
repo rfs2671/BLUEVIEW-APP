@@ -136,3 +136,58 @@ A second message follows for 3A88492. The Spanish version is rendered by the sam
 - **Facade `id_field`:** `filing_number` does not exist in xubg-57si, so facade dedupe is keyed on nothing. Changing it renames stored rows.
 - **eabe-havv ordering:** `$order date_entered` sorts MM/DD/YYYY text. Paging reads two pages of 250, so it matters only on very busy BINs.
 - **3A78809:** emailed as "new" 50 days after filing, so the 2-day gate did not hold on the email path.
+
+## Update: ten ECB/OATH summonses issued the afternoon of 2026-11-10
+
+The operator reported nine violations. The numbers supplied were ten: 039561781P, 782R, 783Z, 786Y, 787X, 788H, 789J, 790R, 791Z, 792K. These are OATH ticket numbers; drop the leading 0 to get the DOB ECB number.
+
+**Where each source stood, checked 21:42–21:55 UTC.** The same answer holds for all ten.
+
+| Source | Contains them? | Evidence |
+|---|---|---|
+| BIS ECB by number (`ECBQueryByNumberServlet`) | **No.** "NOT FOUND" | Control: the same query returns 39556258Y |
+| BIS ECB list, BIN 3255205 | **No.** 19 issued, newest 07/07/2026 | Page count equals rows read |
+| BIS ECB list, BIN 3423445 (rear) | **No.** 1 issued, from 2025 | |
+| BIS DOB violations, both BINs | **No** | Two closed 1986–87 items |
+| BIS complaints 3A88489 / 3A88492 | **No disposition, no ECB number yet** | |
+| Open Data 6bgk-3dad (ECB) | **No** | Refreshed 18:09 UTC |
+| Open Data 3h2n-5cm9 / 855j-jady | **No** | Refreshed 18:38 / 19:07 UTC |
+| OATH hearings jz4z-kudi | **No** | Refreshed 05:59 UTC |
+| DOB NOW public portal | **Unknown: the portal itself was down** ("DOB NOW is unavailable") | |
+| LeveLog production (`dob_logs`, `dot_logs`) | **No** | Read-only probe |
+
+**Why LeveLog has not shown them.** No source LeveLog can read had published any of the ten. The summonses were issued on site, and DOB had not yet entered them into BIS or ECB/OATH.
+
+**Why no notification would have fired once they were published,** under the code on main:
+- **WhatsApp group:** violation alerts for 546 wait on the first sync of `dob_violations`. That sync never happens, because 3usq-5cid fails on every pass. Violations also share their baseline with permits, so permit alerts to the group were blocked too.
+- **Email:** it would fire only after Open Data publishes, the next day or later. An ECB row from 6bgk-3dad that is active scores "Action", and the 2-day gate counts from the issue date.
+
+**When each source learns of them:** being measured. `track_10_summonses.py` polls every source above every 10 minutes, read-only, and logs the first time each number appears (`track_10_summonses.jsonl`). It also saves the real BIS page the moment the numbers appear.
+
+## Architecture fix: per-dataset sync
+
+- **Per-dataset answers.** `_query_dob_apis` records whether each dataset answered (`ds:<id>`), alongside each record type.
+- **Per-dataset state.** `source_sync_state.datasets.<id>` holds `synced_at`, `first_synced_at` and `last_error_at`. A dataset's first sync inherits its source's first sync, so nothing that was already baselined gets re-dated.
+- **A source opens when any of its datasets answers in full.** A storage failure still closes it.
+- **The group alert gate works per row** (`source_sync.dataset_gate`):
+  - A row from a failing dataset that has never synced waits, and only that dataset's rows wait.
+  - A row stored by its dataset's first sync is claimed as baseline.
+  - A later row posts.
+- **Freshness shows each violation dataset on its own line,** so a dead dataset is visible as itself.
+
+## Same-day summons discovery
+
+- **What it reads:** the BIS ECB list for every BIN of the project, in `lib/bis_violations.py` (it parses the page's own structured record, including the issued count).
+- **Dedup:** new numbers are reconciled with stored rows by ECB number. The Open Data row arriving the next day refreshes the same row instead of adding one.
+- **Alert priority:** Class 1 is critical, Class 2 is high. The email text gives the summons number, class, unit, hearing and the BIS link.
+- **Separate state:** it has its own state (`watch.bis_ecb`), so an ECB-page failure never fails the complaint watch, and the reverse.
+- **Rollout:** same mode switch, `BIS_COMPLAINT_WATCH_MODE`, still off.
+
+## Tests (`tests/test_violation_sources_546.py`, `tests/test_bis_complaint_watch_flow.py`)
+
+- **Parsing:** the real ECB pages for both BINs parse completely. The ten numbers normalize to their ECB form, and none appears on the 21:4x pages.
+- **Dead dataset:** a real `_query_dob_apis` pass with 3usq-5cid returning 400 still syncs violations.
+- **Group alert:** the tick, with 3usq-5cid failing on every pass, posts a later ECB violation and keeps the history silent. It failed on origin/main (0 posts).
+- **Discovery:** on the real page, a summons BIS lists that LeveLog lacks is found, stored and emailed once.
+- **First sync and outages:** a first pass stores the history silently, and an ECB outage does not fail the complaint watch.
+- **The ten end to end: SKIPPED until BIS lists them.** It runs on the real page the tracker captures. No synthetic records stand in for them.

@@ -126,7 +126,7 @@ from lib import dot_summons  # noqa: E402
 from lib import dob_site_bins  # noqa: E402
 from lib import dob_alert_gate  # noqa: E402
 from lib import source_sync  # noqa: E402
-from lib import bis_complaints, complaint_watch  # noqa: E402
+from lib import bis_complaints, bis_violations, complaint_watch  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
 from lib import wa_welcome  # noqa: E402
@@ -42266,6 +42266,12 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
             if answered is not None:
                 rt = ep["record_type"]
                 answered[rt] = answered.get(rt, True) and ok
+                # Per dataset too (lib/source_sync.answered_sources_by_dataset):
+                # one dataset failing must not close its whole source.
+                _ds = re.search(r"resource/([a-z0-9]{4}-[a-z0-9]{4})", ep["url"])
+                if _ds:
+                    _k = source_sync.DATASET_KEY + _ds.group(1)
+                    answered[_k] = answered.get(_k, True) and ok
             per_endpoint_stats.append({
                 "url": ep["url"].rsplit("/", 1)[-1].replace(".json", ""),
                 "record_type": ep["record_type"],
@@ -44409,8 +44415,10 @@ async def run_dob_sync_for_project(project: dict) -> list:
     async def _mark_synced():
         await _mark_sources_synced(
             project_id, company_id,
-            source_sync.answered_sources(answered, failed_types)
+            source_sync.answered_sources_by_dataset(answered, failed_types)
             & set(source_sync.DOB_SOURCES))
+        await _mark_datasets_synced(project_id, company_id,
+                                    source_sync.answered_datasets(answered))
 
     raw_records = await _query_dob_apis(nyc_bin, project_address, answered)
     site_bins: list = []
@@ -45600,6 +45608,9 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
                                  "A complaint is not a violation."))
                 await _send_critical_dob_alert_throttled(
                     project, doc, "bis", event=_BIS_EMAIL_EVENT.get(decision["event"], "new"))
+    await _bis_ecb_pass(project, client, pbins, mode=mode, now=now, summary=summary,
+                        first_done=set(((state.get("watch") or {}).get("bis_ecb") or {})
+                                       .get("bins_first_synced") or []))
     upd: Dict[str, Any] = {"company_id": cid, "watch.bis_complaints.last_attempt_at": now,
                            "watch.bis_complaints.mode": mode,
                            "watch.bis_complaints.last_error": "; ".join(summary["errors"]) or None}
@@ -45610,6 +45621,100 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
         {"$set": upd, "$addToSet": {"watch.bis_complaints.bins_first_synced": {"$each": ok_bins}}},
         upsert=True)
     return summary
+
+
+async def _bis_ecb_pass(project: dict, client, pbins: set, *, mode: str, now: datetime,
+                        summary: dict, first_done: set) -> None:
+    """ECB/OATH summonses on BIS for every BIN of the project, reconciled by
+    number with what the Open Data scan stored (6bgk-3dad keys rows on the
+    same ECB number, so the next day's row refreshes this one in place).
+    Its own state (watch.bis_ecb), so a complaint-page failure never blocks
+    summons discovery and the other way round."""
+    pid = str(project.get("_id") or project.get("id") or "")
+    cid = project.get("company_id")
+    own_bin = re.sub(r"\D", "", str(project.get("nyc_bin") or ""))
+    stored = set()
+    for row in await db.dob_logs.find({"project_id": pid, "record_type": {"$in": ["violation", "swo"]},
+                                       "is_deleted": {"$ne": True}}).to_list(5000):
+        n = bis_violations.normalize_violation_number(row.get("raw_dob_id"))
+        if n:
+            stored.add(n)
+    ok_bins, errors = [], []
+    summary.setdefault("ecb", [])
+    for b in sorted(pbins):
+        try:
+            r = await client.get(bis_violations.ecb_list_url(b), headers=_BIS_UA, timeout=30.0)
+        except Exception as e:
+            errors.append(f"BIN {b}: {type(e).__name__}")
+            continue
+        page = bis_violations.parse_ecb_list(r.text) if r.status_code == 200 else None
+        if page is None or page.get("bin") != b or page.get("total_issued") is None:
+            errors.append(f"BIN {b}: HTTP {r.status_code}" if r.status_code != 200
+                          else f"BIN {b}: unrecognized page")
+            continue
+        ok_bins.append(b)
+        summary["ecb"].append({"bin": b, "issued": page["total_issued"], "read": len(page["rows"]),
+                               "complete": page["complete"]})
+        first_sync = b not in first_done
+        for row in page["rows"]:
+            num = row["ecb_number"]
+            if num in stored:
+                continue
+            key = f"cw:{pid}:ecb:{num}:new"
+            seen = await db[COMPLAINT_WATCH_LEDGER].find_one({"_id": key})
+            if seen:
+                continue
+            d = complaint_watch.summons_decision(
+                row, bin_=b, project_bins=pbins, first_sync=first_sync,
+                already_alerted=bool(await db.system_config.find_one({"key": f"dob_alert_sent:{pid}:{num}"})),
+                now=now)
+            status = (("would_alert" if d["alert"] else "suppressed") if mode == "shadow"
+                      else ("alerting" if d["alert"] else "suppressed"))
+            try:
+                await db[COMPLAINT_WATCH_LEDGER].insert_one({
+                    "_id": key, "project_id": pid, "company_id": cid, "violation_number": num,
+                    "bin": b, "event": d["event"], "priority": d["priority"], "late": d["late"],
+                    "reason": d["reason"], "mode": mode, "issue_date": row.get("issue_date"),
+                    "first_seen_at": now, "status": status})
+            except Exception:
+                continue
+            summary["decisions"].append({"complaint_number": num, "event": d["event"],
+                                         "status": status, "reason": d["reason"]})
+            if mode != "live":
+                continue
+            doc = {
+                "project_id": pid, "company_id": cid, "nyc_bin": b, "record_type": "violation",
+                "raw_dob_id": num, "ecb_violation_number": num,
+                "violation_date": (row.get("issue_date") or "").replace("-", ""),
+                "violation_type": row.get("violation_type"), "severity": "Action" if row.get("active") else "Good",
+                "current_status": "ACTIVE" if row.get("active") else (row.get("certification_status") or "RESOLVED"),
+                "ecb_violation_status": "ACTIVE" if row.get("active") else "RESOLVE",
+                "hearing_status": row.get("hearing_status"), "penalty_balance_due": row.get("balance_due"),
+                "infraction_code": row.get("infraction_code"), "severity_class": row.get("severity"),
+                "issuing_unit": row.get("unit"), "respondent_name": row.get("respondent"),
+                "description": f"ECB/OATH summons {num} ({row.get('severity') or ''}), {row.get('unit') or ''}",
+                "signal_kind": "violation_ecb", "dataset": "bis-ecb",
+                "dob_link": bis_violations.ecb_detail_url(num),
+                "site_bin": b if b != own_bin else None,
+                "bin_first_pass": bool(first_sync and not d["alert"]),
+                "bis_first_seen_at": now, "detected_at": now, "created_at": now, "updated_at": now,
+                "is_deleted": False,
+            }
+            await db.dob_logs.insert_one(doc)
+            stored.add(num)
+            if d["alert"] and d["priority"] in ("high", "critical"):
+                doc = dict(doc, ai_summary=complaint_watch.render_summons_alert(
+                    row, d, project_name=project.get("name") or "your project"),
+                    next_action="Correct the condition and file the Certificate of Correction.")
+                await _send_critical_dob_alert_throttled(project, doc, "bis", event="new")
+    upd = {"watch.bis_ecb.last_attempt_at": now, "watch.bis_ecb.mode": mode,
+           "watch.bis_ecb.last_error": "; ".join(errors) or None}
+    if ok_bins and not errors:
+        upd["watch.bis_ecb.last_success_at"] = now
+    summary["ecb_errors"] = errors        # its own state: never fails the complaint watch
+    await db[SOURCE_SYNC_STATE].update_one(
+        {"_id": pid}, {"$set": upd, "$addToSet": {"watch.bis_ecb.bins_first_synced": {"$each": ok_bins}}},
+        upsert=True)
 
 
 async def bis_complaint_watch_tick():
@@ -49244,6 +49349,30 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             logger.warning(f"[wa-gc] record read failed: {type(e).__name__}")
             continue
         items = wa_alerts.collect(dob_rows, dot_rows, today)
+        # PER DATASET (lib/source_sync.dataset_gate): a violation row waits
+        # only on ITS dataset's first sync, and one stored by that first sync
+        # is history -- claimed silently, never posted.
+        try:
+            _st = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id})
+            _ds_first = source_sync.dataset_first_synced(_st)
+            _ds_failing = source_sync.dataset_failing(_st)
+        except Exception:
+            _ds_first = None
+        if _ds_first is not None:
+            _kept = []
+            for it in items:
+                g = source_sync.dataset_gate(it.get("rec") or {}, _ds_first, _ds_failing)
+                if g == "wait":
+                    report["kinds_waiting_sync"] += 1
+                    continue
+                if g == "baseline":
+                    await _gc_ledger_claim(
+                        wa_gc.ledger_id(project_id, it["kind"], it["item"]),
+                        kind=f"gc_{it['kind']}", project_id=project_id,
+                        company_id=company_id, status="baseline")
+                    continue
+                _kept.append(it)
+            items = _kept
         # The email's rules, for the group too (lib/dob_alert_gate, ruling
         # 2026-10-22): an update that issued a SWO / vacate order, and ONE
         # summary per newly added BIN. Everything a rule refuses is claimed
@@ -49501,6 +49630,37 @@ async def _mark_sources_synced(project_id: str, company_id: str,
                 {"$set": {f"sources.{s}.first_synced_at": now}})
         except Exception as e:
             logger.warning(f"[source-sync] state write failed: {type(e).__name__}")
+
+
+async def _mark_datasets_synced(project_id: str, company_id: str, datasets: Dict[str, bool],
+                                now: Optional[datetime] = None) -> None:
+    """Per-dataset sync state: synced_at / first_synced_at on a full answer,
+    last_error_at on a failure. A dataset's FIRST sync inherits its source's
+    first_synced_at when the source was already synced (legacy stand-in
+    included), so turning this on re-dates nothing that was already baselined."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        state = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id}) or {}
+        project = await db.projects.find_one({"_id": to_query_id(project_id)}, {"first_poll_completed_at": 1})
+        src_first = source_sync.first_synced(state, project)
+        have = source_sync.dataset_first_synced(state)
+    except Exception as e:
+        logger.warning(f"[source-sync] dataset state read failed: {type(e).__name__}")
+        return
+    for d, ok in sorted(datasets.items()):
+        try:
+            if not ok:
+                await db[SOURCE_SYNC_STATE].update_one(
+                    {"_id": project_id}, {"$set": {"company_id": company_id,
+                                                   f"datasets.{d}.last_error_at": now}}, upsert=True)
+                continue
+            upd = {"company_id": company_id, f"datasets.{d}.synced_at": now}
+            if d not in have:
+                src = source_sync.DATASET_SOURCE.get(d)
+                upd[f"datasets.{d}.first_synced_at"] = src_first.get(src) or now
+            await db[SOURCE_SYNC_STATE].update_one({"_id": project_id}, {"$set": upd}, upsert=True)
+        except Exception as e:
+            logger.warning(f"[source-sync] dataset state write failed: {type(e).__name__}")
 
 
 async def _project_first_synced(project_id: str) -> dict:
@@ -65798,6 +65958,9 @@ async def _handle_dob_status(project_id: str, *,
         await db[SOURCE_SYNC_STATE].find_one({"_id": project_id}),
         now=datetime.now(timezone.utc))
     lines.append(fresh["note"])
+    if not fresh.get("can_say_no_new_summonses"):
+        lines.append("ECB/OATH summonses were not checked on DOB BIS recently; NYC Open Data "
+                     "updates once a day, so a summons issued today may not be listed yet.")
     return "\n".join(lines)
 
 

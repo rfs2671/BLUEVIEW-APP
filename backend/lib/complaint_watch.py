@@ -200,6 +200,62 @@ def alert_decision(rec: Mapping[str, Any], *, project_bins: Set[str], first_sync
     return out
 
 
+SUMMONS_RECENT = timedelta(days=7)
+
+
+def summons_decision(row: Mapping[str, Any], *, bin_: str, project_bins: Set[str], first_sync: bool,
+                     already_alerted: bool, now: datetime) -> Dict[str, Any]:
+    """An ECB/OATH summons BIS lists for a BIN that LeveLog has not stored.
+    Class 1 = immediately hazardous -> critical; Class 2 -> high; else normal."""
+    num = str(row.get("ecb_number") or "")
+    out: Dict[str, Any] = {"number": num, "alert": False, "event": "violation_served",
+                           "priority": "normal", "late": False, "reason": ""}
+    if re.sub(r"\D", "", str(bin_ or "")) not in project_bins:
+        out["reason"] = f"wrong property: BIN {bin_} is not one of this project's BINs"
+        return out
+    if already_alerted:
+        out["reason"] = "duplicate: this summons was already alerted"
+        return out
+    if not row.get("active"):
+        out["reason"] = "resolved on arrival"
+        return out
+    issued = None
+    if row.get("issue_date"):
+        y, m, d = (int(x) for x in str(row["issue_date"])[:10].split("-"))
+        issued = datetime(y, m, d, tzinfo=ET)
+    age = (now - issued) if issued else None
+    if first_sync and not (age is not None and age <= FIRST_SYNC_RECENT):
+        out["reason"] = "baseline: open summons older than 48h on the first sync of this BIN"
+        return out
+    sev = str(row.get("severity") or "").upper()
+    out["priority"] = "critical" if "1" in sev else "high" if "2" in sev else "normal"
+    out["late"] = bool(age is not None and age > SUMMONS_RECENT)
+    out["alert"] = True
+    out["reason"] = f"{sev or 'unclassed'} summons, {row.get('unit') or 'DOB'}"
+    return out
+
+
+def render_summons_alert(row: Mapping[str, Any], decision: Mapping[str, Any], *, project_name: str,
+                         lang: str = "en") -> str:
+    num = decision.get("number") or row.get("ecb_number")
+    sev = str(row.get("severity") or "").title()
+    due = row.get("balance_due")
+    link = f"https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet?ecbin={num}"
+    if lang == "es":
+        lines = [f"*Citación ECB/OATH del DOB — {project_name}*",
+                 f"Citación {num} ({sev}), emitida {row.get('issue_date') or ''}.",
+                 f"Unidad: {row.get('unit') or ''}. Audiencia: {row.get('hearing_status') or 'pendiente'}.",
+                 f"Multa pendiente: ${due:,.2f}." if isinstance(due, (int, float)) and due else "",
+                 "Corrija la condición y presente el Certificado de Corrección.", link]
+    else:
+        lines = [f"*DOB ECB/OATH summons — {project_name}*",
+                 f"Summons {num} ({sev}), issued {row.get('issue_date') or ''}.",
+                 f"Unit: {row.get('unit') or ''}. Hearing: {row.get('hearing_status') or 'pending'}.",
+                 f"Penalty due: ${due:,.2f}." if isinstance(due, (int, float)) and due else "",
+                 "Correct the condition and file the Certificate of Correction.", link]
+    return "\n".join(x for x in lines if x)
+
+
 def lifecycle_events(rec: Mapping[str, Any], *, ecb: Iterable[Mapping[str, Any]] = ()) -> List[Dict[str, Any]]:
     """complaint -> inspection -> disposition -> violation / summons / order ->
     correction -> closure, as distinct events. Only what a source states."""
@@ -240,17 +296,25 @@ def lifecycle_events(rec: Mapping[str, Any], *, ecb: Iterable[Mapping[str, Any]]
 SOURCE_LABELS = {
     "bis_complaints": "DOB BIS complaints (live)",
     "dob_complaints": "NYC Open Data complaints (daily)",
-    "dob_violations": "DOB / ECB violations",
+    "dob_violations": "DOB / ECB violations (NYC Open Data, daily)",
+    "bis_ecb": "ECB/OATH summonses on DOB BIS (live)",
+}
+DATASET_LABELS = {
+    "855j-jady": "DOB NOW Safety violations (Open Data)",
+    "3h2n-5cm9": "DOB violations (Open Data)",
+    "6bgk-3dad": "ECB/OATH violations (Open Data)",
+    "3usq-5cid": "Stop-work orders, EO 202.6 (Open Data, ends 2020)",
 }
 
 
 def freshness(state: Optional[Mapping[str, Any]], *, now: datetime,
               stale_after: timedelta = timedelta(minutes=45)) -> Dict[str, Any]:
     sources = (state or {}).get("sources") or {}
-    watch = ((state or {}).get("watch") or {}).get("bis_complaints") or {}
+    watches = (state or {}).get("watch") or {}
     rows: List[Dict[str, Any]] = []
-    for key in ("bis_complaints", "dob_complaints", "dob_violations"):
-        if key == "bis_complaints":
+    for key in ("bis_complaints", "dob_complaints", "dob_violations", "bis_ecb"):
+        if key in ("bis_complaints", "bis_ecb"):
+            watch = watches.get(key) or {}
             last_ok, last_err = _as_dt(watch.get("last_success_at")), watch.get("last_error")
             last_try = _as_dt(watch.get("last_attempt_at"))
         else:
@@ -263,9 +327,23 @@ def freshness(state: Optional[Mapping[str, Any]], *, now: datetime,
             "last_error": last_err,
             "status": ("never" if not last_ok else "stale" if age > stale_after else "fresh"),
         })
+    # One row per violation dataset: which answered, which failed, and when --
+    # so one dead dataset is visible as itself, not as "violations: never".
+    for d, label in DATASET_LABELS.items():
+        row = ((state or {}).get("datasets") or {}).get(d) or {}
+        ok, err = _as_dt(row.get("synced_at")), _as_dt(row.get("last_error_at"))
+        if not (ok or err):
+            continue
+        rows.append({"source": f"dataset:{d}", "label": label,
+                     "last_success_at": ok.isoformat() if ok else None,
+                     "last_attempt_at": max(x for x in (ok, err) if x).isoformat(),
+                     "last_error": (f"failed {err.isoformat()}" if err and (not ok or err > ok) else None),
+                     "status": ("never" if not ok else "failing" if err and err > ok
+                                else "stale" if now - ok > timedelta(hours=1) else "fresh")})
     live = rows[0]["status"] == "fresh"
     return {
         "sources": rows,
+        "can_say_no_new_summonses": rows[3]["status"] == "fresh",
         "can_say_no_new_complaints": live,
         "note": ("Checked DOB BIS directly; new complaints show within minutes."
                  if live else
