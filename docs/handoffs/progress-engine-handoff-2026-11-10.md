@@ -87,7 +87,7 @@ Every source becomes an evidence item on one ladder: **verified** (DOB, agency) 
 
 ## 6. Final head and full regression
 
-The test run was on head `aa77a772` of `feat/progress-integrated`. This doc is the only change committed after it.
+The test run was on head `aa77a772` of `feat/progress-integrated`. Only two commits come after it: this doc, and a test rename (`1af33bbd`). The rename was needed because CI's secret scan read the test name `..._re_pass_said_after...` as a Resend key. No credential was involved.
 
 | Suite | Result | What failed |
 |---|---|---|
