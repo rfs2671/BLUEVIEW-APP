@@ -111,6 +111,7 @@ from lib import project_report  # noqa: E402
 from lib import progress_report  # noqa: E402
 from lib import photo_search  # noqa: E402
 from lib import photo_relations, progress_plan, work_state  # noqa: E402
+from lib import photo_geometry, photo_place  # noqa: E402
 from lib import report_image  # noqa: E402
 from lib import progress_report_render  # noqa: E402
 from lib import report_regulatory  # noqa: E402
@@ -56259,7 +56260,7 @@ async def _photo_index_call(raw: bytes, project_id: Any) -> Optional[dict]:
             resp = await client.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
-                json={"model": QWEN_MODEL, "max_tokens": 300, "temperature": 0,
+                json={"model": QWEN_MODEL, "max_tokens": 420, "temperature": 0,
                       "messages": [{"role": "user", "content": [
                           {"type": "image_url", "image_url": {
                               "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
@@ -56320,13 +56321,40 @@ async def _photo_index_window(since: str, until: Optional[str], budget: int, rep
                     {"$inc": {"attempts": 1}, "$set": {"kind": "fail", "at": now}}, upsert=True)
                 return
             await db[PHOTO_INDEX].update_one({"_id": f"v1:{ph['key']}"}, {"$set": {
-                **v, "kind": "photo", "photo_key": ph["key"], "short": photo_search.short_id(ph["key"]),
+                **v, "prompt_v": photo_search.PROMPT_V,
+                "kind": "photo", "photo_key": ph["key"], "short": photo_search.short_id(ph["key"]),
                 "project_id": str(lg.get("project_id") or ""), "company_id": str(lg.get("company_id") or ""),
                 "log_id": ph["log_id"], "date": ph["date"], "sub": ph["sub"], "where": ph["where"],
                 "work": ph["work"], "at": now}}, upsert=True)
             report["indexed"] += 1
     await asyncio.gather(*(one(lg, ph) for lg, ph in pending[:max(0, budget)]), return_exceptions=True)
     return max(0, len(pending) - max(0, budget))
+
+
+async def _photo_index_reread(budget: int, report: dict) -> None:
+    """A second read of photos described before `visible_text` was asked for,
+    only those whose log row names several levels or none (photo_place.
+    reread_targets), and only from what the tick has left. Only the two new
+    fields are written: what a search already finds does not move."""
+    rows = await db[PHOTO_INDEX].find(
+        await unattended_project_filter({"kind": "photo", "prompt_v": {"$ne": photo_search.PROMPT_V}}),
+        {"photo_key": 1, "log_id": 1, "where": 1, "date": 1, "project_id": 1, "reread_tries": 1}).to_list(20000)
+    sem = asyncio.Semaphore(REPORT_JUDGE_AT_ONCE)
+
+    async def one(row: dict) -> None:
+        async with sem:
+            raw = await _photo_log_bytes(row)
+            v = await _photo_index_call(raw, row.get("project_id")) if raw else None
+            if v is None:
+                report["reread_failed"] = report.get("reread_failed", 0) + 1
+                await db[PHOTO_INDEX].update_one({"_id": row["_id"]}, {"$inc": {"reread_tries": 1}})
+                return
+            await db[PHOTO_INDEX].update_one({"_id": row["_id"]}, {"$set": {
+                "visible_text": v.get("visible_text") or [], "room_type": v.get("room_type") or "unknown",
+                "prompt_v": photo_search.PROMPT_V, "reread_at": datetime.now(timezone.utc)}})
+            report["reread"] = report.get("reread", 0) + 1
+    await asyncio.gather(*(one(r) for r in photo_place.reread_targets(rows, budget, PHOTO_INDEX_TRIES)),
+                         return_exceptions=True)
 
 
 async def _photo_index_tick(now: Optional[datetime] = None, budget: int = PHOTO_INDEX_BUDGET) -> dict:
@@ -56349,6 +56377,9 @@ async def _photo_index_tick(now: Optional[datetime] = None, budget: int = PHOTO_
                     {"_id": "state:backfill"},
                     {"$set": {"kind": "state", "before": start, "at": now}}, upsert=True)
                 report["history_before"] = start
+        left = budget - report["indexed"] - report["failed"]
+        if left > 0:
+            await _photo_index_reread(left, report)
     except Exception as e:
         logger.error(f"[photo-index] tick failed: {type(e).__name__}: {e!r}")
     logger.info(f"[photo-index] {report}")
@@ -56408,8 +56439,10 @@ def _photo_send_jpeg(raw: bytes) -> Optional[bytes]:
         return None
 
 
-async def _dm_send_one_photo(dm_chat: str, short: str, jpeg: bytes, caption: str) -> bool:
-    """One photo to this DM chat, through the DM gate, like _dm_send_sheet."""
+async def _dm_send_one_photo(dm_chat: str, short: str, jpeg: bytes, caption: str, *, ask_floor: bool = False) -> bool:
+    """One photo to this DM chat, through the DM gate, like _dm_send_sheet.
+    `ask_floor`: this photo's floor is not on record, so the caption says a
+    reply can settle it, and the row remembers which photo was asked about."""
     verdict = await _dm_send_verdict(dm_chat, f"[photo {short}]", None)
     if not verdict["allowed"]:
         logger.info(f"[photo-index] photo refused ({verdict['reason']}) to {_log_chat(dm_chat)}")
@@ -56420,7 +56453,8 @@ async def _dm_send_one_photo(dm_chat: str, short: str, jpeg: bytes, caption: str
     if media_url:
         ok, body, err = await _waapi_send_dm_paced(
             f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
-            {"chatId": dm_chat, "mediaUrl": media_url, "caption": caption},
+            {"chatId": dm_chat, "mediaUrl": media_url,
+             "caption": f"{caption}\n{PHOTO_PLACE_ASK}" if ask_floor else caption},
             {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"})
         inner = body.get("data") if isinstance(body, dict) else None
         if ok and isinstance(inner, dict) and inner.get("status") == "error":
@@ -56435,6 +56469,7 @@ async def _dm_send_one_photo(dm_chat: str, short: str, jpeg: bytes, caption: str
         await db.whatsapp_messages.insert_one({
             "group_id": dm_chat, "is_dm": True, "sender": "bot", "body": f"[Photo] {caption}",
             "has_audio": False, "message_id": "", "from_me": True,
+            "photo_place_asked": short if ask_floor else None,
             **({"dm_company": _DM_SCOPE.get()} if _DM_SCOPE.get() else {}),
             "timestamp": now, "created_at": now})
     except Exception as e:
@@ -56455,6 +56490,12 @@ async def _dm_send_photos(ctx: dict, job: dict, args: dict) -> str:
     rows = await db[PHOTO_INDEX].find(
         {"project_id": pid, "kind": "photo", "short": {"$in": ids}}).to_list(len(ids))
     by_short = {r.get("short"): r for r in rows}
+    spaces, confirmed = await _photo_place_context(pid)
+    unsure = [r.get("short") for r in rows if photo_place.wants_floor(r, photo_place.infer(
+        r, spaces, confirmations=confirmed.get(str(r.get("photo_key"))) or ()))]
+    # One photo, or nothing: "reply with the floor" has to be about one picture.
+    ask = unsure[0] if len(unsure) == 1 else None
+    asked_about = None
     sent, missing = [], []
     for short in ids:
         row = by_short.get(short)
@@ -56485,9 +56526,10 @@ async def _dm_send_photos(ctx: dict, job: dict, args: dict) -> str:
             continue
         raw = await asyncio.to_thread(_report_photo_bytes, {"photo": photo["photo"], "key": photo["key"]})
         jpeg = await asyncio.to_thread(_photo_send_jpeg, raw) if raw else None
-        if jpeg and await _dm_send_one_photo(ctx["dm_chat"], short, jpeg, caption):
+        if jpeg and await _dm_send_one_photo(ctx["dm_chat"], short, jpeg, caption, ask_floor=short == ask):
             ctx["sent"].append(f"[photo {short}]")
             sent.append(caption)
+            asked_about = asked_about or (short if short == ask else None)
         else:
             missing.append(short)
     parts = [f"Sent {len(sent)} photo(s) to them: " + "; ".join(sent) + "." if sent
@@ -56496,7 +56538,98 @@ async def _dm_send_photos(ctx: dict, job: dict, args: dict) -> str:
         parts.append(f"{len(missing)} could not be sent ({', '.join(missing)}).")
     if len(asked) > len(ids):
         parts.append(f"Only {PHOTO_SEND_MAX} go at a time; {len(asked) - len(ids)} were not sent.")
+    if asked_about:
+        parts.append(f"Photo {asked_about}'s floor is not on record; its caption says they can reply with the floor. "
+                     "Only if their next message is a floor, call confirm_photo_place.")
     return " ".join(parts)
+
+
+# ── WHERE A PHOTO WAS TAKEN (lib/photo_place.py) ────────────────────────────
+#
+# Inferred at read time. The only stored input is a person's answer, in
+# PHOTO_PLACE_CONFIRMATIONS: append-only, with who and when.
+PHOTO_PLACE_CONFIRMATIONS = "photo_place_confirmations"
+#: How long after a photo is sent a reply can still be about it.
+PHOTO_PLACE_ASK_MINUTES = 30
+PHOTO_PLACE_ASK = "Floor not on record. Reply with the floor if you know it."
+
+
+async def _photo_place_context(project_id: str) -> Tuple[dict, dict]:
+    """(the job's plan tags, {photo_key: its confirmations}), for photo_place.infer."""
+    pid = str(project_id)
+    try:
+        rows: list = []
+        for coll in ("plan_records", "plan_areas"):
+            rows += await db[coll].find({"project_id": pid, "unit": {"$nin": [None, ""]}},
+                                        {"unit": 1, "sheet_title": 1, "sheet_number": 1}).to_list(20000)
+        confirmed: Dict[str, list] = {}
+        for c in await db[PHOTO_PLACE_CONFIRMATIONS].find({"project_id": pid}).to_list(20000):
+            confirmed.setdefault(str(c.get("photo_key")), []).append(c)
+    except Exception as e:
+        # The log row alone still places a photo; a tag lookup never stops a send.
+        logger.warning(f"[photo-place] context not read: {type(e).__name__}: {e!r}")
+        return {}, {}
+    return photo_place.spaces_from_plan_rows(rows), confirmed
+
+
+async def _photo_place_record(row: dict, level: str, space: Optional[str], *, user_id: str, name: str, via: str) -> dict:
+    """Append one person's answer. Nothing is ever rewritten: a change of mind
+    is a newer row."""
+    doc = {"photo_key": row.get("photo_key"), "short": row.get("short"), "project_id": str(row.get("project_id") or ""),
+           "company_id": str(row.get("company_id") or ""), "level": level, "space": space or None,
+           "by_user_id": user_id, "by_name": name, "via": via, "at": datetime.now(timezone.utc)}
+    await db[PHOTO_PLACE_CONFIRMATIONS].insert_one(doc)
+    return doc
+
+
+class PhotoPlaceConfirmation(BaseModel):
+    photo: str                          # the short id find_photos and the assistant use
+    level: str                          # "3", "floor 3", "roof", or a token
+    space: Optional[str] = None
+
+
+@api_router.post("/projects/{project_id}/photo-place-confirmations",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def confirm_photo_place(project_id: str, body: PhotoPlaceConfirmation, current_user=Depends(get_current_user)):
+    """A person says where a daily-log photo was taken. Append-only."""
+    level = photo_place.level_token(body.level)
+    if not level:
+        raise HTTPException(status_code=422, detail="Name one level: a floor number, roof, or cellar.")
+    row = await db[PHOTO_INDEX].find_one({"project_id": str(project_id), "kind": "photo", "short": body.photo.strip().lower()})
+    if not row:
+        raise HTTPException(status_code=404, detail="Photo not found on this project.")
+    space = photo_place.tag_key(body.space)[:40] if body.space else None
+    doc = await _photo_place_record(row, level, space, user_id=str(current_user.get("id") or ""),
+                                    name=str(current_user.get("name") or current_user.get("full_name") or ""), via="api")
+    doc.pop("_id", None)
+    doc["at"] = doc["at"].isoformat()
+    return doc
+
+
+async def _dm_confirm_photo_place(ctx: dict, job: dict, args: dict) -> str:
+    """confirm_photo_place: the floor of a photo this chat was just asked about,
+    read from the person's OWN message rather than from the model's arguments."""
+    pid = str(job["id"])
+    if not await _bot_project_scope(ctx["ident"]["company_id"], pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    level = work_state.level_asked(ctx.get("text"))
+    if not level:
+        return "Their message doesn't name one floor, so nothing was recorded."
+    since = datetime.now(timezone.utc) - timedelta(minutes=PHOTO_PLACE_ASK_MINUTES)
+    asks = await db.whatsapp_messages.find(
+        {"group_id": ctx["dm_chat"], "is_dm": True, "sender": "bot", "photo_place_asked": {"$exists": True, "$nin": [None, ""]},
+         "created_at": {"$gte": since}}).sort("created_at", -1).to_list(1)
+    if not asks or not asks[0].get("photo_place_asked"):
+        return "No photo is waiting for a floor, so nothing was recorded."
+    row = await db[PHOTO_INDEX].find_one({"project_id": pid, "kind": "photo", "short": asks[0]["photo_place_asked"]})
+    if not row:
+        return "That photo isn't on this job, so nothing was recorded."
+    if ctx.get("dry_run"):
+        return f"Would record {work_state.level_label(level)}."
+    user = ctx["ident"].get("user") or {}
+    await _photo_place_record(row, level, None, user_id=str(ctx["ident"].get("user_id") or ""),
+                              name=str(user.get("name") or user.get("full_name") or ""), via="whatsapp")
+    return f"Recorded: that photo is on {work_state.level_label(level)}."
 
 
 # ── WHAT THE RECORDS SAY ABOUT A PIECE OF WORK (lib/work_state.py) ──────────
@@ -56541,14 +56674,18 @@ async def _work_state_answer(project: dict, company_id: str, work: str, level: s
                                   now=now, project_bins=src.get("project_bins") or ())
     cov = reg.get("coverage") or {}
     note = "" if cov.get("state") in ("verified", "partial") else (cov.get("note") or "DOB records could not be checked.")
-    rel = await db[PHOTO_RELATIONS].find({"project_id": pid, "level": token, "same_area": "yes",
-                                          "confidence": {"$gte": 0.7}}).to_list(50)
+    # Only a comparison that SUPPORTS same place is shown. An unconfirmed one is
+    # left out, and it weakens nothing: the photos keep their own evidence.
+    rel = await db[PHOTO_RELATIONS].find({"project_id": pid, "level": token,
+                                          "same_place": photo_relations.SUPPORTED}).to_list(50)
     rel = sorted(rel, key=lambda r: str(r.get("second")), reverse=True)
     reports = await db[INSPECTION_REPORTS].find({"project_id": pid, "company_id": str(company_id)}).to_list(5000)
+    spaces, confirmed = await _photo_place_context(pid)
     return {"ok": True, "answer": work_state.what_holds(
         nodes[0], token, acts, index, today=today, schedule=src.get("schedule"), flags=flags,
         log_ids={str(lg.get("_id")) for lg in logs}, stop_work=reg.get("swo_active") or [],
-        regulatory_note=note, relations=rel, logs_from=start, inspections=reports)}
+        regulatory_note=note, relations=rel, logs_from=start, inspections=reports,
+        spaces=spaces, confirmations=confirmed)}
 
 
 async def _dm_work_status(ctx: dict, job: dict, args: dict) -> str:
@@ -56964,15 +57101,17 @@ async def _inspection_doc_turn(ident: dict, dm_chat: str, parsed: dict, body: An
     return True
 
 
-async def _photo_compare_call(raw_a: bytes, raw_b: bytes, project_id: Any) -> Optional[dict]:
-    """One vision call over two photos, or None."""
+async def _photo_compare_call(raw_a: bytes, raw_b: bytes, project_id: Any, *, meter: bool = True) -> Optional[dict]:
+    """One vision call over two photos, or None. `meter` is turned off by the
+    read-only benchmark alone, which counts its own calls and may not write."""
     if not QWEN_API_KEY or not raw_a or not raw_b:
         return None
     a, _e1 = await asyncio.to_thread(_vision_jpeg, raw_a)
     b, _e2 = await asyncio.to_thread(_vision_jpeg, raw_b)
     if not a or not b:
         return None
-    await record_vision_call(db, endpoint=VISION_PHOTO_COMPARE, project_id=str(project_id) if project_id else None)
+    if meter:
+        await record_vision_call(db, endpoint=VISION_PHOTO_COMPARE, project_id=str(project_id) if project_id else None)
     content = [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(x).decode()}}
                for x in (a, b)] + [{"type": "text", "text": photo_relations.COMPARE_PROMPT}]
     try:
@@ -57004,35 +57143,46 @@ async def _photo_log_bytes(row: dict) -> Optional[bytes]:
 
 
 async def _photo_relations_tick(now: Optional[datetime] = None, budget: int = PHOTO_RELATIONS_BUDGET) -> dict:
-    """OFF unless PHOTO_RELATIONS_ENABLED=1: how well the model tells one place
-    from another has not been measured on real photos. Never raises."""
-    report = {"pairs": 0, "failed": 0}
-    if not QWEN_API_KEY or os.environ.get("PHOTO_RELATIONS_ENABLED") != "1":
+    """OFF unless PHOTO_RELATIONS_ENABLED=1 AND both thresholds have been set
+    from a benchmark on real photos: how well anything tells one place from
+    another has not been measured. Geometry and the model each only ADD
+    support (photo_relations.combine); a miss is stored as unconfirmed, never
+    as a different place. Never raises."""
+    report = {"pairs": 0, "failed": 0, "supported": 0}
+    if not QWEN_API_KEY or os.environ.get("PHOTO_RELATIONS_ENABLED") != "1" or not photo_relations.automatic_ready():
         return report
     now = now or datetime.now(timezone.utc)
     try:
         rows = await db[PHOTO_INDEX].find({"kind": "photo"}).sort("date", -1).to_list(5000)
         done = [str(d["_id"]) for d in await db[PHOTO_RELATIONS].find({}, {"_id": 1}).to_list(200000)]
         by_project: Dict[str, list] = {}
-        for p in work_state.photo_rows(rows):
-            by_project.setdefault(str(p.get("project_id")), []).append(p)
-        for pid, photos in by_project.items():
+        for r in rows:
+            by_project.setdefault(str(r.get("project_id")), []).append(r)
+        for pid, raw_rows in by_project.items():
             left = budget - report["pairs"] - report["failed"]
             if left <= 0:
                 break
+            spaces, confirmed = await _photo_place_context(pid)
+            photos = work_state.photo_rows(raw_rows, spaces=spaces, confirmations=confirmed)
             for pair in photo_relations.pick_pairs(photos, done, left):
                 a, b = pair["first"], pair["second"]
                 raw_a, raw_b = await _photo_log_bytes(a), await _photo_log_bytes(b)
-                v = await _photo_compare_call(raw_a, raw_b, pid) if raw_a and raw_b else None
+                if not raw_a or not raw_b:
+                    report["failed"] += 1
+                    continue
+                geometry = await asyncio.to_thread(photo_geometry.match, raw_a, raw_b)
+                base_row = {"project_id": pid, "company_id": str(a.get("company_id") or ""),
+                            "level": a["levels"][0], "space": a.get("space"), "first": str(a.get("short")),
+                            "second": str(b.get("short")), "first_date": a.get("date"), "second_date": b.get("date"),
+                            "geometry": geometry, "prompt_version": photo_relations.PROMPT_VERSION, "at": now}
+                v = await _photo_compare_call(raw_a, raw_b, pid)
                 if v is None:
                     report["failed"] += 1
                     continue
-                await db[PHOTO_RELATIONS].insert_one({
-                    "_id": pair["pair_id"], **v, "project_id": pid, "company_id": str(a.get("company_id") or ""),
-                    "level": a["levels"][0], "first": str(a.get("short")), "second": str(b.get("short")),
-                    "first_date": a.get("date"), "second_date": b.get("date"),
-                    "prompt_version": photo_relations.PROMPT_VERSION, "model": QWEN_MODEL, "at": now})
+                verdict = photo_relations.combine(v, geometry)
+                await db[PHOTO_RELATIONS].insert_one({"_id": pair["pair_id"], **v, **verdict, **base_row, "model": QWEN_MODEL})
                 report["pairs"] += 1
+                report["supported"] += verdict["same_place"] == photo_relations.SUPPORTED
     except Exception as e:
         logger.error(f"[photo-relations] tick failed: {type(e).__name__}: {e!r}")
     logger.info(f"[photo-relations] {report}")
@@ -63266,6 +63416,10 @@ _DM_BRAIN_EXTRA_TOOLS = [
          "job": _JOB_PROP,
          "ids": {"type": "array", "items": {"type": "string"}, "description": "Ids from find_photos."}},
          "required": ["ids"]}},
+    {"name": "confirm_photo_place", "description": (
+        "Record the floor of a photo you just sent. ONLY when send_photos said its floor is not on record and "
+        "their very next message is a floor. The floor is read from their message."),
+     "input_schema": {"type": "object", "properties": {"job": _JOB_PROP}, "required": []}},
     {"name": "sheet_info", "description": (
         "Which file and drawing set a sheet is on (its page), its title, and what the drawing "
         "list says about it and its series (listed but not uploaded). For 'what file is it on'."),
@@ -63662,7 +63816,7 @@ async def _dm_do_set_trade(ident: dict, p: dict):
 _DM_BRAIN_ONE_JOB = _DM_BRAIN_JOB_TOOLS + ("headcount", "dot_status", "send_sheet",
                                            "send_plan_file", "sheet_info",
                                            "find_photos", "send_photos", "work_status",
-                                           "schedule_lookahead", "proposed_sequence", "report_inspection")
+                                           "schedule_lookahead", "proposed_sequence", "report_inspection", "confirm_photo_place")
 
 
 async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
@@ -63799,7 +63953,7 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
     if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
                                                "send_plan_file", "sheet_info",
                                                "find_photos", "send_photos", "work_status",
-                                               "schedule_lookahead", "proposed_sequence", "report_inspection"):
+                                               "schedule_lookahead", "proposed_sequence", "report_inspection", "confirm_photo_place"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
             return why
@@ -63849,6 +64003,8 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
             return await _dm_find_photos(ctx, job, args)
         if name == "send_photos":
             return await _dm_send_photos(ctx, job, args)
+        if name == "confirm_photo_place":
+            return await _dm_confirm_photo_place(ctx, job, args)
         if name == "sheet_info":
             return await _dm_sheet_info(str(job["id"]), str(args.get("sheet") or ""))
         if name == "send_plan_file":

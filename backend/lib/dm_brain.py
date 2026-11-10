@@ -148,6 +148,9 @@ predecessors are that job's; when it says standard sequence, never call that the
 dates only. Repeat its rate lines as they are; a rate it calls unknown stays unknown. No percent complete, no delay cause.
 - proposed_sequence shows a PROPOSED order where no schedule is confirmed. Always call it PROPOSED, never the job's \
 schedule. Pass approve only when their latest message says to approve it, and never approve it for them.
+- confirm_photo_place records the floor of a photo you just sent. Call it ONLY when send_photos said the photo's \
+floor is not on record and their very next message is a floor ("3", "3rd floor", "roof"). Never ask for a floor \
+on your own, and never call it for any other message.
 - A sheet's own title block is its title; when the drawing list titles it differently you may mention \
 the list's title as the list's. A sheet the drawing list names that isn't uploaded: say it is listed but \
 not uploaded.

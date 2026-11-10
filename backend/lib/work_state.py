@@ -191,20 +191,29 @@ def evidence_rows(activities: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def photo_rows(index_rows: Iterable[Dict[str, Any]], log_ids: Optional[set] = None) -> List[Dict[str, Any]]:
-    """The photo index, placed the same way. `log_ids`: the effective filed logs
-    (an amended log's superseded original is left out)."""
+def photo_rows(index_rows: Iterable[Dict[str, Any]], log_ids: Optional[set] = None,
+               *, spaces: Optional[Dict[str, Dict[str, Any]]] = None,
+               confirmations: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> List[Dict[str, Any]]:
+    """The photo index, placed by lib/photo_place.infer: a photo's `levels` is
+    the inferred level when the evidence is sufficient and otherwise only what
+    it is shared between. `log_ids`: the effective filed logs (an amended log's
+    superseded original is left out). `spaces`, `confirmations` (by photo_key):
+    the job's plan tags and what people have answered."""
+    # Here, not at the top: photo_place reads this module's places_in.
+    from lib import photo_place
+    answers = confirmations or {}
     out = []
     for r in index_rows:
         if log_ids is not None and str(r.get("log_id")) not in log_ids:
             continue
-        place = places_in(r.get("where"))
+        place = photo_place.infer(r, spaces, confirmations=answers.get(str(r.get("photo_key"))) or ())
         crew = str(r.get("sub") or "")
         nodes: List[str] = []
         for phrase in P.work_phrases(r.get("work")):
             nodes += classify(phrase, crew)[0]
         seen, _ = classify(f"{r.get('description') or ''} {' '.join(r.get('tags') or [])}", crew)
-        out.append({**r, "levels": place["levels"], "nodes": sorted(set(nodes)), "seen_nodes": seen})
+        out.append({**r, "levels": photo_place.levels_of(place), "space": place["space"], "place": place,
+                    "how_placed": photo_place.how(place), "nodes": sorted(set(nodes)), "seen_nodes": seen})
     return out
 
 
@@ -289,7 +298,7 @@ def package_state(node: str, level: str, rows: Sequence[Dict[str, Any]], photos:
         "generic_only": bool(mine) and all(r["generic"] for r in mine),
         "log_ids": sorted({r["log_id"] for r in mine if r["log_id"]})[-5:],
         "photos": [{"id": p.get("short"), "date": p.get("date"), "sub": p.get("sub"), "shows": p.get("description"),
-                    "only_this_level": p["levels"] == [level]} for p in pics[:MAX_PHOTOS]],
+                    "only_this_level": p["levels"] == [level], "how_placed": p.get("how_placed")} for p in pics[:MAX_PHOTOS]],
         "observed": any(node in p["seen_nodes"] for p in pics),
         "verified": None, "percent": None,
         "schedule": _schedule_facts(_schedule_rows(schedule, node, level), today, bool(days), logs_from),
@@ -383,11 +392,13 @@ def what_holds(target: str, level: str, activities: Iterable[Dict[str, Any]], in
                log_ids: Optional[set] = None, stop_work: Optional[List[Dict[str, Any]]] = None,
                regulatory_note: str = "", relations: Optional[List[Dict[str, Any]]] = None,
                logs_from: Optional[date] = None,
-               inspections: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+               inspections: Optional[List[Dict[str, Any]]] = None,
+               spaces: Optional[Dict[str, Dict[str, Any]]] = None,
+               confirmations: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
     """The evidence for one question. It names what is open on the record and
     what is unknown; it never names a cause."""
     rows = evidence_rows(activities)
-    photos = photo_rows(index_rows, log_ids)
+    photos = photo_rows(index_rows, log_ids, spaces=spaces, confirmations=confirmations)
     nodes, before = _graph(flags)
     work, gates = [], []
     reports = IR.current_state(inspections or [])
@@ -406,8 +417,54 @@ def what_holds(target: str, level: str, activities: Iterable[Dict[str, Any]], in
             "insulation": package_state("insulation", level, rows, photos, schedule, today),
             "has_schedule": bool(schedule), "stop_work": stop_work or [], "regulatory_note": regulatory_note,
             "relations": relations or [], "other_inspections": IR.others(inspections or [], level),
+            "history": level_history(rows, photos, flags=flags, level=level),
             "counts": {"log_rows": len(rows), "on_this_level": sum(1 for r in rows if level in r["levels"]),
                        "without_a_level": sum(1 for r in rows if not r["levels"])}}
+
+
+# ── THE RECORD OVER TIME ───────────────────────────────────────────────────
+
+MAX_HISTORY_PHOTOS = 12
+
+
+def level_history(rows: Sequence[Dict[str, Any]], photos: Sequence[Dict[str, Any]],
+                  *, flags: Optional[Dict[str, Any]] = None, level: Optional[str] = None) -> Dict[str, Any]:
+    """Per level and kind of work: the first and last report and the photos in
+    date order. {"levels": {level: {"stages": [nodes by first report],
+    "work": {node: ...}}}, "out_of_order": [...]}.
+
+    `out_of_order` is a FACT ABOUT THE DATES: a kind of work whose first report
+    comes before the first report of something that usually precedes it. It does
+    not say anything was wrong. Logs get written late, a template is not this
+    job's logic, and a prerequisite with no report is simply not compared.
+    `shared` and `generic` say how much the dates can bear."""
+    nodes, before = _graph(flags)
+    keys = sorted({(lv, n) for r in rows for lv in r["levels"] for n in r["nodes"] if level in (None, lv)})
+    levels: Dict[str, Dict[str, Any]] = {}
+    for lv, n in keys:
+        mine = [r for r in rows if n in r["nodes"] and lv in r["levels"]]
+        days = sorted({r["date"] for r in mine})
+        pics = sorted((p for p in photos if lv in p["levels"] and (n in p["nodes"] or n in p["seen_nodes"])),
+                      key=lambda p: str(p.get("date")))
+        levels.setdefault(lv, {"work": {}})["work"][n] = {
+            "first": days[0], "last": days[-1], "days": len(days), "subs": sorted({r["sub"] for r in mine if r["sub"]}),
+            "shared": not any(r["levels"] == [lv] for r in mine), "generic": all(r["generic"] for r in mine),
+            "photos": [{"id": p.get("short"), "date": p.get("date"), "shows": p.get("description"),
+                        "only_this_level": p["levels"] == [lv], "how_placed": p.get("how_placed")}
+                       for p in pics[:MAX_HISTORY_PHOTOS]]}
+    out_of_order = []
+    for lv, slot in levels.items():
+        work = slot["work"]
+        slot["stages"] = sorted(work, key=lambda n: (work[n]["first"], n))
+        for n, w in work.items():
+            for prior in _prerequisites(n, nodes, before) if n in nodes else []:
+                if prior in work and w["first"] < work[prior]["first"]:
+                    out_of_order.append({"level": lv, "node": n, "first": w["first"], "prerequisite": prior,
+                                         "prerequisite_first": work[prior]["first"],
+                                         "shared": w["shared"] or work[prior]["shared"],
+                                         "generic": w["generic"] or work[prior]["generic"]})
+    out_of_order.sort(key=lambda f: (f["level"], f["first"], f["node"], f["prerequisite"]))
+    return {"levels": levels, "out_of_order": out_of_order}
 
 
 # ── AS WORDS ───────────────────────────────────────────────────────────────
@@ -517,14 +574,23 @@ def as_text(ans: Dict[str, Any]) -> str:
         out.append(f"Related, insulation: {state_words(ans['insulation'], today)}.")
     if not ans["has_schedule"]:
         out.append("No confirmed schedule is on file, so no planned date, delay or downstream impact can be stated.")
+    facts = ans["history"]["out_of_order"]
+    if facts:
+        out.append("Reported out of the usual order on this level (the dates of the reports only; this does not say anything was done wrong):")
+        out += [f"- {node_label(f['node'])} first reported {_day(f['first'])}, before the first report of "
+                f"{node_label(f['prerequisite'])} on {_day(f['prerequisite_first'])}"
+                + (" (a report filed for several floors)" if f["shared"] else "") for f in facts[:5]]
     listed = [st for a in seq["activities"] for link in a["predecessors"] for st in link["states"]] if seq["source"] == "job" else ans["work"]
     shown = {p["id"]: p for s in [t] + listed for p in s["photos"]}
     if shown:
-        out.append("Photos (ids for send_photos):")
+        out.append("Photos, each an observation of what it shows and never a verification (ids for send_photos):")
         out += [f"- {p['id']} {p['date']} {p.get('sub') or ''}: {p['shows']}"
+                + (f" (placed: {p['how_placed']})" if p["only_this_level"] and p.get("how_placed") else "")
                 + ("" if p["only_this_level"] else " (filed for several floors)") for p in list(shown.values())[:6]]
     for r in ans["relations"][:3]:
-        out.append(f"AI photo comparison, unconfirmed ({r['first']} vs {r['second']}): " + "; ".join(r.get("changes") or ["no change named"]))
+        by = ", ".join(r.get("support") or []) or "the model"
+        out.append(f"AI photo comparison, an observation and not a verification, supported by {by} "
+                   f"({r['first']} vs {r['second']}): " + "; ".join(r.get("changes") or ["no change named"]))
     c = ans["counts"]
     out.append(f"Records read: {c['log_rows']} log entries, {c['on_this_level']} naming this level, "
                f"{c['without_a_level']} naming no level at all.")
