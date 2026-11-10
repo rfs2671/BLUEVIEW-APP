@@ -403,7 +403,7 @@ class PastPlannedFinish(unittest.TestCase):
     def test_it_is_stated_only_as_two_records_side_by_side(self):
         words = W._schedule_words(self._state())
         self.assertIn("past planned finish 2026-11-01 with no report on this level in the logs read", words[0])
-        self.assertNotIn("delay", words[0].lower())
+        self.assertNotRegex(words[0], r"(?i)\b(?:delay\w*|because|caused?|due\s+to)\b")
 
     def test_a_report_ends_it(self):
         s = self._state([_act("Electrical wiring", where="floor 3")])
