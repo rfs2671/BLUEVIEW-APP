@@ -619,8 +619,13 @@ async def _as_role(server, ident: dict, role: str, cp_email: str, cache: dict) -
                 return chat, real, f"run as {role} {u.get('name') or u.get('email')} (their assigned jobs)"
     if not ident:
         return None, None, ""
-    return None, dict(ident, role=role, user=dict(ident.get("user") or {}, role=role)), \
-        f"run as {ident.get('role')} with role replaced by {role} (that person's jobs; pass --cp-email for a real {role})"
+    # The jobs that role would have: the server's own rule (a CP: their
+    # assigned jobs only), never the person's admin-wide list.
+    user = dict(ident.get("user") or {}, role=role)
+    projects = await server._dm_assistant_projects(user, str(ident.get("company_id") or ""), role)
+    return None, dict(ident, role=role, user=user, projects=projects), \
+        (f"run as {ident.get('role')} with role replaced by {role} (that person's assigned jobs as a {role}: "
+         f"{len(projects)}; pass --cp-email for a real {role})")
 
 
 async def _fixed(server, rows: list, cache: dict, email: str, models: List[str],
