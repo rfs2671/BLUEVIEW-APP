@@ -208,14 +208,54 @@ def _work_items(r: Dict[str, Any], model: Dict[str, Any], pid: str, trades: Dict
     return out
 
 
-def items_from_records(records: Sequence[Dict[str, Any]], model: Dict[str, Any], *, project_id: str = "588"
-                       ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """(items, meta). meta: what was read, skipped and why."""
+def audit_class(a: Optional[Dict[str, Any]]) -> str:
+    """original | duplicate | synthetic | derived, from one audit_flags row."""
+    if not a:
+        return "unaudited"
+    if a.get("derived_class") == "synthetic":
+        return "synthetic"
+    if a.get("dup_of"):
+        return "duplicate"
+    return "original" if a.get("is_original") else "derived"
+
+
+def items_from_records(records: Sequence[Dict[str, Any]], model: Dict[str, Any], *, project_id: str = "588",
+                       audit: Optional[Dict[str, Dict[str, Any]]] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """(items, meta). meta: what was read, skipped and why.
+
+    With the independent AUDIT (records/audit_flags.jsonl, by rec_id): only
+    ORIGINAL rows become evidence. A duplicate is dropped (the audit's dup_of
+    names the original, which is kept -- the records README's own
+    duplicate_of kept the derived copy in 23 of 25 pairs, so it is ignored);
+    a synthetic row is dropped; a DERIVED row (generated report, classifier
+    output, bot / DM text, relayed report, LLM replay, probe aggregate) is
+    kept only as SUMMARY CONTEXT in meta["summary_context"]: it never becomes
+    an evidence item, so it can never support a fact or be an independent
+    signal. Without the audit: every row the records README did not mark a
+    duplicate (the pre-audit behaviour)."""
     trades = roster(records)
+    if audit is None:
+        return _items(records, model, project_id, trades, readme_dups=True)
+    cls = {str(r.get("id")): audit_class(audit.get(str(r.get("id")))) for r in records}
+    originals = [r for r in records if cls[str(r.get("id"))] == "original"]
+    derived = [r for r in records if cls[str(r.get("id"))] == "derived"]
+    items, meta = _items(originals, model, project_id, trades, readme_dups=False)
+    summ, _ = _items(derived, model, project_id, trades, readme_dups=False)
+    meta["summary_context"] = [{"ref": i["ref"], "on": i.get("on"), "sub": i.get("sub"), "node": i.get("node"),
+                                "levels": i.get("levels"), "quote": (i.get("quote") or "")[:120],
+                                "derived_class": (audit.get(i["ref"].split(":")[0]) or {}).get("derived_class"),
+                                "use": "summary context only: never evidence, never a signal"} for i in summ]
+    from collections import Counter as _C
+    meta["audit_classes"] = dict(_C(cls.values()))
+    return items, meta
+
+
+def _items(records: Sequence[Dict[str, Any]], model: Dict[str, Any], project_id: str, trades: Dict[str, str], *,
+           readme_dups: bool) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     skipped: Dict[str, int] = defaultdict(int)
     for r in records:
-        if r.get("duplicate_of") or r.get("origin") in SKIP_ORIGINS:
+        if (readme_dups and r.get("duplicate_of")) or r.get("origin") in SKIP_ORIGINS:
             skipped["duplicate_or_assistant_claim"] += 1
             continue
         t, f = r.get("type"), r.get("fields") or {}
@@ -338,8 +378,8 @@ def leak_reasons(r: Dict[str, Any], cutoff: date, *, strictness: str = "conserva
     if _RESULT.search(text):
         out.append("states an inspection result")
     a = (audit or {}).get(str(r.get("id"))) or {}
-    if a.get("leaks_inspection_result"):
-        out.append("audit flag: leaks_inspection_result")
+    if a.get("leaks_inspection_result"):          # "direct", "dob_signoff_state: ...", "borderline: ..."
+        out.append(f"audit leak flag: {str(a['leaks_inspection_result'])[:60]}")
     if strictness == "strictest":
         src = str((r.get("provenance") or {}).get("source_file") or "")
         if any(g in src for g in GENERATED_SOURCES) or f.get("kind") in ("period_work_item", "sub_period_summary",
@@ -362,7 +402,7 @@ def blind_records(records: Sequence[Dict[str, Any]], cutoff: date, *, strictness
     return kept, excluded
 
 
-def headcounts(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def headcounts(records: Sequence[Dict[str, Any]], *, readme_dups: bool = True) -> List[Dict[str, Any]]:
     """Per day and company: the daily log's crew count vs the gate count, when
     both are on record. Amended documents replace the original's rows."""
     logs: Dict[Tuple[date, str], Dict[str, Any]] = {}
@@ -370,7 +410,8 @@ def headcounts(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for r in records:
         f = r.get("fields") or {}
         d = _d(r.get("date"))
-        if r.get("type") != "daily_log_activity" or not d or not r.get("company") or r.get("duplicate_of") \
+        if r.get("type") != "daily_log_activity" or not d or not r.get("company") \
+                or (readme_dups and r.get("duplicate_of")) \
                 or not isinstance(r.get("crew_count"), int) or f.get("kind"):
             continue
         if d in amended_days and not f.get("amended_doc") and "amended_doc" in f:
@@ -384,7 +425,7 @@ def headcounts(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         f = r.get("fields") or {}
         d = _d(r.get("date"))
         if r.get("type") == "checkin_aggregate" and d and isinstance(f.get("by_company"), dict) and "doc" not in f \
-                and not r.get("duplicate_of") and r.get("origin") != "assistant_claim":
+                and not (readme_dups and r.get("duplicate_of")) and r.get("origin") != "assistant_claim":
             for co, n in f["by_company"].items():
                 gates.setdefault((d, _canon(co)), (n, r["id"]))
     out = []

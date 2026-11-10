@@ -226,6 +226,21 @@ def signal(i: Dict[str, Any], role: str, level: Optional[str] = None) -> Dict[st
             "role": role}
 
 
+def one_per_record(signals: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Never two signals from one underlying record: a report period row
+    becomes two dated items ("first", "last") and a crew row one item per
+    phrase, but it is still one record ("R0139:first:x" and "R0139:last:x"
+    are R0139). The first signal of each record is kept."""
+    seen, out = set(), []
+    for s in signals:
+        base = str(s.get("ref") or "").split(":", 1)[0]
+        if base in seen:
+            continue
+        seen.add(base)
+        out.append(s)
+    return out
+
+
 def _place_signals(signals: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [s for s in signals if s.get("source") not in PRESENCE_ONLY_SOURCES]
 
@@ -512,6 +527,7 @@ def rough_in(facts: Sequence[Dict[str, Any]], model: Dict[str, Any], level: str,
     stated = [i for i in facts if gate and i.get("node") == gate and i.get("claim") in ("done", "scheduled", "present")
               and (not i.get("levels") or level in i["levels"]) and i.get("kind") not in ("verified", "confirmed")]
     sigs += [signal(i, "a statement about this system's rough inspection", level) for i in stated]
+    sigs = one_per_record(sigs)
     place = _place_signals(sigs)
     if E.independent_sources(place) < E.MIN_INDEPENDENT_SIGNALS:
         return None
@@ -591,6 +607,7 @@ def under_slab(facts: Sequence[Dict[str, Any]], model: Dict[str, Any], system: s
     sigs = ([signal(i, f"{system} work under the slab recorded before the pour", g) for i in before]
             + [signal(pour, "the slab on grade poured over it", g)]
             + [signal(i, "an inspection of the under-slab work was recorded", g) for i in visits])
+    sigs = one_per_record(sigs)
     if E.independent_sources(_place_signals(sigs)) < E.MIN_INDEPENDENT_SIGNALS:
         return None, cons_out
     refs = [s["ref"] for s in sigs]

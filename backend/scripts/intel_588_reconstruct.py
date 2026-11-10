@@ -218,7 +218,7 @@ def load_audit(data: Path) -> Dict[str, Dict[str, Any]]:
         for line in fh:
             if line.strip():
                 row = json.loads(line)
-                out[str(row.get("id") or row.get("record_id"))] = row
+                out[str(row.get("rec_id") or row.get("id") or row.get("record_id"))] = row
     return out
 
 
@@ -230,16 +230,56 @@ def _weeks(start: date, end: date) -> List[date]:
     return days
 
 
+def _originals(src: Dict[str, Any], audit: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [r for r in src["records"] if R.audit_class(audit.get(str(r.get("id")))) == "original"]
+
+
 def blind_run(src: Dict[str, Any], model: Dict[str, Any], strictness: str, audit: Dict[str, Dict[str, Any]],
-              pub_items: List[Dict[str, Any]], days: List[date]) -> Dict[str, Any]:
-    kept, excluded = R.blind_records(src["records"], BLIND_DAY, strictness=strictness, audit=audit)
-    items, meta = R.items_from_records(kept, model, project_id=PID)
-    bt = blind_test(items + pub_items, model, truth(src["dob_now"]), R.headcounts(kept), days)
+              pub_items: List[Dict[str, Any]], days: List[date], *, apply_audit: bool) -> Dict[str, Any]:
+    """apply_audit False = the run before the audit (README duplicates, every
+    non-duplicate row as evidence). True = originals only as evidence, the
+    audit's leak flags (direct, DOB sign-off state AND borderline) excluded,
+    and the public DOB sign-off rows withheld too (the audit flags their
+    record-copies as sign-off-state leaks)."""
+    kept, excluded = R.blind_records(src["records"], BLIND_DAY, strictness=strictness,
+                                     audit=audit if apply_audit else None)
+    if apply_audit:
+        items, meta = R.items_from_records(kept, model, project_id=PID, audit=audit)
+        hc = R.headcounts(_originals({"records": kept}, audit), readme_dups=False)
+        pub = []
+    else:
+        items, meta = R.items_from_records(kept, model, project_id=PID)
+        hc = R.headcounts(kept)
+        pub = pub_items
+    bt = blind_test(items + pub, model, truth(src["dob_now"]), hc, days)
     reasons = [why for e in excluded for why in e["reasons"]]
-    bt.update({"strictness": strictness, "records_kept": len(kept), "records_excluded": len(excluded),
-               "excluded_by_reason": dict(Counter(reasons)),
-               "excluded": excluded, "audit_file_used": bool(audit), "items": len(items)})
+    summary_rows = meta.get("summary_context") or []
+    bt.update({"strictness": strictness, "audit_applied": apply_audit, "records_kept": len(kept),
+               "records_excluded": len(excluded), "excluded_by_reason": dict(Counter(reasons)),
+               "excluded": excluded, "items": len(items), "audit_classes_of_kept": meta.get("audit_classes"),
+               "summary_context_rows": len(summary_rows)})
     return bt
+
+
+def lost_support(before: List[Dict[str, Any]], after: List[Dict[str, Any]],
+                 audit: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Each inference of the pre-audit run, what became of it after the
+    audit, and the audit class of every signal it stood on."""
+    after_by = {i["ref"].rsplit(":", 1)[0]: i for i in after}
+    out = []
+    for i in before:
+        key = i["ref"].rsplit(":", 1)[0]
+        sig = [{"ref": s["ref"], "kind": s["kind"], "sub": s.get("sub"), "source": s["source"],
+                "audit": R.audit_class(audit.get(str(s["ref"]).split(":")[0]))} for s in i["signals"]]
+        a = after_by.get(key)
+        classes = [x["audit"] for x in sig]
+        out.append({"inference": key, "before": f"{i['claim']} / {i['confidence']}",
+                    "after": f"{a['claim']} / {a['confidence']}" if a else "no inference (support lost)",
+                    "signals_by_audit_class": dict(Counter(classes)),
+                    "original_signal_sources_after_audit": sorted({f"{x['source']}|{x['sub']}" for x in sig
+                                                                   if x["audit"] == "original"}),
+                    "signals": sig})
+    return out
 
 
 def main() -> int:
@@ -251,11 +291,14 @@ def main() -> int:
     src = load(data)
     audit = load_audit(data)
     model = CI.model_from_building(src["building"], name="588 Thomas S. Boyland St")
-    rec_items, meta = R.items_from_records(src["records"], model, project_id=PID)
+    pre_items, _pre_meta = R.items_from_records(src["records"], model, project_id=PID)
+    rec_items, meta = R.items_from_records(src["records"], model, project_id=PID, audit=audit or None)
     pub_items = R.items_from_public(src["timeline"], project_id=PID)
     dob_items = R.items_from_dob_now(src["dob_now"], project_id=PID)
-    hc = R.headcounts(src["records"])
+    hc = R.headcounts(_originals(src, audit), readme_dups=False) if audit else R.headcounts(src["records"])
     full_items = rec_items + pub_items + dob_items
+    pre_now = T.as_of(pre_items + pub_items + dob_items, model, TODAY, project_id=PID,
+                      headcounts=R.headcounts(src["records"]))
     # From the day this LeveLog project was created (its first record; the
     # records file also holds a probe line dated 2026-01-01 that says nothing
     # was filed, and another project's document of 2026-05-04) to today.
@@ -263,7 +306,11 @@ def main() -> int:
     first = min(d for d in created if d) if any(created) else min(
         i["on"] for i in rec_items if isinstance(i.get("on"), date))
     days = _weeks(first, TODAY)
-    blinds = {k: T._jsonable(blind_run(src, model, k, audit, pub_items, days)) for k in R.STRICTNESS + (R.DATES_ONLY,)}
+    blinds = {f"pre_audit_{k}": T._jsonable(blind_run(src, model, k, audit, pub_items, days, apply_audit=False))
+              for k in R.STRICTNESS + (R.DATES_ONLY,)}
+    if audit:
+        blinds["post_audit"] = T._jsonable(blind_run(src, model, "conservative", audit, pub_items, days,
+                                                     apply_audit=True))
     now = T.as_of(full_items, model, TODAY, project_id=PID, headcounts=hc)
     weekly = [T.public(T.as_of(full_items, model, day, project_id=PID, headcounts=hc)) for day in days + [TODAY]]
     for w in weekly:
@@ -281,6 +328,11 @@ def main() -> int:
         "inputs": {"records": meta, "public_items": len(pub_items), "dob_now_items": len(dob_items),
                    "headcount_pairs": len(hc), "audit_file_used": bool(audit)},
         "current_state": T.public(now),
+        "summary_context": T._jsonable(meta.get("summary_context") or []),
+        "inferences_before_vs_after_audit": T._jsonable(lost_support(pre_now["inferences"], now["inferences"], audit)),
+        "blind_inferences_before_vs_after_audit": (T._jsonable(lost_support(
+            [x for x in blinds["pre_audit_conservative"]["inferences_as_of_blind_day"]],
+            [x for x in blinds["post_audit"]["inferences_as_of_blind_day"]], audit)) if audit else None),
         "weekly_snapshots": weekly,
         "subs": T.public(now)["subs"],
         "blind_test": blinds,

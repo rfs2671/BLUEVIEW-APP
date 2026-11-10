@@ -141,6 +141,13 @@ class RoughInPlace(unittest.TestCase):
         self.assertEqual(i["confidence"], "medium")
         self.assertEqual(i["contradictions"], [con])
 
+    def test_one_record_is_never_two_signals(self):
+        rows = [rep("R9:first:rough_plumbing", "rough_plumbing", ["FLOOR_2"], d(2, 1)),
+                rep("R9:last:rough_plumbing", "rough_plumbing", ["FLOOR_2"], d(2, 8)),
+                rep("L2", "insulation", ["FLOOR_2"], d(2, 10), sub="Insul Co")]
+        i = inf_on(run(rows), "FLOOR_2")
+        self.assertEqual([s["ref"] for s in i["signals"]], ["R9:first:rough_plumbing", "L2"])
+
     def test_an_inference_never_decides_status(self):
         rows = [rep("L1", "rough_plumbing", ["FLOOR_2"], d(2, 1)),
                 rep("L2", "insulation", ["FLOOR_2"], d(2, 10), sub="Insul Co")]

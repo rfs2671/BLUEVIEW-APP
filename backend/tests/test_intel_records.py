@@ -111,7 +111,36 @@ class BlindLeakage(unittest.TestCase):
     def test_an_audit_flag_excludes(self):
         ok = row("K", "Pipe Co", "Plumbing", "1st floor")
         kept, ex = R.blind_records([ok], self.CUT, audit={"K": {"leaks_inspection_result": True}})
-        self.assertEqual((kept, ex[0]["reasons"]), ([], ["audit flag: leaks_inspection_result"]))
+        self.assertEqual((kept, ex[0]["reasons"]), ([], ["audit leak flag: True"]))
+
+
+class TheAudit(unittest.TestCase):
+    """Synthetic audit_flags rows in the audit lane's shape (rec_id, dup_of,
+    derived_class, is_original, leaks_inspection_result)."""
+
+    def flags(self):
+        return {"O": {"rec_id": "O", "is_original": True, "dup_of": None, "derived_class": "original_filed_row"},
+                "D": {"rec_id": "D", "is_original": False, "dup_of": "O", "derived_class": "generated_report"},
+                "G": {"rec_id": "G", "is_original": False, "dup_of": None, "derived_class": "generated_report"},
+                "S": {"rec_id": "S", "is_original": False, "dup_of": None, "derived_class": "synthetic"}}
+
+    def test_only_originals_are_evidence_and_derived_rows_are_summary_only(self):
+        o = row("O", "Pipe Co", "MEP rough-in", "1st floor")
+        d = dict(row("D", "Pipe Co", "MEP rough-in", "1st floor"))
+        o_readme = dict(o, duplicate_of="D")            # the README kept the derived copy: ignored under the audit
+        g = row("G", "Pipe Co", "Domestic water rough", "floors 1–2")
+        s = row("S", "Pipe Co", "Plumbing", "2nd floor")
+        got, meta = R.items_from_records(TA + [o_readme, d, g, s], MODEL, project_id="synthetic", audit=self.flags())
+        self.assertEqual([i["ref"] for i in got], ["O:rough_plumbing"])
+        self.assertEqual([x["ref"] for x in meta["summary_context"]], ["G:rough_water"])
+        self.assertEqual(meta["summary_context"][0]["derived_class"], "generated_report")
+        self.assertEqual(R.audit_class(self.flags()["S"]), "synthetic")
+
+    def test_a_borderline_leak_flag_is_excluded_from_a_blind_run(self):
+        k = row("K", "Pipe Co", "Underground plumbing inspection", "1st floor")
+        _kept, ex = R.blind_records([k], date(2026, 3, 1),
+                                    audit={"K": {"leaks_inspection_result": "borderline: filed log row mentions a DOB"}})
+        self.assertEqual(ex[0]["reasons"], ["audit leak flag: borderline: filed log row mentions a DOB"])
 
 
 class PublicRecords(unittest.TestCase):
