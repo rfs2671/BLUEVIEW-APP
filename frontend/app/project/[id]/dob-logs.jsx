@@ -104,6 +104,7 @@ export default function DOBLogsScreen() {
   const tc = useT('compliance');
   const tEmbargo = useT('dotEmbargo');
   const tDot = useT('dotCompliance');
+  const tFresh = useT('dobFreshness');
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -119,6 +120,7 @@ export default function DOBLogsScreen() {
   // the window (Nov 1 – Jan 2, New York) and `show`; null = not loaded, and
   // a failed read shows nothing rather than a claim either way.
   const [embargo, setEmbargo] = useState(null);
+  const [freshness, setFreshness] = useState(null);
   const [activeTab, setActiveTab] = useState(initialTab === 'dot' ? 'dot' : 'all');
   const [expandedLogId, setExpandedLogId] = useState(null);
   const [showConfigModal, setShowConfigModal] = useState(false);
@@ -151,12 +153,14 @@ export default function DOBLogsScreen() {
     // (default '30d' empties the list ~30 days after the sync stamp). Tile
     // numbers come from dob-summary; both are fetched together, each settling
     // independently so one failure can't blank the other.
-    const [logsRes, summaryRes, embargoRes] = await Promise.all([
+    const [logsRes, summaryRes, embargoRes, freshRes] = await Promise.all([
       settleFetch(() => dobAPI.getLogs(projectId, { limit: 200, date_range: 'all' })),
       settleFetch(() => dobAPI.getSummary(projectId)),
       settleFetch(() => dobAPI.getDotEmbargo(projectId)),
+      settleFetch(() => dobAPI.getDobFreshness(projectId)),
     ]);
     setEmbargo(embargoRes.status === 'ok' ? (embargoRes.data || null) : null);
+    setFreshness(freshRes.status === 'ok' ? (freshRes.data || null) : null);
 
     setFetchState(logsRes.status);
     if (logsRes.status === 'ok') {
@@ -404,6 +408,35 @@ export default function DOBLogsScreen() {
       )}
     </>
   );
+
+  // HOW FRESH THE COMPLAINT LIST IS (backend lib/complaint_watch.freshness).
+  // An empty Complaints tab said "No records of this type" while two DOB
+  // safety complaints sat on BIS (546 Saratoga, 2026-11-10): Open Data is a
+  // daily extract. This line says what was checked and when. Timestamps only
+  // (never a bare calendar day), so Date.parse is exact here.
+  const agoText = (iso) => {
+    const t = iso ? Date.parse(iso) : NaN;
+    if (Number.isNaN(t)) return null;
+    const m = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (m < 1) return tFresh('justNow');
+    if (m < 90) return tFresh('minutes').replace('{n}', String(m));
+    return tFresh('hours').replace('{n}', String(Math.round(m / 60)));
+  };
+  const freshRow = (key) => ((freshness && freshness.sources) || []).find((r) => r.source === key) || null;
+  const bisFresh = freshRow('bis_complaints');
+  const odFresh = freshRow('dob_complaints');
+  const freshnessNote = freshness ? (
+    <View style={s.freshnessNote}>
+      <Text style={s.freshnessText}>
+        {freshness.can_say_no_new_complaints && bisFresh
+          ? tFresh('live').replace('{ago}', agoText(bisFresh.last_success_at) || '')
+          : tFresh('notLive')}
+        {bisFresh && bisFresh.last_error ? ` ${tFresh('failed').replace('{error}', bisFresh.last_error)}` : ''}
+        {odFresh && agoText(odFresh.last_success_at)
+          ? ` ${tFresh('openData').replace('{ago}', agoText(odFresh.last_success_at))}` : ''}
+      </Text>
+    </View>
+  ) : null;
 
   const handlePrepareRenewal = async (log) => {
     setPreparingId(log.id);
@@ -1084,6 +1117,7 @@ export default function DOBLogsScreen() {
           {/* DOT holiday embargo (outside the DOT tab; inside it, the
               panel places it between the setup card and the permits). */}
           {activeTab !== 'dot' && embargoBanner}
+          {activeTab !== 'dot' && freshnessNote}
 
           {/* The DOT tab (DOT Phase 1 B). */}
           {activeTab === 'dot' && (
@@ -1417,6 +1451,8 @@ function buildStyles(colors, isDark) {
     dobLinkBtn: { marginTop: spacing.sm },
     detectedText: { fontSize: 11, color: colors.text.subtle, marginTop: spacing.sm },
     emptyCard: { alignItems: 'center', gap: spacing.md, paddingVertical: spacing.xl },
+    freshnessNote: { paddingHorizontal: spacing.xs, paddingBottom: spacing.sm },
+    freshnessText: { fontSize: 12, lineHeight: 17, color: colors.text.muted },
     emptyTitle: { fontSize: 18, fontWeight: '500', color: colors.text.primary },
     emptySubtitle: { fontSize: 14, color: colors.text.muted, textAlign: 'center' },
     modalOverlay: { flex: 1, backgroundColor: withAlpha('#000000', 0.6), justifyContent: 'center', alignItems: 'center' },

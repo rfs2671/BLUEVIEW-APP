@@ -538,6 +538,20 @@ def classify_complaint(rec: dict) -> dict:
     disp_info = DOB_DISPOSITION_CODES.get(disp_code, {})
     cat_info = DOB_CATEGORY_CODES.get(cat_code, {})
 
+    # OPEN, NOT YET DISPOSED. With no disposition code the status word
+    # ("ACTIVE") used to stand in for one, matched nothing, and scored MEDIUM:
+    # an open Construction Safety Compliance complaint (8A) awaiting inspection
+    # came out severity "Good" and was never emailed (546 Saratoga,
+    # 2026-11-10, complaints 3A88489 / 3A88492). An inspection is pending: for
+    # a category of MEDIUM risk or more that is something to act on before the
+    # inspector arrives. LOW categories (4S sustainability, 7F tracking) stay.
+    open_pending = (not str(rec.get("disposition_code") or "").strip()
+                    and disp_code in ("ACTIVE", "OPEN", "ACT")
+                    and cat_info.get("risk", "MEDIUM") != "LOW")
+    if open_pending:
+        disp_info = {"label": "Open: awaiting DOB inspection", "risk": "PENDING",
+                     "action": "DOB inspection expected. Correct the cited conditions before the inspector arrives."}
+
     disp_risk = disp_info.get("risk", "MEDIUM")
     cat_risk = cat_info.get("risk", "MEDIUM")
 
@@ -548,7 +562,7 @@ def classify_complaint(rec: dict) -> dict:
         final_risk = disp_risk
 
     # Map to Levelog severity
-    if final_risk in ("CRITICAL", "HIGH", "PENDING"):
+    if final_risk in ("CRITICAL", "HIGH", "PENDING") or open_pending:
         severity = "Action"
     else:
         severity = "Good"

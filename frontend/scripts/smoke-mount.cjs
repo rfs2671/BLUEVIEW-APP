@@ -472,6 +472,21 @@ const PROJECT = { id: 'p1', _id: 'p1', name: 'Smoke Site', address: '1 Test St, 
 // p7 and p6 are also the only rows that draw a LIVE purge button, which keeps
 // "Permanently Delete" present as a positive control — without one, "Deletion
 // blocked" everywhere would be indistinguishable from a screen stuck blocked.
+// The Compliance screen's freshness line (lib/complaint_watch.freshness): one
+// source fresh, one failed, so both branches of the line are executed.
+const DOB_FRESHNESS = {
+  sources: [
+    { source: 'bis_complaints', label: 'DOB BIS complaints (live)', status: 'stale',
+      last_success_at: new Date(Date.now() - 3 * 3600e3).toISOString(),
+      last_attempt_at: new Date().toISOString(), last_error: 'BIN 3255205: HTTP 503' },
+    { source: 'dob_complaints', label: 'NYC Open Data complaints (daily)', status: 'fresh',
+      last_success_at: new Date(Date.now() - 12 * 60e3).toISOString(), last_attempt_at: null, last_error: null },
+  ],
+  can_say_no_new_complaints: false,
+  note: 'Not checked against DOB BIS recently.',
+  bis_watch_mode: 'off',
+};
+
 const PENDING_DELETION = {
   count: 4,
   items: [
@@ -572,6 +587,7 @@ function apiHandler(req, res) {
   // `.items` off it, gets undefined, and renders "Nothing pending deletion".
   // That mounts green while executing none of the retention branches.
   else if (url.includes('/api/projects/pending-deletion')) body = PENDING_DELETION;
+  else if (url.includes('/dob-freshness')) body = DOB_FRESHNESS;
   else if (url.match(/\/api\/projects\/p1(\?|$)/)) body = PROJECT;
   else if (url.match(/\/api\/projects(\?|\/|$)/)) body = [PROJECT];
   else if (url.match(/\/api\/workers\/w1(\?|$)/)) body = WORKER;
