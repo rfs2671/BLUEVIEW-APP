@@ -2207,6 +2207,8 @@ export default {
     live: 'Complaints checked on DOB BIS {ago}.',
     notLive: 'Not checked on DOB BIS recently. NYC Open Data updates once a day, so a complaint filed today may not show here until tomorrow afternoon.',
     failed: 'The last DOB BIS check failed ({error}).',
+    // Shadow mode reads BIS but adds nothing to this list yet: never "none".
+    shadow: 'DOB BIS is being checked in a trial mode that does not add records here yet. NYC Open Data updates once a day, so a complaint filed today may not show here until tomorrow afternoon.',
     openData: 'NYC Open Data read {ago}.',
     justNow: 'just now',
     minutes: '{n} min ago',

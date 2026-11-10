@@ -272,6 +272,11 @@ class TheGroupAlertNoLongerWaitsOnADeadDataset(unittest.TestCase):
             h._run(server._gc_alerts_tick(h.NOON + timedelta(minutes=15)))
             h._run(server._gc_alerts_tick(h.NOON + timedelta(minutes=30)))
             self.assertEqual(h._group_sends(c), [], "history from the first pass must not post")
+            # Real syncs are 15 minutes apart. Back to back, Windows' clock can
+            # stamp both passes with the same instant, and a row stored AT the
+            # dataset's first-sync time is (correctly) history. Keep them apart.
+            import time
+            time.sleep(0.05)
             sync(history + [raw_ecb(99, "20261007")])
             h._run(server._gc_alerts_tick(h.NOON + timedelta(minutes=45)))
         texts = [s["message"] for s in h._group_sends(c)]

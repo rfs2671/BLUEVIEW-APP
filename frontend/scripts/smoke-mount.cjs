@@ -472,20 +472,15 @@ const PROJECT = { id: 'p1', _id: 'p1', name: 'Smoke Site', address: '1 Test St, 
 // p7 and p6 are also the only rows that draw a LIVE purge button, which keeps
 // "Permanently Delete" present as a positive control — without one, "Deletion
 // blocked" everywhere would be indistinguishable from a screen stuck blocked.
-// The Compliance screen's freshness line (lib/complaint_watch.freshness): one
-// source fresh, one failed, so both branches of the line are executed.
-const DOB_FRESHNESS = {
-  sources: [
-    { source: 'bis_complaints', label: 'DOB BIS complaints (live)', status: 'stale',
-      last_success_at: new Date(Date.now() - 3 * 3600e3).toISOString(),
-      last_attempt_at: new Date().toISOString(), last_error: 'BIN 3255205: HTTP 503' },
-    { source: 'dob_complaints', label: 'NYC Open Data complaints (daily)', status: 'fresh',
-      last_success_at: new Date(Date.now() - 12 * 60e3).toISOString(), last_attempt_at: null, last_error: null },
-  ],
-  can_say_no_new_complaints: false,
-  note: 'Not checked against DOB BIS recently.',
-  bis_watch_mode: 'off',
-};
+// The Compliance screen's DOB feed and freshness line, as the BACKEND serves
+// them: scripts/fixtures/dob_logs_546.json is get_dob_logs + get_dob_freshness
+// run over the real 2026-11-10 BIS pages for 546 Saratoga (complaints 3A88489
+// and 3A88492). Before this the screen was mounted on an empty feed, so no DOB
+// card ever rendered here. DOB_SCREEN_MUST_SHOW below is what the mount checks.
+const DOB_546 = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'dob_logs_546.json'), 'utf8'));
+const DOB_LOGS = DOB_546.dob_logs;
+const DOB_FRESHNESS = DOB_546.freshness;
+const DOB_SCREEN_MUST_SHOW = ['3A88489', '3A88492', 'NO ROOF PROTECTION', 'Complaints checked on DOB BIS'];
 
 const PENDING_DELETION = {
   count: 4,
@@ -588,6 +583,7 @@ function apiHandler(req, res) {
   // That mounts green while executing none of the retention branches.
   else if (url.includes('/api/projects/pending-deletion')) body = PENDING_DELETION;
   else if (url.includes('/dob-freshness')) body = DOB_FRESHNESS;
+  else if (url.match(/\/api\/projects\/p1\/dob-logs(\?|$)/)) body = DOB_LOGS;
   else if (url.match(/\/api\/projects\/p1(\?|$)/)) body = PROJECT;
   else if (url.match(/\/api\/projects(\?|\/|$)/)) body = [PROJECT];
   else if (url.match(/\/api\/workers\/w1(\?|$)/)) body = WORKER;
@@ -678,6 +674,17 @@ const ignored = (t) => IGNORE.some((re) => re.test(t));
           return hit || null;
         });
         if (boundary) errors.push(`error-boundary/undefined-ref: "${boundary}"`);
+        if (route === '/project/p1/dob-logs') {
+          const missing = await page.evaluate((want) => {
+            const body = document.body.innerText || '';
+            return want.filter((s) => !body.includes(s));
+          }, DOB_SCREEN_MUST_SHOW);
+          if (missing.length) errors.push(`Compliance screen did not show: ${missing.join(', ')}`);
+          if (process.env.SMOKE_SHOT_DIR) {
+            await page.screenshot({ path: path.join(process.env.SMOKE_SHOT_DIR, `compliance-546-${theme}.png`),
+                                    fullPage: true });
+          }
+        }
         // A REFUSAL IS NOT A MOUNT. See DENIAL_PANELS.
         const denied = await page.evaluate((panels) => {
           const body = document.body.innerText || '';

@@ -221,8 +221,17 @@ class Freshness(unittest.TestCase):
         self.assertIn("once a day", f["note"])
 
     def test_a_recent_bis_check_can_say_none(self):
-        f = cw.freshness({"watch": {"bis_complaints": {"last_success_at": NOW - timedelta(minutes=5)}}}, now=NOW)
+        f = cw.freshness({"watch": {"bis_complaints": {"last_success_at": NOW - timedelta(minutes=5),
+                                                      "mode": "live"}}}, now=NOW)
         self.assertTrue(f["can_say_no_new_complaints"])
+
+    def test_a_shadow_check_never_claims_none(self):
+        """Shadow reads BIS but stores nothing: an empty list beside a fresh
+        shadow check would be a false 'none'."""
+        f = cw.freshness({"watch": {"bis_complaints": {"last_success_at": NOW - timedelta(minutes=5),
+                                                      "mode": "shadow"}}}, now=NOW)
+        self.assertFalse(f["can_say_no_new_complaints"])
+        self.assertIn("trial mode", f["note"])
 
     def test_a_failed_bis_check_is_reported_not_hidden(self):
         f = cw.freshness({"watch": {"bis_complaints": {"last_attempt_at": NOW, "last_error": "BIN 3255205: HTTP 503",

@@ -45505,6 +45505,10 @@ def _bis_row_to_dob_log(rec: dict, project: dict, project_bin: str, decision: di
         "bis_first_seen_at": now,
         "bis_last_seen_at": now,
         "lifecycle": complaint_watch.lifecycle_events(rec),
+        "ai_summary": complaint_watch.card_summary(rec),
+        "next_action": ("Correct the cited conditions before the DOB inspector comes. "
+                        "A complaint is not a violation."),
+        "status_history": status_hist.new_row_history(st, now),
         "detected_at": now,
         "created_at": now,
         "updated_at": now,
@@ -45528,19 +45532,30 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
     watch = (state.get("watch") or {}).get("bis_complaints") or {}
     first_done = set(watch.get("bins_first_synced") or [])
 
+    # The lot's other BINs. A failed or wrong page is an ERROR (the source is
+    # not "fresh") and the BINs saved by the last good read stand in for it,
+    # so the rear BIN is never silently dropped for a pass.
+    saved_lot = list(watch.get("lot_bins") or [])
     lot_bins: list = []
     try:
         r = await client.get(bis_complaints.property_url(own_bin), headers=_BIS_UA, timeout=30.0)
-        if r.status_code == 200:
-            lot_bins = bis_complaints.parse_property_profile(r.text).get("additional_bins") or []
+        prof = bis_complaints.parse_property_profile(r.text) if r.status_code == 200 else {}
+        if prof.get("bin") == own_bin:
+            lot_bins = prof.get("additional_bins") or []
+        else:
+            summary["errors"].append(f"property profile: HTTP {r.status_code}" if r.status_code != 200
+                                     else "property profile: unrecognized page")
+            lot_bins = saved_lot
     except Exception as e:
         summary["errors"].append(f"property profile: {type(e).__name__}")
+        lot_bins = saved_lot
     site_bins = [b for b in await db.dob_logs.distinct("site_bin", {"project_id": pid}) if b]
     pbins = complaint_watch.bins_for_project(project, lot_bins=lot_bins, site_bins=site_bins)
 
     stored: Dict[str, dict] = {}
-    for row in await db.dob_logs.find({"project_id": pid, "record_type": "complaint",
-                                        "is_deleted": {"$ne": True}}).to_list(5000):
+    # Deleted rows count as stored: a complaint someone removed is never
+    # re-inserted and re-alerted by this watch.
+    for row in await db.dob_logs.find({"project_id": pid, "record_type": "complaint"}).to_list(5000):
         if complaint_watch.is_311(row):
             continue
         cn = bis_complaints.normalize_complaint_number(row.get("raw_dob_id") or row.get("complaint_number"))
@@ -45568,8 +45583,10 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
             ex_status = _bis_status_key(exb.get("status") or (ex or {}).get("current_status")
                                         or (ex or {}).get("complaint_status"))
             ex_disp = exb.get("disposition_code") or (ex or {}).get("disposition_code") or None
+            if ex is not None and ex.get("is_deleted"):
+                continue                      # removed by a person: left alone
             if ex is not None and ex_status == _bis_status_key(row.get("status")) \
-                    and (ex_disp is None or ex_disp == (row.get("disposition_code") or None)):
+                    and ex_disp == (row.get("disposition_code") or None):
                 continue                      # nothing new on this complaint
             if await db[COMPLAINT_WATCH_LEDGER].find_one({
                     "project_id": pid, "complaint_number": cn,
@@ -45591,7 +45608,8 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
                 decision.update(alert=False, reason="already stored: status change only")
             key = f"cw:{pid}:{cn}:{decision['event']}"
             if decision["alert"] and (
-                    await db.system_config.find_one({"key": f"dob_alert_sent:{pid}:{cn}"})
+                    await db.system_config.find_one(
+                        {"key": {"$regex": f"^{re.escape(_dob_alert_key(pid, cn))}(:|$)"}})
                     or await db[COMPLAINT_WATCH_LEDGER].find_one({"_id": key})):
                 decision.update(alert=False, reason="duplicate: this complaint was already alerted")
             status = ("would_alert" if decision["alert"] else "suppressed") if mode == "shadow" \
@@ -45612,13 +45630,38 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
                 continue
             if ex is None:
                 doc = _bis_row_to_dob_log(rec, project, own_bin, decision, first_sync, now)
-                await db.dob_logs.insert_one(doc)
+                try:
+                    await db.dob_logs.insert_one(doc)
+                except Exception as e:
+                    # No row, no decision: the next pass tries again.
+                    await db[COMPLAINT_WATCH_LEDGER].delete_one({"_id": key})
+                    logger.warning(f"[bis-watch] store failed for {cn}: {type(e).__name__}")
+                    continue
                 stored[cn] = doc
             else:
+                # AN UPDATE. The disposition and status go onto the row itself
+                # (so the Open Data refresh a day later finds the order already
+                # in force and does not email it again), and whether it emails
+                # is the Open Data path's own rule: only an update that issued
+                # a stop-work or vacate order (dob_alert_gate, ruling 2026-10-22).
+                top = {"current_status": _bis_status_key(rec.get("status")) or ex.get("current_status"),
+                       "disposition_code": rec.get("disposition_code") or ex.get("disposition_code")}
+                top["complaint_status"] = top["current_status"]      # what /dob-summary counts
+                if rec.get("disposition_date"):
+                    top["disposition_date"] = rec.get("disposition_date")
+                after = {**ex, **top, "id": str(ex["_id"])}
+                changed = _bis_status_key(ex.get("current_status")) != top["current_status"]
+                hist, _legacy = status_hist.refreshed_history(ex, top["current_status"], now,
+                                                              changed=changed, in_place=True)
                 await db.dob_logs.update_one({"_id": ex["_id"]}, {"$set": {
+                    **top, "status_history": hist,
                     "bis": {k: rec.get(k) for k in _BIS_KEEP}, "bis_last_seen_at": now,
                     "lifecycle": complaint_watch.lifecycle_events(rec), "updated_at": now}})
-                doc = dict(ex, severity="Action")
+                order = dob_alert_gate.update_issues_order(ex, after)
+                if order:
+                    await _stamp_order_issued(ex["_id"], order, now)
+                    await _send_critical_dob_alert_throttled(project, after, "bis", event=order)
+                continue
             if decision["alert"] and decision["priority"] in ("high", "critical"):
                 # The email reads ai_summary / next_action off the row: give it
                 # the same words a person would get on WhatsApp.
@@ -45638,7 +45681,9 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
                            "watch.bis_complaints.last_error": "; ".join(summary["errors"]) or None}
     if ok_bins and not summary["errors"]:
         upd["watch.bis_complaints.last_success_at"] = now
-    if lot_bins:
+    if lot_bins and mode == "live":
+        # Saved only when LIVE: the Open Data scan reads these BINs and stores
+        # (and may post) their records, which shadow must never cause.
         upd["watch.bis_complaints.lot_bins"] = sorted(set(lot_bins))
     await db[SOURCE_SYNC_STATE].update_one(
         {"_id": pid},
@@ -45658,8 +45703,8 @@ async def _bis_ecb_pass(project: dict, client, pbins: set, *, mode: str, now: da
     cid = project.get("company_id")
     own_bin = re.sub(r"\D", "", str(project.get("nyc_bin") or ""))
     stored = set()
-    for row in await db.dob_logs.find({"project_id": pid, "record_type": {"$in": ["violation", "swo"]},
-                                       "is_deleted": {"$ne": True}}).to_list(5000):
+    for row in await db.dob_logs.find({"project_id": pid,
+                                       "record_type": {"$in": ["violation", "swo"]}}).to_list(5000):
         n = bis_violations.normalize_violation_number(row.get("raw_dob_id"))
         if n:
             stored.add(n)
@@ -45690,7 +45735,8 @@ async def _bis_ecb_pass(project: dict, client, pbins: set, *, mode: str, now: da
                 continue
             d = complaint_watch.summons_decision(
                 row, bin_=b, project_bins=pbins, first_sync=first_sync,
-                already_alerted=bool(await db.system_config.find_one({"key": f"dob_alert_sent:{pid}:{num}"})),
+                already_alerted=bool(await db.system_config.find_one(
+                    {"key": {"$regex": f"^{re.escape(_dob_alert_key(pid, num))}(:|$)"}})),
                 now=now)
             status = (("would_alert" if d["alert"] else "suppressed") if mode == "shadow"
                       else ("alerting" if d["alert"] else "suppressed"))
@@ -45717,6 +45763,8 @@ async def _bis_ecb_pass(project: dict, client, pbins: set, *, mode: str, now: da
                 "infraction_code": row.get("infraction_code"), "severity_class": row.get("severity"),
                 "issuing_unit": row.get("unit"), "respondent_name": row.get("respondent"),
                 "description": f"ECB/OATH summons {num} ({row.get('severity') or ''}), {row.get('unit') or ''}",
+                "ai_summary": complaint_watch.summons_card_summary(row),
+                "next_action": "Correct the condition and file the Certificate of Correction.",
                 "signal_kind": "violation_ecb", "dataset": "bis-ecb",
                 "dob_link": bis_violations.ecb_detail_url(num),
                 "site_bin": b if b != own_bin else None,
@@ -45724,7 +45772,12 @@ async def _bis_ecb_pass(project: dict, client, pbins: set, *, mode: str, now: da
                 "bis_first_seen_at": now, "detected_at": now, "created_at": now, "updated_at": now,
                 "is_deleted": False,
             }
-            await db.dob_logs.insert_one(doc)
+            try:
+                await db.dob_logs.insert_one(doc)
+            except Exception as e:
+                await db[COMPLAINT_WATCH_LEDGER].delete_one({"_id": key})
+                logger.warning(f"[bis-watch] store failed for {num}: {type(e).__name__}")
+                continue
             stored.add(num)
             if d["alert"] and d["priority"] in ("high", "critical"):
                 doc = dict(doc, ai_summary=complaint_watch.render_summons_alert(

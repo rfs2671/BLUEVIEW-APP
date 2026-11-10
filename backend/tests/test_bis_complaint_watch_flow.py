@@ -47,6 +47,12 @@ class _Coll(AsyncFakeCollection):
             raise RuntimeError("E11000 duplicate key")
         return await super().insert_one(doc, **kw)
 
+    async def delete_one(self, flt, **kw):
+        for i, d in enumerate(self.docs):
+            if matches(d, flt):
+                del self.docs[i]
+                break
+
     async def distinct(self, key, flt=None):
         return sorted({d.get(key) for d in self.docs if matches(d, flt) and d.get(key) is not None})
 
@@ -300,17 +306,24 @@ class BothBinsAreMonitored(unittest.TestCase):
     """546 Saratoga has two BINs on one lot. The rear BIN (3423445) shares no
     job with 3255205, so the job-sharing rule never reached it."""
 
-    def test_the_watch_records_the_lots_bins_even_in_shadow(self):
-        db, emails = _seed(), []
-        s = _run(db, _BIS(), "shadow", emails=emails)
-        self.assertEqual(s["lot_bins"], ["3423445"])
-        self.assertEqual(db.source_sync_state.docs[0]["watch"]["bis_complaints"]["lot_bins"], ["3423445"])
-        self.assertEqual(sorted(b["bin"] for b in s["bins"]), ["3255205", "3423445"])
-        self.assertEqual(sorted(e["bin"] for e in s["ecb"]), ["3255205", "3423445"])
+    def test_the_watch_reads_both_bins_in_every_mode(self):
+        for mode in ("shadow", "live"):
+            db, emails = _seed(), []
+            s = _run(db, _BIS(), mode, emails=emails)
+            self.assertEqual(s["lot_bins"], ["3423445"])
+            self.assertEqual(sorted(b["bin"] for b in s["bins"]), ["3255205", "3423445"])
+            self.assertEqual(sorted(e["bin"] for e in s["ecb"]), ["3255205", "3423445"])
 
-    def test_the_open_data_scan_then_reads_the_rear_bin_too(self):
+    def test_shadow_does_not_hand_the_rear_bin_to_the_open_data_scan(self):
+        """Review finding: saving lot_bins in shadow made the Open Data scan
+        store (and post) the rear BIN's records -- shadow must cause nothing."""
         db, emails = _seed(), []
         _run(db, _BIS(), "shadow", emails=emails)
+        self.assertNotIn("lot_bins", db.source_sync_state.docs[0]["watch"]["bis_complaints"])
+
+    def test_live_then_the_open_data_scan_reads_the_rear_bin_too(self):
+        db, emails = _seed(), []
+        _run(db, _BIS(), "live", emails=emails)
         asked = []
 
         async def query(nyc_bin, address="", answered=None):
@@ -378,3 +391,178 @@ class RoutedToEmail(unittest.TestCase):
         text = next(t for r, eid, _, t in sent if eid == "dob_log:3A88489")
         self.assertIn("NO ROOF PROTECTION", text)
         self.assertIn("A complaint is not a violation", text)
+
+
+class OffAndShadowCannotSend(unittest.TestCase):
+    """The rollout's safety claim, pinned. Every send path is replaced by one
+    that FAILS the test if reached: the critical-alert email, the notification
+    layer under it (with a Resend key set, so only the mode could stop it), and
+    dob_logs writes -- the WhatsApp group tick posts only what dob_logs holds."""
+
+    def _tripwires(self, db):
+        def boom(*a, **k):
+            raise AssertionError("a send path was reached")
+
+        async def aboom(*a, **k):
+            boom()
+        return [patch.object(server, "db", db), patch.object(server, "RESEND_API_KEY", "test-key"),
+                patch.object(server, "_send_critical_dob_alert", aboom),
+                patch("lib.notifications.send_notification", aboom)]
+
+    def test_off_reads_nothing_and_sends_nothing(self):
+        db = _seed()
+        ps = self._tripwires(db) + [patch.dict(os.environ, {"BIS_COMPLAINT_WATCH_MODE": "off"}),
+                                    patch.object(server.httpx, "AsyncClient",
+                                                 lambda *a, **k: (_ for _ in ()).throw(AssertionError("BIS read")))]
+        for p in ps:
+            p.start()
+        try:
+            asyncio.run(server.bis_complaint_watch_tick())
+        finally:
+            for p in reversed(ps):
+                p.stop()
+        self.assertEqual(db.complaint_watch_ledger.docs, [])
+        self.assertNotIn("watch", db.source_sync_state.docs[0])
+
+    def test_unset_and_garbage_modes_are_off(self):
+        for v in (None, "", "on", "true", "1", "shadow-live"):
+            env = {} if v is None else {"BIS_COMPLAINT_WATCH_MODE": v}
+            with patch.dict(os.environ, env, clear=False):
+                if v is None:
+                    os.environ.pop("BIS_COMPLAINT_WATCH_MODE", None)
+                self.assertEqual(server._bis_watch_mode(), "off", v)
+
+    def test_shadow_reads_bis_but_writes_no_record_and_sends_nothing(self):
+        db = _seed()
+        before = [dict(d) for d in db.dob_logs.docs]
+        ps = self._tripwires(db)
+        for p in ps:
+            p.start()
+        try:
+            s = asyncio.run(server.run_bis_complaint_watch_for_project(
+                copy.deepcopy(PROJECT), _BIS(), mode="shadow", now=NOW))
+        finally:
+            for p in reversed(ps):
+                p.stop()
+        self.assertEqual(db.dob_logs.docs, before)
+        self.assertEqual([w for w in db.dob_logs.writes], [])
+        self.assertTrue(any(d["status"] == "would_alert" for d in db.complaint_watch_ledger.docs))
+        self.assertTrue(s["decisions"])
+
+
+class ComplianceAndAssistantFreshness(unittest.TestCase):
+    """What a person sees about 546 after each mode, with honest freshness."""
+
+    def _dob_status(self, db):
+        with patch.object(server, "db", db):
+            return asyncio.run(server._handle_dob_status("p546", company_id="co_blueview"))
+
+    # The assistant and the endpoint measure freshness against the real clock,
+    # so these passes run at the real time (the BIS pages are still the fixtures).
+    def test_live_lists_both_complaints_and_says_bis_was_checked(self):
+        db, emails = _seed(), []
+        now = datetime.now(timezone.utc)
+        _run(db, _BIS(), "live", now=now, emails=emails)
+        out = self._dob_status(db)
+        self.assertIn("Open DOB complaints (2)", out)
+        self.assertIn("3A88489", out)
+        self.assertIn("3A88492", out)
+        self.assertIn("Checked DOB BIS directly", out)
+        with patch.object(server, "db", db):
+            f = asyncio.run(server.get_dob_freshness("p546", project=dict(PROJECT)))
+        self.assertTrue(f["can_say_no_new_complaints"])
+        self.assertEqual(f["sources"][0]["last_success_at"], now.isoformat())
+
+    def test_shadow_never_says_none_was_found(self):
+        db, emails = _seed(), []
+        _run(db, _BIS(), "shadow", now=datetime.now(timezone.utc), emails=emails)
+        out = self._dob_status(db)
+        self.assertIn("No open DOB complaints on file.", out)
+        self.assertIn("trial mode", out)
+        self.assertNotIn("Checked DOB BIS directly", out)
+
+
+class ReviewFindings(unittest.TestCase):
+    """Defects an independent review found on this branch, each pinned."""
+
+    def test_a_stored_naive_detected_at_does_not_crash_the_pass(self):
+        # Motor returns naive datetimes; BIS received times are aware.
+        from lib import complaint_watch as cw2
+        rec = {"complaint_number": "3A88489", "bin": "3255205", "status": "ACTIVE", "category": "8A",
+               "received_at": "2026-11-10T11:22:00-05:00", "disposition_code": "A3"}
+        d = cw2.alert_decision(rec, project_bins={"3255205"}, first_sync=False, already_alerted=False,
+                               now=NOW, first_seen_at=datetime(2026, 11, 10, 16, 30))
+        self.assertEqual((d["alert"], d["event"], d["priority"]), (True, "stop_work_order", "critical"))
+
+    def _july_morning(self):
+        """3A70077 as LeveLog held it on 2026-07-07 before the inspection:
+        ACTIVE, no disposition, detected_at naive as Mongo returns it. The BIS
+        pages are the real ones, which show it RESOLVED with L1 (partial SWO)."""
+        db = _seed()
+        row = next(d for d in db.dob_logs.docs if d["raw_dob_id"] == "3A70077")
+        row.update(current_status="ACTIVE", complaint_status="ACTIVE", disposition_code=None,
+                   detected_at=datetime(2026, 7, 7, 13, 0), status_history=[])
+        db.source_sync_state.docs[0]["watch"] = {"bis_complaints": {"bins_first_synced": ["3255205", "3423445"]}}
+        return db, row
+
+    def test_a_stop_work_disposition_on_a_stored_complaint_emails_once_as_swo(self):
+        db, row = self._july_morning()
+        emails = []
+        s = _run(db, _BIS(), "live", emails=emails)
+        self.assertTrue(s["ecb"], "the pass must reach the ECB half (no crash on the naive date)")
+        self.assertEqual([e for e in emails if e[0] == "3A70077"], [("3A70077", "bis", "swo")])
+        self.assertEqual((row["disposition_code"], row["current_status"], row["complaint_status"]), ("L1", "CLOSED", "CLOSED"))
+        self.assertTrue(row.get("order_issued_at") or row.get("order_issued"), row.keys())
+        emails.clear()
+        _run(db, _BIS(), "live", now=NOW + timedelta(minutes=10), emails=emails)
+        self.assertEqual([e for e in emails if e[0] == "3A70077"], [])
+
+    def test_the_next_day_open_data_refresh_does_not_email_the_order_again(self):
+        from lib import dob_alert_gate
+        db, row = self._july_morning()
+        _run(db, _BIS(), "live", emails=[])
+        open_data_after = dict(row, current_status="CLOSED", disposition_code="L1")
+        self.assertIsNone(dob_alert_gate.update_issues_order(row, open_data_after))
+
+    def test_a_property_page_failure_is_an_error_and_the_saved_rear_bin_still_reads(self):
+        db, emails = _seed(), []
+        db.source_sync_state.docs[0]["watch"] = {"bis_complaints": {"lot_bins": ["3423445"]}}
+
+        class _ProfileDown(_BIS):
+            async def get(self, url, **kw):
+                if "PropertyProfileOverviewServlet" in url:
+                    self.urls.append(url)
+                    return _Resp(503, "down")
+                return await super().get(url, **kw)
+        s = _run(db, _ProfileDown(), "shadow", emails=emails)
+        self.assertIn("3423445", [b["bin"] for b in s["bins"]])
+        w = db.source_sync_state.docs[0]["watch"]["bis_complaints"]
+        self.assertNotIn("last_success_at", w)
+        self.assertIn("property profile: HTTP 503", w["last_error"])
+
+    def test_a_deleted_complaint_is_not_reinserted_or_realerted(self):
+        db, emails = _seed(), []
+        db.dob_logs.docs.append({"_id": "gone", "project_id": "p546", "record_type": "complaint",
+                                 "raw_dob_id": "3A88489", "current_status": "ACTIVE", "is_deleted": True})
+        _run(db, _BIS(), "live", emails=emails)
+        self.assertEqual(len([d for d in db.dob_logs.docs if d["raw_dob_id"] == "3A88489"]), 1)
+        self.assertNotIn("3A88489", [e[0] for e in emails])
+
+    def test_an_email_already_sent_by_the_open_data_path_is_not_sent_again(self):
+        db, emails = _seed(), []
+        db.system_config.docs.append({"key": "dob_alert_sent:p546:3A88489:new", "sent_at": NOW})
+        _run(db, _BIS(), "live", emails=emails)
+        self.assertNotIn("3A88489", [e[0] for e in emails])
+        self.assertIn("3A88492", [e[0] for e in emails])
+
+
+class TheCardReadsDobsOwnWords(unittest.TestCase):
+    def test_bis_rows_carry_the_summary_the_compliance_card_shows(self):
+        db, emails = _seed(), []
+        _run(db, _BIS(), "live", emails=emails)
+        row = next(d for d in db.dob_logs.docs if d["raw_dob_id"] == "3A88489")
+        self.assertEqual(row["ai_summary"],
+                         "DOB complaint 3A88489 (8A Construction Safety Compliance (CSC) Action) received on "
+                         "Nov 10, 11:22 AM: NO ROOF PROTECTION, NO WINDOW PROTECTION NO DOCS. Not inspected yet.")
+        ecb = next(d for d in db.dob_logs.docs if d["raw_dob_id"] == "39556260N")
+        self.assertIn("ECB/OATH summons 39556260N (Class - 2), issued 2026-07-07", ecb["ai_summary"])

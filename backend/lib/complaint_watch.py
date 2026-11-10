@@ -177,7 +177,10 @@ def alert_decision(rec: Mapping[str, Any], *, project_bins: Set[str], first_sync
         out["reason"] = "duplicate: this complaint was already alerted"
         return out
     rcv = received_at(rec)
-    seen = first_seen_at or now
+    # A stored detected_at comes back from Mongo without a timezone; BIS's
+    # received time has one. Normalize both before subtracting.
+    now = _as_dt(now) or now
+    seen = _as_dt(first_seen_at) or now
     sa = safety_assessment(rec)
     dclass = disposition_class(rec.get("disposition_code"))
     if not is_open(rec):
@@ -194,6 +197,8 @@ def alert_decision(rec: Mapping[str, Any], *, project_bins: Set[str], first_sync
         out["reason"] = "baseline: open complaint older than 48h on the first sync of this BIN"
         return out
     out["alert"] = True
+    if dclass == "order":
+        out["event"] = "stop_work_order"
     out["priority"] = {"order": "critical", "safety": "high"}.get(sa["tier"], "normal")
     out["late"] = bool(rcv and seen - rcv > LATE_AFTER)
     out["reason"] = "; ".join(sa["reasons"]) or "open DOB complaint"
@@ -233,6 +238,31 @@ def summons_decision(row: Mapping[str, Any], *, bin_: str, project_bins: Set[str
     out["alert"] = True
     out["reason"] = f"{sev or 'unclassed'} summons, {row.get('unit') or 'DOB'}"
     return out
+
+
+def card_summary(rec: Mapping[str, Any]) -> str:
+    """The Compliance card's one-line summary (its `ai_summary` field) for a
+    complaint BIS found first: DOB's own words, no model in between."""
+    cn = rec.get("complaint_number") or rec.get("raw_dob_id")
+    cat = str(rec.get("category") or rec.get("complaint_type") or "")
+    rcv = received_at(rec)
+    when = ""
+    if rcv:
+        t = rcv.astimezone(ET)
+        when = f" on {t:%b} {t.day}" + (f", {(t.hour % 12) or 12}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
+                                         if (t.hour or t.minute) else "")
+    desc = str(rec.get("description") or "").strip().rstrip(".")
+    insp = rec.get("last_inspection_date") or rec.get("inspection_date")
+    state = (f"Inspected {insp}." if insp else "Not inspected yet.")
+    return (f"DOB complaint {cn} ({cat} {get_category_label(cat)}) received{when}: {desc}. {state}").replace("  ", " ")
+
+
+def summons_card_summary(row: Mapping[str, Any]) -> str:
+    due = row.get("balance_due")
+    return (f"ECB/OATH summons {row.get('ecb_number')} ({str(row.get('severity') or '').title()}), "
+            f"issued {row.get('issue_date') or '?'} by {row.get('unit') or 'DOB'}. "
+            f"Hearing: {row.get('hearing_status') or 'pending'}."
+            + (f" Penalty due: ${due:,.2f}." if isinstance(due, (int, float)) and due else ""))
 
 
 def render_summons_alert(row: Mapping[str, Any], decision: Mapping[str, Any], *, project_name: str,
@@ -340,13 +370,23 @@ def freshness(state: Optional[Mapping[str, Any]], *, now: datetime,
                      "last_error": (f"failed {err.isoformat()}" if err and (not ok or err > ok) else None),
                      "status": ("never" if not ok else "failing" if err and err > ok
                                 else "stale" if now - ok > timedelta(hours=1) else "fresh")})
-    live = rows[0]["status"] == "fresh"
+    # Only a LIVE watch stores what it reads. In shadow the BIS read is real but
+    # nothing reaches dob_logs, so a fresh shadow check next to an empty list
+    # would be a false "none".
+    bis_mode = (watches.get("bis_complaints") or {}).get("mode")
+    ecb_mode = (watches.get("bis_ecb") or {}).get("mode")
+    live = rows[0]["status"] == "fresh" and bis_mode == "live"
+    shadow = rows[0]["status"] == "fresh" and bis_mode == "shadow"
     return {
         "sources": rows,
-        "can_say_no_new_summonses": rows[3]["status"] == "fresh",
+        "can_say_no_new_summonses": rows[3]["status"] == "fresh" and ecb_mode == "live",
         "can_say_no_new_complaints": live,
         "note": ("Checked DOB BIS directly; new complaints show within minutes."
                  if live else
+                 "DOB BIS is being checked in a trial mode that does not add records here yet. NYC Open "
+                 "Data refreshes once a day, so a complaint filed today may not appear here until "
+                 "tomorrow afternoon."
+                 if shadow else
                  "Not checked against DOB BIS recently. NYC Open Data refreshes once a day, so a "
                  "complaint filed today may not appear here until tomorrow afternoon."),
     }

@@ -430,7 +430,9 @@ export default function DOBLogsScreen() {
       <Text style={s.freshnessText}>
         {freshness.can_say_no_new_complaints && bisFresh
           ? tFresh('live').replace('{ago}', agoText(bisFresh.last_success_at) || '')
-          : tFresh('notLive')}
+          : freshness.bis_watch_mode === 'shadow' && bisFresh && bisFresh.status === 'fresh'
+            ? tFresh('shadow')
+            : tFresh('notLive')}
         {bisFresh && bisFresh.last_error ? ` ${tFresh('failed').replace('{error}', bisFresh.last_error)}` : ''}
         {odFresh && agoText(odFresh.last_success_at)
           ? ` ${tFresh('openData').replace('{ago}', agoText(odFresh.last_success_at))}` : ''}
