@@ -5,46 +5,62 @@ measure the reconstruction against DOB NOW: Inspections.
 
 READS (local files, never committed, outside this repo):
   <data>/records/588_records.jsonl                  the records lane's rows
+  <data>/records/audit_flags.jsonl                  the independent audit (originals, duplicates, leaks)
   <data>/drawings/building.json                     the drawings lane's building model
   <data>/public/588_public_timeline.json            public DOB / DOT rows (sign-offs read)
   <data>/public/dob_now_inspections_588.json        hand-verified DOB NOW: Inspections
 WRITES:
-  <data>/model/588_model.json, <data>/model/README.md
+  <data>/model/588_model.json, <data>/model/blind_runs/<label>.json
 
 No network, no database, no paid API. Pure lib code does the work
 (lib/intel_records, lib/construction_inference, lib/project_timeline).
 
-THE BLIND TEST. The reconstruction is run as of BLIND_DAY WITHOUT the DOB NOW:
-Inspections file (and without any timeline row from that portal), and WITHOUT
-any record that could carry an inspection result (lib/intel_records
-.leak_reasons: anything dated or captured after the cutoff, bot / DM answers,
-operator inspection statements, any text stating an inspection result, and --
-in the "strictest" variant -- every generated report row). What it believed
-about each DOB floor-table cell (level x water/sanitary rough, storm rough,
-gas rough, underground) is then scored against that file:
+EVIDENCE = the audit's ORIGINAL rows only (derived rows are summary context,
+never a signal). A record is visible on day D only if it EXISTED on D
+(lib/intel_records.existed_on: a filed log from its signature, a report's
+tile from the report's generation, a capture from its capture time).
 
-  correct_fact       a fact at attested or stronger said the work was done
-  correct_inference  an INFERENCE said it was in place (kept apart from a
-                     fact: a correct inference is not a verified completion)
-  partial            work under way (inferred in progress, in progress, reported)
-  miss               unknown: nothing on record the engine could use
-  incorrect          it claimed something DOB contradicts: a failure, a "not
-                     yet", or an inspection passed BEFORE DOB resulted it
-Each row also says whether any record named that PART (a "storm" or "gas"
-record) or only plumbing in general, and, for an in-place inference, its
-by-date against DOB's result date. The scoring rule is fixed here, before the
-run, and is not tuned on the result.
+THE BLIND TEST. Run as of BLIND_DAY WITHOUT the DOB NOW: Inspections file and
+without any record that could carry an inspection result (lib/intel_records
+.leak_reasons + every audit leak flag, borderline included). Each DOB floor-
+table cell (level x water/sanitary rough, storm rough, gas rough,
+underground) is scored:
+
+  correct_fact        a fact at attested or stronger said the work was done
+  correct_inference   an INFERENCE said it was in place (not a verified completion)
+  weak_reported_only  reported only (a log row, a photo, an inference of work
+                      under way): true, but weak
+  miss                unknown: nothing on record the engine could use
+  incorrect           it claimed something DOB contradicts: a failure, a "not
+                      yet", or an inspection passed BEFORE DOB resulted it
+
+UNDER THREE RULE SETS (adversarial review 2, M1):
+  as_stated           independence = source and the crew named (the rule as
+                      first written: two subs on one CP log were "two sources")
+  one_person          independence = the AUTHOR / OBSERVER: one person's log is
+                      one source whatever subs it names (the rule now)
+  part_named          one_person, and a cell counts only if a record NAMES its
+                      part (water/sanitary, storm, gas); otherwise it is a miss
+
+OFFICIAL vs POST-HOC. The OFFICIAL blind score is the rules as they stood
+BEFORE DOB was seen (the first blind run's rule set, FROZEN below and
+re-applied with mock.patch to the same audited, as-of-visible data). Every rule
+changed after that run gives the POST-HOC result, labelled "post-hoc, not
+blind". The scoring rule itself was fixed before the first run.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import re
 import sys
 from collections import Counter
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -58,7 +74,7 @@ DATA = Path("C:/Users/asddd/bv-worktrees/intel588-data")
 PID = "6a5f63bc147407d3261df2c7"
 BLIND_DAY = date(2026, 11, 4)
 TODAY = date(2026, 11, 10)
-DOB_PASS_DAY = date(2026, 11, 5)
+RULE_SETS = ("as_stated", "one_person", "part_named")
 
 
 def load(data: Path) -> Dict[str, Any]:
@@ -70,15 +86,65 @@ def load(data: Path) -> Dict[str, Any]:
     return {"records": records, "building": building, "timeline": timeline, "dob_now": dob_now}
 
 
+def load_audit(data: Path) -> Dict[str, Dict[str, Any]]:
+    """The independent audit lane's per-record flags, when the file exists."""
+    path = data / "records" / "audit_flags.jsonl"
+    if not path.exists():
+        return {}
+    out = {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                row = json.loads(line)
+                out[str(row.get("rec_id") or row.get("id") or row.get("record_id"))] = row
+    return out
+
+
+# ── THE RULES AS THEY STOOD AT THE FIRST BLIND RUN (FROZEN) ───────────────
+
+def frozen_slab_pour(facts, model):
+    """The first run's slab pour: the earliest ground-level foundation / slab
+    row naming a pour and a slab (it took an 08-26 chip list as the pour)."""
+    g = model.get("ground_level")
+    pours = sorted((i for i in facts if g in (i.get("levels") or ()) and i.get("node") in ("foundation", CI.SLAB_ON_GRADE)
+                    and re.search(r"\bpour(?:ing|ed|s)?\b", i.get("quote") or "", re.I)
+                    and re.search(r"\bslab\b", i.get("quote") or "", re.I) and CI._on(i)), key=CI._on)
+    return pours[0] if pours else None
+
+
+def frozen_independence_key(signal):
+    """The first run's independence: source and the crew named."""
+    if signal.get("independence"):
+        return str(signal["independence"])
+    actor = str(signal.get("sub") or signal.get("by") or "").strip().lower()
+    return f"{signal.get('source')}|{actor}"
+
+
+@contextlib.contextmanager
+def rules(version: str, rule_set: str) -> Iterator[None]:
+    """version: "frozen" (official) | "post_hoc". rule_set: RULE_SETS."""
+    with contextlib.ExitStack() as st:
+        if rule_set == "as_stated":
+            st.enter_context(mock.patch.object(E, "independence_key", frozen_independence_key))
+        if version == "frozen":
+            st.enter_context(mock.patch.object(CI, "slab_pour", frozen_slab_pour))
+            st.enter_context(mock.patch.object(CI, "one_per_record", lambda s: list(s)))
+            st.enter_context(mock.patch.object(CI, "framing_before_slab_pour", lambda f, m: []))
+            st.enter_context(mock.patch.object(CI, "group_issues", lambda c, i: c))
+        yield
+
+
 # ── GROUND TRUTH, READ ONLY FOR SCORING ───────────────────────────────────
 
-#: DOB floor-table cell -> (engine part nodes, label). Storm piping has no
-#: node of its own in the engine: only a generic plumbing record can speak to it.
-CELL_PARTS = {"WS ROUGH": (("rough_water", "rough_dwv"), "water / sanitary rough"),
-              "ST DRN ROUGH": ((), "storm drainage rough"),
-              "GAS ROUGH": (("rough_gas",), "gas rough"),
-              "WS UND GRND": ((CI.UNDERGROUND["plumbing"],), "water / sanitary underground"),
-              "ST DRN UND GRND": ((CI.UNDERGROUND["plumbing"],), "storm underground")}
+#: DOB floor-table cell -> (engine part nodes, words that NAME the part, label).
+CELL_PARTS = {
+    "WS ROUGH": (("rough_water", "rough_dwv"), r"\bwater\b|sanitary|\bsewer|\bwaste\b|\bdwv\b", "water / sanitary rough"),
+    "ST DRN ROUGH": ((), r"\bstorm|\bdrain|\bleader", "storm drainage rough"),
+    "GAS ROUGH": (("rough_gas",), r"\bgas\b", "gas rough"),
+    "WS UND GRND": ((CI.UNDERGROUND["plumbing"],), r"underground plumbing|\bwater\b|sanitary|\bsewer|\bwaste\b",
+                    "water / sanitary underground"),
+    "ST DRN UND GRND": ((CI.UNDERGROUND["plumbing"],), r"\bstorm|\bdrain|\bleader", "storm underground"),
+}
 
 
 def truth(dob_now: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -93,13 +159,13 @@ def truth(dob_now: Dict[str, Any]) -> List[Dict[str, Any]]:
             underground = "UND GRND" in cell
             day = when.get("7681636") if underground and code != "OSP" else when.get("7755632")
             out.append({"level_code": code, "level": R.dob_level(code) or "SITE_OPEN_SPACE", "cell": cell,
-                        "what": CELL_PARTS[cell][1], "dob": f"{res} {day}", "dob_day": day,
+                        "what": CELL_PARTS[cell][2], "dob": f"{res} {day}", "dob_day": day,
                         "underground": underground})
     return out
 
 
 def score(state: str, before: List[str]) -> str:
-    """Fixed before the run (module docstring)."""
+    """Fixed before the first run (only the word 'partial' was renamed)."""
     if before or state.startswith(("failed_", "not_yet_", "blocked_")):
         return "incorrect"
     if state.startswith("done_"):
@@ -107,15 +173,15 @@ def score(state: str, before: List[str]) -> str:
     if state.startswith("inferred_done_"):
         return "correct_inference"
     if state.startswith(("inferred_in_progress_", "in_progress_")) or state == "reported":
-        return "partial"
+        return "weak_reported_only"
     return "miss"
 
 
 def cell_state(snap: Dict[str, Any], t: Dict[str, Any]) -> Dict[str, Any]:
     lv = t["level"]
-    parts = set(CELL_PARTS[t["cell"]][0])
+    parts, words, _label = CELL_PARTS[t["cell"]]
     generic = set() if t["underground"] else {CI.PLUMBING_GENERIC}
-    facts = [i for i in snap["_facts"] if lv in (i.get("levels") or ()) and i.get("node") in parts | generic]
+    facts = [i for i in snap["_facts"] if lv in (i.get("levels") or ()) and i.get("node") in set(parts) | generic]
     node = CI.UNDERGROUND["plumbing"] if t["underground"] else "rough_plumbing"
     infs = [i for i in snap["inferences"] if i.get("node") == node and i["levels"] == [lv]]
     st = T.subject_state(facts, infs)
@@ -123,13 +189,19 @@ def cell_state(snap: Dict[str, Any], t: Dict[str, Any]) -> Dict[str, Any]:
     before = [i["ref"] for i in snap["_facts"] if i.get("node") == gate and i.get("claim") == "done"
               and (not i.get("levels") or lv in i["levels"]) and isinstance(i.get("on"), date)
               and t["dob_day"] and i["on"].isoformat() < t["dob_day"] and E.rank(i["kind"]) <= E.rank("attested")]
-    named = any(i.get("node") in parts for i in facts)
+    named = [i["ref"] for i in facts if re.search(words, i.get("quote") or "", re.I)]
     inf = infs[0] if infs else None
     by = inf["on"].isoformat() if inf and inf["claim"] == "done" else None
+    newest = max((i["on"] for i in facts if isinstance(i.get("on"), date)), default=None)
+    level_lists = [i.get("levels") or () for i in facts]          # read out before counting (probe discipline)
+    level_counts = [len(x) for x in level_lists]
     return {"state": st, "score": score(st, before), "pass_claimed_before_dob": before,
-            "evidence_names_this_part": named,
-            "basis_level": "part named by a record" if named else ("system-level only (part never named)"
-                                                                    if (facts or infs) else "nothing"),
+            "part_named_by": named[:6],
+            "basis_level": ("part named by a record" if named else "system-level only (part never named)"
+                            if (facts or infs) else "nothing"),
+            "multi_floor_only": bool(level_counts) and all(n > 1 for n in level_counts),
+            "newest_support": newest.isoformat() if newest else None,
+            "newest_support_days_before_blind_day": (BLIND_DAY - newest).days if newest else None,
             "inferred_in_place_by": by,
             "days_before_dob_result": ((date.fromisoformat(t["dob_day"]) - inf["on"]).days
                                        if by and t["dob_day"] else None),
@@ -137,44 +209,43 @@ def cell_state(snap: Dict[str, Any], t: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def blind_test(items: List[Dict[str, Any]], model: Dict[str, Any], tr: List[Dict[str, Any]],
-               hc: List[Dict[str, Any]], weekly_days: List[date]) -> Dict[str, Any]:
+               hc: List[Dict[str, Any]], weekly_days: List[date], rule_set: str) -> Dict[str, Any]:
     snap = T.as_of(items, model, BLIND_DAY, project_id=PID, headcounts=hc)
     rows = [dict(t, **cell_state(snap, t)) for t in tr]
-    ever, first = [], {}
-    for d in [x for x in weekly_days if x <= BLIND_DAY] + [BLIND_DAY]:
+    if rule_set == "part_named":
+        for r in rows:
+            if r["basis_level"] != "part named by a record" and r["score"] != "incorrect":
+                r["score"] = "miss"
+    ever = []
+    for d in [x for x in weekly_days if x <= BLIND_DAY]:
         s = T.as_of(items, model, d, project_id=PID, headcounts=hc)
         for t in tr:
             c = cell_state(s, t)
-            key = f"{t['level_code']}:{t['cell']}"
             if c["score"] == "incorrect":
-                ever.append({"as_of": d.isoformat(), "cell": key, "state": c["state"], "refs": c["pass_claimed_before_dob"]})
-            if key not in first and c["score"] in ("correct_fact", "correct_inference"):
-                first[key] = {"as_of": d.isoformat(), "state": c["state"]}
-    # Values are read out of OUR result rows before counting (these are not
-    # database documents; scripts/audit_probe_field_discipline.py).
+                ever.append({"as_of": d.isoformat(), "cell": f"{t['level_code']}:{t['cell']}", "state": c["state"],
+                             "refs": c["pass_claimed_before_dob"]})
     scored = [(r["level"], r["score"]) for r in rows]
-    return {"as_of": BLIND_DAY.isoformat(), "dob_now_read": False, "rows": rows,
+    return {"as_of": BLIND_DAY.isoformat(), "rule_set": rule_set, "dob_now_read": False, "rows": rows,
             "totals": dict(Counter(sc for _lv, sc in scored)),
             "totals_by_level": {lv: dict(Counter(sc for x, sc in scored if x == lv))
                                 for lv in sorted({x for x, _sc in scored})},
-            "ever_claimed_what_dob_contradicts": ever, "first_weekly_as_of_with_an_in_place_claim": first,
+            "ever_claimed_what_dob_contradicts": ever,
             "inferences_as_of_blind_day": [_inf_summary(i) for i in snap["inferences"]],
-            "contradictions_as_of_blind_day": snap["contradictions"],
-            "scoring_rule": (__doc__ or "").split("THE BLIND TEST.")[1].strip()}
+            "contradictions_as_of_blind_day": snap["contradictions"]}
 
 
 def _inf_summary(i: Dict[str, Any]) -> Dict[str, Any]:
     return {"ref": i["ref"], "claim": i["claim"], "confidence": i["confidence"], "confidence_rule": i["confidence_rule"],
             "basis": i["basis"], "disproof": i["disproof"], "unlocks": i["unlocks"], "blocks": i["blocks"],
-            "signals": [{k: s[k] for k in ("source", "ref", "on", "kind", "sub", "levels", "role")} for s in i["signals"]],
+            "signals": [{k: s.get(k) for k in ("source", "ref", "on", "kind", "sub", "by", "levels", "role")}
+                        for s in i["signals"]],
             "contradictions": [c["kind"] for c in i["contradictions"]]}
 
 
 # ── COVERAGE ──────────────────────────────────────────────────────────────
 
 def location_coverage(records: List[Dict[str, Any]], model: Dict[str, Any]) -> Dict[str, Any]:
-    rows = [r for r in records if r.get("type") == "daily_log_activity" and not r.get("duplicate_of")
-            and r.get("origin") != "assistant_claim" and r.get("company") and r.get("description")
+    rows = [r for r in records if r.get("type") == "daily_log_activity" and r.get("company") and r.get("description")
             and (r.get("fields") or {}).get("kind") in (None, "period_work_item")]
     one_raw = one_model = 0
     by_count: Counter = Counter()
@@ -191,36 +262,39 @@ def location_coverage(records: List[Dict[str, Any]], model: Dict[str, Any]) -> D
             "share_one_floor_binder_only": round(one_raw / n, 3) if n else None,
             "share_one_floor_with_building_model": round(one_model / n, 3) if n else None,
             "rows_by_number_of_levels": dict(sorted(by_count.items())),
-            "definition": "unique real daily-log crew rows (filed sheets, probes, report period rows) with a company and "
-                          "a work description; one floor = the location binds to exactly one level"}
+            "definition": "the audit's ORIGINAL daily-log crew rows with a company and a work description; one "
+                          "floor = the location binds to exactly one level"}
 
 
-def sub_coverage(snap: Dict[str, Any], roster: Dict[str, str]) -> Dict[str, Any]:
+def sub_coverage(snap: Dict[str, Any], roster: Dict[str, str], tile_refs: set) -> Dict[str, Any]:
+    """Whose current activity is determinable on the day, and FROM WHAT: a
+    sub whose latest work record is a photo tile embedded in a generated
+    report is counted apart, never as the measurement."""
     names = sorted(set(roster) | set(snap["subs"]))
-    det = [s for s in names if snap["subs"].get(s, {}).get("current_activity_determinable")]
-    return {"as_of": snap["as_of"], "roster_and_record_subs": len(names), "roster_subs": len(roster),
-            "determinable": len(det), "share": round(len(det) / len(names), 3) if names else None,
-            "share_of_roster": round(len([s for s in roster if s in det]) / len(roster), 3) if roster else None,
-            "per_sub": {s: (snap["subs"].get(s, {}).get("current_activity") or
-                            {"why_not": snap["subs"].get(s, {}).get("why_not") or "no record of this sub at all"})
+    det, from_tiles, from_filed = [], [], []
+    for s in names:
+        cur = snap["subs"].get(s, {}).get("current_activity")
+        if not cur:
+            continue
+        det.append(s)
+        bases = {r.split(":", 1)[0] for r in cur.get("refs") or ()}
+        (from_tiles if bases <= tile_refs else from_filed).append(s)
+    n_roster = len(roster)
+    return {"as_of": snap["as_of"], "roster_subs": n_roster,
+            "determinable_from_filed_or_original_records": len([s for s in from_filed if s in roster]),
+            "determinable_only_from_photo_tiles_inside_the_11_09_generated_report": len([s for s in from_tiles
+                                                                                          if s in roster]),
+            "measurement": f"{len([s for s in from_filed if s in roster])}/{n_roster} from filed / original records; "
+                           f"{len([s for s in from_tiles if s in roster])}/{n_roster} only from photo tiles inside "
+                           "the 11-09 generated report (not a measurement)",
+            "per_sub": {s: (dict(snap["subs"][s]["current_activity"],
+                                 source="photo tile inside the 11-09 generated report" if s in from_tiles else "record")
+                            if s in det else {"why_not": snap["subs"].get(s, {}).get("why_not")
+                                              or "no work record on file"})
                         for s in names}}
 
 
-# ── MAIN ──────────────────────────────────────────────────────────────────
-
-def load_audit(data: Path) -> Dict[str, Dict[str, Any]]:
-    """The independent audit lane's per-record flags, when the file exists."""
-    path = data / "records" / "audit_flags.jsonl"
-    if not path.exists():
-        return {}
-    out = {}
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            if line.strip():
-                row = json.loads(line)
-                out[str(row.get("rec_id") or row.get("id") or row.get("record_id"))] = row
-    return out
-
+# ── RUNS ──────────────────────────────────────────────────────────────────
 
 def _weeks(start: date, end: date) -> List[date]:
     days, d = [], start
@@ -230,55 +304,43 @@ def _weeks(start: date, end: date) -> List[date]:
     return days
 
 
-def _originals(src: Dict[str, Any], audit: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [r for r in src["records"] if R.audit_class(audit.get(str(r.get("id")))) == "original"]
+def _originals(records: List[Dict[str, Any]], audit: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [r for r in records if R.audit_class(audit.get(str(r.get("id")))) == "original"]
 
 
-def blind_run(src: Dict[str, Any], model: Dict[str, Any], strictness: str, audit: Dict[str, Dict[str, Any]],
-              pub_items: List[Dict[str, Any]], days: List[date], *, apply_audit: bool) -> Dict[str, Any]:
-    """apply_audit False = the run before the audit (README duplicates, every
-    non-duplicate row as evidence). True = originals only as evidence, the
-    audit's leak flags (direct, DOB sign-off state AND borderline) excluded,
-    and the public DOB sign-off rows withheld too (the audit flags their
-    record-copies as sign-off-state leaks)."""
-    kept, excluded = R.blind_records(src["records"], BLIND_DAY, strictness=strictness,
-                                     audit=audit if apply_audit else None)
-    if apply_audit:
-        items, meta = R.items_from_records(kept, model, project_id=PID, audit=audit)
-        hc = R.headcounts(_originals({"records": kept}, audit), readme_dups=False)
-        pub = []
-    else:
-        items, meta = R.items_from_records(kept, model, project_id=PID)
-        hc = R.headcounts(kept)
-        pub = pub_items
-    bt = blind_test(items + pub, model, truth(src["dob_now"]), hc, days)
+def blind_runs(src: Dict[str, Any], model: Dict[str, Any], audit: Dict[str, Dict[str, Any]],
+               days: List[date]) -> Dict[str, Any]:
+    kept, excluded = R.blind_records(src["records"], BLIND_DAY, audit=audit)
+    hc = R.headcounts(_originals(kept, audit), readme_dups=False)
+    tr = truth(src["dob_now"])
     reasons = [why for e in excluded for why in e["reasons"]]
-    summary_rows = meta.get("summary_context") or []
-    bt.update({"strictness": strictness, "audit_applied": apply_audit, "records_kept": len(kept),
-               "records_excluded": len(excluded), "excluded_by_reason": dict(Counter(reasons)),
-               "excluded": excluded, "items": len(items), "audit_classes_of_kept": meta.get("audit_classes"),
-               "summary_context_rows": len(summary_rows)})
-    return bt
+    out: Dict[str, Any] = {"records_kept": len(kept), "records_excluded": len(excluded),
+                           "excluded_by_reason": dict(Counter(reasons)),
+                           "excluded": excluded}
+    for version, label in (("frozen", "official_blind_frozen_rules"), ("post_hoc", "post_hoc_not_blind")):
+        out[label] = {}
+        for rs in RULE_SETS:
+            with rules(version, rs):
+                items, _meta = R.items_from_records(kept, model, project_id=PID, audit=audit)
+                out[label][rs] = T._jsonable(blind_test(items, model, tr, hc, days, rs))
+    return out
 
 
 def lost_support(before: List[Dict[str, Any]], after: List[Dict[str, Any]],
                  audit: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Each inference of the pre-audit run, what became of it after the
-    audit, and the audit class of every signal it stood on."""
+    """Each inference of the as-stated run, what became of it under one
+    person = one source, and the author of every signal it stood on."""
     after_by = {i["ref"].rsplit(":", 1)[0]: i for i in after}
     out = []
     for i in before:
         key = i["ref"].rsplit(":", 1)[0]
-        sig = [{"ref": s["ref"], "kind": s["kind"], "sub": s.get("sub"), "source": s["source"],
-                "audit": R.audit_class(audit.get(str(s["ref"]).split(":")[0]))} for s in i["signals"]]
         a = after_by.get(key)
-        classes = [x["audit"] for x in sig]
-        out.append({"inference": key, "before": f"{i['claim']} / {i['confidence']}",
-                    "after": f"{a['claim']} / {a['confidence']}" if a else "no inference (support lost)",
-                    "signals_by_audit_class": dict(Counter(classes)),
-                    "original_signal_sources_after_audit": sorted({f"{x['source']}|{x['sub']}" for x in sig
-                                                                   if x["audit"] == "original"}),
-                    "signals": sig})
+        authors = sorted({str(s.get("by") or s.get("sub")) for s in i["signals"]})
+        classes = [R.audit_class(audit.get(str(s["ref"]).split(":")[0])) for s in i["signals"]]
+        out.append({"inference": key, "as_stated": f"{i['claim']} / {i['confidence']}",
+                    "one_person_one_source": f"{a['claim']} / {a['confidence']}" if a else "no inference (support lost)",
+                    "authors_of_its_signals": authors,
+                    "signal_audit_classes": dict(Counter(classes))})
     return out
 
 
@@ -290,34 +352,30 @@ def main() -> int:
     data = Path(args.data)
     src = load(data)
     audit = load_audit(data)
+    if not audit:
+        raise SystemExit("records/audit_flags.jsonl is required: only audited originals are evidence")
     model = CI.model_from_building(src["building"], name="588 Thomas S. Boyland St")
-    pre_items, _pre_meta = R.items_from_records(src["records"], model, project_id=PID)
-    rec_items, meta = R.items_from_records(src["records"], model, project_id=PID, audit=audit or None)
+    originals = _originals(src["records"], audit)
+    rec_items, meta = R.items_from_records(src["records"], model, project_id=PID, audit=audit)
     pub_items = R.items_from_public(src["timeline"], project_id=PID)
     dob_items = R.items_from_dob_now(src["dob_now"], project_id=PID)
-    hc = R.headcounts(_originals(src, audit), readme_dups=False) if audit else R.headcounts(src["records"])
+    hc = R.headcounts(originals, readme_dups=False)
     full_items = rec_items + pub_items + dob_items
-    pre_now = T.as_of(pre_items + pub_items + dob_items, model, TODAY, project_id=PID,
-                      headcounts=R.headcounts(src["records"]))
-    # From the day this LeveLog project was created (its first record; the
-    # records file also holds a probe line dated 2026-01-01 that says nothing
-    # was filed, and another project's document of 2026-05-04) to today.
     created = [R._d(r.get("date")) for r in src["records"] if "project_create" in str(r.get("quote") or "")]
-    first = min(d for d in created if d) if any(created) else min(
-        i["on"] for i in rec_items if isinstance(i.get("on"), date))
-    days = _weeks(first, TODAY)
-    blinds = {f"pre_audit_{k}": T._jsonable(blind_run(src, model, k, audit, pub_items, days, apply_audit=False))
-              for k in R.STRICTNESS + (R.DATES_ONLY,)}
-    if audit:
-        blinds["post_audit"] = T._jsonable(blind_run(src, model, "conservative", audit, pub_items, days,
-                                                     apply_audit=True))
+    days = _weeks(min(d for d in created if d), TODAY)
+    blinds = blind_runs(src, model, audit, days)
     now = T.as_of(full_items, model, TODAY, project_id=PID, headcounts=hc)
+    with rules("post_hoc", "as_stated"):
+        stated_now = T.as_of(full_items, model, TODAY, project_id=PID, headcounts=hc)
     weekly = [T.public(T.as_of(full_items, model, day, project_id=PID, headcounts=hc)) for day in days + [TODAY]]
     for w in weekly:
         w.pop("subs", None)                               # per-sub histories are given once, below
+    tiles = {str(r.get("id")) for r in src["records"]
+             if (r.get("fields") or {}).get("kind") == "report_visual_progress_tile"}
     out = {
         "_about": "LeveLog offline reconstruction of 588 Thomas S. Boyland St (project " + PID + "), built "
                   + TODAY.isoformat() + " by backend/scripts/intel_588_reconstruct.py from local files only. "
+                  "Evidence = the audit's original rows; a record is visible on a day only if it existed then. "
                   "Categories: verified / confirmed / attested (a named person's statement; between confirmed and "
                   "observed) / observed / reported / inferred / unknown. An inference is never a fact, never a "
                   "passed inspection, never a percent. Unknown is never 'not done'.",
@@ -325,18 +383,16 @@ def main() -> int:
                          "Reported": "reported", "Inferred": "inferred", "Unknown": "no items",
                          "attested (engine rung, no owner category)": "a named person's statement; shown as attested"},
         "building_model": model,
-        "inputs": {"records": meta, "public_items": len(pub_items), "dob_now_items": len(dob_items),
-                   "headcount_pairs": len(hc), "audit_file_used": bool(audit)},
+        "inputs": {"records": {k: v for k, v in meta.items() if k != "summary_context"},
+                   "public_items": len(pub_items), "dob_now_items": len(dob_items), "headcount_pairs": len(hc)},
         "current_state": T.public(now),
         "summary_context": T._jsonable(meta.get("summary_context") or []),
-        "inferences_before_vs_after_audit": T._jsonable(lost_support(pre_now["inferences"], now["inferences"], audit)),
-        "blind_inferences_before_vs_after_audit": (T._jsonable(lost_support(
-            [x for x in blinds["pre_audit_conservative"]["inferences_as_of_blind_day"]],
-            [x for x in blinds["post_audit"]["inferences_as_of_blind_day"]], audit)) if audit else None),
+        "inferences_as_stated_vs_one_person": T._jsonable(lost_support(stated_now["inferences"], now["inferences"],
+                                                                        audit)),
         "weekly_snapshots": weekly,
         "subs": T.public(now)["subs"],
         "blind_test": blinds,
-        "coverage": {"location": location_coverage(src["records"], model), "subs": sub_coverage(now, meta["roster"])},
+        "coverage": {"location": location_coverage(originals, model), "subs": sub_coverage(now, meta["roster"], tiles)},
         "confidence_rules": CI.CONFIDENCE_RULES,
     }
     (data / "model" / "blind_runs").mkdir(parents=True, exist_ok=True)
@@ -344,18 +400,12 @@ def main() -> int:
                                                    encoding="utf-8")
     (data / "model" / "blind_runs" / f"{args.label}.json").write_text(
         json.dumps(blinds, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
-    summary = {k: {"totals": b["totals"], "by_level": b["totals_by_level"],
-                   "cells": {f"{r['level_code']}:{r['cell']}": [r["state"], r["score"], r["basis_level"],
-                                                                 r["inferred_in_place_by"]] for r in b["rows"]},
-                   "ever_incorrect": b["ever_claimed_what_dob_contradicts"], "excluded": b["records_excluded"],
-                   "excluded_by_reason": b["excluded_by_reason"]} for k, b in blinds.items()}
-    infs_now = now["inferences"]
-    n_inf = len(infs_now)
+    totals = {f"{v}:{rs}": blinds[v][rs]["totals"] for v in ("official_blind_frozen_rules", "post_hoc_not_blind")
+              for rs in RULE_SETS}
     con_kinds = [c["kind"] for c in now["contradictions"]]
-    print(json.dumps({"blind": summary,
+    print(json.dumps({"blind_totals": totals, "excluded": blinds["records_excluded"],
+                      "coverage_subs": out["coverage"]["subs"]["measurement"],
                       "coverage_location": {k: v for k, v in out["coverage"]["location"].items() if k != "definition"},
-                      "coverage_subs": {k: v for k, v in out["coverage"]["subs"].items() if k != "per_sub"},
-                      "inferences_now": n_inf, "contradictions_now": len(con_kinds),
                       "contradiction_kinds": dict(Counter(con_kinds)),
                       "items": {"records": len(rec_items), "public": len(pub_items), "dob_now": len(dob_items)}},
                      indent=1, default=str))

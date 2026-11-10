@@ -143,6 +143,35 @@ class TheAudit(unittest.TestCase):
         self.assertEqual(ex[0]["reasons"], ["audit leak flag: borderline: filed log row mentions a DOB"])
 
 
+class WhenARecordExisted(unittest.TestCase):
+    """Review 2, M3: visible on D only if it EXISTED on D."""
+
+    def test_a_late_signed_log_is_invisible_before_its_signature(self):
+        from lib import project_timeline as T
+        header = {"id": "H", "type": "other", "date": "2026-02-02", "provenance": {"line_or_offset": "daily_jobsite/doc1"},
+                  "fields": {"kind": "daily_jobsite_header", "cp_signature_claimed": "February 20, 2026 at 7:57 AM EDT"}}
+        crew = dict(row("C", "Pipe Co", "Plumbing", "1st floor"), provenance={"line_or_offset": "daily_jobsite/doc1"})
+        got = items([header, crew])
+        self.assertEqual(got[0]["said_at"].date(), date(2026, 2, 20))
+        self.assertEqual(got[0]["by"], R.CP_LOG)
+        self.assertEqual(T.visible(got, date(2026, 2, 10)), [])
+        self.assertEqual(len(T.visible(got, date(2026, 2, 20))), 1)
+
+    def test_a_report_tile_exists_from_the_reports_generation(self):
+        tile = {"id": "T", "type": "photo", "date": "2026-02-03", "company": "Pipe Co", "location_text": "floor 2",
+                "description": "Plumbing installed", "fields": {"kind": "report_visual_progress_tile"},
+                "provenance": {"transcript_timestamp": "2026-02-27T19:27:02.019Z"}}
+        [i] = items([tile])
+        self.assertEqual((i["on"], i["said_at"].date()), (date(2026, 2, 3), date(2026, 2, 27)))
+
+    def test_a_bot_guessed_floor_tag_is_not_a_place(self):
+        walk = {"id": "W", "type": "photo", "date": "2026-02-03",
+                "fields": {"walk_item": 1, "floor_tag": "7", "trade_guess": True, "caption_text": "Sheetrock not done"}}
+        [i] = items([walk])
+        self.assertEqual((i["levels"], i["candidates"]), ([], []))
+        self.assertIn("GUESSED", i["note"])
+
+
 class PublicRecords(unittest.TestCase):
 
     def test_a_signoff_is_verified_and_dob_now_rows_are_not_read_here(self):

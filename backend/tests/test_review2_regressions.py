@@ -387,11 +387,22 @@ class ABookingIsNotInProgress(unittest.TestCase):
     def test_reported_only_when_a_reported_item_exists(self):
         for kind in E.KINDS:
             for claim in E.CLAIMS:
-                if kind == "estimate":
+                if kind in E.NON_FACTS:          # an estimate or an inference is not a fact: below
                     continue
                 st = E.status([_it(kind, claim)])
                 with self.subTest(kind=kind, claim=claim):
                     self.assertEqual(st == "reported", kind == "reported" and claim in E.WORK_CLAIMS)
+
+    def test_a_valid_inference_never_says_reported_or_done(self):
+        signals = [{"source": "logbooks", "ref": "L1", "kind": "reported", "by": "CP"},
+                   {"source": "photo_index", "ref": "P1", "kind": "observed", "by": "camera"}]
+        for claim in E.INFERRED_CLAIMS:
+            inf = E.item("inferred", claim, source="lib/construction_inference", ref="i", project_id="p",
+                         node=IR.PLUMBING_ROUGH, levels=["FLOOR_3"], on=TODAY, basis="b", disproof="d",
+                         confidence="medium", confidence_rule="r", signals=signals)
+            with self.subTest(claim=claim):
+                self.assertEqual(E.status([inf]), "unknown")
+                self.assertEqual(E.status([inf, _it("attested", "scheduled")]), "scheduled_attested")
 
     def test_the_report_draws_a_booking_as_booked(self):
         booked = _it("attested", "scheduled", on=TODAY + timedelta(days=7))

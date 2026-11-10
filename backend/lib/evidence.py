@@ -111,14 +111,16 @@ def item(kind: str, claim: str, *, source: str, ref: str, project_id: Any, node:
 
 
 def independence_key(signal: Dict[str, Any]) -> str:
-    """Two signals are independent when they come from different sources or
-    different actors: a log row of the plumber and a log row of the insulator
-    are two; two rows of the same crew are one. A signal may name its own
-    `independence` (e.g. two rows typed by one person), which then wins."""
+    """Two signals are independent only when different AUTHORS / OBSERVERS
+    made them: the person who typed or signed it (`by`), else the crew it is
+    about (`sub`) when nothing says who wrote it. The CP's daily log naming the
+    plumber and the same log naming the insulator are ONE source (one author);
+    a gate check-in and that log are two. A signal may name its own
+    `independence`, which then wins."""
     if signal.get("independence"):
         return str(signal["independence"])
-    actor = str(signal.get("sub") or signal.get("by") or "").strip().lower()
-    return f"{signal.get('source')}|{actor}"
+    actor = str(signal.get("by") or signal.get("sub") or "").strip().lower()
+    return f"{signal.get('source')}|{actor}" if not signal.get("by") else f"author|{actor}"
 
 
 def independent_sources(signals: Iterable[Dict[str, Any]]) -> int:

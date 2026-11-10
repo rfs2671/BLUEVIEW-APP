@@ -288,7 +288,7 @@ CONSERVATIVE_STORY = ("A cold winter and slow agencies: exterior and sitework we
 CONSERVATIVE_ADVERSE = ("weather_exterior", "weather_sitework", "lead_special", "lead_dob_electrical", "lead_fdny_fa",
                         "lead_dob_plumbing", "lead_dep_permit", "lead_dep_inspection", "lead_dot_permit",
                         "lead_gas_auth", "lead_tco", "lead_bpp", "reinspect_factor", "mobilization",
-                        "lead_cabinet_delivery")
+                        "lead_cabinet_delivery", "remaining_inferred_done")
 SCENARIO_STORIES = {
     "fast": "Crews at the highest day seen, short agency waits, a mild winter, unstarted trades on site at once.",
     "normal": "Crews at their average, the measured 7-working-day DOB wait, typical winter, 5-day mobilization.",
@@ -345,8 +345,9 @@ def default_assumptions() -> List[Dict[str, Any]]:
           "fraction", IA, 0.0, 0.0, 0.2, faster="lower",
           basis="conservative re-verifies an unverified operator statement"),
         A("remaining_inferred_done", "Share left where 'done' is an inference (e.g. later work closes over it)",
-          "fraction", IA, 0.0, 0.0, 0.2, faster="lower",
-          basis="an inference is never a fact; conservative leaves a fifth to re-open"),
+          "fraction", IA, 0.1, 0.2, 0.3, faster="lower",
+          basis="an inference is never a fact, so it is never counted as done: some scope stays open in EVERY "
+                "scenario (a tenth fast, a fifth normal, three tenths conservative and stress)"),
         A("eifs_side_exposed_share", "Share of the side (lot-line) walls that is exposed and gets EIFS", "fraction",
           IA, 0.6, 0.8, 1.0, faster="lower",
           basis="neighbour 586 is a 2-storey brick with cellar (survey on ST T-001), so about 2 of 5 storeys on that "
@@ -1901,8 +1902,12 @@ def _effort(a: Act, st: Dict[str, Any], scn: str, A) -> Tuple[float, float, str]
         return lead * rem + (1 if rem else 0), rem, how
     if rule == "fixed":
         if not a.get("dur"):
-            rem, how = ((0.0, f"done ({st['evidence']}); no remaining scope is modelled, so no haircut applies")
-                        if st["status"] == "done" else (1.0, st["status"]))
+            if st["status"] == "done" and st["evidence"] == "inferred":
+                # An inference is never done: its share stays open (see remaining_inferred_done).
+                rem, how = float(A("remaining_inferred_done", scn)), "done by inference only (never counted as done)"
+            else:
+                rem, how = ((0.0, f"done ({st['evidence']}); no remaining scope is modelled, so no haircut applies")
+                            if st["status"] == "done" else (1.0, st["status"]))
             return 0.0, rem, how
         rem, how = remaining_fraction(st, scn, A, gate=a["kind"] in ("utility", "regulatory"))
         return float(A(a["dur"], scn)) * rem, rem, how
