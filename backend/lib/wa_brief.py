@@ -49,7 +49,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from lib import dob_penalty, dot_sync, source_sync, wa_alerts, wa_gc
+from lib import dob_penalty, dob_signoffs, dot_sync, source_sync, wa_alerts, wa_gc
 
 try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
     from zoneinfo import ZoneInfo
@@ -269,7 +269,9 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                     continue
 
         # 🟠 permit expiring / expired (not for a revoked permit)
-        if rt == "permit" and _text(latest.get("permit_status")).upper() != "REVOKED":
+        # A permit DOB signed off is finished work: no expiry line for it.
+        if rt == "permit" and _text(latest.get("permit_status")).upper() != "REVOKED" \
+                and not dob_signoffs.row_signed_off(latest):
             item = _expiry_item(latest, "job_number", "DOB", today,
                                 work=_text(latest.get("work_type")))
             if item:

@@ -48,7 +48,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from lib.datefmt import strftime as _fmt
-from lib import wa_alerts, wa_gc
+from lib import dob_signoffs, wa_alerts, wa_gc
 
 NY = ZoneInfo("America/New_York")
 
@@ -361,6 +361,11 @@ def build(dob_rows: Iterable[Dict[str, Any]], dot_rows: Iterable[Dict[str, Any]]
         if not issued and (first_seen is None or first_seen > end_at):
             continue
         closed_end: Optional[bool] = None if uncertain else _closed_status(status_end)
+        # A permit or job filing DOB signed off ('Signed-off', 'LOC Issued') is
+        # closed: finished work, never "expiring".
+        if closed_end is False and rt in ("permit", "job_status") \
+                and dob_signoffs.is_signed_off(status_end):
+            closed_end = True
         cd = wa_gc.parse_dob_date(latest.get("closed_date"))
         if closed_end is False and cd and cd <= end:
             closed_end = True
