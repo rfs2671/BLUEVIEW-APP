@@ -20,6 +20,22 @@ work, and both are kept.
   reported   a filed daily-log crew row saying the crew did the work there.
   estimate   computed by LeveLog (a forecast, a projection). NEVER a fact, never
              shown without the word "estimate" and its basis.
+  inferred   a plausible conclusion that MULTIPLE INDEPENDENT signals support
+             (lib/construction_inference: "rough-in on 3 is probably in: the
+             plumber logged it there, another crew's photo shows pipe there,
+             insulation began"). NEVER a fact, exactly like an estimate: it never
+             decides status(), never is strongest(), never carries a percent and
+             never says failed. It needs `signals` (each a FACT with its own
+             source, ref, date and kind) from >= 2 independent sources, a
+             `basis`, a `disproof` (what would show it wrong) and a confidence
+             word (low / medium / high) WITH the rule that produced it -- never a
+             made-up decimal.
+
+The owner's six categories map onto this ladder as: Verified = verified;
+Confirmed = confirmed; Observed = observed; Reported = reported; Inferred =
+inferred; Unknown = no items. `attested` (a named person's statement) has no
+category of its own: it sits between Confirmed and Observed and is shown as
+"attested (a named person's statement)", never folded into Confirmed.
 
 UNKNOWN is not a rung: it is the absence of items, and it never means not done.
 No item carries a percent unless a source stated one; a stated percent keeps the
@@ -33,8 +49,16 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-KINDS = ("verified", "confirmed", "attested", "observed", "reported", "estimate")
+KINDS = ("verified", "confirmed", "attested", "observed", "reported", "estimate", "inferred")
 _RANK = {k: i for i, k in enumerate(KINDS)}
+#: Kinds that are never facts: never status(), never strongest(), never counted.
+NON_FACTS = ("estimate", "inferred")
+FACT_KINDS = tuple(k for k in KINDS if k not in NON_FACTS)
+#: An inference's confidence is one of these words, always with its rule.
+CONFIDENCE = ("low", "medium", "high")
+#: What an inference may claim: never "failed" (a failure is a record, not a guess).
+INFERRED_CLAIMS = ("done", "in_progress", "started", "present")
+MIN_INDEPENDENT_SIGNALS = 2
 
 #: What an item says about the work.
 CLAIMS = ("done", "in_progress", "started", "failed", "scheduled", "present", "blocked",
@@ -49,7 +73,11 @@ def item(kind: str, claim: str, *, source: str, ref: str, project_id: Any, node:
          on: Optional[date] = None, by: Optional[str] = None, quote: Optional[str] = None,
          shared: bool = False, stated_percent: Optional[float] = None,
          basis: Optional[str] = None, note: Optional[str] = None,
-         said_at: Optional[datetime] = None, candidates: Sequence[str] = ()) -> Dict[str, Any]:
+         said_at: Optional[datetime] = None, candidates: Sequence[str] = (),
+         signals: Sequence[Dict[str, Any]] = (), disproof: Optional[str] = None,
+         confidence: Optional[str] = None, confidence_rule: Optional[str] = None,
+         contradictions: Sequence[Dict[str, Any]] = (), unlocks: Sequence[str] = (),
+         blocks: Sequence[str] = ()) -> Dict[str, Any]:
     """One piece of evidence. `source` names the collection or feed, `ref` the
     record inside it (so it can be shown and audited). `shared`: the record names
     several places together ("floors 1-4") and is not about one alone.
@@ -58,17 +86,67 @@ def item(kind: str, claim: str, *, source: str, ref: str, project_id: Any, node:
     places an undated one: it is never shown as the date of the work.
     `candidates`: the levels the record NAMED but that could not be placed
     (the project does not have them, or its levels could not be read): the
-    item's `levels` is then [] -- place unknown, never the building's."""
+    item's `levels` is then [] -- place unknown, never the building's.
+
+    An `inferred` item also carries `signals`, `disproof`, `confidence`,
+    `confidence_rule`, `contradictions`, `unlocks` and `blocks` (see the module
+    docstring); no other kind carries those keys."""
     if kind not in _RANK:
         raise ValueError(f"unknown evidence kind {kind!r}")
     if claim not in CLAIMS:
         raise ValueError(f"unknown claim {claim!r}")
     if kind == "estimate" and not basis:
         raise ValueError("an estimate needs its basis")
-    return {"kind": kind, "claim": claim, "source": source, "ref": str(ref), "project_id": str(project_id),
-            "node": node, "levels": sorted(set(levels)), "space": space, "sub": sub, "on": on, "by": by,
-            "quote": quote, "shared": bool(shared), "stated_percent": stated_percent, "basis": basis, "note": note,
-            "said_at": said_at, "candidates": sorted(set(candidates or ()))}
+    if kind == "inferred":
+        _check_inference(claim, basis, disproof, confidence, confidence_rule, stated_percent, signals)
+    out = {"kind": kind, "claim": claim, "source": source, "ref": str(ref), "project_id": str(project_id),
+           "node": node, "levels": sorted(set(levels)), "space": space, "sub": sub, "on": on, "by": by,
+           "quote": quote, "shared": bool(shared), "stated_percent": stated_percent, "basis": basis, "note": note,
+           "said_at": said_at, "candidates": sorted(set(candidates or ()))}
+    if kind == "inferred":
+        out.update({"signals": [dict(s) for s in signals], "disproof": disproof, "confidence": confidence,
+                    "confidence_rule": confidence_rule, "contradictions": [dict(c) for c in contradictions or ()],
+                    "unlocks": list(unlocks or ()), "blocks": list(blocks or ())})
+    return out
+
+
+def independence_key(signal: Dict[str, Any]) -> str:
+    """Two signals are independent when they come from different sources or
+    different actors: a log row of the plumber and a log row of the insulator
+    are two; two rows of the same crew are one. A signal may name its own
+    `independence` (e.g. two rows typed by one person), which then wins."""
+    if signal.get("independence"):
+        return str(signal["independence"])
+    actor = str(signal.get("sub") or signal.get("by") or "").strip().lower()
+    return f"{signal.get('source')}|{actor}"
+
+
+def independent_sources(signals: Iterable[Dict[str, Any]]) -> int:
+    return len({independence_key(s) for s in signals or ()})
+
+
+def _check_inference(claim: str, basis: Optional[str], disproof: Optional[str], confidence: Optional[str],
+                     confidence_rule: Optional[str], stated_percent: Optional[float],
+                     signals: Sequence[Dict[str, Any]]) -> None:
+    if claim not in INFERRED_CLAIMS:
+        raise ValueError(f"an inference may not claim {claim!r}")
+    if not basis:
+        raise ValueError("an inference needs its basis")
+    if not disproof:
+        raise ValueError("an inference needs what would disprove it")
+    if confidence not in CONFIDENCE or not confidence_rule:
+        raise ValueError("an inference needs a confidence word (low/medium/high) and the rule that produced it")
+    if stated_percent is not None:
+        raise ValueError("an inference never carries a percent")
+    for s in signals or ():
+        if s.get("kind") not in FACT_KINDS or not s.get("source") or not s.get("ref"):
+            raise ValueError("every signal of an inference is a fact with its source and ref")
+    if independent_sources(signals) < MIN_INDEPENDENT_SIGNALS:
+        raise ValueError(f"an inference needs signals from >= {MIN_INDEPENDENT_SIGNALS} independent sources")
+
+
+def is_fact(i: Dict[str, Any]) -> bool:
+    return i.get("kind") not in NON_FACTS
 
 
 def rank(kind: str) -> int:
@@ -104,8 +182,9 @@ def newest(items: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 
 
 def strongest(items: Iterable[Dict[str, Any]], *, facts_only: bool = True) -> Optional[Dict[str, Any]]:
-    """The strongest item, newest first within a rung. An estimate is never a fact."""
-    pool = [i for i in items if not (facts_only and i["kind"] == "estimate")]
+    """The strongest item, newest first within a rung. An estimate or an
+    inference is never a fact."""
+    pool = [i for i in items if not (facts_only and i["kind"] in NON_FACTS)]
     if not pool:
         return None
     best = min(rank(i["kind"]) for i in pool)
@@ -150,8 +229,9 @@ def status(items: Sequence[Dict[str, Any]]) -> str:
       unknown                       nothing, or only "don't know" / "nobody
                                     was there": unknown is never not done
 
-    Nothing below 'attested' can say done."""
-    facts = [i for i in items if i["kind"] != "estimate"]
+    Nothing below 'attested' can say done, and an estimate or an inference
+    says nothing here at all."""
+    facts = [i for i in items if i["kind"] not in NON_FACTS]
     if not facts:
         return "unknown"
     for kind in _STRONG:
