@@ -260,5 +260,50 @@ class TheReviewStrings(unittest.TestCase):
             self.assertEqual(bind(text)["levels"], want, text)
 
 
+# ── ROUND 3 (review 2): a crew count is never a floor ───────────────────────
+#: "floor 2 - 3 men" read as floors 2-3: the 3 is how many men. A number with a
+#: crew/count noun after it ("3 men", "4 guys", "2 ppl", "5 hombres") or a count
+#: word before it ("crew of 3", "x 3") is a count. Next to a floor phrase it
+#: makes the reading uncertain, so the binder abstains; it never adds a floor.
+
+FLOOR_PHRASES = (("floor 2", fl(2)), ("2nd floor", fl(2)), ("floor 3", fl(3)), ("4th fl", fl(4)),
+                 ("floors 2 & 3", fl(2, 3)), ("floors 1-2", fl(1, 2)), ("piso 2", fl(2)), ("segundo piso", fl(2)))
+COUNT_TAILS = (" - {n} men", ", {n} guys", " {n} workers", " / {n} ppl", " ({n} people)", " - {n} hombres",
+               ", {n} trabajadores", " {n} personas", ", crew of {n}", " x {n}", " x{n} men", " -{n} man crew",
+               " {n}-man crew", ", {n} laborers")
+
+
+def _counts():
+    out = []
+    for phrase, s in FLOOR_PHRASES:
+        for tail in COUNT_TAILS:
+            for n in (1, 2, 3, 4, 5):
+                out.append((phrase + tail.format(n=n), s, set()))
+                out.append((tail.format(n=n).lstrip(" ,-/") + " on " + phrase, s, set()))
+    return out
+
+
+class ACountIsNeverAFloor(unittest.TestCase):
+    def test_the_review_string(self):
+        r = bind("floor 2 - 3 men")
+        self.assertNotIn("FLOOR_3", r["levels"])
+        self.assertIn(r["certainty"], (B.NONE, B.EXACT))
+        self.assertEqual(r["levels"] if r["certainty"] != B.NONE else ["FLOOR_2"], ["FLOOR_2"])
+
+    def test_generated_counts_after_and_before_floor_phrases(self):
+        TheRuleOnGeneratedPhrasings._check(self, _counts())
+
+    def test_a_count_beside_a_floor_number_abstains(self):
+        for text in ("floor 2 - 3 men", "floor 2, 3 guys", "floors 1-2 - 3 men", "piso 2 - 3 hombres",
+                     "floor 2 x 3", "floor 3, crew of 4"):
+            r = bind(text)
+            self.assertEqual((r["certainty"], r["reason"]), (B.NONE, B.R_COUNT), text)
+
+    def test_a_count_apart_from_the_floor_phrase_is_harmless(self):
+        for text, want in (("3 men on floor 2", ["FLOOR_2"]), ("floor 2 with 3 men", ["FLOOR_2"]),
+                           ("Framing 4 guys floor 3", ["FLOOR_3"])):
+            self.assertEqual(bind(text)["levels"], want, text)
+
+
 if __name__ == "__main__":
     unittest.main()

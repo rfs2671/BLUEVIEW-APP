@@ -414,6 +414,27 @@ R_RELATIVE = "relative_place"
 R_NEGATION = "a_level_excluded"
 #: A span or open range expanded against a COMPLETE frame: declared, never silent.
 R_EXPANDED = "expanded_against_the_frame"
+#: Round 3 (review 2): "floor 2 - 3 men" was floors 2-3. A number with a crew
+#: or count noun after it, or "crew of" / "x" before it, is a COUNT. Joined to a
+#: floor number by a list or span mark, which it is cannot be settled: none.
+R_COUNT = "a_count_beside_a_floor_number"
+_COUNT = re.compile(r"(?<![\w.])(\d{1,3})\s*-?\s*(?:men|man|guys?|workers?|ppl|people|persons?|hombres|trabajadores"
+                    r"|personas|laborers?|labourers?|crews?|hands|employees|pax|carpenters?|electricians?|plumbers?)\b"
+                    r"|\b(?:crew\s+of|x)\s*(\d{1,3})\b", re.I)
+
+
+def _count_beside_a_floor(rest: str, chains: Sequence[Dict[str, Any]]) -> bool:
+    """A count inside a chain of level material, or straight after a chain that
+    ends in a floor number with only punctuation between."""
+    for m in _COUNT.finditer(rest):
+        at = m.start(1) if m.group(1) else m.start()
+        for c in chains:
+            if c["start"] <= at < c["end"]:
+                return True
+            if (c["end"] <= m.start() and re.search(r"\d\s*$", rest[c["start"]:c["end"]])
+                    and re.fullmatch(r"[\s,&/+\-–—()|:;]*", rest[c["end"]:m.start()])):
+                return True
+    return False
 
 
 def _ref_n(m: "re.Match[str]", a: int = 1) -> Optional[int]:
@@ -503,6 +524,8 @@ def _structural(r: Dict[str, Any], levels: List[str], frame: Set[str], complete:
     rest = r.get("rest") or ""
     chains = _chains(rest)
     stated = set().union(*(c["stated"] for c in chains)) if chains else set()
+    if _count_beside_a_floor(rest, chains):
+        return levels, R_COUNT, sorted(stated), False
     if (stated or levels) and _NEGATION.search(rest):
         return levels, R_NEGATION, sorted(stated), False
     expanded = False
