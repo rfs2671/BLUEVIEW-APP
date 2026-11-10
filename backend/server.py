@@ -76,6 +76,7 @@ from lib import wa_security  # noqa: E402
 from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import dob_penalty  # noqa: E402
+from lib import dob_signoffs  # noqa: E402
 from lib import model_outage  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
@@ -43500,6 +43501,15 @@ def _extract_job_status_fields(rec: dict) -> dict:
     fields["filing_date"] = rec.get("current_status_date") or rec.get("filing_date") or rec.get("latest_action_date") or None
     fields["job_type"] = rec.get("job_type") or None
     fields["job_description"] = rec.get("job_description") or None
+    # The sign-off (lib/dob_signoffs). Kept: DOB's own sign-off date, when the
+    # filing was approved and first permitted, the floors it covers, and the
+    # work types its YES/NO flags name. Dropping these is how a filing with a
+    # Letter of Completion reached the assistant as "no sign-offs".
+    fields["signoff_date"] = rec.get("signoff_date") or None
+    fields["approved_date"] = rec.get("approved_date") or None
+    fields["first_permit_date"] = rec.get("first_permit_date") or None
+    fields["work_on_floor"] = rec.get("work_on_floor") or None
+    fields["work_types"] = dob_signoffs.work_types(rec)
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
@@ -43530,6 +43540,27 @@ def _extract_permit_fields(rec: dict) -> dict:
     fields["job_number"] = rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or None
     fields["job_type"] = rec.get("job_type") or rec.get("filing_reason") or None
     fields["work_type"] = rec.get("work_type") or rec.get("permit_type") or None
+    fields["approved_date"] = rec.get("approved_date") or None
+    fields["work_on_floor"] = rec.get("work_on_floor") or None
+    # What the work is, in DOB's words: an electrical filing has no work type.
+    fields["job_description"] = rec.get("job_description") or None
+    # DOB NOW Electrical (dm9a-ab7w): `job_status` is the job's progress ('Job
+    # in Process' / 'Job is complete' / 'Inspection not complete due to
+    # withdrawal'); permit_status above reads its filing_status first, so the
+    # completion was never kept. Its `completion_date` is an estimate on an
+    # open job (2028, 2030 on 588), so it is kept only once the job IS complete.
+    fields["electrical_job_status"] = rec.get("job_status") or None
+    if dob_signoffs.is_signed_off(rec.get("job_status")):
+        fields["electrical_completion_date"] = rec.get("completion_date") or None
+    # The job-filing twin (w9ak-ipjd) the sync folded onto this permit
+    # (_collapse_job_status_twins): DOB's sign-off lives there, not here.
+    # Only written when the twin was seen, so a sync whose job-filing query
+    # failed does not blank a sign-off date already stored.
+    twin = rec.get("_job_filing") if isinstance(rec.get("_job_filing"), dict) else None
+    if twin:
+        fields["job_filing_status"] = twin.get("filing_status") or None
+        for k in ("signoff_date", "first_permit_date", "work_types"):
+            fields[k] = twin.get(k) or None
     cleaned = {k: str(v).strip() if v else None for k, v in fields.items()}
     # Derived classification — must come AFTER cleanup so we read
     # the same trimmed values the rest of the pipeline persists.
@@ -44343,6 +44374,49 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
         return records
 
 
+def _collapse_job_status_twins(raw_records: list) -> Tuple[list, int]:
+    """DOB NOW Job → Filing de-duplication: (records, twins dropped). Pure.
+
+    A permit-bearing filing appears BOTH in a permit dataset (rbx6-tga4 /
+    dm9a-ab7w, record_type="permit") AND in the job-filing dataset (w9ak-ipjd,
+    record_type="job_status") — the SAME filing, shown twice with two labels.
+    Keep ONE row per permit-bearing filing: the permit (it carries issuance +
+    expiration). Drop the redundant job_status twin. Standalone job_status
+    filings (Approved specs with no permit) survive untouched as demoted
+    "pending filings".
+
+    What the twin alone knows is folded onto EVERY permit of that filing (one
+    filing can be several permits: B01141294-S4 is an Earth Work permit and a
+    Foundation permit): the job's real `job_type` (permit datasets have none),
+    and the twin's extracted fields as `_job_filing` -- its filing status
+    ('LOC Issued'), DOB's sign-off date and its work types, which
+    _extract_permit_fields keeps. Before this the twin was dropped whole, and
+    the sign-off date went with it."""
+    def _norm_jfn(r):
+        return str(r.get("job_filing_number") or r.get("job__") or "").strip().upper()
+
+    permits_by_jfn: Dict[str, list] = {}
+    for r in raw_records:
+        if r.get("_record_type") == "permit" and _norm_jfn(r):
+            permits_by_jfn.setdefault(_norm_jfn(r), []).append(r)
+    if not permits_by_jfn:
+        return raw_records, 0
+    out, dropped = [], 0
+    for r in raw_records:
+        if r.get("_record_type") == "job_status":
+            perms = permits_by_jfn.get(_norm_jfn(r))
+            if perms:
+                twin = _extract_job_status_fields(r)
+                for perm in perms:
+                    if r.get("job_type") and not perm.get("job_type"):
+                        perm["job_type"] = r.get("job_type")
+                    perm.setdefault("_job_filing", twin)
+                dropped += 1
+                continue
+        out.append(r)
+    return out, dropped
+
+
 async def run_dob_sync_for_project(project: dict) -> list:
     """Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual.
 
@@ -44485,33 +44559,12 @@ async def run_dob_sync_for_project(project: dict) -> list:
     # the w9ak twin onto it (permit datasets have no job_type). Drop the redundant
     # job_status twin. Standalone job_status filings (Approved specs with no
     # permit) survive untouched as demoted "pending filings".
-    def _norm_jfn(r):
-        return str(r.get("job_filing_number") or r.get("job__") or "").strip().upper()
-
-    _permit_by_jfn = {
-        _norm_jfn(r): r
-        for r in raw_records
-        if r.get("_record_type") == "permit" and _norm_jfn(r)
-    }
-    if _permit_by_jfn:
-        _deduped, _dropped = [], 0
-        for r in raw_records:
-            if r.get("_record_type") == "job_status":
-                perm = _permit_by_jfn.get(_norm_jfn(r))
-                if perm is not None:
-                    # Fold the job's real type onto the permit for labelling,
-                    # then drop this duplicate filing row.
-                    if r.get("job_type") and not perm.get("job_type"):
-                        perm["job_type"] = r.get("job_type")
-                    _dropped += 1
-                    continue
-            _deduped.append(r)
-        raw_records = _deduped
-        if _dropped:
-            logger.info(
-                f"DOB sync for project {project_id}: collapsed {_dropped} "
-                f"job_status filing(s) into their matching permit rows"
-            )
+    raw_records, _dropped = _collapse_job_status_twins(raw_records)
+    if _dropped:
+        logger.info(
+            f"DOB sync for project {project_id}: collapsed {_dropped} "
+            f"job_status filing(s) into their matching permit rows"
+        )
 
     # One-time cleanup of legacy-format permit rows. Before the
     # renewal-collapse fix, permits were keyed by per-filing
@@ -58748,6 +58801,8 @@ def _upcoming_city_events(dob_rows: list, dot_rows: list, today: _Date) -> list:
         if r.get("record_type") == "permit":
             if "REVOKED" in str(r.get("permit_status") or "").upper():
                 continue
+            if dob_signoffs.row_signed_off(r):
+                continue                     # signed off: its expiry is not a deadline
             num = r.get("job_number") or rid
             ev = upcoming.city_event("permit_expiration", "DOB", f"dob:{rid}",
                                      r.get("expiration_date"), f"DOB permit expires · #{num}",
@@ -66551,6 +66606,19 @@ async def _handle_dob_status(project_id: str, *,
             lines.append(f"  - {desc}")
     else:
         lines.append("\nNo recent violations on file.")
+    # SIGN-OFFS (Nov 9, 11:37 PM). Asked what inspections had happened on 588,
+    # the assistant said DOB sign-offs "aren't in anything I can read": this
+    # tool printed BIN, BBL and violations only, and active_permits keeps only
+    # issued permits, so the four Letters of Completion stored in dob_logs
+    # reached no tool. Every signed-off filing is listed here, with what it
+    # covers, DOB's date and the record number, then what public data lacks.
+    filings = await db.dob_logs.find({
+        "project_id": project_id,
+        "company_id": _company_id_filter(company_id),
+        "record_type": {"$in": ["permit", "job_status"]},
+        "is_deleted": {"$ne": True},
+    }).to_list(1000)
+    lines += dob_signoffs.signoff_section(filings)
     return "\n".join(lines)
 
 
@@ -67064,7 +67132,10 @@ async def _handle_start_permit_renewal(
     for p in permits:
         stat = str(p.get("permit_status") or "").strip().lower()
         exp = _parse_iso(p.get("expiration_date"))
-        if stat in active_status and (exp is None or exp > now):
+        # A filing DOB has signed off (its job-filing twin says 'LOC Issued', or
+        # the electrical job is complete) is finished work, not an active permit.
+        if stat in active_status and (exp is None or exp > now) \
+                and not dob_signoffs.row_signed_off(p):
             active.append((p, exp))
 
     if not active:
@@ -67233,7 +67304,10 @@ async def _handle_active_permits(project_id: str, *,
     for p in permits:
         stat = str(p.get("permit_status") or "").strip().lower()
         exp = _parse_iso(p.get("expiration_date"))
-        if stat in active_status and (exp is None or exp > now):
+        # A filing DOB has signed off (its job-filing twin says 'LOC Issued', or
+        # the electrical job is complete) is finished work, not an active permit.
+        if stat in active_status and (exp is None or exp > now) \
+                and not dob_signoffs.row_signed_off(p):
             active.append((p, exp))
 
     if not active:
@@ -74918,7 +74992,13 @@ _AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "dob_status",
-            "description": "Return DOB status, permits, and recent violations for the project.",
+            "description": (
+                "Return the project's DOB record: every DOB sign-off (Letter of Completion "
+                "-- what work the filing covers, DOB's sign-off date, the record number), "
+                "recent violations, BIN/BBL, and which inspections public data does not "
+                "hold. Use for 'what inspections happened', 'what's signed off', 'did the "
+                "foundation get signed off', 'DOB status', 'violations'."
+            ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
@@ -74947,7 +75027,8 @@ _AGENT_TOOLS = [
                 "SP (sprinkler), etc. Use for 'active permits', 'what permits are open', "
                 "'show me permits', 'permit status', 'is the GC permit active', 'permits "
                 "expiring', or any question about issued / non-expired DOB job filings. Do "
-                "NOT use for violations — violations are in dob_status."
+                "NOT use for violations or for sign-offs / completed work / inspections — "
+                "those are in dob_status."
             ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
@@ -75296,7 +75377,7 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "project manager's right hand: brief, specific, and always one step ahead.\n\n"
     "CAPABILITIES (via tools):\n"
     "  • Active permits + who's expiring + renewal (active_permits, start_permit_renewal)\n"
-    "  • DOB violations + complaints + 311 + BIN (dob_status)\n"
+    "  • DOB sign-offs + violations + complaints + 311 + BIN (dob_status)\n"
     "  • Open items / punch list / materials (open_items, material_status)\n"
     "  • Crew roster + who's on site (list_workers, who_on_site)\n"
     "  • Project metadata — address/BIN/BBL (project_info)\n"
@@ -75308,7 +75389,8 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "    active_permits. Never query_plan for these.\n"
     "  • 'renew <permit>', 'start renewal', 'yes renew', 'renew the plumbing one' → "
     "    start_permit_renewal with permit_hint.\n"
-    "  • 'violation', 'DOB status', 'complaints', '311', 'BIN' → dob_status.\n"
+    "  • 'violation', 'DOB status', 'complaints', '311', 'BIN', 'sign-off', "
+    "'what inspections happened' → dob_status.\n"
     "  • 'open items', 'punch list', 'to-do', 'outstanding' → open_items.\n"
     "  • 'who's on site', 'how many workers', 'trade count' → who_on_site.\n"
     "  • 'list workers', 'all carpenters', 'roster' → list_workers.\n"

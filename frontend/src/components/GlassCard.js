@@ -177,14 +177,26 @@ const TINT_KEYS = ['backgroundColor', 'borderColor', 'borderWidth'];
 function splitTint(inner, colors) {
   const rest = {}; const tint = {};
   // `overflow` is dropped: the soft surface draws its shadow outside the card, and a clip would cut it off.
-  Object.keys(inner).forEach((k) => { if (k === 'overflow') return; (TINT_KEYS.includes(k) ? tint : rest)[k] = inner[k]; });
+  // Side borders (a severity stripe down the left edge, a top rule) are kept but move to the CONTENT layer, which is
+  // rounded and clipped: drawn on the outer wrapper they float above or beside the soft surface as a stray straight
+  // line. Radii are dropped (the surface sets its own).
+  Object.keys(inner).forEach((k) => {
+    if (k === 'overflow') return;
+    if (k.startsWith('border') && k.includes('Radius')) return;
+    (k.startsWith('border') || k === 'backgroundColor' ? tint : rest)[k] = inner[k];
+  });
   // The old glass fill and hairline border are what a card used to BE. Callers still pass them (a row's own style
   // often carries the glass tokens), and on a soft surface they draw as a thin frame around the card. Only a
   // deliberate tint (attention, warning...) is kept.
   const g = colors && colors.glass;
   if (g) {
     if (tint.backgroundColor === g.background || tint.backgroundColor === g.backgroundHover) delete tint.backgroundColor;
-    if (tint.borderColor === g.border || tint.borderColor === g.borderHover) { delete tint.borderColor; delete tint.borderWidth; }
+    ['borderColor', 'borderTopColor', 'borderBottomColor', 'borderLeftColor', 'borderRightColor'].forEach((ck) => {
+      if (tint[ck] === g.border || tint[ck] === g.borderHover) {
+        delete tint[ck];
+        delete tint[ck.replace('Color', 'Width')];
+      }
+    });
   }
   return { rest, tint };
 }
