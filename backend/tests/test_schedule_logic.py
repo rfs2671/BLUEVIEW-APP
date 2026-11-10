@@ -468,42 +468,19 @@ def _worked(level, start, days):
     return [_ev(start + timedelta(days=i), "drywall", level) for i in range(days)]
 
 
-class TheRate(unittest.TestCase):
+def _three_floors_moved():
+    """Drywall reported 4 days on floor 1, 5 on floor 2, 6 on floor 3, then on
+    floor 4: the crew moving floor to floor, as the logs show it."""
+    return _worked("FLOOR_1", _D, 4) + _worked("FLOOR_2", _D + timedelta(days=10), 5)         + _worked("FLOOR_3", _D + timedelta(days=20), 6) + _worked("FLOOR_4", _D + timedelta(days=30), 2)
 
-    def _three(self):
-        return _worked("FLOOR_1", _D, 4) + _worked("FLOOR_2", _D + timedelta(days=10), 5) + _worked("FLOOR_3", _D + timedelta(days=20), 6) \
-            + _worked("FLOOR_4", _D + timedelta(days=30), 2)
 
-    def test_three_levels_left_behind_give_a_rate(self):
-        self.assertEqual(PP.production_rate("drywall", self._three(), TODAY), {"levels": 3, "days_per_level": 5})
+class NoProductionRate(unittest.TestCase):
+    """Owner ruling 2026-11-09: activity dates, three-floor crew movement and
+    photo frequency are not proof of a production rate. None is computed."""
 
-    def test_two_levels_are_unknown(self):
-        rows = _worked("FLOOR_1", _D, 4) + _worked("FLOOR_2", _D + timedelta(days=10), 5) + _worked("FLOOR_3", _D + timedelta(days=20), 2)
-        self.assertIsNone(PP.production_rate("drywall", rows, TODAY)["days_per_level"])
-
-    def test_a_row_for_several_floors_spoils_those_floors(self):
-        rows = self._three() + [_ev(_D, "drywall", "FLOOR_1", "FLOOR_2")]
-        self.assertIsNone(PP.production_rate("drywall", rows, TODAY)["days_per_level"])
-
-    def test_a_trade_only_row_spoils_its_floor(self):
-        rows = self._three() + [_ev(_D, "drywall", "FLOOR_1", generic=True)]
-        self.assertIsNone(PP.production_rate("drywall", rows, TODAY)["days_per_level"])
-
-    def test_the_level_being_worked_is_not_counted(self):
-        self.assertEqual(PP.production_rate("drywall", self._three(), TODAY)["levels"], 3)
-
-    def test_a_level_reported_within_the_last_week_is_not_counted(self):
-        recent = TODAY - timedelta(days=W.REPORTED_RECENT_DAYS)
-        rows = _worked("FLOOR_1", _D, 4) + _worked("FLOOR_2", _D + timedelta(days=10), 5) + [_ev(recent, "drywall", "FLOOR_3"), _ev(TODAY, "drywall", "FLOOR_4")]
-        self.assertEqual(PP.production_rate("drywall", rows, TODAY)["levels"], 2)
-
-    def test_the_last_level_with_no_later_work_is_not_counted(self):
-        rows = _worked("FLOOR_1", _D, 4) + _worked("FLOOR_2", _D + timedelta(days=10), 5) + _worked("FLOOR_3", _D + timedelta(days=20), 6)
-        self.assertEqual(PP.production_rate("drywall", rows, TODAY)["levels"], 2)
-
-    def test_add_workdays_counts_the_start_and_skips_the_weekend(self):
-        self.assertEqual(PP._add_workdays(date(2026, 11, 6), 2), date(2026, 11, 9))  # Fri + Mon
-        self.assertEqual(PP._add_workdays(date(2026, 11, 7), 1), date(2026, 11, 9))  # Sat starts Mon
+    def test_the_module_computes_no_rate(self):
+        for gone in ("production_rate", "_rate_for", "_add_workdays", "MIN_RATE_LEVELS"):
+            self.assertFalse(hasattr(PP, gone), gone)
 
 
 class Lookahead(unittest.TestCase):
@@ -535,40 +512,79 @@ class Lookahead(unittest.TestCase):
     def test_baseline_is_used_only_when_there_is_no_current_and_is_named(self):
         self.assertEqual(next(i for i in self._la()["items"] if i["id"] == "OLD")["planned_source"], "baseline")
 
-    def test_without_evidence_the_rate_is_unknown_and_says_so(self):
-        i = next(i for i in self._la()["items"] if i["id"] == "IN")
-        self.assertIsNone(i["rate"])
-        self.assertIn("Rate unknown", i["rate_words"])
+    def test_crew_movement_gives_no_rate_and_no_date_but_the_files(self):
+        """Three floors left behind used to make a "reported rate" and a date
+        beside the file's. Now the item holds the file's dates and the
+        reported days, and nothing else that is a date or a rate."""
+        la = self._la(rows=_three_floors_moved())
+        i = next(i for i in la["items"] if i["id"] == "IN")
+        self.assertEqual((i["planned_start"], i["planned_finish"]), (date(2026, 11, 10), date(2026, 11, 20)))
+        for item in la["items"]:
+            for k in item:
+                self.assertFalse(any(w in k for w in ("rate", "estimate", "forecast", "at_rate")), k)
+        dates = {v for item in la["items"] for k, v in item.items() if isinstance(v, date)}
+        files = {d for item in la["items"] for d in (item["planned_start"], item["planned_finish"])}
+        reported = {d for item in la["items"] for d in (item["first_reported"], item["last_reported"])}
+        self.assertLessEqual(dates, files | reported)
 
-    def test_three_levels_give_a_date_beside_the_files(self):
-        i = next(i for i in self._la(rows=TheRate()._three())["items"] if i["id"] == "IN")
-        self.assertEqual(i["rate"]["days_per_level"], 5)
-        self.assertEqual(i["planned_finish"], date(2026, 11, 20))
-        self.assertEqual(i["finish_at_rate"], PP._add_workdays(date(2026, 11, 10), 5))
-
-    def test_a_finish_at_rate_already_past_is_not_given(self):
-        sched = {"activities": [{"id": "OLD", "name": "Drywall Floor 8", "kind": "task", "actual_start": "2026-09-01",
-                                 "current_start": "2026-11-10", "current_finish": "2026-11-12"}]}
-        i = PP.lookahead(sched, TheRate()._three(), today=TODAY, days=7)["items"][0]
-        self.assertIsNone(i["finish_at_rate"])
-        self.assertIn("nothing on record says it finished", i["rate_words"])
+    def test_the_words_carry_no_rate_or_forecast(self):
+        out = PP.lookahead_text(self._sched(), _three_floors_moved(), today=TODAY, days=7, logs_from=_D)
+        low = out.lower()
+        for banned in ("crew day", "at that rate", "rate unknown", "reported rate", "estimate from the logs",
+                       "about nov", "per level"):
+            self.assertNotIn(banned, low)
+        self.assertIn("No production rate or estimated finish is made", out)
+        self.assertIn("Do not give a forecast, a rate", out)
 
     def test_a_plumbing_trim_activity_gets_the_trim_place(self):
         self.assertEqual(PP.activity_place({"name": "Plumbing Trim Floor 3"})["nodes"], ["mep_trim"])
 
-    def test_two_floors_at_once_gets_no_rate(self):
-        sched = {"activities": [{"id": "M", "name": "Drywall Floors 1-2", "kind": "task", "current_start": "2026-11-10", "current_finish": "2026-11-14"}]}
-        i = PP.lookahead(sched, TheRate()._three(), today=TODAY, days=7)["items"][0]
-        self.assertIsNone(i["rate"])
+    def test_facts_are_kept_apart_file_logic_reported(self):
+        sched = {"data_date": "2026-11-02", "activities": [
+            {"id": "FR", "name": "Frame Floor 5", "kind": "task", "current_start": "2026-10-20", "current_finish": "2026-11-05",
+             "actual_start": "2026-10-21", "actual_finish": "2026-11-06", "predecessors": []},
+            {"id": "RP", "name": "Rough Plumbing Floor 5", "kind": "task", "current_start": "2026-11-01",
+             "current_finish": "2026-11-12", "actual_start": "2026-11-02", "predecessors": [{"id": "FR", "type": "FS", "lag": 2, "lag_unit": "days"}],
+             "predecessors_unresolved": 1},
+            {"id": "DW", "name": "Drywall Floor 5", "kind": "task", "current_start": "2026-11-12", "current_finish": "2026-11-20"},
+        ]}
+        la = PP.lookahead(sched, [_ev(date(2026, 11, 3), "rough_dwv", "FLOOR_5")], today=TODAY, days=7)
+        rp = next(i for i in la["items"] if i["id"] == "RP")
+        self.assertEqual(rp["depends_on"], [{"id": "FR", "name": "Frame Floor 5", "type": "FS", "lag": 2, "lag_unit": "days",
+                                             "finished_per_file": "2026-11-06"}])
+        self.assertEqual((rp["depends_unresolved"], rp["actual_start_per_file"]), (1, "2026-11-02"))
+        self.assertIsNone(next(i for i in la["items"] if i["id"] == "DW")["depends_on"])
+        out = PP.lookahead_text(sched, [_ev(date(2026, 11, 3), "rough_dwv", "FLOOR_5")], today=TODAY, days=7,
+                                logs_from=date(2026, 8, 1))
+        line = next(ln for ln in out.splitlines() if "(RP)" in ln)
+        self.assertIn("FILE: planned current 2026-11-01 to 2026-11-12; actual start per the file 2026-11-02.", line)
+        self.assertIn("LOGIC: after Frame Floor 5 (FS, lag 2 working days, actual finish per the file 2026-11-06); "
+                      "1 more link(s) in the file could not be matched", line)
+        self.assertIn("REPORTED: reported in the logs Nov 3 to Nov 3, 1 day(s).", line)
+        dw = next(ln for ln in out.splitlines() if "(DW)" in ln)
+        self.assertIn("no predecessor logic for it (unknown, not 'no dependencies')", dw)
 
-    def test_the_rate_never_moves_the_files_date(self):
-        la = self._la(rows=TheRate()._three())
-        self.assertEqual({i["planned_finish"] for i in la["items"]}, {date(2026, 11, 20), date(2026, 11, 13)})
+    def test_an_empty_list_in_the_file_is_no_predecessor_not_unknown(self):
+        sched = {"activities": [{"id": "A", "name": "Drywall Floor 5", "kind": "task", "current_start": "2026-11-10",
+                                 "current_finish": "2026-11-12", "predecessors": []}]}
+        out = PP.lookahead_text(sched, [], today=TODAY, days=7, logs_from=date(2026, 8, 1))
+        self.assertIn("LOGIC: the file lists no predecessor.", out)
+
+    def test_the_file_order_is_the_jobs_not_the_templates(self):
+        """A file that puts drywall BEFORE rough plumbing is reported as the
+        file says, never re-ordered to the standard sequence."""
+        sched = {"activities": [
+            {"id": "DW", "name": "Drywall Floor 5", "kind": "task", "current_start": "2026-11-10", "current_finish": "2026-11-12",
+             "predecessors": []},
+            {"id": "RP", "name": "Rough Plumbing Floor 5", "kind": "task", "current_start": "2026-11-13",
+             "current_finish": "2026-11-14", "predecessors": [{"id": "DW", "type": "FS", "lag": None, "lag_unit": None}]}]}
+        rp = next(i for i in PP.lookahead(sched, [], today=TODAY, days=7)["items"] if i["id"] == "RP")
+        self.assertEqual([d["id"] for d in rp["depends_on"]], ["DW"])
 
     def test_the_words_state_the_file_and_forbid_the_rest(self):
         out = PP.lookahead_text(self._sched(), [], today=TODAY, days=7, logs_from=date(2026, 8, 1))
         self.assertIn("data date 2026-11-02 (7 days old)", out)
-        self.assertIn("Do not give a percent complete, a delay or a cause", out)
+        self.assertIn("Do not give a forecast, a rate, a percent complete, a delay or a cause", out)
         self.assertNotIn("%", out)
 
     def test_a_past_planned_finish_is_listed_with_no_cause(self):
@@ -783,8 +799,8 @@ class ThroughTheAssistant(_Brain):
     def test_the_lookahead_reads_the_confirmed_file(self):
         self._seed_confirmed()
         out = self._call("_dm_schedule_lookahead", {"days": 7}, "what's next")
-        self.assertIn("Drywall Floor 3 (A1)", out)
-        self.assertIn("Rate unknown", out)
+        self.assertIn("Drywall Floor 3 (A1). FILE: planned current", out)
+        self.assertNotIn("rate unknown", out.lower())
 
     def test_work_status_gets_the_files_logic_through_the_assistant(self):
         doc = {"data_date": "2026-11-01", "activities": [

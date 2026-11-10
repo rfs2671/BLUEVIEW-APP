@@ -63220,8 +63220,9 @@ _DM_BRAIN_EXTRA_TOOLS = [
          "level": {"type": "string", "description": "One level: '3', 'floor 3', 'roof', 'cellar'."}},
          "required": ["work", "level"]}},
     {"name": "schedule_lookahead", "description": (
-        "What the job's CONFIRMED schedule file plans in the next 7 or 14 days, beside what the logs report, and "
-        "activities past their planned finish with no report. From the file's dates only."),
+        "What the job's CONFIRMED schedule file plans in the next 7 or 14 days, each activity's predecessors as the "
+        "file links them, beside what the logs report, and activities past their planned finish with no report. "
+        "From the file's dates and logic only: no rate, forecast or estimated date."),
      "input_schema": {"type": "object", "properties": {
          "job": _JOB_PROP,
          "days": {"type": "integer", "description": "7 or 14. Default 7."}},

@@ -16,13 +16,20 @@ It is only ever said for a date inside the window (an older date could have
 been reported before the logs read begin), for an activity that maps to a kind
 of work and a level, and with no cause.
 
-THE RATE. Logs name a floor, not a quantity, so a rate is days per level and
-needs levels that were plainly left behind. A level counts only when every row
-for that work there names it alone (a "floors 1-4" row or a trade-only row
-spoils it), and the crew has since been reported on another level, and its last
-report is older than work_state.REPORTED_RECENT_DAYS. That is NOT completion: it
-is the only signal the logs hold, and it is called a rate, never a finish. With
-fewer than MIN_RATE_LEVELS such levels the rate is unknown and says so.
+NO PRODUCTION RATE, NO ESTIMATE (owner ruling, 2026-11-09). Activity dates, a
+crew reported on one floor and then another, and how often photos were taken
+are NOT proof of a production rate, so none is computed here and no date is
+derived from one. (A days-per-level rate from "levels the crew moved on from"
+lived here and was removed by that ruling.) What the lookahead states is
+VERIFIED FACTS ONLY, kept apart in the data and in the words:
+  * the file's dates: planned (current, else baseline, and which) and the
+    file's own stated actual start / finish;
+  * the file's own logic: each activity's predecessors as the confirmed file
+    links them (`depends_on`), None when the file carries no logic (unknown,
+    never "no dependencies"), and how many links could not be resolved;
+  * reported: the first and last day a filed log names that work on that level.
+Nothing is estimated, so there is no estimate field; one added later must be
+its own field, labelled "estimate, not verified", never mixed into these.
 
 A PROPOSED SEQUENCE is what to do where no baseline exists: graph_v1's order, for
 the levels the logs name, in the order the logs first name them. It is the
@@ -34,7 +41,6 @@ approves it: approval makes it the sequence they agreed to, not a schedule file.
 from __future__ import annotations
 
 import heapq
-import statistics
 from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -42,7 +48,6 @@ from app.scheduling.graph_v1 import build_graph_v1
 from lib import work_state as W
 from lib.plans import level_suggestion as LS
 
-MIN_RATE_LEVELS = 3
 LOOKAHEAD_DAYS = (7, 14)
 MAX_LOOKAHEAD_ITEMS = 12
 MAX_PAST_ITEMS = 8
@@ -102,41 +107,6 @@ def plan_vs_actual(schedule: Optional[Dict[str, Any]], rows: Sequence[Row], *, t
     return {"rows": out, "unmapped": unmapped, "data_date": (schedule or {}).get("data_date"), "logs_from": logs_from}
 
 
-# ── THE RATE ───────────────────────────────────────────────────────────────
-
-def production_rate(node: str, rows: Sequence[Row], today: date) -> Dict[str, Any]:
-    """{"levels": n, "days_per_level": int|None}: None is an unknown rate."""
-    mine = [r for r in rows if node in r["nodes"] and r["levels"]]
-    spoiled = {lv for r in mine if r["generic"] or len(r["levels"]) > 1 for lv in r["levels"]}
-    by_level: Dict[str, set] = {}
-    for r in mine:
-        if len(r["levels"]) == 1 and r["levels"][0] not in spoiled:
-            by_level.setdefault(r["levels"][0], set()).add(r["date"])
-    done: Dict[str, int] = {}
-    for level, days in by_level.items():
-        last = max(days)
-        moved_on = any(d > last for other, ds in by_level.items() if other != level for d in ds)
-        if moved_on and (today - last).days > W.REPORTED_RECENT_DAYS:
-            done[level] = len(days)
-    if len(done) < MIN_RATE_LEVELS:
-        return {"levels": len(done), "days_per_level": None}
-    return {"levels": len(done), "days_per_level": int(statistics.median(done.values()) + 0.5)}
-
-
-def _add_workdays(start: date, days: int) -> date:
-    """`days` working days counting `start` (Mon-Fri; the file's calendar is
-    not carried here)."""
-    d = start
-    while d.weekday() >= 5:
-        d += timedelta(days=1)
-    left = days - 1
-    while left > 0:
-        d += timedelta(days=1)
-        if d.weekday() < 5:
-            left -= 1
-    return d
-
-
 # ── LOOKAHEAD ──────────────────────────────────────────────────────────────
 
 def _planned_span(a: Dict[str, Any]) -> Tuple[Optional[date], Optional[date], str]:
@@ -146,36 +116,34 @@ def _planned_span(a: Dict[str, Any]) -> Tuple[Optional[date], Optional[date], st
     return _iso(a.get("baseline_start")), _iso(a.get("baseline_finish")), "baseline"
 
 
-def _rate_for(a: Dict[str, Any], place: Dict[str, Any], rows: Sequence[Row], start: Optional[date], today: date) -> Dict[str, Any]:
-    """The rate line for one activity, and the date it implies when it can be
-    stated. Beside the file's date, never instead of it."""
-    unknown = {"rate": None, "finish_at_rate": None, "rate_words": "Rate unknown."}
-    if place["generic"] or len(place["nodes"]) != 1 or len(place["levels"]) != 1:
-        return unknown
-    rate = production_rate(place["nodes"][0], rows, today)
-    if rate["days_per_level"] is None:
-        return {**unknown, "rate_words": f"Rate unknown ({rate['levels']} level(s) reported alone; needs {MIN_RATE_LEVELS})."}
-    n, k = rate["days_per_level"], rate["levels"]
-    words = f"Reported rate about {n} crew day(s) per level, over {k} levels."
-    first = min((r["date"] for r in _reports(rows, place)), default=None)
-    begun = _iso(a.get("actual_start")) or first or start
-    if begun is None:
-        return {"rate": rate, "finish_at_rate": None, "rate_words": words + " No start date to apply it to."}
-    at_rate = _add_workdays(begun, n)
-    if at_rate < today:
-        return {"rate": rate, "finish_at_rate": None,
-                "rate_words": words + " At that rate the date is already past, and nothing on record says it finished, so no date is given."}
-    return {"rate": rate, "finish_at_rate": at_rate,
-            "rate_words": words + f" At that rate, about {_day(at_rate)}. An estimate from the logs, not the file's date."}
+def depends_on(a: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+    """This activity's predecessors AS THE CONFIRMED FILE LINKS THEM: the
+    project's own logic, never the standard template's. None: the file
+    carries no logic for it (unknown, not "no dependencies"); []: the file
+    lists none. Each link: the predecessor's id and name, the link's type and
+    lag as the file states them (None where it states none), and the
+    predecessor's actual finish if the file states one."""
+    links = a.get("predecessors")
+    if not isinstance(links, list):
+        return None
+    out = []
+    for link in links:
+        p = by_id.get(str(link.get("id"))) or {}
+        out.append({"id": link.get("id"), "name": p.get("name") or str(link.get("id")), "type": link.get("type"),
+                    "lag": link.get("lag"), "lag_unit": link.get("lag_unit"),
+                    "finished_per_file": p.get("actual_finish")})
+    return out
 
 
 def lookahead(schedule: Dict[str, Any], rows: Sequence[Row], *, today: date, days: int) -> Dict[str, Any]:
     """Activities the CONFIRMED file plans in the next 7 or 14 days. Any `days`
-    other than 14 is read as 7."""
+    other than 14 is read as 7. Facts only: the file's dates, the file's own
+    links, and the reported days; no rate and no estimated date."""
     days = 14 if days == 14 else 7
     until = today + timedelta(days=days)
     items: List[Dict[str, Any]] = []
     undated = 0
+    by_id = {str(a.get("id")): a for a in (schedule or {}).get("activities") or []}
     for a in _activities(schedule):
         if a.get("actual_finish"):
             continue
@@ -189,11 +157,17 @@ def lookahead(schedule: Dict[str, Any], rows: Sequence[Row], *, today: date, day
         place = activity_place(a)
         reports = _reports(rows, place) if place["nodes"] and place["levels"] else []
         report_days = sorted({r["date"] for r in reports})
-        items.append({"id": a.get("id"), "name": a.get("name"), "kind": a.get("kind"), "planned_start": start,
-                      "planned_finish": finish, "planned_source": source, "started_per_file": bool(a.get("actual_start")),
+        items.append({"id": a.get("id"), "name": a.get("name"), "kind": a.get("kind"),
+                      # the file's dates, as stated in it
+                      "planned_start": start, "planned_finish": finish, "planned_source": source,
+                      "started_per_file": bool(a.get("actual_start")), "actual_start_per_file": a.get("actual_start"),
+                      # the file's own logic
+                      "depends_on": depends_on(a, by_id),
+                      "depends_unresolved": int(a.get("predecessors_unresolved") or 0),
+                      # what the filed logs report
                       "first_reported": report_days[0] if report_days else None,
                       "last_reported": report_days[-1] if report_days else None,
-                      **_rate_for(a, place, rows, start, today)})
+                      "report_days": len(report_days)})
     items.sort(key=lambda i: (i["planned_start"] or i["planned_finish"], str(i["name"])))
     data_date = _iso((schedule or {}).get("data_date"))
     return {"days": days, "from": today, "until": until, "items": items, "undated": undated,
@@ -211,9 +185,11 @@ def lookahead_text(schedule: Dict[str, Any], rows: Sequence[Row], *, today: date
         out.append("Nothing in the file is planned in that window.")
     for i in la["items"][:MAX_LOOKAHEAD_ITEMS]:
         when = f"{i['planned_source']} {i['planned_start'] or 'no start'} to {i['planned_finish'] or 'no finish'}"
-        rep = (f"reported {_day(i['first_reported'])} to {_day(i['last_reported'])}" if i["first_reported"]
-               else "no report in the logs read")
-        out.append(f"- {i['name']} ({i['id']}): {when}; {'started per the file; ' if i['started_per_file'] else ''}{rep}. {i['rate_words']}")
+        started = f"; actual start per the file {i['actual_start_per_file']}" if i["actual_start_per_file"] else ""
+        rep = (f"reported in the logs {_day(i['first_reported'])} to {_day(i['last_reported'])}, {i['report_days']} day(s)"
+               if i["first_reported"] else "no report in the logs read")
+        out.append(f"- {i['name']} ({i['id']}). FILE: planned {when}{started}. LOGIC: {_depends_words(i)}. "
+                   f"REPORTED: {rep}.")
     if len(la["items"]) > MAX_LOOKAHEAD_ITEMS:
         out.append(f"...and {len(la['items']) - MAX_LOOKAHEAD_ITEMS} more.")
     if la["undated"]:
@@ -224,8 +200,34 @@ def lookahead_text(schedule: Dict[str, Any], rows: Sequence[Row], *, today: date
         out += [f"- {r['name']} ({r['id']}): planned finish {r['planned_finish']}" for r in past[:MAX_PAST_ITEMS]]
         if len(past) > MAX_PAST_ITEMS:
             out.append(f"...and {len(past) - MAX_PAST_ITEMS} more.")
-    out.append("State the dates as the file's. Do not give a percent complete, a delay or a cause: none is on record.")
+    out.append("FILE dates and LOGIC are the confirmed schedule's own; REPORTED is the filed logs. Keep them apart. "
+               "No production rate or estimated finish is made: activity dates, a crew moving between floors and photo "
+               "counts are not proof of a rate. Do not give a forecast, a rate, a percent complete, a delay or a cause: "
+               "none is on record.")
     return "\n".join(out)
+
+
+_LAG_UNITS = {"days": "working days", "edays": "calendar days", "percent": "%"}
+
+
+def _depends_words(i: Dict[str, Any]) -> str:
+    """The file's links into one activity, in words."""
+    deps = i["depends_on"]
+    if deps is None:
+        return "the file carries no predecessor logic for it (unknown, not 'no dependencies')"
+    if not deps and not i["depends_unresolved"]:
+        return "the file lists no predecessor"
+    bits = []
+    for d in deps[:6]:
+        link = d["type"] or "type not stated"
+        if d["lag"] is not None:
+            link += f", lag {d['lag']:g} {_LAG_UNITS.get(str(d['lag_unit']), '')}".rstrip()
+        done = f", actual finish per the file {d['finished_per_file']}" if d["finished_per_file"] else ""
+        bits.append(f"{d['name']} ({link}{done})")
+    more = f" and {len(deps) - 6} more" if len(deps) > 6 else ""
+    lost = (f"; {i['depends_unresolved']} more link(s) in the file could not be matched, so this list is not complete"
+            if i["depends_unresolved"] else "")
+    return "after " + "; ".join(bits) + more + lost if bits else lost.lstrip("; ")
 
 
 # ── A PROPOSED SEQUENCE ────────────────────────────────────────────────────
