@@ -37,7 +37,11 @@ KINDS = ("verified", "confirmed", "attested", "observed", "reported", "estimate"
 _RANK = {k: i for i, k in enumerate(KINDS)}
 
 #: What an item says about the work.
-CLAIMS = ("done", "in_progress", "started", "failed", "scheduled", "present", "blocked")
+CLAIMS = ("done", "in_progress", "started", "failed", "scheduled", "present", "blocked",
+          # A person's answer to a targeted confirmation (lib/confirmation_queue):
+          # "not yet", "nobody was there", and "don't know" -- kept as said, so a
+          # "don't know" is never read as a no. status() reads none of them.
+          "not_yet", "absent", "dont_know")
 
 
 def item(kind: str, claim: str, *, source: str, ref: str, project_id: Any, node: Optional[str] = None,
