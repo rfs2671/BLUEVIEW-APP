@@ -379,7 +379,7 @@ class TheJobsOwnLogic(unittest.TestCase):
 
     def test_the_inspections_stay_labelled_standard_even_beside_job_logic(self):
         out = W.as_text(_holds(schedule=_sched()))
-        self.assertIn("(standard sequence, not this job's own schedule). Levelog holds no inspection results", out)
+        self.assertIn("(standard sequence, not this job's own schedule). Levelog holds no official inspection results", out)
 
     def test_a_predecessor_naming_no_level_is_not_matched_to_a_level(self):
         sched = _sched()

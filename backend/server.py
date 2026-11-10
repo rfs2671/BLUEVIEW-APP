@@ -3892,7 +3892,9 @@ from lib.vision_meter import (  # noqa: E402
     VISION_PHOTO_INDEX,
     VISION_PHOTO_COMPARE,
     VISION_GROUP_PHOTO,
+    VISION_INSPECTION_DOC,
 )
+from lib import inspection_reports, vision_meter  # noqa: E402
 from lib import plan_extract  # noqa: E402
 from lib import plan_eval  # noqa: E402
 from lib import plan_refusal  # noqa: E402
@@ -56485,6 +56487,13 @@ WORK_STATE_DAYS = 90
 PHOTO_RELATIONS = "photo_relations"
 PHOTO_RELATIONS_BUDGET = 10       # pairs asked per tick, across every job
 PHOTO_RELATIONS_TICK_MINUTES = 60
+from pymongo.errors import DuplicateKeyError as _DuplicateKeyError  # noqa: E402
+#: What people told the assistant about inspections (lib/inspection_reports.py).
+#: Append-only: nothing is edited or deleted; the newest statement wins.
+INSPECTION_REPORTS = inspection_reports.COLLECTION
+#: Circuit breaker, per project per day: past it the file is kept and not read.
+INSPECTION_DOC_DAILY_CAP = 40
+INSPECTION_DOC_MAX_BYTES = 25 * 1024 * 1024
 
 
 async def _work_state_answer(project: dict, company_id: str, work: str, level: str,
@@ -56514,10 +56523,11 @@ async def _work_state_answer(project: dict, company_id: str, work: str, level: s
     rel = await db[PHOTO_RELATIONS].find({"project_id": pid, "level": token, "same_area": "yes",
                                           "confidence": {"$gte": 0.7}}).to_list(50)
     rel = sorted(rel, key=lambda r: str(r.get("second")), reverse=True)
+    reports = await db[INSPECTION_REPORTS].find({"project_id": pid, "company_id": str(company_id)}).to_list(5000)
     return {"ok": True, "answer": work_state.what_holds(
         nodes[0], token, acts, index, today=today, schedule=src.get("schedule"), flags=flags,
         log_ids={str(lg.get("_id")) for lg in logs}, stop_work=reg.get("swo_active") or [],
-        regulatory_note=note, relations=rel, logs_from=start)}
+        regulatory_note=note, relations=rel, logs_from=start, inspections=reports)}
 
 
 async def _dm_work_status(ctx: dict, job: dict, args: dict) -> str:
@@ -56619,6 +56629,244 @@ async def _dm_proposed_sequence(ctx: dict, job: dict, args: dict) -> str:
             "graph_version": plan["graph_version"], "created_by": uid, "created_at": now, "updated_at": now,
             "history": [progress_plan.history_entry("proposed", uid, role, now)]}}, upsert=True)
     return progress_plan.proposed_text({**plan, "status": "proposed"}, job["label"])
+
+
+# ── AN INSPECTION SOMEONE TOLD US ABOUT (lib/inspection_reports.py) ─────────
+
+async def _dm_report_inspection(ctx: dict, job: dict, args: dict) -> str:
+    """Written at once, no yes/no: their words, kept as reported by them. Every
+    refusal below writes nothing and tells the model what to ask."""
+    ir, ident = inspection_reports, ctx["ident"]
+    turn = ctx.get("turn") or {}
+    own = turn.get("own_text")
+    if own is None and ctx.get("dry_run"):
+        own = ctx.get("text")                    # the eval hands in the message itself
+    if not _dm_is_approved(ident):
+        return "Their account isn't approved for changes yet. Nothing was recorded."
+    project = await _bot_project_scope(ident["company_id"], str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    if turn.get("forwarded"):
+        return "NOT RECORDED: this message was forwarded, so the words are someone else's. Ask who did the inspection."
+    inspection, quote = str(args.get("inspection") or "").strip(), str(args.get("quote") or "").strip()
+    if not inspection or not ir.quote_is_theirs(own, quote):
+        return ("NOT RECORDED: `quote` must be their own words, copied exactly from their message this turn, and it "
+                "must state something rather than ask it. Do not say it was noted.")
+    result = str(args.get("result") or "").strip().lower()
+    if result not in ir.RESULTS:
+        return "NOT RECORDED: the result isn't clear. Ask one short question: passed, failed, partial or scheduled?"
+    if len(ir.gates_named(inspection)) > 1:
+        return "NOT RECORDED: that names more than one inspection. Call report_inspection once for each."
+    said = args.get("levels")
+    levels = work_state.levels_named(", ".join(map(str, said)) if isinstance(said, list) else said)
+    theirs = [str(own or "")] + [str(x) for x in turn.get("recent") or []]
+    if not levels or not all(any(work_state.level_said(lv, t) for t in theirs) for lv in levels):
+        return "NOT RECORDED: the floor isn't clear from what they said. Ask one short question: which floor?"
+    now = datetime.now(timezone.utc)
+    inspected_on, problem = ir.clean_date(args.get("date"), now.astimezone(_MemoryZone("America/New_York")).date(), result)
+    if problem:
+        return ("NOT RECORDED: date must be a real date as YYYY-MM-DD, and a result can't be for a day still to come. "
+                "Ask one short question: which day?")
+    user = ident.get("user") or {}
+    name = user.get("name") or user.get("full_name") or "the sender"
+    # A gate only they named: "the plumbing passed" is not the plumbing ROUGH.
+    gate = ir.gate_for(inspection)
+    if gate and not any(gate in ir.gates_named(t) for t in theirs):
+        gate = None
+    row = ir.new_row(
+        project_id=job["id"], company_id=ident["company_id"], gate=gate, inspection=inspection,
+        levels=levels, space=args.get("space"), result=result, inspected_on=inspected_on,
+        inspector=args.get("inspector"), reporter_user_id=ident.get("user_id"), reporter_name=name,
+        source=turn.get("source") or "text", quote=quote, message_id=turn.get("message_id"), created_at=now)
+    line = ir.noted_line(name, inspection, [work_state.level_label(lv) for lv in levels], result, inspected_on)
+    tail = "" if row["gate"] else " (Kept as said: it matches no inspection step we track, so no step changed.)"
+    if ctx.get("dry_run"):
+        return f"(eval) Would record. {line}{tail} Answer with that one line."
+    try:
+        await db[INSPECTION_REPORTS].insert_one(row)
+    except _DuplicateKeyError:
+        pass                                     # this statement is already on record
+    except Exception as e:
+        logger.warning(f"[inspection-report] write failed: {type(e).__name__}: {e!r}")
+        return "NOT RECORDED: it couldn't be saved just now. Tell them to send it again."
+    return f"{line}{tail} Answer with that one line."
+
+
+def _inspection_doc_caption(parsed: dict, body: Any) -> str:
+    """The words sent with a file. With no caption the body can be its base64
+    preview, which is not words."""
+    b = " ".join(str(body or "").split())
+    return "" if len(b) > 200 and " " not in b else b
+
+
+def _inspection_doc_asked(parsed: dict, body: Any) -> bool:
+    """A photo or document in a DM whose words clearly name an inspection or
+    sign-off. Decides only that it is worth looking at; costs nothing."""
+    is_doc = parsed.get("media_type") == "document"
+    if parsed.get("has_audio") or not (parsed.get("has_image") or is_doc):
+        return False
+    return inspection_reports.names_signoff(
+        f"{_inspection_doc_caption(parsed, body)} {parsed.get('file_name') or '' if is_doc else ''}")
+
+
+async def _inspection_doc_job(ident: dict, dm_chat: str, caption: str) -> Optional[dict]:
+    """The job a sign-off is for: named in its caption, their only job, or the
+    one this chat is on. None when that isn't one job: never a guess."""
+    jobs = await _dm_jobs(ident) if ident.get("projects") else []
+    by_id = {j["id"]: j for j in jobs}
+    ids = wa_assistant.find_jobs(caption, jobs) if caption else []
+    if not ids and caption:
+        named = wa_assistant.job_named(caption, jobs, in_sentence=True)
+        ids = [named] if named else []
+    if ids:
+        return by_id.get(ids[0]) if len(ids) == 1 else None
+    if len(jobs) == 1:
+        return jobs[0]
+    cur = await _dm_state_get("dm_job", dm_chat)
+    return by_id.get(str(cur.get("project_id"))) if cur else None
+
+
+async def _inspection_doc_bytes(parsed: dict) -> Optional[bytes]:
+    """The file as sent: a photo's original, or a document from WhatsApp's CDN
+    and then WaAPI's download-media."""
+    if parsed.get("has_image"):
+        return await download_image(parsed)
+    note: dict = {}
+    doc = await _wa_cdn_photo(wa_media_ref(parsed.get("raw")), note, kind="document")
+    if doc:
+        return doc
+    message_id = parsed.get("message_id_serialized") or parsed.get("message_id") or ""
+    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and message_id):
+        return None
+    try:
+        async with ServerHttpClient(timeout=45) as client_http:
+            resp = await client_http.post(
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/download-media",
+                headers={"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"},
+                json={"messageId": message_id})
+            j = resp.json() if 200 <= resp.status_code < 300 and resp.content else {}
+    except Exception as e:
+        logger.warning(f"[inspection-doc] download failed: {type(e).__name__}")
+        return None
+    return next((b for is_media, b in _wa_media_blobs(j) if is_media), None)
+
+
+def _inspection_doc_page(raw: bytes) -> Tuple[Optional[bytes], str, str]:
+    """(the page to read as a JPEG, or None; the file's extension; its type)."""
+    if raw.startswith(b"%PDF"):
+        page = _render_pdf_page(raw, 1, 150)
+        return (_vision_jpeg(page)[0] if page else None), "pdf", "application/pdf"
+    return _vision_jpeg(raw)[0], "jpg", "image/jpeg"
+
+
+async def _inspection_doc_read(page: bytes, project_id: str, today: _Date) -> Optional[dict]:
+    """One metered vision call: the checked reading, or None (no key, the day's
+    cap reached, the call failed, an unusable answer)."""
+    if not QWEN_API_KEY:
+        return None
+    try:
+        spent = await db[vision_meter.COLLECTION].find_one(
+            {"_id": vision_meter.meter_key(vision_meter.eastern_day(), project_id, VISION_INSPECTION_DOC)})
+    except Exception:
+        spent = None
+    if int((spent or {}).get("calls") or 0) >= INSPECTION_DOC_DAILY_CAP:
+        logger.warning(f"[inspection-doc] daily cap reached project={project_id}")
+        return None
+    await record_vision_call(db, endpoint=VISION_INSPECTION_DOC, project_id=project_id)
+    try:
+        async with ServerHttpClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
+                json={"model": QWEN_MODEL, "max_tokens": 300, "temperature": 0, "messages": [{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(page).decode()}},
+                    {"type": "text", "text": inspection_reports.DOCUMENT_PROMPT}]}]})
+            if resp.status_code >= 400:
+                logger.warning(f"[inspection-doc] vision HTTP {resp.status_code}")
+                return None
+            said = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"[inspection-doc] vision failed: {type(e).__name__}: {e!r}")
+        return None
+    return inspection_reports.parse_document(said, today)
+
+
+async def _inspection_doc_turn(ident: dict, dm_chat: str, parsed: dict, body: Any) -> bool:
+    """A sign-off sent in a DM, or False to leave the message exactly where it
+    was going. Stored as document_on_file with the original in R2: kept and
+    read, and still not verified."""
+    ir = inspection_reports
+    caption = _inspection_doc_caption(parsed, body)
+    if parsed.get("has_image"):
+        # A walkthrough in progress keeps its photos.
+        if _punch_photo_caption_ref(parsed, body):
+            return False
+        sess = await _punch_session(ident["user_id"])
+        if sess and sess.get("status") in PUNCH_STATE_OPEN:
+            return False
+    if not _dm_is_approved(ident):
+        return False
+    job = await _inspection_doc_job(ident, dm_chat, caption)
+    if not job:
+        await send_whatsapp_message(dm_chat, "Which job is this sign-off for? Send it again with the job in the caption.")
+        return True
+    pid = str(job["id"])
+    if not await _bot_project_scope(ident["company_id"], pid):
+        return False
+    mid = parsed.get("message_id_serialized") or parsed.get("message_id") or ""
+    rid = ir.document_id(mid, pid)
+    if rid and await db[INSPECTION_REPORTS].find_one({"_id": rid}, {"_id": 1}):
+        return True                              # a redelivered webhook: already read and answered
+    raw = await _inspection_doc_bytes(parsed)
+    if not raw or len(raw) > INSPECTION_DOC_MAX_BYTES:
+        await send_whatsapp_message(dm_chat, "I couldn't get that file. Send it again, as a PDF or a photo.")
+        return True
+    page, ext, ctype = await asyncio.to_thread(_inspection_doc_page, raw)
+    if not page:
+        await send_whatsapp_message(dm_chat, "I can only read a PDF or a photo of a sign-off. Send it as one of those.")
+        return True
+    now = datetime.now(timezone.utc)
+    read = await _inspection_doc_read(page, pid, now.astimezone(_MemoryZone("America/New_York")).date())
+    if read and not read["is_signoff"]:
+        return False                             # not a sign-off after all: on to the punch list or the assistant
+    read = read or {}
+    key = _punch_photo_key(pid, "inspection", mid or uuid.uuid4().hex)[:-3] + ext
+    try:
+        stored = await asyncio.to_thread(_upload_to_r2, raw, key, ctype)
+    except Exception as e:
+        logger.warning(f"[inspection-doc] R2 failed: {type(e).__name__}")
+        stored = None
+    if not stored:
+        await send_whatsapp_message(dm_chat, "I couldn't keep that file just now. Send it again in a moment, please.")
+        return True
+    file_name = parsed.get("file_name") or ""
+    inspection = read.get("inspection") or caption or file_name
+    on_page = work_state.levels_named(read.get("levels"))
+    captioned = work_state.places_in(caption)["levels"]
+    # The page and the caption disagreeing is not ours to settle.
+    levels = on_page if not captioned else captioned if not on_page else on_page if on_page == captioned else []
+    user = ident.get("user") or {}
+    name = user.get("name") or user.get("full_name") or "the sender"
+    gate = ir.gate_for(inspection)
+    row = ir.new_row(
+        project_id=pid, company_id=ident["company_id"], gate=gate, inspection=inspection, levels=levels,
+        space=work_state.places_in(caption)["space"], result=read.get("result"), inspected_on=read.get("date"),
+        inspector=read.get("inspector"), reporter_user_id=ident.get("user_id"), reporter_name=name, source="document",
+        quote=read.get("quote") or caption or file_name, message_id=mid, created_at=now, status=ir.DOCUMENT,
+        r2_key=key, file_name=file_name, read_ok=bool(read), row_id=rid)
+    try:
+        await db[INSPECTION_REPORTS].insert_one(row)
+    except _DuplicateKeyError:
+        return True
+    except Exception as e:
+        logger.warning(f"[inspection-doc] write failed: {type(e).__name__}: {e!r}")
+        await send_whatsapp_message(dm_chat, "I couldn't keep that file just now. Send it again in a moment, please.")
+        return True
+    reply = ir.document_line(name, job["label"], read.get("inspection") or (caption if gate else None),
+                             [work_state.level_label(lv) for lv in levels], read.get("result"), gate)
+    await send_whatsapp_message(dm_chat, reply)
+    await _dm_log_answer(ident, pid, caption or file_name, reply, "inspection_doc")
+    return True
 
 
 async def _photo_compare_call(raw_a: bytes, raw_b: bytes, project_id: Any) -> Optional[dict]:
@@ -62849,7 +63097,7 @@ _DM_BRAIN_EXTRA_TOOLS = [
     {"name": "work_status", "description": (
         "What the records say about a kind of work on one level of a job, and what normally has to come before it: "
         "'what's holding up drywall on floor 3', 'where is plumbing rough on 4'. Returns the work reported by the "
-        "daily logs, the inspections that normally come first, schedule dates if a schedule is confirmed, stop-work "
+        "daily logs, the inspections that normally come first and what people reported about them, schedule dates if a schedule is confirmed, stop-work "
         "orders and photos."),
      "input_schema": {"type": "object", "properties": {
          "job": _JOB_PROP,
@@ -62870,6 +63118,21 @@ _DM_BRAIN_EXTRA_TOOLS = [
          "job": _JOB_PROP,
          "approve": {"type": "boolean", "description": "True ONLY when their latest message says to approve it."}},
          "required": []}},
+    {"name": "report_inspection", "description": (
+        "Record an inspection they TELL you passed, failed, partly passed or is booked: 'plumbing rough passed on 3', "
+        "'hydro failed floor 5', the same in a voice note. Not for a question. One call per inspection. Written at "
+        "once, no confirmation, as reported by them, not verified; saying it again corrects it. Floor or result "
+        "unclear: ask one short question and do not call this. Answer with the one line it returns."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "inspection": {"type": "string", "description": "Which inspection, in their words: 'plumbing rough', 'hydro', 'firestopping'."},
+         "levels": {"type": "string", "description": "The floor or floors they said: '3', 'floors 3-4', '3 and 5', 'roof', 'cellar'."},
+         "space": {"type": "string", "description": "An apartment or room, only if they said one."},
+         "result": {"type": "string", "enum": ["passed", "failed", "partial", "scheduled"]},
+         "date": {"type": "string", "description": "The inspection's date as YYYY-MM-DD, only if they said one ('today' resolved)."},
+         "inspector": {"type": "string", "description": "The inspector or agency, only if they said one."},
+         "quote": {"type": "string", "description": "Their exact words stating it, copied from their message this turn, same language."}},
+         "required": ["inspection", "levels", "result", "quote"]}},
     {"name": "find_photos", "description": (
         "Search a job's daily-log photos by what they show: 'front of the building', 'roof', "
         "'scaffold', 'Arkon framing'. Returns each match's id, date, sub and a description of the "
@@ -63278,7 +63541,7 @@ async def _dm_do_set_trade(ident: dict, p: dict):
 _DM_BRAIN_ONE_JOB = _DM_BRAIN_JOB_TOOLS + ("headcount", "dot_status", "send_sheet",
                                            "send_plan_file", "sheet_info",
                                            "find_photos", "send_photos", "work_status",
-                                           "schedule_lookahead", "proposed_sequence")
+                                           "schedule_lookahead", "proposed_sequence", "report_inspection")
 
 
 async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
@@ -63401,7 +63664,7 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
     if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
                                                "send_plan_file", "sheet_info",
                                                "find_photos", "send_photos", "work_status",
-                                               "schedule_lookahead", "proposed_sequence"):
+                                               "schedule_lookahead", "proposed_sequence", "report_inspection"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
             return why
@@ -63445,6 +63708,8 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
             return await _dm_schedule_lookahead(ctx, job, args)
         if name == "proposed_sequence":
             return await _dm_proposed_sequence(ctx, job, args)
+        if name == "report_inspection":
+            return await _dm_report_inspection(ctx, job, args)
         if name == "find_photos":
             return await _dm_find_photos(ctx, job, args)
         if name == "send_photos":
@@ -63834,12 +64099,15 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
                            active: Optional[str] = None,
                            t0: Optional[float] = None,
                            live: Optional[dict] = None,
-                           person: Optional[List[dict]] = None) -> dict:
+                           person: Optional[List[dict]] = None,
+                           turn: Optional[dict] = None) -> dict:
     """Build the context and run the brain for one message (the live path
     and the eval). {reply, trace, ...} plus `sent` (what tools sent).
     `t0`: the monotonic clock at the message's receipt (timing offsets).
     `live`: given, live["ctx"] is the turn's context -- what a turn that is
     given up (_dm_await_budget) had done, and when.
+    `turn`: what `text` isn't: the person's own words alone (`text` can carry a
+    quoted message and a voice marker), and their message id and source.
 
     `person` (2+ accounts, one per company): a read across all of them. The
     jobs are every account's, each named with its company; each tool call
@@ -63892,7 +64160,7 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
     messages = dm_brain.turn_messages(dm_brain.history_messages(history, now), text)
     ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
            "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
-           "used_job": None, "t0": t0, "person": person if multi else None}
+           "used_job": None, "t0": t0, "person": person if multi else None, "turn": turn}
     if live is not None:
         live["ctx"] = ctx
     _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phones": [
@@ -63989,6 +64257,11 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
     live: dict = {}
     task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history,
                                                   now=now, t0=t0, live=live,
+                                                  turn={"own_text": text, "message_id": message_id,
+                                                        "source": "voice" if heard else "text",
+                                                        "forwarded": bool(inbound.get("forwarded")),
+                                                        "recent": [r.get("body") for r in history
+                                                                   if str(r.get("sender") or "") != "bot"]},
                                                   **({"person": person} if person else {})))
     # "typing…" in their chat while the brain works, sent again every 8 s --
     # the only "working on it" signal (no 👀 reaction: Oct 27). Until the
@@ -66941,6 +67214,9 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db[PHOTO_RELATIONS], keys=[("project_id", 1), ("level", 1), ("same_area", 1)],
         name="photo_relations_by_place")
+    await _ensure_index_resilient(
+        db[INSPECTION_REPORTS], keys=[("project_id", 1), ("gate", 1), ("created_at", -1)],
+        name="inspection_reports_by_gate")
     await _ensure_index_resilient(
         db[WA_CONNECT_CODES], keys=[("user_id", 1)],
         name="whatsapp_connect_codes_by_user")
@@ -76879,7 +77155,7 @@ def _b64_sha(b: bytes) -> str:
     return base64.b64encode(hashlib.sha256(b).digest()).decode()
 
 
-async def _wa_cdn_photo(ref: dict, note: dict) -> Optional[bytes]:
+async def _wa_cdn_photo(ref: dict, note: dict, kind: str = "image") -> Optional[bytes]:
     """The original from WhatsApp's CDN: the encrypted file at the message's
     directPath, checked against its encFilehash, decrypted with its mediaKey,
     checked against its filehash. None (and why, in `note`) otherwise."""
@@ -76903,10 +77179,10 @@ async def _wa_cdn_photo(ref: dict, note: dict) -> Optional[bytes]:
         note["cdn"] = "the file did not match its hash"
         return None
     try:
-        img = _decrypt_whatsapp_media(enc, str(ref["mediaKey"]), "image")
+        img = _decrypt_whatsapp_media(enc, str(ref["mediaKey"]), kind)
     except Exception:
         img = None
-    if not img or not img.startswith(_IMAGE_MAGIC):
+    if not img or (kind == "image" and not img.startswith(_IMAGE_MAGIC)):
         note["cdn"] = "could not be decrypted"
         return None
     if ref.get("filehash") and _b64_sha(img) != ref["filehash"]:
@@ -80841,7 +81117,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
         except (TypeError, ValueError):
             wa_ts = 0
         _WA_INBOUND.set({"received": received_at or started, "started": started,
-                         "wa_ts": wa_ts})
+                         "wa_ts": wa_ts, "forwarded": bool(parsed.get("forwarded"))})
 
         # ── A NOTIFICATION IS NOT A MESSAGE ────────────────────────────────
         #
@@ -81920,7 +82196,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                             "english": body, "lang": vresult.language_detected,
                             "confidence": vresult.confidence}
 
-        if not (parsed.get("has_image") or body):
+        # A sign-off sent as a photo or document (lib/inspection_reports.py):
+        # only when its words clearly name one, and only with the brain on.
+        signoff = dm_brain_on and _inspection_doc_asked(parsed, body)
+        if not (parsed.get("has_image") or body or signoff):
             return
         # Which account this message is for: one company's (everything below
         # then acts for that company only), or -- the brain only -- a read
@@ -81929,7 +82208,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
         cross = False
         if multi:
             routed = await _dm_route_accounts(person, dm_chat, body or "", brain=dm_brain_on,
-                                              has_image=bool(parsed.get("has_image")))
+                                              has_image=bool(parsed.get("has_image") or signoff))
             if routed is None:
                 return
             body = routed["body"]
@@ -81947,6 +82226,12 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
         else:
             turn = _dm_enter(ident, str(ident.get("company_id")), False)
         try:
+            if signoff and not cross:
+                try:
+                    if await _inspection_doc_turn(ident, dm_chat, parsed, body or ""):
+                        return
+                except Exception as e:
+                    logger.warning(f"[inspection-doc] dm turn failed: {type(e).__name__}: {e!r}")
             # A walkthrough (punch list) turn: photos, their words, the draft,
             # edits, assigning, the due day, send; and punch questions / "P23 ok".
             # A walk is one company's: never started from a read across them.
