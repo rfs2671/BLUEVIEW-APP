@@ -129,8 +129,16 @@ class TheStates(unittest.TestCase):
         self.assertEqual(out["state"], "unavailable")
         self.assertIsNone(out["connect_url"])
 
+    def test_a_cp_or_superintendent_may_connect_with_no_brief(self):
+        """Owner ruling 2026-11-09: they connect; nothing is sent to them first."""
+        for role in ("cp", "superintendent"):
+            out = _me(_admin(role=role))
+            self.assertEqual(out["state"], "not_connected", role)
+            self.assertTrue(out["eligible"])
+            self.assertIsNone(out["brief"])
+
     def test_ineligible_roles_get_nothing(self):
-        for role in ("cp", "superintendent", "worker", "owner", "demo", ""):
+        for role in ("worker", "owner", "demo", ""):
             out = _me(_admin(role=role))
             self.assertEqual(out["state"], "not_eligible", role)
             self.assertFalse(out["eligible"])

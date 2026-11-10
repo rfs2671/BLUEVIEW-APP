@@ -79,6 +79,7 @@ from lib import dob_penalty  # noqa: E402
 from lib import model_outage  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
+from lib import dm_roles  # noqa: E402
 from lib import datefmt  # noqa: E402
 from lib import multilang  # noqa: E402
 from lib import punch  # noqa: E402
@@ -53601,7 +53602,7 @@ async def _redeem_connect_code(code: str, chat: str) -> Optional[dict]:
              "is_deleted": {"$ne": True}}, {"password": 0})
     except Exception:
         u = None
-    return u if wa_dm.is_dm_eligible(u) else None
+    return u if wa_dm.is_dm_assistant_eligible(u) else None
 
 
 async def _reply_dm(chat_id: str, text: str, outcome: str) -> None:
@@ -53798,7 +53799,10 @@ async def _phone_accounts(phone: str) -> dict:
         if cid:
             by_company[cid] = by_company.get(cid, 0) + 1
     dup = next((c for c, n in by_company.items() if n > 1), "")
-    eligible = sorted((u for u in users if wa_dm.is_dm_eligible(u)),
+    # Who may CONNECT: admins, PMs, and (owner ruling 2026-11-09)
+    # superintendents and CPs, who are answered on their assigned jobs only
+    # and never written to first (wa_dm.is_dm_eligible stays the gate there).
+    eligible = sorted((u for u in users if wa_dm.is_dm_assistant_eligible(u)),
                       key=lambda u: str(u.get("_id")))
     return {"users": users, "eligible": eligible, "dup_company": dup}
 
@@ -54194,7 +54198,8 @@ async def _record_optins(users: List[dict], phone: str, chat: str, chat_digits: 
         # intro. Every START after that: the intro, as before.
         if await _dm_welcome(users[0], chat, "start_welcomed"):
             return True
-        await _reply_dm(chat, wa_dm.INTRO_TEXT, "start_opted_in")
+        await _reply_dm(chat, wa_dm.FIELD_INTRO_TEXT if wa_dm.is_dm_field(users[0])
+                        else wa_dm.INTRO_TEXT, "start_opted_in")
         return True
     if later:
         # Already talking to the assistant: no second hello for the new account.
@@ -54208,7 +54213,8 @@ async def _record_optins(users: List[dict], phone: str, chat: str, chat_digits: 
             else:
                 await _dm_welcome_claim(u)     # one hello per person, not per account
         if not greeted:
-            await _reply_dm(chat, wa_dm.INTRO_TEXT, "start_opted_in")
+            await _reply_dm(chat, wa_dm.FIELD_INTRO_TEXT if all(wa_dm.is_dm_field(u) for u in users)
+                            else wa_dm.INTRO_TEXT, "start_opted_in")
     names = []
     rows = sorted(await _active_optins_for_phone(phone),
                   key=lambda o: (_utc(o.get("opted_in_at")) or _EPOCH, str(o.get("user_id"))))
@@ -54388,7 +54394,8 @@ async def _dm_welcome(u: dict, chat: str, outcome: str) -> bool:
     logger.info(f"[wa-dm] {outcome} kind={wa_dm.jid_kind(chat) or 'unknown'} "
                 f"chat=...{wa_dm.phone_digits(chat)[-4:]}")
     sent = await send_whatsapp_message(
-        chat, wa_welcome.welcome_text(u.get("name"), with_card=with_card))
+        chat, wa_welcome.welcome_text(u.get("name"), with_card=with_card,
+                                      field=wa_dm.is_dm_field(u)))
     inner = sent.get("data") if isinstance(sent, dict) else None
     if sent is None or (isinstance(inner, dict) and inner.get("status") == "error"):
         # WaAPI's 200 with data.status "error" is not a delivery either.
@@ -54855,7 +54862,11 @@ async def _dm_identity_of_optin(optin: dict) -> Optional[dict]:
             {"_id": to_query_id(str(optin["user_id"])), "is_deleted": {"$ne": True}})
     except Exception:
         return None
-    if not wa_dm.is_dm_eligible(user):
+    # Answered: admins, PMs, superintendents and CPs. Written to FIRST: only
+    # admins and PMs -- every proactive path checks wa_dm.is_dm_eligible on
+    # the account it sends as (send_whatsapp_dm, _brief_accounts,
+    # _upcoming_person_account), never this.
+    if not wa_dm.is_dm_assistant_eligible(user):
         return None
     company_id = str(user.get("company_id") or "").strip()
     if not company_id:
@@ -54875,10 +54886,18 @@ async def _dm_identity_of_optin(optin: dict) -> Optional[dict]:
 
 
 async def _dm_assistant_projects(user: dict, company_id: str, role: str) -> list:
-    """The jobs this person may ask about, each re-proven to be the company's."""
+    """The jobs this person may ask about, each re-proven to be the company's.
+
+    A PM on assigned jobs, a superintendent and a CP: their `assigned_projects`
+    and nothing else (ROLES_SCOPED_TO_ASSIGNED_PROJECTS, the same list the
+    app's logbook write gates hold them to), each one re-proven to be their
+    own company's live job -- an assignment to another company's job is not
+    answered here. An admin (or a PM with full access): every live job of the
+    company."""
     out = []
     try:
-        if role == ROLE_PM and not pm_has_full_access(user):
+        if (role == ROLE_PM and not pm_has_full_access(user)) \
+                or role in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
             for pid in user.get("assigned_projects") or []:
                 p = await _bot_project_scope(company_id, pid)
                 if p:
@@ -55171,7 +55190,9 @@ async def _brief_accounts(user: dict, optin: Optional[dict] = None) -> List[dict
             out.append(user)
             continue
         ident = await _dm_identity_of_optin(o)
-        if ident:
+        # The brief is written FIRST: a superintendent / CP account on the
+        # same number is answered when it asks, never put in a brief.
+        if ident and wa_dm.is_dm_eligible(ident["user"]):
             out.append(ident["user"])
     return out if any(str(u.get("_id")) == uid for u in out) else [user]
 
@@ -56604,9 +56625,20 @@ async def _dm_proposed_sequence(ctx: dict, job: dict, args: dict) -> str:
     coll, cf = db[PROPOSED_SEQUENCES], _company_id_filter(cid)
     said = str(ctx.get("text") or "")
     approving = bool(args.get("approve")) and bool(_APPROVE_WORD.search(said)) and not _APPROVE_DENIED.search(said)
+    # Approval is the official one: a PM's or an admin's (owner ruling
+    # 2026-11-09), refused here as well as at the tool gate. A field role
+    # VIEWS: nothing is stored or rebuilt by their asking.
+    field = not dm_roles.may_approve_sequence(role)
+    if field and args.get("approve"):
+        return dm_roles.refusal(role, "approving a sequence")
     stored = await coll.find_one({"_id": key, "company_id": cf})
     if stored and stored.get("status") == "approved":
         return progress_plan.proposed_text(stored, job["label"])
+    if field:
+        plan = progress_plan.propose_sequence(rows)
+        shown = stored if stored and stored.get("levels") == plan["levels"] else {**plan, "status": "proposed"}
+        return progress_plan.proposed_text(shown, job["label"]).replace(
+            'To approve it, say "approve the sequence".', "A PM or an admin can approve it.")
     if approving and stored:
         if ctx.get("dry_run"):
             return "(eval) Would approve the PROPOSED sequence for " + job["label"] + "."
@@ -58521,7 +58553,8 @@ async def _upcoming_person_account(person: str) -> Tuple[Optional[dict], List[st
     lead, companies = None, []
     for o in rows:
         ident = await _dm_identity_of_optin(o)
-        if not ident:
+        # A reminder is sent first: as an admin / PM account only.
+        if not ident or not wa_dm.is_dm_eligible(ident["user"]):
             continue
         lead = lead or ident
         if ident["company_id"] not in companies:
@@ -61019,6 +61052,10 @@ def _dm_is_admin(ident: dict) -> bool:
 #: sub's punch contact. A new job and a job's settings need an admin (or a
 #: PM with full access).
 _DM_PM_ACTIONS = ("add_person", "add_sub", "set_punch_contact", "set_trade")
+#: A superintendent / CP asked for a change (owner ruling 2026-11-09).
+DM_FIELD_CHANGE_TEXT = ("That change is for your PM or admin, so nothing was changed. I can take an "
+                        "inspection result or a sign-off, find photos, and tell you about progress "
+                        "and the schedule on your jobs.")
 
 
 async def _dm_action_model(text: str, jobs: List[str]) -> Optional[dict]:
@@ -61225,6 +61262,9 @@ async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool,
         p["quoted"] = dm_actions.redact(quoted)[:500]     # (a): the job of the message replied to
     if p["action"] not in ("unsupported",) and not _dm_is_approved(ident):
         await _dm_say(dm_chat, p["lang"], "not_approved")
+        return True
+    if p["action"] not in ("unsupported",) and dm_roles.change_refusal(ident.get("role")):
+        await _dm_say_raw(dm_chat, DM_FIELD_CHANGE_TEXT)
         return True
     if p["action"] == "undo":
         await _dm_action_undo(ident, dm_chat, p["lang"])
@@ -61854,6 +61894,12 @@ async def _dm_action_do(ident: dict, dm_chat: str, p: dict) -> None:
     if not _dm_is_approved(ident):
         await _dm_say(dm_chat, lang, "not_approved")
         return
+    # A superintendent / CP makes no change to job data, whatever led here
+    # (a "yes" to a held change, a picked account): the last gate before the
+    # write (owner ruling 2026-11-09).
+    if dm_roles.change_refusal(ident.get("role")):
+        await _dm_say_raw(dm_chat, DM_FIELD_CHANGE_TEXT)
+        return
     if a not in _DM_PM_ACTIONS and not _dm_is_admin(ident):
         await _dm_say(dm_chat, lang, "admin_only")
         return
@@ -62130,6 +62176,12 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     new job never asks it."""
     # This turn's evidence for the answer log, before anything it starts.
     _answer_turn_begin()
+    if not brain and not person and dm_roles.is_field(ident.get("role")):
+        # The old pipeline is an admin / PM path (changes, company reports,
+        # the brief): a superintendent / CP is answered by the brain, with
+        # its per-tool role gate, or not at all.
+        await send_whatsapp_message(dm_chat, dm_roles.FIELD_UNAVAILABLE_TEXT)
+        return
     if brain:
         # The DM brain (flag dm_brain_v2): one model, tools, guardrails.
         # `person`: a read across all of a person's companies (each job and
@@ -63209,9 +63261,14 @@ _DM_BRAIN_EXTRA_TOOLS = [
 _DM_BRAIN_TOOL_CACHE: Optional[list] = None
 
 
-def _dm_brain_tools() -> list:
+def _dm_brain_tools(field: bool = False) -> list:
     """Every tool the brain can call: the agent's read tools (with a `job`)
-    and the brain's own, in a fixed order, as OpenAI function tools."""
+    and the brain's own, in a fixed order, as OpenAI function tools.
+
+    `field`: a superintendent / CP turn -- only lib/dm_roles.FIELD_TOOLS are
+    SHOWN. Showing is not the gate: _dm_brain_exec_one refuses per call."""
+    if field:
+        return [t for t in _dm_brain_tools() if t["function"]["name"] in dm_roles.FIELD_TOOLS]
     global _DM_BRAIN_TOOL_CACHE
     if _DM_BRAIN_TOOL_CACHE is not None:
         return _DM_BRAIN_TOOL_CACHE
@@ -63558,6 +63615,12 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
     if not person:
         return await _dm_brain_exec_one(ctx, name, args)
     args = dict(args or {})
+    # Refused for every one of their accounts (all superintendent / CP): said
+    # here, before a "Which company?" is opened for a change none may make.
+    # Otherwise each call is checked again as the account it runs as.
+    refused = [dm_roles.tool_refusal(a.get("role"), name, args) for a in person]
+    if all(refused):
+        return refused[0]
     by_uid = {a["user_id"]: a for a in person}
     if name in _DM_BRAIN_ONE_JOB or (name in ("list_subs", "find_sub", "set_sub_trade")
                                      and args.get("job")):
@@ -63659,6 +63722,14 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
     """One tool call from the brain, as ctx["ident"] (one company)."""
     ident, dm_chat = ctx["ident"], ctx["dm_chat"]
     args = dict(args or {})
+    # THE ROLE GATE, PER CALL (owner ruling 2026-11-09). A superintendent / CP
+    # calls the field tools only, and never approves a sequence; hiding a tool
+    # from the model is not this gate. Before anything is read or written.
+    refused = dm_roles.tool_refusal(ident.get("role"), name, args)
+    if refused:
+        logger.info(f"[dm-brain] tool refused for role: tool={name} "
+                    f"role={dm_roles.norm(ident.get('role'))} company={ident.get('company_id') or '?'}")
+        return refused
     dry = bool(ctx.get("dry_run"))
     now = datetime.now(timezone.utc)
     if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
@@ -63908,7 +63979,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
     same lists sit on ctx (_trace, _rounds) so a turn that raises still
     leaves what it did."""
     client = _dm_brain_client()
-    tools = _dm_brain_tools()
+    tools = _dm_brain_tools(field=bool(ctx.get("field_only")))
     use = model or _DM_MODEL.get() or dm_brain.MODEL
     msgs = [{"role": "system", "content": system}] + [dict(m) for m in messages]
     trace: List[dict] = []
@@ -64133,13 +64204,25 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
             company = (co or {}).get("name") or ""
         except Exception:
             company = ""
-    role = "admin" if ident.get("role") == "admin" else "project manager"
+    role = dm_roles.role_label(ident.get("role"))
+    # Superintendent / CP (owner ruling 2026-11-09): the field tools only,
+    # on their assigned jobs, said to the model; refused per call regardless.
+    accounts = person if multi else [ident]
+    field_only = all(dm_roles.is_field(a.get("role")) for a in accounts)
+    limits = ""
     if multi:
-        parts = []
+        parts, field_at = [], []
         for a in person:
             name = await _company_display_name(a.get("company_id")) or "another company"
-            parts.append(f"{'admin' if a.get('role') == 'admin' else 'project manager'} at {name}")
+            parts.append(f"{dm_roles.role_label(a.get('role'))} at {name}")
+            if dm_roles.is_field(a.get("role")):
+                field_at.append(name)
         role, company = "; ".join(parts), ""
+        if field_at and not field_only:
+            limits = (f"ROLE LIMITS: on their jobs at {', '.join(field_at)} they may only "
+                      f"{dm_roles.FIELD_CAN}; anything else there is for a PM or admin and is refused.")
+    if field_only:
+        limits = dm_roles.FIELD_PROMPT.format(label=dm_roles.role_label(ident.get("role")))
     if flows is None:
         if multi:
             flows = []
@@ -64156,11 +64239,12 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
                     else by_id.get(active)) if active and active in by_id else None,
         open_flows=flows,
         now_label=datefmt.strftime(_memory_ny(now), "%a %b %-d %Y, %-I:%M %p"))
-    system = dm_brain.SYSTEM_PROMPT + "\n\n" + context
+    system = dm_brain.SYSTEM_PROMPT + "\n\n" + context + (f"\n{limits}" if limits else "")
     messages = dm_brain.turn_messages(dm_brain.history_messages(history, now), text)
     ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
            "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
-           "used_job": None, "t0": t0, "person": person if multi else None, "turn": turn}
+           "used_job": None, "t0": t0, "person": person if multi else None, "turn": turn,
+           "field_only": field_only}
     if live is not None:
         live["ctx"] = ctx
     _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phones": [
@@ -81974,9 +82058,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                 return
 
         # ── LEVELOG ASSISTANT IN A DM ─────────────────────────────────────
-        # Only an opted-in Admin or PM, found through the opt-in for THIS
-        # chat (so a @lid sender resolves), whose phone is still the one on
-        # their profile. Anyone else — unknown number, CP, superintendent,
+        # Only an opted-in Admin, PM, superintendent or CP (the last two on
+        # their assigned jobs, with lib/dm_roles.py's tools), found through
+        # the opt-in for THIS chat (so a @lid sender resolves), whose phone
+        # is still the one on their profile. Anyone else — unknown number,
         # not opted in — gets the same one line and no data. The old path
         # looked the sender's digits up in whatsapp_contacts, which a @lid
         # sender never matched, checked no role, and picked one project.
@@ -82232,10 +82317,23 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
                         return
                 except Exception as e:
                     logger.warning(f"[inspection-doc] dm turn failed: {type(e).__name__}: {e!r}")
+            # A superintendent / CP (owner ruling 2026-11-09): a photo is
+            # kept only as a sign-off (above). A walkthrough sends a punch
+            # list to subs -- a PM's or admin's flow -- so it is never
+            # started for them, and the old pipeline (an admin / PM path,
+            # with changes and company reports) never answers them.
+            if not cross and dm_roles.is_field(ident.get("role")):
+                if not dm_brain_on:
+                    await send_whatsapp_message(dm_chat, dm_roles.FIELD_UNAVAILABLE_TEXT)
+                    return
+                if parsed.get("has_image"):
+                    await send_whatsapp_message(dm_chat, dm_roles.FIELD_PHOTO_TEXT)
+                    return
             # A walkthrough (punch list) turn: photos, their words, the draft,
             # edits, assigning, the due day, send; and punch questions / "P23 ok".
             # A walk is one company's: never started from a read across them.
-            if (parsed.get("has_image") or body) and not cross:
+            if (parsed.get("has_image") or body) and not cross \
+                    and not dm_roles.is_field(ident.get("role")):
                 try:
                     if await _punch_dm_turn(ident, dm_chat, parsed, body or "", voice=dm_voice,
                                             brain=dm_brain_on):
@@ -83659,7 +83757,9 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
     `state` is the one thing the Integrations screen shows
     (wa_dm.connect_state); the app polls this while the screen is open, so a
     START that arrives flips it to "connected" without a reload."""
-    eligible = wa_dm.is_dm_eligible(current_user)
+    # May CONNECT (and ask): admins, PMs, superintendents, CPs. The morning
+    # brief row below is for those the bot writes to first (admins, PMs).
+    eligible = wa_dm.is_dm_assistant_eligible(current_user)
     uid = str(current_user.get("id") or current_user.get("_id") or "")
     phone = current_user.get("phone") or ""
     digits = wa_dm.phone_digits(phone)
@@ -83712,7 +83812,8 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
                      if state == wa_dm.CONNECT_CONNECTED else None),
         # The morning brief row is shown only to an eligible, connected user.
         "brief": (await _brief_settings(uid)
-                  if state == wa_dm.CONNECT_CONNECTED else None),
+                  if state == wa_dm.CONNECT_CONNECTED and wa_dm.is_dm_eligible(current_user)
+                  else None),
     }
 
 

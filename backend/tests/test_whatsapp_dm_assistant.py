@@ -26,7 +26,7 @@ os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 
 import server  # noqa: E402
-from lib import wa_assistant  # noqa: E402
+from lib import dm_roles, wa_assistant  # noqa: E402
 from tests._fake_mongo import FakeDb  # noqa: E402
 from tests.test_whatsapp_phase1_foundations import (  # noqa: E402
     ADMIN_PHONE, CO_A, CO_B, CP_PHONE, PM_PHONE, SUPER_PHONE, UNKNOWN_PHONE,
@@ -127,17 +127,28 @@ class _Harness:
 
 class WhoMayUseIt(_Harness, unittest.TestCase):
 
-    def test_unknown_cp_super_get_no_reply_at_all(self):
+    def test_unknown_gets_no_reply_at_all(self):
         """Not on the list: silence -- no "for admins only" line telling a
         stranger this number is a bot."""
         db = _db()
-        _optin(db, "u_cp", CP_PHONE)          # even with an opt-in row, a CP is refused
-        _optin(db, "u_super", SUPER_PHONE)
         with _Ctx(db=db) as c:
-            for i, phone in enumerate((UNKNOWN_PHONE, CP_PHONE, SUPER_PHONE)):
-                with self.subTest(phone):
-                    self._send(c, f"{phone}@c.us", "who's on site at 588 Thomas", mid=f"S{i}")
+            self._send(c, f"{UNKNOWN_PHONE}@c.us", "who's on site at 588 Thomas", mid="S0")
             self.assertEqual([p for p in c.wire.calls if "message" in p], [])
+        self.assertEqual(self.agent_calls, [])
+        self.assertEqual(self.llm_calls, [])
+
+    def test_an_opted_in_cp_or_super_never_reaches_the_admin_pipeline(self):
+        """Owner ruling 2026-11-09: a CP / superintendent is answered by the
+        brain (per-tool role gate) or, with it off, one plain line -- never
+        by the old admin / PM pipeline and its job agent."""
+        db = _db()
+        _optin(db, "u_cp", CP_PHONE)
+        _optin(db, "u_super", SUPER_PHONE)
+        with _Ctx(db=db) as c, patch.object(server, "DM_BRAIN_API_KEY", ""):
+            for i, phone in enumerate((CP_PHONE, SUPER_PHONE)):
+                with self.subTest(phone):
+                    self.assertEqual(self._send(c, f"{phone}@c.us", "who's on site at 588 Thomas",
+                                                mid=f"S{i}"), dm_roles.FIELD_UNAVAILABLE_TEXT)
         self.assertEqual(self.agent_calls, [])
         self.assertEqual(self.llm_calls, [])
 

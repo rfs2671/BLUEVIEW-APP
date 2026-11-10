@@ -257,13 +257,26 @@ class StartAndStop(unittest.TestCase):
             self._process(c, PM_PHONE, "start")
         self.assertEqual(c.db[server.WA_OPTINS].rows[0]["user_id"], "u_pm")
 
-    def test_start_from_cp_super_or_unknown_gets_no_optin_and_a_neutral_reply(self):
-        for phone in (CP_PHONE, SUPER_PHONE, UNKNOWN_PHONE):
+    def test_start_from_an_unknown_number_gets_no_optin_and_a_neutral_reply(self):
+        with _Ctx() as c:
+            self._process(c, UNKNOWN_PHONE, "START")
+            self.assertEqual(c.db[server.WA_OPTINS].rows, [])
+            self.assertEqual([p["message"] for p in c.wire.calls],
+                             [wa_dm.NOT_ELIGIBLE_TEXT])
+
+    def test_start_from_cp_or_super_opts_in_for_the_assistant_only(self):
+        """Owner ruling 2026-11-09: answered on their assigned jobs, never
+        written to first (tests/test_dm_roles.py)."""
+        for phone, uid, name in ((CP_PHONE, "u_cp", "Cal CP"), (SUPER_PHONE, "u_super", "Sue Super")):
             with self.subTest(phone=phone), _Ctx() as c:
                 self._process(c, phone, "START")
-                self.assertEqual(c.db[server.WA_OPTINS].rows, [])
+                self.assertEqual([r["user_id"] for r in c.db[server.WA_OPTINS].rows], [uid])
                 self.assertEqual([p["message"] for p in c.wire.calls],
-                                 [wa_dm.NOT_ELIGIBLE_TEXT])
+                                 [wa_welcome.welcome_text(name, with_card=False, field=True)])
+                c.wire.calls.clear()
+                self.assertIsNone(_run(server.send_whatsapp_dm(
+                    uid, "x", kind="summary", window="w")))
+                self.assertEqual(c.wire.calls, [])
 
     def test_start_from_a_worker_only_phone_gets_no_optin(self):
         db = _db(workers=[{"_id": "w1", "company_id": CO_A,

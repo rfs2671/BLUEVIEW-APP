@@ -18,9 +18,16 @@ can route around it. A direct message is allowed for exactly two reasons:
 
 ── WHO MAY OPT IN ───────────────────────────────────────────────────────────
 
-Company admins and PMs (shown in the app as Site Manager) of that company.
-Never CP, superintendent, or workers. Opt-in happens by the person messaging
-START from the phone on their user record; STOP or PARAR ends it.
+Company admins and PMs (shown in the app as Site Manager) of that company,
+and (owner ruling, 2026-11-09) superintendents and CPs. Never workers, site
+devices or demo accounts. Opt-in happens by the person messaging START from the
+phone on their user record; STOP or PARAR ends it.
+
+TWO QUESTIONS, TWO FUNCTIONS. `is_dm_assistant_eligible`: may this person
+connect and ask the assistant (a superintendent / CP on their assigned jobs
+only, with the tools lib/dm_roles.py allows). `is_dm_eligible`: may the bot
+write to them FIRST (the morning brief, alerts, reminders, reports): admins
+and PMs only, unchanged. A CP who connects is answered; nothing is pushed.
 """
 
 from __future__ import annotations
@@ -32,8 +39,10 @@ from typing import Iterable, Optional
 # Roles allowed to opt in to proactive direct messages. Compared after strip()
 # and lower(), like every other role comparison in server.py.
 DM_ELIGIBLE_ROLES = frozenset({"admin", "pm"})
-DM_NEVER_ROLES = frozenset({"cp", "superintendent", "worker", "site_device",
-                            "demo"})
+# Roles that may connect and ASK, on their assigned jobs only, and are never
+# messaged first (lib/dm_roles.py holds which tools they may call).
+DM_FIELD_ROLES = frozenset({"superintendent", "cp"})
+DM_NEVER_ROLES = frozenset({"worker", "site_device", "demo"})
 
 REPLY_WINDOW_SECONDS = 10 * 60
 REPLY_WINDOW_MAX_SENDS = 4
@@ -60,6 +69,16 @@ INTRO_TEXT = (
     "main admin, Levelog Assistant will ask you here which group that is. "
     "Admins can turn these alerts on or off in the app: open the project, "
     "then WhatsApp. Reply STOP to turn this off."
+)
+# The intro for a superintendent or CP: what they may do, on their jobs. No
+# alerts are named: nothing is sent to them first.
+FIELD_INTRO_TEXT = (
+    "Levelog Assistant here. You're connected for your assigned jobs. Ask me "
+    "what's holding up a piece of work on a floor, find job photos, or check "
+    "the schedule's next 7 or 14 days. Tell me an inspection result "
+    "(\"plumbing rough passed on 3\") or send the sign-off as a photo or PDF "
+    "with the inspection and floor in the caption. Changes to a job are for "
+    "your PM or admin. Reply STOP to turn this off."
 )
 # EVERY START GETS A REPLY. Each refusal says, in plain words, what to do.
 # The one deliberately vague line is NOT_ELIGIBLE_TEXT: an unknown number and
@@ -307,14 +326,33 @@ def norm_role(role: Optional[str]) -> str:
     return str(role or "").strip().lower()
 
 
+def _live_in_company(user: Optional[dict]) -> bool:
+    return bool(user) and not user.get("is_deleted") and bool(
+        str(user.get("company_id") or "").strip())
+
+
 def is_dm_eligible(user: Optional[dict]) -> bool:
-    """A live user of a company, in an eligible role."""
-    if not user or user.get("is_deleted"):
-        return False
-    if not str(user.get("company_id") or "").strip():
+    """May the bot message this person FIRST (brief, alerts, reminders,
+    reports): a live user of a company, admin or PM."""
+    if not _live_in_company(user):
         return False
     role = norm_role(user.get("role"))
     return role in DM_ELIGIBLE_ROLES and role not in DM_NEVER_ROLES
+
+
+def is_dm_assistant_eligible(user: Optional[dict]) -> bool:
+    """May this person connect (START) and ask the assistant: everyone
+    is_dm_eligible admits, plus a superintendent or CP. Their jobs and tools
+    are narrowed elsewhere; this decides only who is answered at all."""
+    if not _live_in_company(user):
+        return False
+    role = norm_role(user.get("role"))
+    return (role in DM_ELIGIBLE_ROLES or role in DM_FIELD_ROLES) and role not in DM_NEVER_ROLES
+
+
+def is_dm_field(user: Optional[dict]) -> bool:
+    """A superintendent or CP: answered on assigned jobs, never written to first."""
+    return is_dm_assistant_eligible(user) and norm_role((user or {}).get("role")) in DM_FIELD_ROLES
 
 
 # What the Integrations screen shows, one value per situation. Each blocked

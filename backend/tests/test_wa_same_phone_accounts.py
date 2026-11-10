@@ -195,9 +195,10 @@ class StartListsEveryCompanyAndAsksOnce(unittest.TestCase):
             self.assertEqual(_active(c), [])
 
     def test_one_eligible_account_is_connected_at_once_as_before(self):
-        """Brick's account is a CP (no assistant): the admin account alone
-        is connected by START, with no question."""
-        with _Ctx(_db(b_role="cp")) as c:
+        """Brick's account is a worker (no assistant): the admin account alone
+        is connected by START, with no question. (A CP account is connectable
+        since the 2026-11-09 ruling: tests/test_dm_roles.py.)"""
+        with _Ctx(_db(b_role="worker")) as c:
             _say(c, "START", "m1")
             self.assertEqual(_active(c), ["u_admin"])
             self.assertEqual(_texts(c), [wa_welcome.welcome_text("Ada Admin", with_card=False)])

@@ -206,8 +206,12 @@ class EveryStartGetsAPlainReply(unittest.TestCase):
         self.assertEqual(c.db[server.WA_OPTINS].rows[0]["chat_id"],
                          f"{ADMIN_PHONE}@c.us")
 
-    def test_a_cp_gets_the_neutral_line(self):
+    def test_a_cp_connects_with_the_field_welcome(self):
+        """Owner ruling 2026-11-09: a CP connects (answered on assigned jobs
+        only, never written to first); the neutral line stays for strangers."""
         msg, _ = self._reply("15550001003@c.us", "START")
+        self.assertEqual(msg, wa_welcome.welcome_text("Cal CP", with_card=False, field=True))
+        msg, _ = self._reply("15550009999@c.us", "START")
         self.assertEqual(msg, wa_dm.NOT_ELIGIBLE_TEXT)
 
 
