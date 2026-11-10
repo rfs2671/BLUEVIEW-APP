@@ -264,17 +264,24 @@ def schedule_file_report(path: str, limit: int = 60) -> List[str]:
     p = Path(path)
     doc = schedule_import.parse_schedule(p.name, p.read_bytes())
     acts = doc.get("activities") or []
-    work = [a for a in acts if a.get("kind") != "summary"]
-    no_logic = [a for a in work if not isinstance(a.get("predecessors"), list)]
-    linked = [a for a in work if isinstance(a.get("predecessors"), list)]
-    links = sum(len(a["predecessors"]) for a in linked)
-    lost = sum(int(a.get("predecessors_unresolved") or 0) for a in acts)
+    # The importer's own output schema (lib/schedule_import.py), not a
+    # database sample: each field is read once here, outside the counts
+    # (tests/test_probe_field_discipline.py).
+    kinds = [str(a.get("kind")) for a in acts]
+    preds = [a.get("predecessors") for a in acts]
+    lost_each = [int(a.get("predecessors_unresolved") or 0) for a in acts]
+    work_i = [i for i, k in enumerate(kinds) if k != "summary"]
+    work = [acts[i] for i in work_i]
+    linked = [preds[i] for i in work_i if isinstance(preds[i], list)]
+    no_logic = len(work_i) - len(linked)
+    links = sum(len(x) for x in linked)
+    lost = sum(lost_each)
     out = [f"File: {p.name}  format={doc.get('format')}  confidence={doc.get('confidence')}  "
            f"data date={doc.get('data_date') or 'not stated'}  project={doc.get('project_name') or '-'}",
-           f"Activities: {len(acts)} ({', '.join(f'{k} {n}' for k, n in sorted(Counter(a.get('kind') for a in acts).items()))})",
+           f"Activities: {len(acts)} ({', '.join(f'{k} {n}' for k, n in sorted(Counter(kinds).items()))})",
            f"Logic: {len(linked)} of {len(work)} non-summary activities carry the file's links ({links} links); "
-           f"{len(no_logic)} carry none (unknown, not 'no dependencies'); "
-           f"{sum(1 for a in linked if not a['predecessors'])} list no predecessor.",
+           f"{no_logic} carry none (unknown, not 'no dependencies'); "
+           f"{len([x for x in linked if not x])} list no predecessor.",
            f"Unresolved links (left out, counted on the activity): {lost}"]
     for w in doc.get("warnings") or []:
         out.append(f"  warning: {w}")
