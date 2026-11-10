@@ -504,10 +504,23 @@ class TheLookahead(unittest.TestCase):
 
     def test_no_estimate_is_labelled_as_fact(self):
         t = site().results["pm_lookahead"]
-        body = t.split("FILE dates and LOGIC are the confirmed schedule's own")[0]
+        # The lookahead (the file's dates) carries no estimate at all ...
+        look, _, status = t.partition("SCHEDULE STATUS for")
+        body = look.split("FILE dates and LOGIC are the confirmed schedule's own")[0]
         for word in ("estimate", "forecast", "at that rate", "per level", "%", "about "):
             self.assertNotIn(word, body.lower())
-        self.assertIn("No production rate or estimated finish is made", t)
+        # ... and the schedule-status groups after it (lib/forecast.py) name an
+        # estimate only inside the labelled ESTIMATES group, or to say none is made.
+        self.assertTrue(status, "the lookahead ends with the schedule status groups")
+        allowed = ("ESTIMATES (computed by LeveLog, NOT verified", "- ESTIMATE:", "not enough completed evidence for an estimate",
+                   "no completion forecast", "Keep these four groups apart")
+        loose = [ln for ln in status.splitlines()
+                 if ("estimat" in ln.lower() or "forecast" in ln.lower()) and not any(a in ln for a in allowed)]
+        self.assertEqual(loose, [], "an estimate outside its labelled group")
+        # The lookahead's own no-forecast rule gives way to the status groups'
+        # rule (lib/forecast.lookahead_with_status): estimates only as labelled.
+        self.assertIn("Keep these four groups apart", status)
+        self.assertIn("No production rate or estimated finish is made", progress_plan.LOOKAHEAD_RULE)
         sched = next(r for r in site().db[server.PROJECT_SCHEDULES].rows if r["status"] == "confirmed")["doc"]
         la = progress_plan.lookahead(sched, [], today=TODAY, days=14)
         self.assertEqual([i["id"] for i in la["items"]], ["A60", "A40", "A50"])
