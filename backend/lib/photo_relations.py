@@ -1,10 +1,17 @@
 """Which photos may show the same physical area, and what changed between them.
 
-Ordinary daily photos have no GPS and no per-photo location: the only place
-signal is the crew row they were filed under. So this does NOT try to compare
-everything. `pick_pairs` chooses few, targeted pairs, and only among photos
-filed for ONE level, of the same kind of view and the same kind of work. A
-photo filed under "floors 1-4" is never a candidate.
+Ordinary daily photos have no GPS and no per-photo location. So this does NOT
+try to compare everything. `pick_pairs` chooses few, targeted pairs, and only
+among photos whose place is inferred with sufficient certainty (lib/photo_place)
+to ONE level, in one space when one is known, of the same kind of view, room and
+work. A photo filed under "floors 1-4" is never a candidate.
+
+NOTHING RUNS AUTOMATICALLY YET. Floor + trade + general view is not enough to
+call two photos one place, so a pair is only asked of the model when the
+deterministic geometry check (lib/photo_geometry) agrees, and that check needs a
+threshold measured on real labeled photos. `GEOMETRY_MIN_INLIERS` is None until
+scripts/photo_relation_benchmark.py has produced one; while it is None
+`pick_pairs` returns nothing and PHOTO_RELATIONS_ENABLED alone starts nothing.
 
 A pair is asked of the vision model once and stored by its two photo keys
 (`pair_id`). The answer is an AI observation: `same_area` may be "unsure", and
@@ -21,9 +28,13 @@ import json
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
+from lib import photo_place
 from lib import project_report as base
 
 PROMPT_VERSION = "v1"
+#: Set ONLY from a real benchmark run. None: no automatic comparison at all.
+GEOMETRY_MIN_INLIERS: Optional[int] = None
+GEOMETRY_MIN_RATIO: float = 0.0
 MIN_QUALITY = 4.0
 #: Two photos a day or two apart rarely show a change worth a paid call.
 MIN_GAP_DAYS = 3
@@ -46,18 +57,40 @@ def pair_id(key_a: str, key_b: str) -> str:
     return f"{PROMPT_VERSION}:{a}|{b}"
 
 
+def automatic_ready() -> bool:
+    """Has a benchmark on real photos set a geometry threshold?"""
+    return GEOMETRY_MIN_INLIERS is not None
+
+
+def geometry_agrees(g: Optional[Dict[str, Any]]) -> bool:
+    """Does a lib/photo_geometry.match result clear the benchmarked threshold?
+    False, always, when there is no threshold or the images could not be measured."""
+    if GEOMETRY_MIN_INLIERS is None or not g or not g.get("ok"):
+        return False
+    return int(g.get("inliers") or 0) >= GEOMETRY_MIN_INLIERS and float(g.get("ratio") or 0) >= GEOMETRY_MIN_RATIO
+
+
 def _group_key(p: Dict[str, Any]) -> Optional[tuple]:
-    levels = p.get("levels") or []
+    place = p.get("place")
     nodes = sorted(set(p.get("nodes") or []) | set(p.get("seen_nodes") or []))
-    if len(levels) != 1 or not nodes or p.get("view") not in _COMPARABLE_VIEWS:
+    if not photo_place.is_sufficient(place) or not place.get("level") or not nodes \
+            or p.get("view") not in _COMPARABLE_VIEWS:
         return None
-    return (p.get("project_id"), levels[0], p.get("view"), nodes[0])
+    return (p.get("project_id"), place["level"], place.get("space") or "", p.get("view"), nodes[0])
+
+
+def _same_room(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    ra, rb = (a.get("place") or {}).get("room_type"), (b.get("place") or {}).get("room_type")
+    return not ra or not rb or ra == rb
 
 
 def pick_pairs(photos: Iterable[Dict[str, Any]], done: Iterable[str], budget: int) -> List[Dict[str, Any]]:
     """At most `budget` pairs not yet asked: within each group of photos of one
-    level, view and kind of work, the newest photo against the oldest and
-    against the one before it. Newest groups first."""
+    inferred place, view and kind of work, the newest photo against the oldest
+    and against the one before it. Newest groups first. Nothing until a
+    geometry threshold has been measured (see the module docstring)."""
+    if not automatic_ready():
+        return []
     groups: Dict[tuple, List[Dict[str, Any]]] = {}
     for p in photos:
         key = _group_key(p)
@@ -69,7 +102,8 @@ def pick_pairs(photos: Iterable[Dict[str, Any]], done: Iterable[str], budget: in
         rows = sorted(rows, key=lambda p: (str(p["date"]), str(p.get("photo_key"))))
         newest = rows[-1]
         for other in (rows[0], rows[-2] if len(rows) > 1 else rows[0]):
-            if other is newest or (base._d(newest["date"]) - base._d(other["date"])).days < MIN_GAP_DAYS:
+            if other is newest or (base._d(newest["date"]) - base._d(other["date"])).days < MIN_GAP_DAYS \
+                    or not _same_room(other, newest):
                 continue
             pid = pair_id(other["photo_key"], newest["photo_key"])
             if pid in seen:

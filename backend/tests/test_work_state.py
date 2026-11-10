@@ -9,6 +9,10 @@ CONTROL: against origin/main's server.py, lib/dm_brain.py and lib/vision_meter.p
 7 tests fail: the tool, the sweep and the meter. The tests of the two new pure
 modules cannot fail on main (the files exist on both sides), so those were
 checked by 9 single mutations of the modules, each caught (2026-11-09).
+
+Pairs need a place (lib/photo_place) and a benchmarked geometry threshold
+(photo_relations.GEOMETRY_MIN_INLIERS) that does not exist yet: the tests of the
+selection stand one in, here, and only here. See tests/test_photo_place.py.
 """
 
 from __future__ import annotations
@@ -207,6 +211,11 @@ class TheQuestion(unittest.TestCase):
 
 class ThePairs(unittest.TestCase):
 
+    def setUp(self):
+        threshold = patch.object(R, "GEOMETRY_MIN_INLIERS", 10)
+        threshold.start()
+        self.addCleanup(threshold.stop)
+
     def _rows(self, *pics):
         return W.photo_rows(pics)
 
@@ -309,7 +318,9 @@ class TheSweep(_Brain):
         async def raw(row):
             return b"x"
         with patch.dict("os.environ", {"PHOTO_RELATIONS_ENABLED": env}), patch.object(server, "QWEN_API_KEY", "x"), \
-                patch.object(server, "_photo_compare_call", compare), patch.object(server, "_photo_log_bytes", raw):
+                patch.object(server, "_photo_compare_call", compare), patch.object(server, "_photo_log_bytes", raw), \
+                patch.object(R, "GEOMETRY_MIN_INLIERS", 10), \
+                patch.object(server.photo_geometry, "match", lambda a, b: {"ok": True, "inliers": 50, "ratio": 0.5, "reason": ""}):
             return asyncio.run(server._photo_relations_tick())
 
     def test_it_is_off_until_it_is_turned_on(self):

@@ -27,11 +27,20 @@ from lib import project_report as base
 VIEWS = ("building_front", "building_side_or_rear", "roof", "interior", "basement",
          "site", "detail", "document", "other")
 
+#: Written on every row as `prompt_v`. A row read before this existed has none:
+#: `visible_text` and `room_type` were never asked of it.
+PROMPT_V = 2
+
+#: What room the picture shows, when that can be told. Evidence about a photo,
+#: never a location: every apartment on every floor has a bathroom.
+ROOM_TYPES = ("apartment", "bathroom", "kitchen", "corridor", "stairwell", "elevator", "lobby",
+              "mechanical_room", "storage", "cellar", "roof", "exterior", "other", "unknown")
+
 INDEX_PROMPT = (
     "Describe this construction jobsite photo so a project manager can find it later by searching "
     "words. Answer in JSON only: {\"view\": \"building_front\"|\"building_side_or_rear\"|\"roof\"|"
     "\"interior\"|\"basement\"|\"site\"|\"detail\"|\"document\"|\"other\", \"quality\": 0-10, "
-    "\"description\": \"...\", \"tags\": [\"...\"]}. "
+    "\"description\": \"...\", \"tags\": [\"...\"], \"visible_text\": [\"...\"], \"room_type\": \"...\"}. "
     "view: building_front is the building's street face seen from outside, from the street or the "
     "sidewalk. building_side_or_rear is an outside face that is plainly not the street face. roof is "
     "taken on the roof. interior is inside the building above ground. basement is below ground or a "
@@ -43,7 +52,12 @@ INDEX_PROMPT = (
     "description: one or two plain sentences of ONLY what is visible: what is built, the materials, "
     "the stage of the work (for example \"Six-story concrete frame with formwork stripped, sidewalk "
     "shed along the street\"). Never a person's name, a number, a date or an address unless it is "
-    "legible in the photo. tags: up to 10 single search words for what is visible.")
+    "legible in the photo. tags: up to 10 single search words for what is visible. "
+    "visible_text: ONLY place markings you can actually read in this photo: door tags, unit or apartment "
+    "numbers, floor numbers sprayed or taped on a wall, column or slab, room signs. Copy each exactly as "
+    "written. Leave out anything blurry, cut off or partly hidden. Never work a floor or a unit out from "
+    "how the place looks, and never guess. If there is none, []. "
+    "room_type: one of " + "|".join(ROOM_TYPES) + "; unknown when you cannot plainly tell.")
 
 #: Words a view answers to, so "front of the building" finds a building_front
 #: photo whether or not its description says "front".
@@ -73,8 +87,10 @@ def short_id(key: str) -> str:
 
 
 def parse_index(said: Any) -> Optional[Dict[str, Any]]:
-    """The model's answer as {view, quality, description, tags}, or None when
-    it said nothing usable (such a photo is tried again, never stored blank)."""
+    """The model's answer as {view, quality, description, tags, visible_text,
+    room_type}, or None when it said nothing usable (such a photo is tried
+    again, never stored blank). An answer without the two newer fields is still
+    a description: they come back empty, never invented."""
     found = re.search(r"\{.*\}", str(said or ""), re.S)
     if not found:
         return None
@@ -94,8 +110,12 @@ def parse_index(said: Any) -> Optional[Dict[str, Any]]:
         quality = 0.0
     raw_tags = v.get("tags") if isinstance(v.get("tags"), list) else []
     tags = [t for t in (base.no_phone(str(x)).strip().lower()[:30] for x in raw_tags) if t][:10]
+    raw_text = v.get("visible_text") if isinstance(v.get("visible_text"), list) else []
+    visible = [t for t in (base.no_phone(str(x)).strip()[:40] for x in raw_text) if t][:8]
+    room = str(v.get("room_type") or "").strip().lower()
     return {"view": view if view in VIEWS else "other", "quality": quality,
-            "description": description, "tags": tags}
+            "description": description, "tags": tags, "visible_text": visible,
+            "room_type": room if room in ROOM_TYPES else "unknown"}
 
 
 def log_photo_rows(logbook: Dict[str, Any]) -> List[Dict[str, Any]]:
