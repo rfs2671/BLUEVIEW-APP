@@ -170,6 +170,10 @@ class WholeTextOnly(unittest.TestCase):
         self.assertIsNone(P.infer({"where": "gymnasium floor"}, spaces)["space"])
         self.assertEqual(P.infer({"where": "main lobby"}, spaces)["space"], "LOBBY")
 
+    def test_a_named_room_long_enough_to_search_for_needs_its_own_word(self):
+        spaces = P.spaces_from_plan_rows([{"unit": "non-unit:LOBBY", "sheet_title": "CELLAR PLAN"}])
+        self.assertIsNone(P.infer({"where": "lobbyist desk"}, spaces)["space"])
+
 
 class Conflicts(unittest.TestCase):
 
@@ -343,6 +347,16 @@ class TheSweep(_Brain):
             _o, calls = self._tick(budget=2)
         self.assertEqual(len(calls), 2)
 
+    def test_a_new_photo_comes_out_of_the_same_budget_first(self):
+        self.db.logbooks.rows.append({"_id": "L1", "log_type": "daily_jobsite", "project_id": THOMAS, "company_id": CO_A, "status": "submitted",
+                                      "date": (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat(),
+                                      "data": {"activities": [{"company": "A", "work_locations": "floors 1-4",
+                                                               "photos": [{"enhanced_r2_key": "k/new.jpg"}]}]}})
+        self.db[server.PHOTO_INDEX].rows += [_idx(_key(i), where="floors 1-4") for i in range(5)]
+        with _Ctx(db=self.db), patch.object(server, "_report_photo_bytes", lambda c: b"x"):
+            out, calls = self._tick(budget=2)
+        self.assertEqual((out["indexed"], out["reread"], len(calls)), (1, 1, 2))
+
     def test_a_row_the_model_will_not_answer_is_given_up_on(self):
         self.db[server.PHOTO_INDEX].rows.append(_idx(_key(1), where="floors 1-4"))
 
@@ -458,7 +472,9 @@ class ThePairs(unittest.TestCase):
 
     def test_a_photo_with_a_stale_levels_field_but_no_sufficient_place_is_not_used(self):
         """The place decides, not the row's levels."""
-        rows = self._rows(self._pic("a", where="floors 1-4", visible=["FLOOR 6"], day="2026-10-01"), self._pic("b"))
+        rows = self._rows(self._pic("a", where="floors 1-4", day="2026-10-01"), self._pic("b", where="floors 1-4"))
+        for r in rows:
+            r["levels"] = [F3]
         with patch.object(R, "GEOMETRY_MIN_INLIERS", 10):
             self.assertEqual(R.pick_pairs(rows, [], 10), [])
 

@@ -130,6 +130,22 @@ class TheVerification(unittest.TestCase):
         a = np.float32(rng.randint(0, 600, (100, 2))).reshape(-1, 1, 2)
         self.assertEqual(G.verify(a, a + np.float32([[12, -7]]))[0], 100)
 
+    def test_outliers_among_true_matches_do_not_spoil_the_fit(self):
+        """What RANSAC is for: a plain least-squares fit is dragged off by these."""
+        rng = np.random.RandomState(2)
+        a = np.float32(rng.randint(0, 600, (100, 2))).reshape(-1, 1, 2)
+        b = a + np.float32([[12, -7]])
+        b[70:] = np.float32(rng.randint(0, 600, (30, 2))).reshape(-1, 1, 2)
+        self.assertGreaterEqual(G.verify(a, b)[0], 70)
+
+    def test_the_result_reports_the_verified_count_not_the_match_count(self):
+        a = texture(6)
+        with patch.object(G, "verify", return_value=(3, 9)):
+            got = G.match(a, warped(a))
+        self.assertGreater(got["good"], 20, got)
+        self.assertEqual((got["inliers"], got["epipolar_inliers"]), (3, 9))
+        self.assertEqual(got["ratio"], round(3 / got["good"], 4))
+
 
 class HowItIsBuilt(unittest.TestCase):
 

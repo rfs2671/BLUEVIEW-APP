@@ -56446,7 +56446,7 @@ async def _dm_send_one_photo(dm_chat: str, short: str, jpeg: bytes, caption: str
         await db.whatsapp_messages.insert_one({
             "group_id": dm_chat, "is_dm": True, "sender": "bot", "body": f"[Photo] {caption}",
             "has_audio": False, "message_id": "", "from_me": True,
-            **({"photo_place_asked": short} if ask_floor else {}),
+            "photo_place_asked": short if ask_floor else None,
             **({"dm_company": _DM_SCOPE.get()} if _DM_SCOPE.get() else {}),
             "timestamp": now, "created_at": now})
     except Exception as e:
@@ -56594,9 +56594,9 @@ async def _dm_confirm_photo_place(ctx: dict, job: dict, args: dict) -> str:
         return "Their message doesn't name one floor, so nothing was recorded."
     since = datetime.now(timezone.utc) - timedelta(minutes=PHOTO_PLACE_ASK_MINUTES)
     asks = await db.whatsapp_messages.find(
-        {"group_id": ctx["dm_chat"], "is_dm": True, "sender": "bot", "photo_place_asked": {"$exists": True},
+        {"group_id": ctx["dm_chat"], "is_dm": True, "sender": "bot", "photo_place_asked": {"$exists": True, "$nin": [None, ""]},
          "created_at": {"$gte": since}}).sort("created_at", -1).to_list(1)
-    if not asks:
+    if not asks or not asks[0].get("photo_place_asked"):
         return "No photo is waiting for a floor, so nothing was recorded."
     row = await db[PHOTO_INDEX].find_one({"project_id": pid, "kind": "photo", "short": asks[0]["photo_place_asked"]})
     if not row:
