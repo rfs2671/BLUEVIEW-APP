@@ -30,4 +30,4 @@ export function useNavChromeVisible() {
 }
 
 // Width the corner button takes, so neighbours can clear it.
-export const CORNER_BUTTON_SPACE = 44;
+export const CORNER_BUTTON_SPACE = 56; // the 44dp corner gear plus a 12dp gap

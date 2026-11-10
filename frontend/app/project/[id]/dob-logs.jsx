@@ -35,6 +35,7 @@ import {
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
+import { useCornerInset, useBrandRoom } from '../../../src/components/CornerInset';
 import GlassInput from '../../../src/components/GlassInput';
 import FloatingNav from '../../../src/components/FloatingNav';
 import { useToast } from '../../../src/components/Toast';
@@ -93,6 +94,8 @@ const formatDate = formatRecordDate;
 export default function DOBLogsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
+  const cornerInset = useCornerInset();
+  const brandRoom = useBrandRoom();
   const router = useRouter();
   // `tab=dot` opens the DOT tab directly (a deep link, and the mount smoke).
   const { id: projectId, tab: initialTab } = useLocalSearchParams();
@@ -963,9 +966,9 @@ export default function DOBLogsScreen() {
         <View style={s.header}>
           <View style={s.headerLeft}>
             <GlassButton variant="icon" icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => router.back()} />
-            <HeaderBrand />
+            <HeaderBrand style={brandRoom} />
           </View>
-          <View style={s.headerRight}>
+          <View style={[s.headerRight, cornerInset]}>
             {isAdmin && <GlassButton variant="icon" icon={<Settings size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={openConfigModal} />}
           </View>
         </View>

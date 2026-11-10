@@ -1,12 +1,11 @@
 import React from 'react';
-import { Pressable, StyleSheet } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Settings } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { useIsDesktop } from '../hooks/useIsDesktop';
 import { useNavChromeVisible } from '../utils/navChromeStore';
-import { withAlpha } from '../styles/semanticColors';
+import { SoftPebble } from './SoftPanel';
 
 // Small, always-there settings button in the top-right corner. It replaces the
 // Settings tab in the bottom bar. Shown wherever the bottom nav is (the nav
@@ -21,37 +20,16 @@ export default function CornerSettings() {
 
   if (isDesktop || !navVisible || pathname === '/settings') return null;
 
+  // The same soft round button as the back button on the left, so the two header corners match.
   return (
-    <Pressable
+    <SoftPebble
       onPress={() => router.push('/settings')}
       accessibilityRole="button"
       accessibilityLabel="Settings"
       hitSlop={8}
-      style={({ pressed }) => [
-        styles.btn,
-        {
-          top: insets.top + 19,
-          backgroundColor: withAlpha(colors.text.primary, 0.06),
-          borderColor: colors.glass.border,
-        },
-        pressed && { opacity: 0.6 },
-      ]}
+      style={{ position: 'absolute', right: 24, top: insets.top + 16, zIndex: 50 }}
     >
-      <Settings size={17} strokeWidth={1.7} color={colors.text.secondary} />
-    </Pressable>
+      <Settings size={19} strokeWidth={1.6} color={colors.text.secondary} />
+    </SoftPebble>
   );
 }
-
-const styles = StyleSheet.create({
-  btn: {
-    position: 'absolute',
-    right: 16,
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 50,
-  },
-});
