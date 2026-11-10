@@ -87,6 +87,9 @@ _RANGE_NUM = re.compile(rf"\b(?:floors?|flrs?|fls?|levels?|lvls?|pisos?)\.?\s*#?
 #: "1st-4th", "1st to 4th floor", "2nd thru 3rd fl".
 _RANGE_ORD = re.compile(rf"\b(\d{{1,2}})\s*{_ORD}\s*(?:fl(?:oo)?r?s?\.?\s*)?(?:-|–|—|to|thru|through)\s*(\d{{1,2}})\s*{_ORD}\b",
                         re.I)
+#: "1-4 floors", "2 thru 5 levels": the level word after the range.
+_RANGE_AFTER = re.compile(rf"\b(\d{{1,2}})\s*(?:-|–|—|to|thru|through)\s*(\d{{1,2}})\s*(?:floors?|flrs?|fls?|levels?|lvls?|pisos?)\b",
+                          re.I)
 _ES_ORDINAL = {"primer": 1, "primero": 1, "segundo": 2, "tercer": 3, "tercero": 3, "cuarto": 4, "quinto": 5,
                "sexto": 6, "septimo": 7, "séptimo": 7, "octavo": 8, "noveno": 9, "decimo": 10, "décimo": 10}
 _ES_WORDS = "|".join(sorted(_ES_ORDINAL, key=len, reverse=True))
@@ -195,7 +198,7 @@ def read(text: Any, *, source: str = FREE_TEXT) -> Dict[str, Any]:
             out["unsettled"].append(R_BELOW)
         elif tok == "SW":
             out["area"] = EXTERIOR
-    for rx in (_RANGE_NUM, _RANGE_ORD):
+    for rx in (_RANGE_NUM, _RANGE_ORD, _RANGE_AFTER):
         for m in rx.finditer(rest):
             lo, hi = sorted((int(m.group(1)), int(m.group(2))))
             levels |= {_floor(n) or "" for n in range(lo, hi + 1)}
@@ -314,7 +317,9 @@ def place(text: Any, frame: Dict[str, Any], *, source: str = FREE_TEXT) -> Dict[
     """work_state.places_in's shape, bound to a project: {"levels", "space"}.
     An abstention is no level. With no plan tags in the frame the space is the
     one places_in has always read, so nothing changes where nothing is known."""
-    b = bind(text, frame.get("levels"), frame.get("spaces"), source=source)
+    # An UNREADABLE frame (server _project_place_frame failed) binds against
+    # no levels: an abstention, never the words' own guess.
+    b = bind(text, [] if frame.get("unreadable") else frame.get("levels"), frame.get("spaces"), source=source)
     levels = b["levels"] if b["certainty"] != NONE else []
     space = b["space"] if frame.get("spaces") else W.places_in(text)["space"]
     return {"levels": levels, "space": space}

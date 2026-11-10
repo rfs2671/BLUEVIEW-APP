@@ -344,7 +344,13 @@ class TheMode(unittest.TestCase):
     def test_live_is_refused_without_the_allow_variable(self):
         self.assertEqual(C.mode({C.MODE_ENV: "live"}), "shadow")
         self.assertEqual(C.mode({C.MODE_ENV: "live", C.LIVE_ENV: "true"}), "shadow")
-        self.assertEqual(C.mode({C.MODE_ENV: "live", C.LIVE_ENV: "1"}), "live")
+        # Review 2: the roles asked (superintendent, CP) are never messaged
+        # first (lib/dm_roles), so even allowed, live is refused and says why.
+        self.assertEqual(C.mode({C.MODE_ENV: "live", C.LIVE_ENV: "1"}), "shadow")
+        self.assertIn("cannot be messaged first", C.live_refused({C.LIVE_ENV: "1"}))
+        # Were the rule ever ruled otherwise, the allow variable alone decides.
+        with patch.object(C, "unmessageable_roles", lambda: []):
+            self.assertEqual(C.mode({C.MODE_ENV: "live", C.LIVE_ENV: "1"}), "live")
 
     def test_the_allow_variable_is_set_nowhere_in_the_repo(self):
         root = _BACKEND.parent
@@ -373,9 +379,13 @@ def _server():
 
 
 class ShadowSendsNothing(unittest.TestCase):
-    def _run_tick(self, mode, env_extra=None):
+    def _run_tick(self, mode, env_extra=None, messageable=False):
         from async_fake_mongo import AsyncFakeDB
         server = _server()
+        if messageable:
+            # A hypothetical ruling that lets the bot message these roles first.
+            with patch.object(C, "unmessageable_roles", lambda: []):
+                return self._run_tick(mode, env_extra)
         db = AsyncFakeDB()
         db.projects.docs.append({"_id": PID, "company_id": "c1", "name": "588 Boyland", "status": "active"})
         db.users.docs.append({"_id": "u1", "company_id": "c1", "role": "superintendent", "name": "Ray Santos",
@@ -414,10 +424,19 @@ class ShadowSendsNothing(unittest.TestCase):
         self.assertEqual((report["rows"], db.confirmation_candidates.docs), (0, []))
 
     def test_live_allowed_queues_one_message_for_the_morning(self):
-        report, db, enq, boom = self._run_tick("live", {C.LIVE_ENV: "1"})
+        report, db, enq, boom = self._run_tick("live", {C.LIVE_ENV: "1"}, messageable=True)
         self.assertEqual(enq.call_count, 1)
         self.assertEqual(enq.call_args.kwargs["until"], C.send_at(TODAY))
         boom.assert_not_called()
+        # Queued is not sent: "sent" comes only from a delivery.
+        self.assertEqual({r["status"] for r in db.confirmation_candidates.docs}, {"queued"})
+
+    def test_live_allowed_but_the_roles_cannot_be_messaged_is_shadow_and_says_why(self):
+        report, db, enq, boom = self._run_tick("live", {C.LIVE_ENV: "1"})
+        self.assertEqual(report["mode"], "shadow")
+        self.assertIn("cannot be messaged first", report["live_refused"])
+        enq.assert_not_called()
+        self.assertTrue(all("cannot be messaged first" in r["live_refused"] for r in db.confirmation_candidates.docs))
 
     def test_a_rerun_the_same_day_adds_nothing(self):
         from async_fake_mongo import AsyncFakeDB  # noqa: F401
@@ -470,9 +489,14 @@ class LiveReplyIsRecorded(unittest.TestCase):
             db.confirmation_candidates.docs.append({
                 "_id": f"k{pos}", "day": TODAY.isoformat(), "project_id": PID, "company_id": "c1",
                 "target_user_id": "u1", "trigger": c["trigger"], "node": c["node"], "level": c["level"],
-                "question": c["question"], "options": c["options"], "status": "sent", "position": pos})
+                "question": c["question"], "options": c["options"], "status": "queued", "position": pos})
+            # Delivered at 7:30 New York (the queue appends "sent" after delivering).
+            db.confirmation_events.docs.append({"candidate_id": f"k{pos}", "project_id": PID, "company_id": "c1",
+                                                "kind": "sent", "by": "u1",
+                                                "at": datetime(2026, 11, 10, 12, 30, tzinfo=timezone.utc)})
         sent = AsyncMock()
         with patch.object(server, "db", db), patch.dict(os.environ, {C.MODE_ENV: "live", C.LIVE_ENV: "1"}), \
+                patch.object(C, "unmessageable_roles", lambda: []), \
                 patch.object(server, "send_whatsapp_message", sent):
             took = asyncio.run(server._confirmation_take_reply(
                 {"user_id": "u1", "user": {"name": "Ray Santos"}}, "1555@c.us", "1 passed, 2 no sé",
@@ -485,7 +509,8 @@ class LiveReplyIsRecorded(unittest.TestCase):
         reports = db[server.INSPECTION_REPORTS].docs
         self.assertEqual([(r["gate"], r["result"], r["status"]) for r in reports],
                          [(IR.PLUMBING_ROUGH, "passed", IR.ATTESTED)])
-        self.assertEqual(len(db.confirmation_events.docs), 2)
+        # The two deliveries and the two answers.
+        self.assertEqual([e["kind"] for e in db.confirmation_events.docs], ["sent", "sent", "answered", "answered"])
         self.assertIn("not verified", sent.call_args.args[1])
 
 

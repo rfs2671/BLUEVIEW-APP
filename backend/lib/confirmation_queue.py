@@ -81,7 +81,11 @@ SEND_AT = time(7, 30)
 TARGET_ROLES = ("superintendent", "cp")
 _ROLE_ORDER = {"superintendent": 0, "cp": 1}
 
-STATUSES = ("shadow", "sent", "answered", "dismissed")
+#: queued: handed to the morning queue, NOT delivered. A candidate is "sent"
+#: only by an appended "sent" event written after a delivery succeeded
+#: (server _confirmation_delivered); a reply is read as an answer only to a
+#: question delivered to that person that day.
+STATUSES = ("shadow", "queued", "sent", "answered", "dismissed")
 VERDICTS = ("correct", "wrong")
 
 CONFLICT, OFF_LEVEL, DONE_UNBACKED = "conflict_failed_after_pass", "work_off_logged_level", "done_unbacked"
@@ -104,7 +108,8 @@ INSPECTION_PREFIX = "inspection:"
 
 def mode(env: Optional[Dict[str, str]] = None) -> str:
     """off | shadow | live. Default off; anything unknown is off. "live"
-    without LIVE_ENV=1 is REFUSED and read as shadow: nothing is sent."""
+    without LIVE_ENV=1, or while the people asked cannot be messaged first
+    (unmessageable_roles), is REFUSED and read as shadow: nothing is sent."""
     e = os.environ if env is None else env
     m = str(e.get(MODE_ENV, "") or "").strip().lower()
     if m not in MODES:
@@ -114,11 +119,31 @@ def mode(env: Optional[Dict[str, str]] = None) -> str:
     return m
 
 
+def live_requested(env: Optional[Dict[str, str]] = None) -> bool:
+    e = os.environ if env is None else env
+    return str(e.get(MODE_ENV, "") or "").strip().lower() == "live"
+
+
+def unmessageable_roles() -> List[str]:
+    """The TARGET_ROLES the bot may not message first. lib/dm_roles (owner
+    ruling 2026-11-09): a field role (superintendent, CP) is never messaged
+    first, and send_whatsapp_dm refuses them (lib/wa_dm.is_dm_eligible). That
+    rule is not changed here: while it holds, live cannot deliver a question,
+    so it must not read anyone's DMs as answers either."""
+    from lib import wa_dm
+    return [r for r in TARGET_ROLES if r not in wa_dm.DM_ELIGIBLE_ROLES or r in wa_dm.DM_NEVER_ROLES]
+
+
 def live_refused(env: Optional[Dict[str, str]] = None) -> Optional[str]:
-    """Why live is refused, or None when the owner allowed it."""
+    """Why live is refused, or None when it may run."""
     e = os.environ if env is None else env
     if str(e.get(LIVE_ENV, "") or "").strip() != "1":
         return f"live refused: {LIVE_ENV} is not 1"
+    blocked = unmessageable_roles()
+    if blocked:
+        return (f"live refused: the roles asked ({', '.join(blocked)}) cannot be messaged first (lib/dm_roles: a "
+                "field role is never messaged first; send_whatsapp_dm refuses them), so no question could be "
+                "delivered and no reply may be read as an answer; running as shadow")
     return None
 
 
@@ -169,8 +194,17 @@ def _ref(i: Dict[str, Any]) -> Dict[str, Any]:
             "on": d.isoformat() if d else None, "by": i.get("by"), "quote": i.get("quote")}
 
 
+def _when(i: Dict[str, Any]) -> Optional[date]:
+    """The day THE ONE ORDER (evidence.order_key) puts an item on: its own
+    date, else the day it was said. Never printed as the date of the work."""
+    k = E.order_key(i)[0]
+    return date.fromordinal(k) if k > 0 else None
+
+
 def _newest(items: Sequence[Dict[str, Any]], n: int = 3) -> List[Dict[str, Any]]:
-    return sorted(items, key=lambda i: (_on(i) or date.min, str(i.get("ref"))), reverse=True)[:n]
+    """Newest first by evidence.order_key: an undated statement said later is
+    later, never hidden behind an earlier dated one."""
+    return sorted(items, key=lambda i: (E.order_key(i), str(i.get("ref"))), reverse=True)[:n]
 
 
 # ── WORDS ──────────────────────────────────────────────────────────────────
@@ -193,6 +227,14 @@ def node_words(node: Optional[str], note: Any = None) -> str:
 
 def day_words(d: Optional[date]) -> str:
     return f"{d:%a %b} {d.day}" if d else "an earlier day"
+
+
+def said_words(i: Dict[str, Any]) -> str:
+    """An item's day: its own date, or that it states none and when it was said."""
+    if _on(i):
+        return day_words(_on(i))
+    w = _when(i)
+    return f"date not stated, said {day_words(w)}" if w else "date not stated"
 
 
 def _who(i: Dict[str, Any]) -> str:
@@ -252,28 +294,30 @@ def _cand(trigger: str, thing: str, project_id: Any, node: Optional[str], level:
 
 
 def _conflicts(fs: List[Dict[str, Any]], pid: Any, today: date) -> List[Dict[str, Any]]:
+    """In THE ONE ORDER (evidence.order_key), as evidence.status reads it: an
+    undated re-pass said after the failure is after it, and answers it."""
     out = []
     keys = {(i.get("node"), lv) for i in fs if i.get("node") for lv in i.get("levels") or []}
     for node, lv in sorted(keys, key=str):
         mine = _about(fs, node, lv)
-        fails = [i for i in mine if i["claim"] == "failed" and i["kind"] == "attested" and _on(i)]
+        fails = [i for i in mine if i["claim"] == "failed" and i["kind"] == "attested" and _when(i)]
         if not fails:
             continue
         last = _newest(fails, 1)[0]
-        d = _on(last)
+        d, at = _when(last), E.order_key(last)
         passes = [i for i in mine if i["claim"] == "done" and E.rank(i["kind"]) <= E.rank("attested")
-                  and _on(i) and _on(i) < d]
+                  and _when(i) and E.order_key(i) < at]
         if not passes:
             continue
         # Anything said on or after the failure (a re-inspection, a sign-off,
         # an answer) already says where it stands.
-        since = [i for i in mine if i is not last and _on(i) and _on(i) >= d
+        since = [i for i in mine if i is not last and _when(i) and E.order_key(i) >= at
                  and i["claim"] in ("done", "failed", "not_yet", "in_progress")]
         if since:
             continue
         p = _newest(passes, 1)[0]
         q = (f"{node_words(node, last.get('note')).capitalize()} on {level_words(lv)}: {_who(p)} said passed "
-             f"({day_words(_on(p))}), {_who(last)} said failed ({day_words(d)}). Where does it stand now?")
+             f"({said_words(p)}), {_who(last)} said failed ({said_words(last)}). Where does it stand now?")
         out.append(_cand(CONFLICT, _thing(CONFLICT, node, lv, last.get("ref")), pid, node, lv, q, [last, p], d, today,
                          last.get("note")))
     return out
@@ -393,8 +437,10 @@ def _inspection_passed(fs: List[Dict[str, Any]], pid: Any, today: date) -> List[
         d = _on(last)
         if d >= today:
             continue
+        # An outcome dated on or after the booking, or an undated one SAID on
+        # or after it (evidence.order_key): "it passed" said Friday answers it.
         outcome = [i for i in mine if i["claim"] in ("done", "failed", "in_progress", "not_yet")
-                   and _on(i) and _on(i) >= d]
+                   and _when(i) and _when(i) >= d]
         if outcome:
             continue
         q = (f"The {node_words(node, last.get('note'))} on {level_words(lv)} was booked for {day_words(d)}; "
@@ -483,7 +529,7 @@ def plan(cands: Sequence[Dict[str, Any]], people: Sequence[Dict[str, Any]], *, d
             hd = date.fromisoformat(str(h.get("day"))[:10])
         except ValueError:
             continue
-        if h.get("status") not in ("shadow", "sent", "answered"):
+        if h.get("status") not in ("shadow", "queued", "sent", "answered"):
             continue
         if since < hd <= day:
             asked.add((str(h.get("project_id")), h.get("thing")))
@@ -555,10 +601,23 @@ def _norm(text: Any) -> str:
     return " ".join(str(text or "").replace("’", "'").split()).casefold()
 
 
-#: "no se" is "don't know" only when no word follows it: "no se terminó" is
-#: "it wasn't finished".
-_DONT_KNOW = re.compile(r"\b(?:don'?t know|dont know|do not know|idk|not sure|no idea|unsure|ni idea|"
-                        r"no estoy segur[oa])\b|\bno s[eé]\b(?!\s+\w)|^\W*\?+\W*$")
+#: "no se" is "don't know" only when no word follows it ("no se terminó" is
+#: "it wasn't finished"), or when "si" does ("no sé si empezaron": I don't
+#: know whether). "no lo sé", "ni idea", "no clue", "nobody told me", "not
+#: that I know": DON'T KNOW, never a no. Read BEFORE any yes / no.
+_DONT_KNOW = re.compile(
+    r"\b(?:don'?t know|dont know|do not know|didn'?t know|idk|dunno|not sure|not certain|no idea|no clue|"
+    r"not a clue|unsure|beats me|who knows|can'?t say|cannot say|hard to say|i'?ll (?:check|ask|find out)|"
+    r"(?:nobody|no one|no-one) told me|not that i know(?: of)?|not as far as i know|"
+    r"ni idea|no tengo (?:ni )?idea|no lo s[eé]|no sabemos|no s[eé] si|no sabr[ií]a|"
+    r"qui[eé]n sabe|no estoy segur[oa]|no que yo sepa|que yo sepa|voy a preguntar|tengo que preguntar)\b"
+    r"|^\W*(?:ask|preg[uú]nta(?:le|les)?)\b|\bno s[eé]\b(?!\s+\w)|^\W*\?+\W*$")
+#: Words that put a crew there / say nobody was. A reply carrying both a yes
+#: and "nobody", or a no and "they were there", is not one answer.
+_PRESENT_WORDS = re.compile(r"\b(?:(?:they|crew|guys|men|people|someone|somebody) (?:was|were)(?: there)?|"
+                            r"s[ií] estaban|hab[ií]a gente|s[ií] hab[ií]a)\b")
+_ABSENT_WORDS = re.compile(r"\b(?:nobody|no one|no-one|nadie|no crew|not there|wasn'?t anyone|weren'?t there|"
+                           r"no estaban|no hab[ií]a)\b")
 _BLOCKED = re.compile(r"\b(?:blocked|stuck|held up|on hold|bloquead[oa]s?|detenid[oa]s?|parad[oa]s?)\b\W*(.*)$")
 _NOT_YET = re.compile(r"\b(?:not yet|not done|not started|not finished|hasn'?t started|haven'?t started|"
                       r"didn'?t start|did not start|not complete|todav[ií]a no|a[uú]n no|no todav[ií]a|"
@@ -600,9 +659,13 @@ def read_answer(segment: Any, trigger: str) -> Optional[Dict[str, Any]]:
         else:
             return None
     elif trigger == OFF_LEVEL:
-        if _YES.search(s):
+        yes = bool(_YES.search(s)) or bool(_PRESENT_WORDS.search(s))
+        no = bool(_NO.search(s)) or bool(_ABSENT_WORDS.search(s))
+        if yes and no:
+            return None              # "yes, nobody was there": two answers, none read
+        if yes:
             found = {"answer": "present"}
-        elif _NO.search(s):
+        elif no:
             found = {"answer": "absent"}
         else:
             return None
@@ -629,6 +692,9 @@ def read_answer(segment: Any, trigger: str) -> Optional[Dict[str, Any]]:
                 hits.append({"answer": "percent", "percent": float(pct)})
             elif pct == 100:
                 hits.append({"answer": "done"})
+        if not hits and (_NO.search(s) and _YES.search(s) or _NO.search(s) and _PRESENT_WORDS.search(s)
+                         or _YES.search(s) and _ABSENT_WORDS.search(s)):
+            return None              # "no, they were there": a yes and a no, neither read
         if not hits and _NO.search(s):
             hits.append({"answer": "not_yet"})
         if not hits and _YES.search(s):

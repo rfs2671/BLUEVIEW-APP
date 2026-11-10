@@ -143,7 +143,8 @@ class ThePage(unittest.TestCase):
     def test_the_legend_is_one_line_of_every_mark(self):
         legend = RR.floor_legend()
         # Every kind of mark the matrix can draw, drawn in the legend (not read off MARKS itself).
-        self.assertEqual(legend.count("<span class='lg'>"), 6)
+        # 9: review 2 added stated-in-progress, booked and not-yet / blocked (a booking is not in progress).
+        self.assertEqual(legend.count("<span class='lg'>"), 9)
         for kind, sig in _signature().items():
             with self.subTest(kind=kind):
                 self.assertIn(sig.replace('height="9.2"', 'height="8.0"').replace('r="4.6"', 'r="4.0"')

@@ -182,8 +182,11 @@ async def _people(server, company_id: str, inspections: list, confirmations: dic
             names.append(who)
             role = PV.role_words(role_of.get(str(r.get("reporter_user_id") or "")))
             roles[who] = role if roles.get(who, role) == role else "a person"
-        if r.get("inspector_as_said"):
-            names.append(str(r["inspector_as_said"]))
+        # Every name a row carries is redacted wherever it turns up: the
+        # inspector, who it was heard from, who relayed it.
+        for k in ("inspector_as_said", "hearsay_from", "relayed_from"):
+            if r.get(k):
+                names.append(str(r[k]))
     for answers in confirmations.values():
         names += [str(c.get("by_name")) for c in answers if c.get("by_name")]
     return names, roles

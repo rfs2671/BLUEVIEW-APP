@@ -571,15 +571,24 @@ def report_section(fc: Dict[str, Any]) -> Dict[str, Any]:
     for a report, the same four groups the assistant gets, in the same order."""
     makers = {"verified": _verified_lines, "file": _file_lines, "reported": _reported_lines, "estimate": _estimate_lines}
     return {"title": "Schedule status", "groups": [{"key": k, "label": label, "lines": makers[k](fc)} for k, label in GROUPS],
-            "estimates": estimates(fc)}
+            "estimates": estimates(fc), "unreadable": list(fc.get("unreadable") or ()),
+            "unreadable_line": unreadable_line(fc)}
+
+
+def unreadable_line(fc: Dict[str, Any]) -> Optional[str]:
+    """The same words for the assistant and the report: a source that could
+    not be read makes "no done marker" mean only "not read"."""
+    if not fc.get("unreadable"):
+        return None
+    return ("Could not be read just now: " + ", ".join(s.replace("_", " ") for s in fc["unreadable"])
+            + ". What they hold is unknown, so a missing start or done marker may only mean it was not read.")
 
 
 def status_text(fc: Dict[str, Any], job: str = "") -> str:
     sec = report_section(fc)
     out = [f"SCHEDULE STATUS{' for ' + job if job else ''}, against the confirmed schedule file, as of {_day(fc['today'])}."]
-    if fc.get("unreadable"):
-        out.append("Could not be read just now: " + ", ".join(s.replace("_", " ") for s in fc["unreadable"])
-                   + ". What they hold is unknown, so a missing start or done marker may only mean it was not read.")
+    if sec["unreadable_line"]:
+        out.append(sec["unreadable_line"])
     for g in sec["groups"]:
         out.append(g["label"] + ":")
         out += g["lines"]

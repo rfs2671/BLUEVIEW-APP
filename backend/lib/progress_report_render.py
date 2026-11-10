@@ -526,8 +526,11 @@ FLOOR_MAX_STEPS = 22
 MARKS = (("verified", "Verified (DOB / agency)"),
          ("confirmed", "Confirmed (signed)"),
          ("attested", "Stated done (named person)"),
+         ("stated", "Stated or signed: in progress"),
          ("observed", "Photo: in progress"),
          ("reported", "Reported: in progress"),
+         ("booked", "Booked (not in progress)"),
+         ("not_yet", "Stated: not yet / blocked"),
          ("failed", "Failed"))
 UNKNOWN_NOTE = ("An empty cell is unknown: nothing is on record either way, so it is shown neither as done nor as "
                 "not done.")
@@ -559,6 +562,12 @@ def mark_of(status: Optional[str]) -> Optional[str]:
         return s[5:]
     if s.startswith("failed_"):
         return "failed"
+    if s.startswith("scheduled_"):
+        return "booked"                  # a booked inspection is not work in progress
+    if s.startswith(("not_yet_", "blocked_")):
+        return "not_yet"
+    if s.startswith("in_progress_") and s != "in_progress_observed":
+        return "stated"
     return {"in_progress_observed": "observed", "reported": "reported"}.get(s)
 
 
@@ -574,6 +583,14 @@ def _mark_shape(kind: Optional[str], cx: float, cy: float, r: float = 4.6) -> st
         return f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r - 0.8:.1f}" fill="#fff" stroke="{NAVY}" stroke-width="1.5"/>'
     if kind == "reported":
         return f'<rect x="{cx - r:.1f}" y="{cy - 1.3:.1f}" width="{2 * r:.1f}" height="2.6" rx="1" fill="{MUTED}"/>'
+    if kind == "stated":
+        return f'<rect x="{cx - r:.1f}" y="{cy - 1.6:.1f}" width="{2 * r:.1f}" height="3.2" rx="1" fill="{NAVY}"/>'
+    if kind == "booked":
+        return (f'<rect x="{cx - r + 0.8:.1f}" y="{cy - r + 0.8:.1f}" width="{2 * r - 1.6:.1f}" '
+                f'height="{2 * r - 1.6:.1f}" fill="#fff" stroke="{MUTED}" stroke-width="1.2" stroke-dasharray="1.6 1.2"/>')
+    if kind == "not_yet":
+        return (f'<polygon points="{cx:.1f},{cy - r:.1f} {cx + r:.1f},{cy + r - 0.6:.1f} {cx - r:.1f},{cy + r - 0.6:.1f}" '
+                f'fill="#fff" stroke="{MUTED}" stroke-width="1.2"/>')
     if kind == "failed":
         return (f'<path d="M{cx - r + 0.6:.1f},{cy - r + 0.6:.1f} L{cx + r - 0.6:.1f},{cy + r - 0.6:.1f} '
                 f'M{cx + r - 0.6:.1f},{cy - r + 0.6:.1f} L{cx - r + 0.6:.1f},{cy + r - 0.6:.1f}" '
@@ -723,9 +740,8 @@ def _building_note(c: Dict[str, Any]) -> str:
     if d:
         who = PPG._who(d)
         return f"{'done' if c['bucket'] == 'done' else 'failed'}, {d['kind']} {who}, {_day_y(d.get('on'))}".rstrip(", ")
-    words = {"in_progress_observed": "photographed in progress", "reported": "reported in progress"}
     span = PPG._span(c)
-    return words.get(c["status"], c["status"].replace("_", " ")) + (f", {span}" if span else "")
+    return PPG.status_words(c["status"]) + (f", {span}" if span else "")
 
 
 def _whole_building(model: Dict[str, Any]) -> str:
@@ -813,13 +829,21 @@ def _status_by_floor(rep: Dict[str, Any]) -> str:
     else:
         body = floor_matrix_svg(model, cols)
     asof = _fmt(model["today"], "%b %-d, %Y")
+    from lib import project_progress as PPG
+    gone = "".join(f"<p class='none'>{_e(w)}</p>" for w in PPG.unreadable_words(model))
+    loose = [lv["label"] for lv in levels if lv.get("records_only")]
+    loose_note = (f"<div class='muted'>{_e(', '.join(loose))}: {_e(PPG.RECORDS_ONLY)} (named by records, not by the "
+                  "project's fields, plans or level frame).</div>" if loose else "")
+    excluded = model.get("levels_excluded") or []
+    excluded_note = (f"<div class='muted'>Records name {_e(', '.join(PPG.W.level_label(lv) for lv in excluded))}, which "
+                     "the project's levels exclude: on record, never a level of this building.</div>" if excluded else "")
     subs = "" if rep["subs"] else _sub_status(rep)
     sched = "" if rep.get("forecast") else f"<p class='muted'>{_e(NO_SCHEDULE_LINE)}</p>"
     return (f"<section class='pg fs'><h2>Status by floor</h2><p class='muted'>The strongest record for each level and "
             f"work step, from every source on file, as of {_e(asof)}. Steps are the standard sequence laid over "
-            "each level, not this job's schedule. No percent complete is calculated.</p>"
+            f"each level, not this job's schedule. No percent complete is calculated.</p>{gone}"
             f"{_whole_building(model)}{body}{floor_legend()}<div class='foot fn'>{mark_svg(None, 10)}&nbsp;{_e(note)}</div>"
-            f"{_outside(model)}{_open_on_record(model)}{_disagree(model)}{subs}{sched}</section>")
+            f"{loose_note}{excluded_note}{_outside(model)}{_open_on_record(model)}{_disagree(model)}{subs}{sched}</section>")
 
 
 def _levels_words(levels: List[str]) -> str:
@@ -896,6 +920,8 @@ def _forecast_section(rep: Dict[str, Any]) -> str:
         got = got[:cap] + ([f"…and {more} more in the report's stored snapshot."] if more > 0 else [])
         return "<ul class='tight'>" + "".join(f"<li>{_e(ln.strip())}</li>" for ln in got) + "</ul>"
     parts = "".join(f"<h3>{_e(heads[k])}</h3>{lines(k)}" for k in ("verified", "file", "reported") if k in by)
+    if sec.get("unreadable_line"):
+        parts = f"<p class='none'>{_e(sec['unreadable_line'])}</p>" + parts
     est = (f"<div class='estbox'><h4>Estimates: computed by LeveLog, not verified</h4><div class='muted'>Each with "
            f"its basis and the number of levels it rests on; never a schedule date.</div>{lines('estimate', 10)}</div>"
            if "estimate" in by else "")

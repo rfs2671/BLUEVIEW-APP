@@ -48557,6 +48557,8 @@ async def _quiet_queue_tick(now: Optional[datetime] = None) -> dict:
         # failed send it was made from).
         attempts = int(r.get("attempts") or 0) + 1
         if ok:
+            if spec.get("confirmation_ids"):
+                await _confirmation_delivered(spec, now)
             if spec.get("gc_ledger_id"):
                 await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
                                                {"$set": {"status": "sent", "sent_at": now}})
@@ -57466,12 +57468,19 @@ async def _progress_evidence(project: dict, company_id: str, start: _Date, end: 
     closed = await _read("punch_items", lambda: db[punch.COLLECTION].find(
         {"project_id": pid, "status": "closed"}).to_list(5000)) or []
     logs = src["logbooks"]
+    # ONE frame for every source (lib/evidence_sources binds each to it); a
+    # failed read is named in coverage["unreadable"] by collect().
+    frame = await _project_place_frame(pid)
+    if keep is not None:
+        keep["frame"] = frame
+    if frame.get("unreadable"):
+        logger.warning(f"[progress-evidence] {pid}: the project's level frame could not be read; no record is placed")
     return evidence_sources.collect(
         pid, start=start, end=end, activities=progress_report._log_activities(logs, start, end),
         photo_index=index, log_ids={str(lg.get("_id")) for lg in logs}, spaces=spaces, confirmations=confirmed,
         inspections=reports, dob_rows=src["dob_rows"], bins=src.get("project_bins") or (), logbooks=heads,
         punch_items=closed, checkins=src["checkins"], schedule=src.get("schedule"), unreadable=unreadable,
-        frame=await _project_place_frame(pid))
+        frame=frame)
 
 
 # ── PROJECT PROGRESS (lib/project_progress.py) ──────────────────────────────
@@ -57514,7 +57523,7 @@ async def _project_progress(project: dict, company_id: str, *, job: str = "", to
     plan_tokens = await _progress_plan_tokens(str(project.get("_id")))
     return project_progress.build(items, today=today, project=project, plan_tokens=plan_tokens,
                                   schedule=keep["sources"].get("schedule"), job=job or str(project.get("name") or ""),
-                                  unreadable=(coverage or {}).get("unreadable") or ())
+                                  unreadable=(coverage or {}).get("unreadable") or (), frame=keep.get("frame"))
 
 
 @api_router.get("/projects/{project_id}/progress",
@@ -57566,6 +57575,18 @@ async def _dm_project_status(ctx: dict, job: dict, args: dict) -> str:
 from lib import forecast as schedule_forecast  # noqa: E402
 
 
+def _forecast_window(items: list, logbooks: list, today: _Date) -> tuple:
+    """(log rows, items, first day) the schedule forecast reads, the SAME for
+    the assistant and a report: day-by-day activity (crew rows, photos,
+    check-ins, the superintendent's walk) from the last WORK_STATE_DAYS only;
+    standing records (pours, DOB sign-offs, punch closeouts, inspections,
+    schedule actuals) whole, as the loader reads them (evidence_sources.in_window)."""
+    start = today - timedelta(days=WORK_STATE_DAYS - 1)
+    kept = [i for i in items if evidence_sources.in_window(i, start, today)]
+    rows = work_state.evidence_rows(progress_report._log_activities(logbooks, start, today))
+    return rows, kept, start
+
+
 async def _forecast_inputs(project: dict, company_id: str) -> tuple:
     """(report sources, log rows, today, first day read, evidence items): every
     source through the one loader (_progress_evidence), read once. The window
@@ -57579,7 +57600,7 @@ async def _forecast_inputs(project: dict, company_id: str) -> tuple:
     keep: dict = {}
     items, coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
     src = {**keep["sources"], "progress_unreadable": list((coverage or {}).get("unreadable") or ())}
-    rows = work_state.evidence_rows(progress_report._log_activities(src["logbooks"], start, today))
+    rows, items, start = _forecast_window(items, src["logbooks"], today)
     return src, rows, today, start, items
 
 
@@ -57701,8 +57722,8 @@ async def _confirmation_inputs(project: dict, company_id: str) -> tuple:
         logger.warning(f"[confirm] {pid} skipped: unreadable {coverage['unreadable']}")
         return None
     src = keep["sources"]
-    # The same place frame the loader reads levels with (lib/location_binder).
-    place = await _project_place_frame(pid)
+    # The same place frame the loader read levels with (lib/location_binder).
+    place = keep.get("frame") or await _project_place_frame(pid)
     rows = work_state.evidence_rows(progress_report._log_activities(src["logbooks"], start, today), place)
     done, logged = _confirm_log_items(rows, pid)
     answers = await db.confirmation_answers.find({"project_id": pid, "company_id": str(company_id)}).to_list(5000)
@@ -57766,6 +57787,12 @@ async def _confirmations_tick(now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
     m = confirmation_queue.mode()
     report = {"mode": m, "projects": 0, "candidates": 0, "messages": 0, "rows": 0, "queued": 0, "skipped": {}}
+    refused = confirmation_queue.live_refused() if confirmation_queue.live_requested() else None
+    if refused:
+        # Said, never silent: live asked for and refused runs as shadow, and
+        # every row it stores carries why (the shadow report prints it).
+        logger.warning(f"[confirm] {refused}")
+        report["live_refused"] = refused
     if m == "off":
         return report
     day = wa_chase.today(now)
@@ -57804,13 +57831,17 @@ async def _confirmations_tick(now: Optional[datetime] = None) -> dict:
     plan = confirmation_queue.plan(cands, everyone, day=day, history=history, said_today=said, keeps_shabbos=keeps)
     for s in plan["skipped"]:
         report["skipped"][s["why"]] = report["skipped"].get(s["why"], 0) + 1
-    status = "sent" if m == "live" else "shadow"
+    # Live: "queued" until the queue DELIVERS it (_confirmation_delivered
+    # appends "sent"); never "sent" on the strength of a queue row.
+    status = "queued" if m == "live" else "shadow"
     for msg in plan["messages"]:
         text = confirmation_queue.message_text(msg["name"], msg["items"], names)
         report["messages"] += 1
         if m == "live":
+            ids = [confirmation_queue.candidate_id(day, msg["user_id"], c["project_id"], c["thing"]) for c in msg["items"]]
             await _quiet_enqueue({"via": "dm", "user_id": msg["user_id"], "message": text, "kind": "confirmation",
-                                  "window": day.isoformat(), "project_id": None},
+                                  "window": day.isoformat(), "project_id": None, "confirmation_ids": ids,
+                                  "confirmation_day": day.isoformat()},
                                  company_id=company_of.get(str(msg["items"][0]["project_id"])), project_id=None,
                                  kind="confirmation", until=plan["send_at"], now=now)
             report["queued"] += 1
@@ -57824,7 +57855,8 @@ async def _confirmations_tick(now: Optional[datetime] = None) -> dict:
                 "target_name": msg["name"], "trigger": c["trigger"], "thing": c["thing"], "node": c["node"],
                 "level": c["level"], "question": c["question"], "options": c["options"],
                 "evidence": c["evidence"], "score": c["score"], "position": pos, "text": text,
-                "would_send_at": plan["send_at"], "status": status, "mode": m, "created_at": now})
+                "would_send_at": plan["send_at"], "status": status, "mode": m, "created_at": now,
+                **({"live_refused": refused} if refused else {})})
             report["rows"] += 1
     logger.info(f"[confirm] {report}")
     return report
@@ -57837,11 +57869,33 @@ async def _confirmations_job() -> None:
         logger.error(f"[confirm] job failed: {type(e).__name__}: {e!r}")
 
 
+async def _confirmation_delivered(spec: dict, now: datetime) -> None:
+    """The morning queue delivered a confirmation message: ONLY now is each of
+    its questions "sent" (an appended event, with the delivery time). Never
+    raises: the message is out either way."""
+    ids = [str(i) for i in spec.get("confirmation_ids") or ()]
+    if not ids:
+        return
+    try:
+        for cid in ids:
+            row = await db.confirmation_candidates.find_one({"_id": cid}, {"project_id": 1, "company_id": 1})
+            if not row:
+                continue
+            await db.confirmation_events.insert_one({
+                "candidate_id": cid, "project_id": row.get("project_id"), "company_id": row.get("company_id"),
+                "kind": "sent", "by": str(spec.get("user_id") or ""), "at": now})
+    except Exception as e:
+        logger.warning(f"[confirm] delivery not recorded: {type(e).__name__}")
+
+
 async def _confirmation_take_reply(ident: dict, dm_chat: str, text: Any,
                                    now: Optional[datetime] = None) -> bool:
     """A DM that answers today's confirmation message, read by fixed rules
     first. True when it was read (and answered); False leaves the turn to the
-    DM brain unchanged. Off and shadow: always False (nothing was asked)."""
+    DM brain unchanged. Off and shadow: always False (nothing was asked).
+    Only questions DELIVERED to this person today count: a "sent" event that
+    the queue appended after delivering (_confirmation_delivered), dated
+    today. A queued question, or a row merely marked sent, was never seen."""
     if confirmation_queue.mode() != "live":
         return False
     now = now or datetime.now(timezone.utc)
@@ -57850,11 +57904,19 @@ async def _confirmation_take_reply(ident: dict, dm_chat: str, text: Any,
         return False
     day = wa_chase.today(now)
     rows = await db.confirmation_candidates.find(
-        {"target_user_id": uid, "day": day.isoformat(), "status": "sent"}).to_list(10)
+        {"target_user_id": uid, "day": day.isoformat(), "status": {"$in": ["queued", "sent"]}}).to_list(10)
+    if not rows:
+        return False
+    events = await db.confirmation_events.find({"candidate_id": {"$in": [r["_id"] for r in rows]}}).to_list(200)
+
+    def delivered(r: dict) -> bool:
+        return any(e.get("candidate_id") == r["_id"] and e.get("kind") == "sent" and isinstance(e.get("at"), datetime)
+                   and _utc(e["at"]) <= now and wa_chase.today(_utc(e["at"])) == day and str(e.get("by") or uid) == uid
+                   for e in events)
+    rows = [r for r in rows if delivered(r)]
     if not rows:
         return False
     rows.sort(key=lambda r: int(r.get("position") or 0))
-    events = await db.confirmation_events.find({"candidate_id": {"$in": [r["_id"] for r in rows]}}).to_list(200)
     parsed = confirmation_queue.parse_reply(text, rows)
     if not parsed["answers"]:
         return False
@@ -57949,9 +58011,11 @@ async def review_project_confirmation(project_id: str, candidate_id: str, body: 
 # and has_* flags, its indexed plan sheets (as the level suggestion reads them),
 # its plan tags (plan_records / plan_areas, as photo_place reads them), and the
 # levels at least two of its filed daily logs name. Read-only: nothing is
-# stored, so there is no second copy to drift. A failed read is an EMPTY frame,
-# and an empty frame changes nothing: work_state.places_in and photo_place.infer
-# bind only when the frame holds levels.
+# stored, so there is no second copy to drift. A failed read is an EMPTY frame
+# marked `unreadable`: the loader names it in coverage["unreadable"]
+# ("place_frame"), every answer says so, and places are then CONSTRAINED, never
+# guessed (work_state.places_in binds against no levels: "floor 9" places
+# nothing). A frame that was read and holds no level changes nothing.
 from lib import location_binder  # noqa: E402
 
 PLACE_FRAME_LOGS = 5000
@@ -57976,7 +58040,7 @@ async def _project_place_frame(project_id: str) -> dict:
         spaces, _confirmed = await _photo_place_context(pid)
     except Exception as e:
         logger.warning(f"[place-frame] not read: {type(e).__name__}: {e!r}")
-        return {"levels": [], "spaces": {}, "basis": {}, "known": False, "excluded": {}}
+        return {"levels": [], "spaces": {}, "basis": {}, "known": False, "excluded": {}, "unreadable": True}
     locations = [[a.get("work_locations") for a in ((lg.get("data") or {}).get("activities") or [])
                   if isinstance(a, dict)] for lg in logs]
     return location_binder.frame_from(project, pages, locations, spaces)
@@ -58129,8 +58193,11 @@ async def _report_progress(rep: dict, project: dict, company_id: str, now: datet
     if not sched:
         return
     try:
-        rows = work_state.evidence_rows(progress_report._log_activities(keep["sources"]["logbooks"], keep["start"], today))
-        fc = schedule_forecast.forecast(sched, keep["items"], rows, today=today, project_id=str(project.get("_id")))
+        # The assistant's window and the model's unreadable sources: the report
+        # and the assistant give the same markers from the same record.
+        rows, items, _start = _forecast_window(keep["items"], keep["sources"]["logbooks"], today)
+        fc = schedule_forecast.forecast(sched, items, rows, today=today, project_id=str(project.get("_id")),
+                                        unreadable=rep["progress_model"].get("unreadable") or ())
         rep["forecast"] = schedule_forecast.report_section(fc)
     except Exception as e:                  # a schedule that cannot be read is no forecast
         logger.warning(f"[report] forecast not built: {type(e).__name__}: {e!r}")

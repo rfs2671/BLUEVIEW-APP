@@ -78,12 +78,17 @@ def places_in(text: Any, frame: Optional[Dict[str, Any]] = None) -> Dict[str, An
     """{"levels": [tokens], "space": "3B" | None} named by free text. An unknown
     place is [] and None: it is never guessed. `frame`: the project's levels and
     plan tags (server _project_place_frame); when it holds levels the words are
-    bound to them by lib/location_binder, and a level the job lacks is none."""
-    if frame and frame.get("levels"):
+    bound to them by lib/location_binder, and a level the job lacks is none.
+    A frame that could not be READ (`unreadable`) binds too: against no
+    levels, so nothing is placed (never a guess from the words alone).
+    A LIST of floors ("2nd & 3rd floor", "floors 2, 3 and 4", "fl 2/3", a bare
+    "2 and 3") is every one of them: never the one a reader happened to see."""
+    if frame and (frame.get("levels") or frame.get("unreadable")):
         from lib import location_binder   # here: the binder reads this module
         return location_binder.place(text, frame)
     t = str(text or "")
     levels = [f"{LS.FLOOR_PREFIX}{n}" for n in P.floors_in(t)]
+    levels += floor_list(t)
     rest = _SUB_CELLAR_WORDS.sub(" ", t)
     for token, rx in _NAMED_LEVELS:
         if rx.search(t if token == LS.SUB_CELLAR else rest):
@@ -96,6 +101,31 @@ def places_in(text: Any, frame: Optional[Dict[str, Any]] = None) -> Dict[str, An
     if not levels and str(read.get("floor") or "").isdigit():
         levels.append(f"{LS.FLOOR_PREFIX}{read['floor']}")
     return {"levels": sorted(set(levels)), "space": space}
+
+
+_LIST_WORD = r"(?:floors?|flrs?|fls?|fl|levels?|lvls?|pisos?|stor(?:y|ey|ies|eys))"
+_LIST_NUM = r"\d{1,2}(?:\s*(?:st|nd|rd|th))?"
+_LIST_SEP = r"\s*(?:,|&|/|\+|\band\b|\by\b)\s*"
+_LIST = rf"{_LIST_NUM}(?:{_LIST_SEP}(?:and\s+|y\s+)?{_LIST_NUM})+"
+#: "floors 2, 3 and 4", "fl 2/3", "pisos 2 y 3" | "2nd & 3rd floor", "3rd and
+#: 4th floors" | a location that is ONLY a list: "2 and 3", "2, 3" (no "/":
+#: "2/3" alone is a date as often as two floors).
+_FLOOR_LISTS = (re.compile(rf"\b{_LIST_WORD}\.?\s*#?\s*({_LIST})(?![\w/])", re.I),
+                re.compile(rf"\b({_LIST})\s*{_LIST_WORD}\b", re.I),
+                re.compile(rf"^\s*({_LIST_NUM}(?:\s*(?:,|&|\band\b|\by\b)\s*(?:and\s+|y\s+)?{_LIST_NUM})+)\s*$", re.I))
+
+
+def floor_list(text: Any) -> List[str]:
+    """Every floor a LIST names ("2nd & 3rd floor" is 2 and 3), [] when none.
+    Several levels named together: the caller treats them as shared, never one."""
+    t = " ".join(str(text or "").split())
+    out: List[str] = []
+    for rx in _FLOOR_LISTS:
+        for m in rx.finditer(t):
+            for n in re.findall(r"\d{1,2}", m.group(1)):
+                if 0 < int(n) <= LS.MAX_SUGGESTED_STORIES:
+                    out.append(f"{LS.FLOOR_PREFIX}{int(n)}")
+    return sorted(set(out))
 
 
 def level_asked(text: Any) -> Optional[str]:

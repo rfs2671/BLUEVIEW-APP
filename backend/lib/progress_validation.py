@@ -141,17 +141,27 @@ def role_words(role: Any) -> str:
 def redact_answer(answer: Dict[str, Any], roles_by_name: Dict[str, str]) -> Dict[str, Any]:
     """A work_state.what_holds answer with every inspection reporter replaced
     by their role, the inspector and their words withheld. Photos keep what
-    they show (the index prompt forbids names)."""
+    they show (the index prompt forbids names). EVERY person field of a gate
+    read is cleaned, the later statements (`later`) as well: who someone
+    heard it from (`hearsay_from`), who relayed it (`relayed_from`), each
+    later statement's reporter and words."""
     out = dict(answer)
 
-    def clean(g: Dict[str, Any]) -> Dict[str, Any]:
+    def person(g: Dict[str, Any]) -> Dict[str, Any]:
         g = dict(g)
         if "who" in g:
             g["who"] = roles_by_name.get(str(g.get("who") or ""), "a person")
-        if g.get("inspector"):
-            g["inspector"] = "[withheld]"
+        for k in ("inspector", "hearsay_from", "relayed_from"):
+            if g.get(k):
+                g[k] = "[withheld]"
         if g.get("quote"):
             g["quote"] = None
+        return g
+
+    def clean(g: Dict[str, Any]) -> Dict[str, Any]:
+        g = person(g)
+        if g.get("later"):
+            g["later"] = [person(r) for r in g["later"]]
         return g
     out["gates"] = [clean(g) for g in answer.get("gates") or []]
     out["other_inspections"] = [clean(g) for g in answer.get("other_inspections") or []]
