@@ -11,6 +11,7 @@ this script reads and writes only DATA_DIR. No database, no network, no paid API
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -30,19 +31,34 @@ def _load(data: Path):
                if line.strip()]
     inspections = json.loads((data / "public" / "dob_now_inspections_588.json").read_text(encoding="utf-8"))
     timeline = json.loads((data / "public" / "588_public_timeline.json").read_text(encoding="utf-8"))
-    return building, records, inspections, timeline
+    audit_path = data / "records" / "audit_flags.jsonl"
+    audit = ([json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+             if audit_path.exists() else None)
+    return building, records, inspections, timeline, audit
+
+
+def fingerprint(path: Path) -> dict:
+    st = path.stat()
+    return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "bytes": st.st_size,
+            "mtime": st.st_mtime}
 
 
 def run(data: Path, use_model: bool) -> dict:
-    building, records, inspections, timeline = _load(data)
-    kw = dict(data_date=DATA_DATE, inspections=inspections, timeline=timeline,
+    building, records, inspections, timeline, audit = _load(data)
+    kw = dict(data_date=DATA_DATE, inspections=inspections, timeline=timeline, audit=audit,
               project="588 Thomas S. Boyland St, Brooklyn (Block 3540 Lot 25)")
     doc = G.generate(building, records, **kw)
+    doc["inputs"] = {"records_audit": "records/audit_flags.jsonl" if audit is not None else None,
+                     "original_rows": len(G.original_ids(audit) or ())}
     model_path = data / "model" / "588_model.json"
     doc["model_run"] = None
     if use_model and model_path.exists():
+        before = fingerprint(model_path)
         model = json.loads(model_path.read_text(encoding="utf-8"))
-        doc["model_run"] = G.model_run(building, records, model, **kw)
+        doc["model_run"] = G.model_run(building, records, model, model_meta=before, **kw)
+        after = fingerprint(model_path)
+        if after["sha256"] != before["sha256"]:
+            raise SystemExit(f"{model_path} changed while this run read it; re-run")
     elif use_model:
         doc["model_run"] = {"present": False, "note": f"{model_path} not present at run time"}
     return doc

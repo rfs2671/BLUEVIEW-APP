@@ -56,6 +56,8 @@ def synthetic_building(*, gas=True, sprinkler=True, elevators=0, mezz=False):
         "plumbing": {"gas": {"value": "Gas meter at the first floor, riser G-1" if gas else "all electric"}},
         "site_safety_soe": {"sewer_connection_hold": {"value": "Roof detention (blue roof) 400 cf"}},
         "project_type": {"classification": {"value": "NEW BUILDING (synthetic)"}},
+        "zoning_code": {"cellar": {"note": 'Neighbour No. 10 is "1 STORY BRICK" (synthetic).'},
+                        "footprint": {"value": {"side_yards": "0'-0\" both sides (lot-line walls)"}}},
     }
 
 
@@ -79,12 +81,31 @@ def synthetic_records():
     out.append({"id": "S-Skin", "type": "checkin_aggregate", "origin": "synthetic", "company": "Skin Co",
                 "fields": {"kind": "sub_period_summary", "period": "2030-02-17..2030-03-01",
                            "raw_row": "Skin Co NEW Stucco floors 1–2 5 — 2.0 — 3"}})
+    # ORIGINAL filed daily-log crew rows (SYNTHETIC): Frame Co on 3 dates, Volt Co on 2
+    for i, (d, n) in enumerate((("2030-02-18", 6), ("2030-02-19", 9), ("2030-02-20", 12))):
+        out.append({"id": f"F{i}", "type": "daily_log_activity", "origin": "synthetic", "company": "Frame Co",
+                    "date": d, "crew_count": n, "description": "Framing", "fields": {}})
+    out.append({"id": "F3", "type": "daily_log_activity", "origin": "synthetic", "company": "Frame",
+                "date": "2030-02-20", "crew_count": 3, "description": "Framing", "fields": {}})
+    for i, (d, n) in enumerate((("2030-02-18", 4), ("2030-02-19", 6))):
+        out.append({"id": f"V{i}", "type": "daily_log_activity", "origin": "synthetic", "company": "Volt Co",
+                    "date": d, "crew_count": n, "description": "Wiring", "fields": {}})
     out.append({"id": "W1", "type": "daily_log_activity", "origin": "synthetic", "company": "Frame Co",
                 "quote": "Interior framing — floors 1–2 (Feb 17–Mar 1)",
                 "fields": {"kind": "period_work_item", "period": "2030-02-17..2030-03-01"}})
     out.append({"id": "W2", "type": "daily_log_activity", "origin": "synthetic", "company": "Skin Co",
                 "quote": "Stucco — floors 1–2 (Feb 20–Mar 1)",
                 "fields": {"kind": "period_work_item", "period": "2030-02-17..2030-03-01"}})
+    return out
+
+
+def synthetic_audit():
+    """SYNTHETIC audit flags: roster rows and the filed crew rows are original, the rest derived."""
+    out = []
+    for r in synthetic_records():
+        orig = r["id"].startswith(("F", "V", "R-"))
+        out.append({"rec_id": r["id"], "is_original": orig, "dup_of": None,
+                    "derived_class": "original_filed_row" if orig else "generated_report"})
     return out
 
 
@@ -105,7 +126,7 @@ def _gen(**kw):
     # the generator reads the plumbing record under this key
     ins["plumbing_permit_B01141294-S5-PL"] = ins.pop("plumbing_permit_X")
     return G.generate(b, synthetic_records(), data_date=DATA_DATE, inspections=ins, timeline=(),
-                      extras=kw.get("extras", False))
+                      extras=kw.get("extras", False), audit=synthetic_audit(), state=kw.get("state"))
 
 
 class CPMIsCorrect(unittest.TestCase):
@@ -249,9 +270,9 @@ class InspectionsAreGates(unittest.TestCase):
     def test_board_waits_for_every_pre_board_gate(self):
         for z in ("L1", "L2"):
             need = {f"gate_plumbing_rough_{z}", f"gate_elec_rough_{z}", f"gate_sprinkler_hydro_{z}",
-                    f"gate_firestop_{z}", f"gate_tr8_insulation_{z}"}
+                    f"gate_firestop_pre_{z}", f"gate_tr8_insulation_{z}"}
             self.assertTrue(need <= self._preds(f"board_hang_{z}"), z)
-            self.assertIn(f"gate_fire_rated_{z}", self._preds(f"tape_{z}"))
+            self.assertTrue({f"gate_fire_rated_{z}", f"gate_firestop_{z}"} <= self._preds(f"tape_{z}"), z)
 
     def test_a_passed_plumbing_rough_is_not_the_plumbing_final(self):
         self.assertEqual(self.acts["gate_plumbing_rough_L1"]["state"]["status"], "done")
@@ -272,7 +293,9 @@ class InspectionsAreGates(unittest.TestCase):
         self.assertIn("dot_opening_permit", self._preds("house_sewer_connection"))
         self.assertIn("gas_authorization", self._preds("ng_meter_on"))
         self.assertIn("ng_meter_on", self._preds("dhw_startup"))
-        self.assertIn("dhw_startup", self._preds("gate_plumbing_final"))
+        # review 1: hot water and drainage gate the TCO (HMC 27-2031, DEP), not the plumbing final
+        self.assertIn("dhw_startup", self._preds("gate_tco"))
+        self.assertIn("gate_dep_connection", self._preds("gate_tco"))
         for g in ("gate_plumbing_final", "gate_dob_elec_final", "gate_sprinkler_final", "gate_fdny_fa"):
             self.assertIn(g, self._preds("gate_tco"))
 
@@ -353,15 +376,19 @@ class TheNetworkIsThisBuilding(unittest.TestCase):
 
 class MeasuredIsMeasured(unittest.TestCase):
     def test_crew_sizes_with_sample(self):
-        crews = G.measured_crews(synthetic_records())
-        self.assertEqual((crews["Frame Co"]["avg"], crews["Frame Co"]["peak"], crews["Frame Co"]["days"]), (8.0, 11, 10))
+        crews = G.measured_crews(synthetic_records(), synthetic_audit())
+        fc = crews["Frame Co"]
+        # originals: 6, 9, max(12, 3 under the short name "Frame") -> mean 9, peak 12, n=3
+        self.assertEqual((fc["source"], fc["avg"], fc["peak"], fc["days"]), ("original", 9.0, 12.0, 3))
+        self.assertEqual(sorted(fc["ids"]), ["F0", "F1", "F2", "F3"])
+        self.assertEqual(crews["Skin Co"]["source"], "derived_report")
         self.assertEqual((crews["Skin Co"]["avg"], crews["Skin Co"]["peak"], crews["Skin Co"]["days"]), (2.0, 3.0, 5))
         self.assertEqual(crews["Spray Co"]["avg"], None)
         self.assertEqual(crews["Frame Co"]["role"], "framing")
         self.assertEqual(crews["Main Co"]["role"], "site_utility")
         a = {x["id"]: x for x in G.measured_assumptions(crews, {})}
         self.assertEqual(a["crew_frame_co"]["tag"], "measured")
-        self.assertEqual(a["crew_frame_co"]["sample"]["n_days"], 10)
+        self.assertEqual(a["crew_frame_co"]["sample"]["n_days"], 3)
         self.assertNotIn("crew_spray_co", a)
 
     def test_inspection_lead_is_measured_from_the_record(self):
@@ -400,3 +427,111 @@ class StateAndBranches(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewOneFixes(unittest.TestCase):
+    """Adversarial review 1 + records audit (2026-11-10). SYNTHETIC fixtures."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.doc = _gen(extras=True)
+        cls.acts = {a["id"]: a for a in cls.doc["network"]["activities"]}
+        cls.links = cls.doc["network"]["links"]
+
+    def _preds(self, aid):
+        return {l["from"] for l in self.links if l["to"] == aid and l["kind"] == "prerequisite"}
+
+    def test_measured_crews_come_only_from_original_rows(self):
+        crews = G.measured_crews(synthetic_records(), synthetic_audit())
+        self.assertEqual(crews["Volt Co"]["source"], "derived_report")  # 2 original days < 3: not measured
+        self.assertEqual(crews["Volt Co"]["original_days"], 2)
+        a = {x["id"]: x for x in G.measured_assumptions(crews, {})}
+        self.assertEqual(a["crew_volt_co"]["tag"], "derived-report")
+        self.assertEqual(a["crew_skin_co"]["tag"], "derived-report")
+        self.assertIn("unaudited", a["crew_skin_co"]["label"])
+        unaudited = G.measured_crews(synthetic_records(), None)
+        self.assertTrue(all(c["source"] != "original" for c in unaudited.values()))
+
+    def test_sensitivity_to_the_eifs_crew_and_the_dob_wait(self):
+        sens = self.doc["sensitivity"]
+        crews = [r["crew"] for r in sens["eifs_crew"]]
+        self.assertTrue({1, 2, 3, 5} <= set(crews))
+        tcos = [r["tco"] for r in sorted(sens["eifs_crew"], key=lambda r: r["crew"])]
+        self.assertEqual(tcos, sorted(tcos, reverse=True))
+        waits = [r["tco"] for r in sorted(sens["dob_wait"], key=lambda r: r["working_days"])]
+        self.assertEqual(waits, sorted(waits))
+
+    def test_insulation_waits_for_the_rough_inspections(self):
+        for z in ("L1", "L2"):
+            p = self._preds(f"insulation_{z}")
+            self.assertIn(f"gate_elec_rough_{z}", p)
+            self.assertIn(f"gate_plumbing_rough_{z}", p)
+            self.assertNotIn(f"elec_rough_{z}", p)
+
+    def test_firestopping_is_split_around_the_board(self):
+        for z in ("L1", "L2"):
+            self.assertIn(f"gate_firestop_pre_{z}", self._preds(f"board_hang_{z}"))
+            self.assertIn(f"firestop_pre_{z}", self._preds(f"gate_firestop_pre_{z}"))
+            self.assertIn(f"board_hang_{z}", self._preds(f"firestop_post_{z}"))
+            self.assertIn(f"firestop_post_{z}", self._preds(f"gate_firestop_{z}"))
+            self.assertIn(f"gate_firestop_{z}", self._preds(f"tape_{z}"))
+
+    def test_work_under_way_still_waits_for_its_inspect_before_cover_gate(self):
+        st = {a["id"]: a["state"] for a in self.doc["network"]["activities"]}
+        st["insulation_L1"] = G.state_entry("in_progress", "reported_log", "SYNTHETIC")
+        doc = _gen(state=st)
+        acts = {a["id"]: a for a in doc["network"]["activities"]}
+        for s in G.SCENARIOS:
+            self.assertGreaterEqual(acts["insulation_L1"]["scenarios"][s]["es"],
+                                    acts["gate_elec_rough_L1"]["scenarios"][s]["ef"], s)
+            for e in [i for i in acts if i.startswith("eifs_") and acts[i]["state"]["status"] == "in_progress"]:
+                g = next(l["from"] for l in doc["network"]["links"] if l["to"] == e and l["from"].startswith("gate_"))
+                self.assertGreaterEqual(acts[e]["scenarios"][s]["es"], acts[g]["scenarios"][s]["ef"], f"{s} {e}")
+        self.assertIn("insulation_L1", {c["id"] for c in doc["state_contradictions"]})
+
+    def test_facade_split_is_a_branch_and_the_covered_lot_line_gets_no_eifs(self):
+        ids = {b["id"] for b in self.doc["branches"]}
+        self.assertIn("facade_eifs_share", ids)
+        self.assertIn("brick_veneer", self.acts)
+        side = self.acts["eifs_side_known"]
+        # SYNTHETIC: one side wall 60 LF x (2 levels x 10 ft + 3.5 ft parapet), the 1-storey neighbour covers 10 ft
+        self.assertEqual(side["scope"]["quantity"], round(60 * (2 * 10 + 3.5 - 10)))
+        self.assertIn("adjoining_roof_access_known", self._preds("eifs_side_known"))
+
+    def test_no_uncited_link_and_the_removed_ones_are_listed(self):
+        self.assertNotIn("gate_dob_elec_final", self._preds("gate_tr8_final"))
+        for l in self.links:
+            self.assertTrue(l.get("basis"), f"{l['from']} -> {l['to']}")
+        removed = {(r["from"], r["to"]) for r in self.doc["link_review"]["removed"]}
+        self.assertIn(("gate_dob_elec_final", "gate_tr8_final"), removed)
+
+    def test_an_inferred_gate_is_never_passed(self):
+        st = {a["id"]: a["state"] for a in self.doc["network"]["activities"]}
+        st["gate_elec_rough_L1"] = G.state_entry("done", "inferred", "SYNTHETIC: inferred")
+        doc = _gen(state=st, extras=True)
+        acts = {a["id"]: a for a in doc["network"]["activities"]}
+        for s in G.SCENARIOS:
+            self.assertGreater(acts["gate_elec_rough_L1"]["scenarios"][s]["effort_days"], 0, s)
+            self.assertIn("inferred", acts["gate_elec_rough_L1"]["scenarios"][s]["remaining_how"])
+        self.assertIn("inferred_gate:gate_elec_rough_L1", {b["id"] for b in doc["branches"]})
+
+    def test_conservative_is_one_story_and_the_stack_is_a_stress_test(self):
+        d = self.doc["scenario_definitions"]
+        self.assertTrue(d["conservative"]["story"])
+        self.assertTrue(d["conservative"]["adverse"])
+        a = {x["id"]: x for x in self.doc["assumptions"]}
+        self.assertEqual(a["crew_frame_co"]["values"]["conservative"], a["crew_frame_co"]["values"]["normal"])
+        self.assertLess(a["crew_frame_co"]["values"]["stress"], a["crew_frame_co"]["values"]["normal"])
+        st = self.doc["stress_test"]
+        self.assertGreaterEqual(st["tco_working_days"], self.doc["completion"]["conservative"]["tco_working_days"])
+        self.assertTrue(all(G.monotone(x) for x in self.doc["assumptions"]))
+
+    def test_no_negative_float_and_a_done_activity_with_open_prerequisite_is_reported(self):
+        st = {a["id"]: a["state"] for a in self.doc["network"]["activities"]}
+        st["elec_rough_L1"] = G.state_entry("done", "verified_public_record", "SYNTHETIC")
+        st["framing_close_L1"] = G.state_entry("in_progress", "reported_log", "SYNTHETIC")
+        doc = _gen(state=st)
+        for a in doc["network"]["activities"]:
+            for s in G.SCENARIOS:
+                self.assertGreaterEqual(a["scenarios"][s]["total_float_days"], 0, f"{s} {a['id']}")
+        self.assertIn("elec_rough_L1", {c["id"] for c in doc["state_contradictions"]})

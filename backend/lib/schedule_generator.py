@@ -48,9 +48,16 @@ from lib import evidence as E
 ENGINE = "schedule_generator v1"
 DOC_KIND = "schedule_estimate"
 SCENARIOS = ("fast", "normal", "conservative")
-TAGS = ("measured", "drawing", "regulatory", "industry-assumption")
+#: the stacked worst case, reported separately as a stress test (not a scenario)
+STRESS = "stress"
+ALL_RUNS = SCENARIOS + (STRESS,)
+#: "derived-report": a figure read from a generated report or snapshot, not
+#: from an original record (records/AUDIT.md); never called measured.
+TAGS = ("measured", "derived-report", "drawing", "regulatory", "industry-assumption")
 STATUSES = ("done", "in_progress", "not_started", "unknown")
-EVIDENCE = ("verified_public_record", "reported_log", "operator_statement", "inferred", "no_record")
+EVIDENCE = ("verified_public_record", "reported_log", "derived_report", "operator_statement", "inferred", "no_record")
+#: original per-day crew counts needed before a crew size is called measured
+MIN_MEASURED_DAYS = 3
 LINK_KINDS = ("prerequisite", "overlap", "resource")
 LINK_TYPES = ("FS", "SS", "FF")
 #: Field-name prefixes a schedule FILE uses (lib/schedule_import.py). None may
@@ -209,6 +216,8 @@ def cpm(acts: Sequence[Act], links: Sequence[Link]) -> Dict[str, Dict[str, Any]]
         d = float(a.get("effort") or 0.0)
         lf, ls_cap = finish, None
         for l in outof[j]:
+            if by_id[l["to"]].get("pinned"):
+                continue  # done work imposes no requirement (a contradiction is reported elsewhere)
             s, lag = r[l["to"]], int(l.get("lag") or 0)
             if l["type"] == "FS":
                 lf = min(lf, s["ls"] - lag)
@@ -242,27 +251,64 @@ def driving_path(res: Dict[str, Dict[str, Any]], end: str) -> List[str]:
 # ═══ ASSUMPTIONS ═════════════════════════════════════════════════════════════
 
 def assumption(aid: str, label: str, unit: str, tag: str, fast: Any, normal: Any, cons: Any, *, faster: str,
-               basis: str, sample: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+               basis: str, sample: Optional[Dict[str, Any]] = None, stress: Any = None) -> Dict[str, Any]:
+    """`stress` (default: `cons`) is the worst value, used only by the stress
+    test; see `coherent_conservative` for how `conservative` is chosen."""
     if tag not in TAGS:
         raise ValueError(f"unknown assumption tag {tag!r}")
     if faster not in ("higher", "lower"):
         raise ValueError("faster must be 'higher' or 'lower'")
     out = {"id": aid, "label": label, "unit": unit, "tag": tag, "faster": faster,
-           "values": {"fast": fast, "normal": normal, "conservative": cons}, "basis": basis}
+           "values": {"fast": fast, "normal": normal, "conservative": cons,
+                      STRESS: cons if stress is None else stress}, "basis": basis}
     if sample is not None:
         out["sample"] = sample
     return out
 
 
 def monotone(a: Dict[str, Any]) -> bool:
-    """fast is never slower than normal, normal never slower than conservative."""
+    """fast is never slower than normal, normal never slower than
+    conservative, conservative never slower than the stress test."""
     v = a["values"]
+    keys = [k for k in ALL_RUNS if k in v]
 
-    def ok(f, n, c):
-        return f >= n >= c if a["faster"] == "higher" else f <= n <= c
+    def ok(*xs):
+        return all((x >= y) if a["faster"] == "higher" else (x <= y) for x, y in zip(xs, xs[1:]))
     if isinstance(v["normal"], dict):
-        return all(ok(v["fast"][k], v["normal"][k], v["conservative"][k]) for k in v["normal"])
-    return ok(v["fast"], v["normal"], v["conservative"])
+        return all(ok(*[v[s][k] for s in keys]) for k in v["normal"])
+    return ok(*[v[s] for s in keys])
+
+
+#: CONSERVATIVE is ONE plausible adverse story, not every worst case at once:
+CONSERVATIVE_STORY = ("A cold winter and slow agencies: exterior and sitework weather at the cold end, every DOB / "
+                      "FDNY / DEP / DOT / TCO wait at its long end, one failed first attempt at the DOB electrical "
+                      "final and the FDNY fire-alarm test (one extra cycle of that inspection), and trades not yet on "
+                      "site mobilizing late. Crews, production rates, utility leads and unknown-scope shares stay at "
+                      "normal.")
+CONSERVATIVE_ADVERSE = ("weather_exterior", "weather_sitework", "lead_special", "lead_dob_electrical", "lead_fdny_fa",
+                        "lead_dob_plumbing", "lead_dep_permit", "lead_dep_inspection", "lead_dot_permit",
+                        "lead_gas_auth", "lead_tco", "lead_bpp", "reinspect_factor", "mobilization",
+                        "lead_cabinet_delivery")
+SCENARIO_STORIES = {
+    "fast": "Crews at the highest day seen, short agency waits, a mild winter, unstarted trades on site at once.",
+    "normal": "Crews at their average, the measured 7-working-day DOB wait, typical winter, 5-day mobilization.",
+    "conservative": CONSERVATIVE_STORY,
+    STRESS: "STRESS TEST, not a forecast: every assumption at its worst value simultaneously (crews at 80% of "
+            "average, slowest rates, longest leads, worst weather, worst state shares).",
+}
+
+
+def coherent_conservative(assumptions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """conservative = the stress value for the adverse story's assumptions,
+    the normal value for everything else."""
+    for a in assumptions:
+        v = a["values"]
+        v.setdefault(STRESS, v["conservative"])
+        if a["id"] in CONSERVATIVE_ADVERSE:
+            v["conservative"] = v[STRESS]
+        else:
+            v["conservative"] = v["normal"]
+    return assumptions
 
 
 _MONTHS = range(1, 13)
@@ -305,6 +351,24 @@ def default_assumptions() -> List[Dict[str, Any]]:
           IA, 0.6, 0.8, 1.0, faster="lower",
           basis="neighbour 586 is a 2-storey brick with cellar (survey on ST T-001), so about 2 of 5 storeys on that "
                 "side are covered; the other neighbour's height is not on the drawings"),
+        A("facade_eifs_share", "Share of the exterior wall finished in EIFS/stucco (rest brick veneer)", "fraction",
+          IA, 1.0, 1.0, 1.0, faster="lower",
+          basis="NOT DETERMINABLE from the drawings (legend names brick and stucco; elevations carry no finish "
+                "labels). Scenarios use 1.0 because the only facade trade on the roster or in any record is Stucco "
+                "(J&P) and no mason appears; the branch 'facade_eifs_share' runs 0.5"),
+        A("unknown_neighbour_storeys", "Storeys of the neighbour on the side the drawings do not describe",
+          "storeys", IA, 2, 2, 2, faster="higher", stress=0,
+          basis="only No. 586 is described (2-storey brick, Z-001); the other side is assumed alike; stress: no "
+                "building there, the whole wall is exposed"),
+        A("lead_adjoining_access", "Adjoining-owner licence and roof protection before scaffolding from a "
+          "neighbour's roof", "working days", IA, 5, 15, 30, faster="lower", stress=60,
+          basis="SSP-003/005 plan adjacent-roof protection; licence status unknown; stress: RPAPL 881 petition"),
+        A("rate_brick", "Brick veneer on CFS (ties, flashing, brick)", "SF per worker-day", IA, 90, 75, 60,
+          faster="higher", basis="mason output"),
+        A("crew_masons", "Masons (none on the roster)", "workers", IA, 6, 4, 3, faster="higher",
+          basis="no masonry sub on the roster"),
+        A("window_avg_sf", "Average window opening deducted from the W1 walls", "SF", IA, 15, 15, 15, faster="higher",
+          basis="window sizes are not determinable from the text layer; PTAC opening 5.5 SF each (A-100)"),
         # ── physical limits of this site ──
         A("sf_per_worker", "Floor plate per worker on one floor at once", "SF per worker", IA, 150, 200, 250,
           faster="lower", basis="2,497 SF plate (Z-001), 4 small units + corridor; working-room norm"),
@@ -496,9 +560,9 @@ def default_assumptions() -> List[Dict[str, Any]]:
     ]
     hol = [date(2026, 11, 26), date(2026, 11, 27), date(2026, 12, 25), date(2027, 1, 1), date(2027, 5, 31),
            date(2027, 7, 5), date(2027, 9, 6)]
-    out[-1]["values"] = {s: [d.isoformat() for d in hol] for s in SCENARIOS}
+    out[-1]["values"] = {s: [d.isoformat() for d in hol] for s in ALL_RUNS}
     out[-1]["faster"] = "lower"
-    return out
+    return coherent_conservative(out)
 
 
 # ═══ MEASURED FROM THE RECORDS ═══════════════════════════════════════════════
@@ -533,21 +597,57 @@ def _period_end(f: Dict[str, Any]) -> str:
     return p.split("..")[-1] if ".." in p else str(f.get("last") or "")
 
 
-def measured_crews(records: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """{company: {role, trade, avg, peak, days, period_end, ids}} from the
-    report engine's per-sub period summaries (check-ins per day). The latest
-    period wins. A COUNT of people per day, never a production rate."""
+def _canon_company(name: str, roster: Sequence[str]) -> str:
+    """'Arkon' -> 'Arkon Builders' when exactly one roster company starts with it."""
+    n = (name or "").strip()
+    hits = [c for c in roster if c == n or c.lower().startswith(n.lower() + " ")]
+    return hits[0] if len(hits) == 1 else n
+
+
+def original_ids(audit: Optional[Iterable[Dict[str, Any]]]) -> Optional[set]:
+    """Record ids the records audit marks ORIGINAL and not a duplicate. None:
+    no audit was given, so nothing can be called original."""
+    if audit is None:
+        return None
+    return {f["rec_id"] for f in audit if f.get("is_original") and not f.get("dup_of")}
+
+
+def measured_crews(records: Iterable[Dict[str, Any]], audit: Optional[Iterable[Dict[str, Any]]] = None
+                   ) -> Dict[str, Dict[str, Any]]:
+    """{company: {source, role, trade, avg, peak, days, ...}}.
+
+    MEASURED (source "original") only from ORIGINAL filed daily-log crew rows
+    (records/AUDIT.md: is_original and not a duplicate): per company and date
+    the largest count printed that day (an amendment raises, never lowers, in
+    these records), then the mean and the highest day over at least
+    MIN_MEASURED_DAYS dates. Otherwise the report engine's period summary is
+    used and labelled "derived_report" (a generated report, unaudited), with
+    the original days kept beside it. A COUNT of people per day, never a rate."""
+    records = list(records)
+    orig = original_ids(audit)  # the audit's own duplicate flags (the README's duplicate_of is backwards in 23 of 25)
     roster: Dict[str, str] = {}
-    best: Dict[str, Dict[str, Any]] = {}
     for r in records:
-        if r.get("duplicate_of") or r.get("origin") == "assistant_claim":
-            continue
         f = r.get("fields") or {}
-        kind = f.get("kind")
+        if f.get("kind") == "roster_row_trade_assignment" and r.get("company"):
+            roster[r["company"].strip()] = r.get("trade") or ""
+    per_day: Dict[str, Dict[str, Tuple[float, List[str]]]] = {}
+    for r in records:
+        if orig is None or r.get("id") not in orig:
+            continue
+        if r.get("type") != "daily_log_activity" or r.get("crew_count") is None or not r.get("date"):
+            continue
+        comp = _canon_company(r.get("company") or "", list(roster))
+        if not comp or comp.lower().startswith("pending"):
+            continue
+        cur = per_day.setdefault(comp, {}).get(r["date"])
+        n_ = float(r["crew_count"])
+        ids = (cur[1] if cur else []) + [r["id"]]
+        per_day[comp][r["date"]] = (max(n_, cur[0]) if cur else n_, ids)
+    derived: Dict[str, Dict[str, Any]] = {}
+    for r in records:
+        f = r.get("fields") or {}
         comp = (r.get("company") or "").strip()
-        if kind == "roster_row_trade_assignment" and comp:
-            roster[comp] = r.get("trade") or ""
-        if kind != "sub_period_summary" or not comp:
+        if f.get("kind") != "sub_period_summary" or not comp or r.get("origin") == "assistant_claim"                 or r.get("duplicate_of"):
             continue
         avg = f.get("avg_workers", f.get("avg_per_day"))
         peak = f.get("peak", f.get("max"))
@@ -559,17 +659,30 @@ def measured_crews(records: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any
         if avg is None or peak is None or not days:
             continue
         end = _period_end(f)
-        cur = best.get(comp)
+        cur = derived.get(comp)
         if cur is None or end > cur["period_end"]:
-            best[comp] = {"avg": float(avg), "peak": float(peak), "days": int(days), "period_end": end,
-                          "period": f.get("period") or f"{f.get('first')}..{f.get('last')}", "ids": [r.get("id")]}
-    for comp, v in best.items():
-        v["trade"] = roster.get(comp, "")
-        v["role"] = role_of(v["trade"])
-    for comp, trade in roster.items():
-        best.setdefault(comp, {"avg": None, "peak": None, "days": 0, "period_end": "", "period": None, "ids": [],
-                               "trade": trade, "role": role_of(trade)})
-    return best
+            derived[comp] = {"avg": float(avg), "peak": float(peak), "days": int(days), "period_end": end,
+                             "period": f.get("period") or f"{f.get('first')}..{f.get('last')}", "ids": [r.get("id")]}
+    out: Dict[str, Dict[str, Any]] = {}
+    for comp in sorted(set(roster) | set(per_day) | set(derived)):
+        days = per_day.get(comp, {})
+        vals = [v[0] for _d, v in sorted(days.items())]
+        entry: Dict[str, Any] = {"trade": roster.get(comp, ""), "role": role_of(roster.get(comp, "")),
+                                 "original_days": len(vals),
+                                 "original_values": {d: v[0] for d, v in sorted(days.items())},
+                                 "derived": derived.get(comp)}
+        if len(vals) >= MIN_MEASURED_DAYS:
+            entry.update({"source": "original", "avg": round(sum(vals) / len(vals), 2), "peak": max(vals),
+                          "days": len(vals), "period": f"{min(days)}..{max(days)}",
+                          "ids": sorted(i for v in days.values() for i in v[1])})
+        elif comp in derived:
+            d = derived[comp]
+            entry.update({"source": "derived_report", "avg": d["avg"], "peak": d["peak"], "days": d["days"],
+                          "period": d["period"], "ids": d["ids"]})
+        else:
+            entry.update({"source": "none", "avg": None, "peak": None, "days": 0, "period": None, "ids": []})
+        out[comp] = entry
+    return out
 
 
 def _working_days_between(a: date, b: date) -> int:
@@ -613,22 +726,30 @@ def measured_assumptions(crews: Dict[str, Dict[str, Any]], leads: Dict[str, Any]
         if not c.get("avg"):
             continue
         avg, peak = c["avg"], max(c["peak"], c["avg"])
+        if c["source"] == "original":
+            tag, label = "measured", f"Crew size, {comp} ({c['trade'] or 'trade not on roster'})"
+            basis = (f"ORIGINAL filed daily-log crew rows on {c['days']} dates ({c['period']}): mean {avg:g}, highest "
+                     f"{peak:g} (rows {', '.join(c['ids'][:12])}{' ...' if len(c['ids']) > 12 else ''})")
+        else:
+            tag = "derived-report"
+            label = f"Crew size, {comp} ({c['trade'] or 'trade not on roster'}) - derived-report figure (unaudited)"
+            basis = (f"generated report period summary {c['period']} (rows {', '.join(c['ids'])}): {avg:g} per day "
+                     f"present over {c['days']} days, highest {peak:g}; NOT an original record. Original filed "
+                     f"crew rows: {c['original_days']} date(s) {c['original_values'] or ''}")
         out.append(assumption(
-            crew_id(comp), f"Crew size, {comp} ({c['trade'] or 'trade not on roster'})", "workers on site per day",
-            "measured", peak, avg, round(max(1.0, 0.8 * avg), 2), faster="higher",
-            basis=(f"check-ins per day over {c['days']} days on site, period {c['period']}: average {avg:g}, peak "
-                   f"{peak:g}. fast = measured peak, normal = measured average, conservative = 80% of the "
-                   "average (the 80% haircut is an assumption)"),
-            sample={"n_days": c["days"], "period": c["period"], "record_ids": c["ids"]}))
+            crew_id(comp), label, "workers on site per day present", tag, peak, avg, avg, faster="higher",
+            stress=round(max(1.0, 0.8 * avg), 2),
+            basis=basis + ". fast = highest day, normal and conservative = mean, stress = 80% of the mean",
+            sample={"n_days": c["days"], "period": c["period"], "record_ids": c["ids"], "source": c["source"]}))
     pl = leads.get("dob_plumbing")
     if pl:
         w = pl["working_days"]
         out.append(assumption(
             "lead_dob_plumbing", "DOB plumbing / sprinkler / gas inspection request to result", "working days",
             "measured", max(1, w - 2), w, w + 5, faster="lower",
-            basis=(f"inspection {pl['inspection']}: requested (Pending) {pl['requested']}, resulted {pl['resulted']} = "
-                   f"{w} working days; n=1, so fast/conservative are +-assumptions around it; reused for sprinkler "
-                   "and gas finals (no sample of their own)"),
+            basis=(f"inspection {pl['inspection']} (public DOB NOW record, hand-verified): requested (Pending) "
+                   f"{pl['requested']}, resulted {pl['resulted']} = {w} working days; n=1, so fast/conservative are "
+                   "+-assumptions around it; reused for sprinkler and gas finals (no sample of their own)"),
             sample={"n": 1, "inspection": pl["inspection"]}))
     return out
 
@@ -651,6 +772,17 @@ EXTERIOR_TYPES = ("W1", "W2")
 
 def _val(node: Any) -> Any:
     return node.get("value") if isinstance(node, dict) and "value" in node else node
+
+
+def _strings(o: Any) -> Iterable[str]:
+    if isinstance(o, dict):
+        for v in o.values():
+            yield from _strings(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from _strings(v)
+    elif isinstance(o, str):
+        yield o
 
 
 def _floats(s: Any) -> List[float]:
@@ -708,7 +840,14 @@ def facts_from_building(b: Dict[str, Any]) -> Dict[str, Any]:
     ext_doors = sum(int(v) for k, v in dw.items() if re.fullmatch(r"D\d", k))
     windows = sum(int(v) for k, v in dw.items() if re.fullmatch(r"W\d", k))
     n_levels_ext = len(zones)
+    neighbours = []
+    for txt in _strings(b):
+        for m in re.finditer(r'Neighbou?r No\.\s*(\d+)\s+is\s+"?(\d+)\s+STOR', txt, re.I):
+            nb = {"number": m.group(1), "storeys": int(m.group(2))}
+            if nb not in neighbours:
+                neighbours.append(nb)
     return {
+        "neighbours": neighbours,
         "zones": zones,
         "systems": {
             "sprinkler": "sprinkler" in sprk.lower() and "wet" in sprk.lower(),
@@ -764,20 +903,22 @@ def remaining_fraction(st: Dict[str, Any], scn: str, A: Callable[[str, str], Any
     """(share of the scope left, how it was decided). A gate or lead is passed
     or not: anything short of done leaves all of it."""
     s, ev = st["status"], st["evidence"]
+    if s == "done" and gate and ev != "verified_public_record":
+        return 1.0, f"pass not verified ({ev}): an inferred or reported pass is never a passed inspection; pending"
     if s == "done":
         if ev == "operator_statement":
             return float(A("remaining_operator_done", scn)), "done per an operator statement only"
         if ev == "inferred" and not gate:
             return float(A("remaining_inferred_done", scn)), "done by inference only"
-        return 0.0, "done"
+        return 0.0, f"done ({ev})"
     if gate or s == "not_started":
         return 1.0, s
     if s == "in_progress":
         md = st.get("man_days")
         if md and qty and rate:
             left = max(MIN_REMAINING, 1.0 - md * rate / qty)
-            return round(left, 3), (f"ESTIMATE of work in place: {md:g} measured man-days x assumed rate "
-                                    f"{rate:g} / {qty:g}; at least {MIN_REMAINING:g} left")
+            return round(left, 3), (f"ESTIMATE of work in place: {md:g} man-days (derived-report figure, unaudited) "
+                                    f"x assumed rate {rate:g} / {qty:g}; at least {MIN_REMAINING:g} left")
         return float(A("remaining_in_progress", scn)), "in progress, amount unmeasured"
     return float(A("remaining_unknown", scn)), "state unknown"
 
@@ -789,6 +930,7 @@ class _Net:
         self.acts: List[Act] = []
         self.links: List[Link] = []
         self._ids: set = set()
+        self.skipped: List[Tuple[str, str]] = []
 
     def act(self, aid: str, name: str, kind: str, **kw: Any) -> Act:
         if aid in self._ids:
@@ -803,18 +945,28 @@ class _Net:
         return aid in self._ids
 
     def link(self, a: str, b: str, kind: str, why: str, *, type: str = "FS", lag: Any = 0,
-             scenarios: Sequence[str] = SCENARIOS) -> None:
+             scenarios: Sequence[str] = ALL_RUNS, basis: Optional[str] = None) -> None:
+        """`basis`: a code section, a drawing note, or 'physical: ...'. A link
+        to an activity this building does not have is skipped and recorded."""
         if a not in self._ids or b not in self._ids:
+            self.skipped.append((a, b))
             return
         if kind not in LINK_KINDS or type not in LINK_TYPES:
             raise ValueError(f"bad link {a}->{b}: {kind}/{type}")
+        if basis is None:
+            basis = {"resource": "crew continuity: one crew, one place at a time",
+                     "overlap": "physical: the next trade starts once the first area is ready"}.get(kind,
+                                                                                                   f"physical: {why}")
         self.links.append({"from": a, "to": b, "type": type, "lag": lag, "kind": kind, "why": why,
-                           "scenarios": list(scenarios)})
+                           "basis": basis, "scenarios": list(scenarios)})
 
 
 def _crew(role_company: Dict[str, str], role: str, fallback: str) -> Tuple[str, Optional[str]]:
     comp = role_company.get(role)
     return (crew_id(comp), comp) if comp else (fallback, None)
+
+
+COVER_BASIS = "BC 110.3 / 1704: work is inspected before it is covered"
 
 
 def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_ids: set) -> Dict[str, Any]:
@@ -942,49 +1094,88 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
         zones[0]["ptacs"] += drift
 
     h = H
-    elevs = []
+    eifs_ids: List[str] = []
     ext_lf = B["exterior_lf_per_level"]
     if ext_lf and zones:
         ref = max((z for z in zones if z["id"] != "MEZ"), key=lambda z: z["gross_sf"])
         w1 = ref["wall_lf"].get("W1", 0.0)
         w2 = ref["wall_lf"].get("W2", 0.0)
         levels = facts["building"]["levels_with_facade"]
-        parapet = 3.5
-        storey = 10.0
-        # sides first: they carry no PTAC sleeves, so EIFS can run there while
-        # the sleeves go into the front and rear walls.
-        elevs = [("sides", "Side walls (W2, 2-hr lot-line walls above the neighbours)", w2, False),
-                 ("front_rear", "Front and rear (W1 walls, PTAC + window walls)", w1, True)]
-        elevs = [(eid, label, round(lf * (levels * storey + parapet)), ptac) for eid, label, lf, ptac in elevs if lf]
-    prev = None
-    for eid, label, area, has_ptac in elevs:
-        gate(f"gate_air_barrier_{eid}", f"TR8 IIA6 air barrier visual before EIFS, {eid}", "ENVELOPE", "gate_tr8",
-             "lead_special", "Progress inspector (TR8)", [f"eifs_{eid}"], basis="GN-001 TR8 IIA6")
-        n.link("windows", f"gate_air_barrier_{eid}", "prerequisite", "window perimeters sealed to the air barrier")
-        work(f"eifs_{eid}", f"EIFS: {label}", "ENVELOPE", "eifs", area, "SF", "rate_eifs", eifs,
-             weather="weather_exterior",
-             basis=("W1/W2 LF per level x (levels x 10 ft + 42 in parapet), openings not deducted; side walls "
-                    "below neighbouring roofs may not get EIFS, so the side figure is an upper bound"))
-        if eid == "sides":
-            n.acts[-1]["qty_factor"] = "eifs_side_exposed_share"
-        n.link(f"gate_air_barrier_{eid}", f"eifs_{eid}", "prerequisite", "EIFS covers the air barrier")
-        if prev:
-            n.link(prev, f"eifs_{eid}", "resource", "one EIFS crew moves elevation to elevation")
-        prev = f"eifs_{eid}"
-    eifs_ids = [f"eifs_{e[0]}" for e in elevs]
+        height = levels * 10.0 + 3.5  # 10 ft storeys + 42 in parapet
+        known = facts["neighbours"]
+        elev = []  # (id, label, quantity basis dict, ptac wall, neighbour)
+        if w2:
+            side = w2 / 2.0
+            if known:
+                nb = known[0]
+                elev.append(("side_known", f"Lot-line side wall above neighbour No. {nb['number']} "
+                             f"({nb['storeys']}-storey)", {"lf": side, "height": height, "covered_storeys": nb["storeys"]},
+                             False, nb))
+            elev.append(("side_other", "Lot-line side wall above the other neighbour (height not on the drawings)",
+                         {"lf": side, "height": height, "covered_storeys": "unknown_neighbour_storeys"}, False, None))
+        if w1:
+            elev.append(("front_rear", "Front and rear (W1 walls: windows and PTAC sleeves)",
+                         {"lf": w1, "height": height, "covered_storeys": 0, "openings": True, "windows": B["windows"], "ptacs": B["ptacs"]}, True, None))
+        bulk_lf = 4 * math.sqrt(B["bulkhead_sf"]) if B["bulkhead_sf"] else 0.0
+        if bulk_lf:
+            elev.append(("bulkhead", "Stair/mechanical bulkhead walls (worked from the roof)",
+                         {"lf": bulk_lf, "height": 10.0, "covered_storeys": 0}, False, None))
+        prev = None
+        for eid, label, qb, has_ptac, nb in elev:
+            gate(f"gate_air_barrier_{eid}", f"TR8 IIA6 air/water barrier visual before cladding, {eid}", "ENVELOPE",
+                 "gate_tr8", "lead_special", "Progress inspector (TR8)", [f"eifs_{eid}"], basis="GN-001 TR8 IIA6")
+            n.link("windows", f"gate_air_barrier_{eid}", "prerequisite", "window perimeters sealed to the air barrier",
+                   basis="TR8 IIA6 (GN-001): the barrier is inspected complete, including its seals at openings")
+            gross = qb["lf"] * qb["height"]
+            work(f"eifs_{eid}", f"EIFS: {label}", "ENVELOPE", "eifs", round(qb["lf"] * (qb["height"] - 10.0 * qb[
+                "covered_storeys"])) if isinstance(qb["covered_storeys"], int) else round(gross), "SF", "rate_eifs",
+                 eifs, weather="weather_exterior",
+                 basis=("wall LF x exposed height (covered storeys of the neighbour removed); the finish split is "
+                        "not determinable from the drawings (building.json not_determinable), so the EIFS share is "
+                        "an assumption with a branch"))
+            n.acts[-1]["qty_rule"] = dict(qb, kind="facade")
+            n.acts[-1]["qty_factor"] = ["facade_eifs_share"]
+            n.link(f"gate_air_barrier_{eid}", f"eifs_{eid}", "prerequisite", "EIFS covers the air barrier",
+                   basis="TR8 IIA6 + BC 1704.13: the barrier is seen before EIFS covers it")
+            if eid.startswith("side_"):
+                fixed(f"adjoining_roof_access_{eid[5:]}", f"Adjoining-owner access + roof protection for the {label}",
+                      "regulatory", "SITE", "adjoining_access", "lead_adjoining_access",
+                      basis="SSP-003/005 show adjacent-building roof protection; access to a neighbour's roof needs "
+                            "the owner's licence (RPAPL 881 if refused)")
+                n.link(f"adjoining_roof_access_{eid[5:]}", f"eifs_{eid}", "prerequisite",
+                       "the lot-line wall above the neighbour is reached only from its roof",
+                       basis="physical: 0 ft side yards (Z-003), lot ~10 in wider than the building; BC 3309 "
+                             "protection of adjoining property")
+            for r in ("renew_permit_shed", "renew_permit_scaffold"):
+                n.link(r, f"eifs_{eid}", "prerequisite", "facade worked from the permitted scaffold/shed",
+                       basis="AC 28-105: the scaffold and shed stay under a valid permit while in use")
+            if prev:
+                n.link(prev, f"eifs_{eid}", "resource", "one EIFS crew moves elevation to elevation")
+            prev = f"eifs_{eid}"
+            eifs_ids.append(f"eifs_{eid}")
+        work("brick_veneer", "Brick veneer where the facade is brick, not EIFS (split not determinable)", "ENVELOPE",
+             "brick_veneer", round(sum(e[2]["lf"] * e[2]["height"] for e in elev)), "SF", "rate_brick",
+             {"crew": "crew_masons", "company": None, "mobilize": True}, weather="weather_exterior",
+             basis="legend names brick and stucco, elevations carry no finish labels; quantity x (1 - EIFS share)")
+        n.acts[-1]["qty_factor"] = ["1-facade_eifs_share"]
+        n.link("gate_air_barrier_front_rear", "brick_veneer", "prerequisite", "veneer covers the air barrier",
+               basis="TR8 IIA6: the barrier is seen before it is covered")
     if eifs_ids:
         gate("gate_eifs_special", "EIFS special inspection close-out (BC 1704.13)", "ENVELOPE", "gate_special",
              "lead_special", "Special inspector (TR1)", eifs_ids, basis="GN-001")
         for e in eifs_ids:
-            n.link(e, "gate_eifs_special", "prerequisite", "close-out covers every elevation")
+            n.link(e, "gate_eifs_special", "prerequisite", "close-out covers every elevation",
+                   basis="BC 1704.13 special inspection of EIFS (GN-001)")
         fixed("facade_lighting", "Facade LED strip under the coping", "work", "ENVELOPE", "facade_lighting",
               "dur_facade_light", c=elec)
-        n.link(eifs_ids[-1], "facade_lighting", "prerequisite", "fixtures mount on the finished facade")
+        n.link("eifs_front_rear", "facade_lighting", "prerequisite", "fixtures mount on the finished front facade")
+        n.link("brick_veneer", "facade_lighting", "prerequisite", "fixtures mount on the finished facade")
         n.link("roof_coping", "facade_lighting", "prerequisite", "strip mounts under the coping")
     gate("gate_air_barrier_test", "TR8 IIA7 whole-building air barrier test", "ENVELOPE", "gate_tr8", "lead_special",
          "Progress inspector (TR8)", ["envelope"], basis="GN-001 TR8 IIA7")
-    for a in eifs_ids + ["windows", "exterior_doors", "roof_coping"]:
-        n.link(a, "gate_air_barrier_test", "prerequisite", "the test needs the whole envelope closed")
+    for a_ in eifs_ids + ["brick_veneer", "windows", "exterior_doors", "roof_coping"]:
+        n.link(a_, "gate_air_barrier_test", "prerequisite", "the test needs the whole envelope closed",
+               basis="TR8 IIA7 (GN-001): a whole-building test of the closed envelope")
 
     # ── stairs ──
     if B["stairs"]:
@@ -1037,16 +1228,17 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
         for fam in ("elec_rough", "lv_rough", "sprinkler_rough", "duct_rough", "ptac_sleeves", "insulation"):
             if n.has(f"{fam}_{zid}"):
                 chain(fam, f"{fam}_{zid}", "one crew moves floor to floor")
-        n.link(f"elec_rough_{zid}", f"insulation_{zid}", "prerequisite", "wiring in exterior walls before insulation")
-        n.link(f"ptac_sleeves_{zid}", f"insulation_{zid}", "prerequisite", "sleeves before wall insulation")
-        n.link(f"plumbing_rough_{zid}", f"insulation_{zid}", "prerequisite", "piping in walls before insulation")
+        n.link(f"ptac_sleeves_{zid}", f"insulation_{zid}", "prerequisite", "sleeves before wall insulation",
+               basis="physical: the sleeve is framed into the CFS wall the insulation fills")
         n.link(f"ptac_sleeves_{zid}", "gate_air_barrier_front_rear", "prerequisite",
-               "PTAC sleeves penetrate the front/rear air barrier and are sealed before it is inspected")
-        work(f"firestopping_{zid}", f"Firestopping penetrations and joints, {z['label']}", zid, "firestopping",
-             z["gross_sf"], "GSF", "rate_firestop", simple["firestop"], basis="A-500 UL systems; 2-hr floors")
+               "PTAC sleeves penetrate the front/rear air barrier and are sealed before it is inspected",
+               basis="TR8 IIA6: the barrier is inspected with its penetrations sealed")
+        work(f"firestop_pre_{zid}", f"Firestopping before board: rated penetrations in framing and floor/deck, "
+             f"{z['label']}", zid, "firestop_pre", round(z["gross_sf"] * 0.6), "GSF", "rate_firestop",
+             simple["firestop"], basis="A-500 UL systems; share of the floor's penetrations concealed by board: 0.6")
         for r in rough + [f"plumbing_rough_{zid}"]:
-            n.link(r, f"firestopping_{zid}", "prerequisite", "seal penetrations after they exist")
-        chain("firestopping", f"firestopping_{zid}", "one crew moves floor to floor")
+            n.link(r, f"firestop_pre_{zid}", "prerequisite", "seal penetrations after they exist")
+        chain("firestop_pre", f"firestop_pre_{zid}", "one crew moves floor to floor")
         # pre-board gates: TRUE prerequisites of board on that floor
         gate(f"gate_elec_rough_{zid}", f"DOB electrical rough inspection, {z['label']}", zid, "gate_elec_rough",
              "lead_dob_electrical", "DOB Electrical", [f"elec_rough_{zid}", f"lv_rough_{zid}"])
@@ -1056,27 +1248,50 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
             gate(f"gate_sprinkler_hydro_{zid}", f"Sprinkler hydrostatic test before cover, {z['label']}", zid,
                  "gate_sprinkler_hydro", "lead_special", "Licensed sprinkler contractor test (NFPA 13R)",
                  [f"sprinkler_rough_{zid}"])
-            n.link(f"sprinkler_rough_{zid}", f"gate_sprinkler_hydro_{zid}", "prerequisite", "test the installed pipe")
-        gate(f"gate_firestop_{zid}", f"Fire-resistant penetrations/joints special inspection, {z['label']}", zid,
-             "gate_firestop", "lead_special", "Special inspector (BC 1704.27)", [f"firestopping_{zid}"])
-        n.link(f"firestopping_{zid}", f"gate_firestop_{zid}", "prerequisite", "inspect before cover")
+            n.link(f"sprinkler_rough_{zid}", f"gate_sprinkler_hydro_{zid}", "prerequisite", "test the installed pipe",
+               basis="NFPA 13R / NFPA 13 hydrostatic test before concealment")
+        gate(f"gate_firestop_pre_{zid}", f"Firestop special inspection, penetrations concealed by board, {z['label']}",
+             zid, "gate_firestop", "lead_special", "Special inspector (BC 1704.27)", [f"firestop_pre_{zid}"])
+        n.link(f"firestop_pre_{zid}", f"gate_firestop_pre_{zid}", "prerequisite", "inspect before cover",
+               basis="BC 1704.27: penetrations seen before board conceals them")
+        # insulation covers wiring and piping: it waits for the ROUGH INSPECTIONS
+        n.link(f"gate_elec_rough_{zid}", f"insulation_{zid}", "prerequisite",
+               "spray foam conceals the cable in exterior walls", basis=COVER_BASIS)
+        n.link(f"gate_plumbing_rough_{zid}", f"insulation_{zid}", "prerequisite",
+               "insulation conceals the piping", basis=COVER_BASIS)
         gate(f"gate_tr8_insulation_{zid}", f"TR8 IIA2 insulation placement and R-values, {z['label']}", zid,
              "gate_tr8", "lead_special", "Progress inspector (TR8)", [f"insulation_{zid}"])
-        n.link(f"insulation_{zid}", f"gate_tr8_insulation_{zid}", "prerequisite", "inspect before cover")
+        n.link(f"insulation_{zid}", f"gate_tr8_insulation_{zid}", "prerequisite", "inspect before cover",
+               basis="BC 110.3.5 / TR8 IIA2 (GN-001)")
         work(f"board_hang_{zid}", f"Gypsum board hang (rated walls and 1-hr ceiling), {z['label']}", zid,
              "board_hang", q["board_sf"], "SF", "rate_board_hang", framer, share="share_arkon_board",
              basis="wall LF x faces by type (2-hr partitions 2 layers each side) x 9 ft + rated ceiling")
         for g in (f"gate_plumbing_rough_{zid}", f"gate_elec_rough_{zid}", f"gate_sprinkler_hydro_{zid}",
-                  f"gate_firestop_{zid}", f"gate_tr8_insulation_{zid}", f"duct_rough_{zid}"):
-            n.link(g, f"board_hang_{zid}", "prerequisite", "nothing is covered before it is inspected")
+                  f"gate_firestop_pre_{zid}", f"gate_tr8_insulation_{zid}"):
+            n.link(g, f"board_hang_{zid}", "prerequisite", "nothing is covered before it is inspected",
+                   basis=COVER_BASIS)
+        n.link(f"duct_rough_{zid}", f"board_hang_{zid}", "prerequisite", "ducts run in the ceiling the board closes")
         chain("board_hang", f"board_hang_{zid}", "one board crew; 20 psf storage limit (S-001) means floor-by-floor "
                                                "stocking")
         gate(f"gate_fire_rated_{zid}", f"Fire-resistance-rated construction progress inspection, {z['label']}", zid,
              "gate_fire_rated", "lead_special", "Progress inspector (BC 110.3.4)", [f"board_hang_{zid}"])
-        n.link(f"board_hang_{zid}", f"gate_fire_rated_{zid}", "prerequisite", "layers and fastening seen before tape")
+        n.link(f"board_hang_{zid}", f"gate_fire_rated_{zid}", "prerequisite", "layers and fastening seen before tape",
+               basis="BC 110.3.4 fire-resistance-rated construction progress inspection (GN-001)")
+        work(f"firestop_post_{zid}", f"Firestopping after board: through-board penetrations, rated joints, "
+             f"head-of-wall, {z['label']}", zid, "firestop_post", round(z["gross_sf"] * 0.4), "GSF", "rate_firestop",
+             simple["firestop"], basis="A-500 UL joint/membrane systems; remaining share 0.4")
+        n.link(f"board_hang_{zid}", f"firestop_post_{zid}", "prerequisite", "membrane penetrations exist once board is up")
+        chain("firestop_post", f"firestop_post_{zid}", "one crew moves floor to floor")
+        gate(f"gate_firestop_{zid}", f"Firestop special inspection, joints and membrane penetrations, {z['label']}",
+             zid, "gate_firestop", "lead_special", "Special inspector (BC 1704.27)", [f"firestop_post_{zid}"])
+        n.link(f"firestop_post_{zid}", f"gate_firestop_{zid}", "prerequisite", "inspect before tape and paint",
+               basis="BC 1704.27: joints and penetrations seen before they are finished over")
         work(f"tape_{zid}", f"Tape and finish, {z['label']}", zid, "tape", q["board_sf"], "SF", "rate_tape",
              simple["tapers"], min_days="min_tape_days", basis="board area")
-        n.link(f"gate_fire_rated_{zid}", f"tape_{zid}", "prerequisite", "tape after the rated-assembly inspection")
+        n.link(f"gate_fire_rated_{zid}", f"tape_{zid}", "prerequisite", "tape after the rated-assembly inspection",
+               basis="BC 110.3.4")
+        n.link(f"gate_firestop_{zid}", f"tape_{zid}", "prerequisite", "tape after the firestop inspection",
+               basis="BC 1704.27")
         chain("tape", f"tape_{zid}", "one taping crew")
         work(f"prime_{zid}", f"Prime and first coat, {z['label']}", zid, "prime", q["paint_sf"], "SF",
              "rate_paint_prime", simple["painters"], basis="visible wall faces x 9 ft + ceiling")
@@ -1170,8 +1385,9 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
           "dur_fa_pretest", c=lv)
     for z in zids:
         n.link(f"lv_trim_{z}", "fa_pretest", "prerequisite", "every device installed")
-        if S["sprinkler"]:
-            n.link(f"sprinkler_trim_{z}", "fa_pretest", "prerequisite", "flow/tamper switches are supervised points")
+    if S["sprinkler"]:
+        n.link("sprinkler_riser", "fa_pretest", "prerequisite", "flow and tamper switches on the riser are supervised",
+               basis="FA-001 riser: sprinkler alarm points")
     gate("gate_fdny_fa", "FDNY fire-alarm acceptance test", "BUILDING", "gate_fdny_fa", "lead_fdny_fa", "FDNY",
          ["fire_alarm"], extra="reinspect_factor")
     n.link("fa_pretest", "gate_fdny_fa", "prerequisite", "FDNY tests a pre-tested system")
@@ -1191,12 +1407,12 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
           "dur_coned_energize")
     n.link("gate_dob_elec_service", "coned_energize", "prerequisite", "utility needs the DOB inspection")
     n.link("coned_lead", "coned_energize", "prerequisite", "utility's own lead time")
-    n.link("coned_energize", "fa_pretest", "prerequisite", "FDNY tests on permanent power (industry practice)")
+    n.link("coned_energize", "fa_pretest", "prerequisite", "the panel runs on the building's light and power service",
+           basis="NFPA 72 10.6: primary power from the building service")
     gate("gate_dob_elec_final", "DOB electrical final inspection", "BUILDING", "gate_elec_final",
          "lead_dob_electrical", "DOB Electrical", ["electrical"], extra="reinspect_factor")
     for z in zids:
         n.link(f"elec_trim_{z}", "gate_dob_elec_final", "prerequisite", "final on trimmed work")
-    n.link("coned_energize", "gate_dob_elec_final", "prerequisite", "final on a powered building")
     if eifs_ids:
         n.link("facade_lighting", "gate_dob_elec_final", "prerequisite", "exterior lighting included")
     # ── ventilation ──
@@ -1208,13 +1424,14 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
     n.link("roof_mech", "ventilation_tab", "prerequisite", "balance installed equipment")
     n.link("coned_energize", "ventilation_tab", "prerequisite", "fans run on permanent power")
     for z in zids:
-        n.link(f"punch_clean_{z}", "ventilation_tab", "prerequisite", "grilles and fans trimmed")
+        n.link(f"final_paint_{z}", "ventilation_tab", "prerequisite", "grilles set after the final coat")
     gate("gate_tr8_final", "TR8 final energy items (IB2, IIC1-IIC6, IID1, ID2)", "BUILDING", "gate_tr8",
          "lead_special", "Progress inspector (TR8)", ["energy"], basis="GN-001 TR8 list (16 items)")
     n.link("ventilation_tab", "gate_tr8_final", "prerequisite", "IB2 ventilation")
-    n.link("gate_dob_elec_final", "gate_tr8_final", "prerequisite", "IIC lighting, metering, controls")
     for z in zids:
-        n.link(f"ptac_set_{z}", "gate_tr8_final", "prerequisite", "equipment in place")
+        n.link(f"ptac_set_{z}", "gate_tr8_final", "prerequisite", "equipment in place", basis="TR8 IB2 (GN-001)")
+        n.link(f"elec_trim_{z}", "gate_tr8_final", "prerequisite", "lighting and controls installed",
+               basis="TR8 IIC2-IIC5 (GN-001): the installed lighting and controls are inspected")
 
     # ── gas and hot water ──
     if S["gas"]:
@@ -1238,7 +1455,8 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
               "lead_ng_service", basis="request status unknown")
         fixed("ng_meter_on", "National Grid meter set and gas turn-on", "utility", "SITE", "ng_turn_on",
               "lead_ng_turn_on")
-        n.link("gas_authorization", "ng_meter_on", "prerequisite", "no gas without the authorization")
+        n.link("gas_authorization", "ng_meter_on", "prerequisite", "no gas without the authorization",
+               basis="NYC FGC / DOB gas authorization required before the utility supplies gas")
         n.link("ng_service_lead", "ng_meter_on", "prerequisite", "service line before the meter")
         fixed("dhw_startup", "Hot water start-up and recirculation balance", "work", "ROOF", "dhw_startup",
               "dur_dhw_startup", c=plumber)
@@ -1249,7 +1467,6 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
     for z in zids:
         n.link(f"plumb_trim_{z}", "gate_plumbing_final", "prerequisite", "fixtures set")
     n.link("backflow_devices", "gate_plumbing_final", "prerequisite", "devices tested")
-    n.link("dhw_startup", "gate_plumbing_final", "prerequisite", "hot water running")
     n.link("renew_permit_plumbing", "gate_plumbing_final", "prerequisite", "no inspection on an expired permit")
     if S["roof_detention"]:
         gate("gate_detention_cert", "DOB certifies the roof detention installed", "ROOF", "gate_detention",
@@ -1259,7 +1476,8 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
         n.link("renew_permit_plumbing", "gate_detention_cert", "prerequisite", "inspection under the plumbing permit")
         fixed("dep_connection_permit", "DEP site connection (sewer) permit", "regulatory", "SITE", "dep_permit",
               "lead_dep_permit")
-        n.link("gate_detention_cert", "dep_connection_permit", "prerequisite", "DEP condition: detention first")
+        n.link("gate_detention_cert", "dep_connection_permit", "prerequisite", "DEP condition: detention first",
+               basis="SD1-2 p2: no connection permit until DOB certifies the detention facility")
         fixed("dot_opening_permit", "DOT street-opening permit for the sewer cut", "regulatory", "SITE", "dot_permit",
               "lead_dot_permit", basis="B012026289B88 expired 2026-11-01")
         n.link("dep_connection_permit", "dot_opening_permit", "prerequisite", "DOT opening for a permitted connection")
@@ -1271,7 +1489,6 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
         gate("gate_dep_connection", "DEP house connection inspection", "SITE", "gate_dep", "lead_dep_inspection",
              "DEP", ["house_sewer_connection"])
         n.link("house_sewer_connection", "gate_dep_connection", "prerequisite", "inspect before backfill/close")
-        n.link("gate_dep_connection", "gate_plumbing_final", "prerequisite", "a building drains before its final")
         fixed("street_restoration", "Street restoration over the sewer cut", "work", "SITE", "street_restoration",
               "dur_street_restore", c=site, weather="weather_sitework")
         n.link("gate_dep_connection", "street_restoration", "prerequisite", "restore after the inspection")
@@ -1301,7 +1518,8 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
     fixed("inspection_reports", "Special and progress inspection reports compiled and filed (TR1, TR8)", "regulatory",
           "BUILDING", "reports", "dur_paperwork")
     for a in ["tr1_closeout", "gate_eifs_special", "gate_tr8_final", "gate_air_barrier_test", "gate_tr8_fenestration"] \
-            + [f"gate_firestop_{z}" for z in zids] + [f"gate_fire_rated_{z}" for z in zids]:
+            + [f"gate_firestop_{z}" for z in zids] + [f"gate_firestop_pre_{z}" for z in zids] \
+            + [f"gate_fire_rated_{z}" for z in zids]:
         n.link(a, "inspection_reports", "prerequisite", "a report follows its inspection")
     gate("gate_final_progress", "Final progress inspection (TR1 FINAL, BC 110.5)", "BUILDING", "gate_final_progress",
          "lead_special", "Progress inspector", ["building"], basis="S-001 progress inspection FINAL")
@@ -1309,17 +1527,27 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
         n.link(f"punch_clean_{z}", "gate_final_progress", "prerequisite", "final on finished floors")
     n.link("inspection_reports", "gate_final_progress", "prerequisite", "documents complete")
     gate("gate_tco", "DOB Temporary Certificate of Occupancy", "BUILDING", "gate_tco", "lead_tco", "DOB",
-         ["occupancy"], extra="reinspect_factor")
-    tco_preds = ["gate_final_progress", "gate_plumbing_final", "gate_dob_elec_final", "gate_sprinkler_final",
-                 "gate_fdny_fa", "gate_tr8_final", "gate_air_barrier_test", "hpd_smoke_co", "stairs_complete",
-                 "scaffold_shed_removal", "renew_permits_gc"]
-    for p in tco_preds:
-        n.link(p, "gate_tco", "prerequisite", "a TCO needs every sign-off and a safe, finished exit path")
-    n.link("gate_bpp", "gate_tco", "prerequisite", "conservative: BPP sign-off demanded before the TCO",
-           scenarios=("conservative",))
+         ["occupancy"])
+    tco_basis = {
+        "gate_final_progress": "BC 110.5 final inspection (S-001 progress inspection FINAL)",
+        "gate_plumbing_final": "AC 28-118: plumbing work signed off for the occupied area",
+        "gate_dob_elec_final": "AC 28-118 / NYC Electrical Code: electrical sign-off",
+        "gate_sprinkler_final": "BC 903 / AC 28-118: sprinkler system accepted",
+        "gate_fdny_fa": "FDNY letter of approval for the fire alarm (FC 907)",
+        "gate_tr8_final": "BC 110.3.5: energy progress inspections (TR8) complete",
+        "gate_air_barrier_test": "BC 110.3.5: TR8 IIA7 air barrier test",
+        "hpd_smoke_co": "GN-001: HPD smoke/CO certificate (LL 62/81)",
+        "stairs_complete": "BC 1011: exit stairs complete (2 stairs, no elevator)",
+        "renew_permits_gc": "AC 28-105.9: work and inspections under a valid permit",
+        "dhw_startup": "HMC 27-2031: hot water to every unit before occupancy",
+        "gate_dep_connection": "physical: an occupied building must drain; DEP connection permit condition (SD1-2)",
+    }
+    for p_, why in tco_basis.items():
+        n.link(p_, "gate_tco", "prerequisite", "a TCO needs this", basis=why)
     gate("final_co", "Final Certificate of Occupancy", "BUILDING", "final_co", "lead_tco", "DOB", ["occupancy"])
     n.link("gate_tco", "final_co", "prerequisite", "CO follows the TCO")
-    n.link("gate_bpp", "final_co", "prerequisite", "BPP sign-off before the CO")
+    n.link("gate_bpp", "final_co", "prerequisite", "BPP sign-off before the CO",
+           basis="Builders Pavement Plan job 340915692 is signed off before the final CO")
     n.link("street_restoration", "final_co", "prerequisite", "street restored")
     zinfo = {z["id"]: (i, z["gross_sf"]) for i, z in enumerate(zones)}
     for a in n.acts:
@@ -1337,7 +1565,8 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
                                                       "'cellar slab' wording is the slab on grade"})
     not_applicable.append({"id": "superstructure_cycles", "why": "see superstructure_cycles: CFS frame, no deck "
                                                                  "pours, frame complete to the roof"})
-    return {"activities": n.acts, "links": n.links, "not_applicable": not_applicable}
+    return {"activities": n.acts, "links": n.links, "not_applicable": not_applicable,
+            "skipped_links": [{"from": a_, "to": b_} for a_, b_ in n.skipped]}
 
 
 # ═══ PROVISIONAL STATE FROM THE RECORDS ═════════════════════════════════════
@@ -1434,7 +1663,10 @@ def provisional_state(network: Dict[str, Any], records: Sequence[Dict[str, Any]]
                          "record; the FDNY acceptance gate is scheduled from its lead time instead.")
             break
     # filed-log phrases, latest period (report engine)
-    man_days_by_company = {c: v["avg"] * v["days"] for c, v in crews.items() if v.get("avg")}
+    # man-days in place come only from the report engine's period summaries:
+    # a derived-report figure (unaudited), labelled so wherever it is used
+    man_days_by_company = {c: v["derived"]["avg"] * v["derived"]["days"] for c, v in crews.items()
+                           if v.get("derived")}
     seen_trim = False
     for r in records:
         f = r.get("fields") or {}
@@ -1449,20 +1681,20 @@ def provisional_state(network: Dict[str, Any], records: Sequence[Dict[str, Any]]
             continue
         comp = (r.get("company") or "").strip()
         md = man_days_by_company.get(comp)
-        basis = f"filed logs (report engine, period {f.get('period') or '?'}): {text!r} by {comp}"
+        basis = (f"generated progress report (derived, unaudited), period {f.get('period') or '?'}: {text!r} by {comp}")
         floors = _floors_in(text)
         if fam in ("roofing", "windows", "roof_mech", "stairs_complete"):
-            put(fam, state_entry("in_progress", "reported_log", basis, sources=[r.get("id")],
+            put(fam, state_entry("in_progress", "derived_report", basis, sources=[r.get("id")],
                                  man_days=md if fam in ("roofing", "windows") else None))
             continue
         if fam == "eifs":
             for a in ids:
                 if a.startswith("eifs_"):
-                    put(a, state_entry("in_progress", "reported_log", basis, sources=[r.get("id")], man_days=md))
+                    put(a, state_entry("in_progress", "derived_report", basis, sources=[r.get("id")], man_days=md))
             continue
         for z in floors:
             share = md / len(floors) if (md and fam == "insulation") else None
-            put(f"{fam}_{z}", state_entry("in_progress", "reported_log", basis + f" (floor {z[1:]})",
+            put(f"{fam}_{z}", state_entry("in_progress", "derived_report", basis + f" (floor {z[1:]})",
                                           sources=[r.get("id")], man_days=share))
     if seen_trim:
         notes.append("Logs report 'Trim out'/'Fixtures' for Quality Plumbing on floors 1-4 (Oct 27-Nov 9) while no "
@@ -1639,8 +1871,17 @@ def _effort(a: Act, st: Dict[str, Any], scn: str, A) -> Tuple[float, float, str]
     rule = a.get("rule")
     if rule == "production":
         qty = float(a["scope"]["quantity"] or 0)
-        if a.get("qty_factor"):
-            qty *= float(A(a["qty_factor"], scn))
+        qr = a.get("qty_rule")
+        if qr and qr.get("kind") == "facade":
+            cov = qr["covered_storeys"]
+            cov = float(A(cov, scn)) if isinstance(cov, str) else float(cov)
+            qty = qr["lf"] * max(0.0, qr["height"] - 10.0 * cov)
+            if qr.get("openings"):
+                qty -= qr.get("windows", 0) * float(A("window_avg_sf", scn)) + qr.get("ptacs", 0) * 5.5
+            qty = max(qty, 0.0)
+        qf = a.get("qty_factor")
+        for f in ([qf] if isinstance(qf, str) else (qf or [])):
+            qty *= (1.0 - float(A(f[2:], scn))) if f.startswith("1-") else float(A(f, scn))
         rate = float(A(a["rate"], scn))
         crew = crew_used(a, scn, A) or 1.0
         rem, how = remaining_fraction(st, scn, A, qty=qty, rate=rate)
@@ -1654,11 +1895,14 @@ def _effort(a: Act, st: Dict[str, Any], scn: str, A) -> Tuple[float, float, str]
         rem, how = remaining_fraction(st, scn, A, gate=True)
         lead = float(A(a["lead"], scn))
         if a.get("reinspect"):
-            lead *= 1 + float(A(a["reinspect"], scn))
+            # a failed first attempt costs one more request-to-result cycle at the
+            # NORMAL wait (a re-test request), not the long-end wait again
+            lead += float(A(a["reinspect"], scn)) * float(A(a["lead"], "normal"))
         return lead * rem + (1 if rem else 0), rem, how
     if rule == "fixed":
         if not a.get("dur"):
-            rem, how = (0.0, "done") if st["status"] == "done" else (1.0, st["status"])
+            rem, how = ((0.0, f"done ({st['evidence']}); no remaining scope is modelled, so no haircut applies")
+                        if st["status"] == "done" else (1.0, st["status"]))
             return 0.0, rem, how
         rem, how = remaining_fraction(st, scn, A, gate=a["kind"] in ("utility", "regulatory"))
         return float(A(a["dur"], scn)) * rem, rem, how
@@ -1755,8 +1999,9 @@ def _schedule_once(network, state, assumptions, scn, data_date, overrides, extra
     started = {a["id"] for a in network["activities"]
                if state.get(a["id"], DEFAULT_STATE)["status"] == "in_progress"}
     pinned_ids = {x["id"] for x in acts if x["pinned"]}
+    kinds = {a["id"]: a["kind"] for a in network["activities"]}
     for l in list(network["links"]) + list(extra):
-        if scn not in l.get("scenarios", SCENARIOS):
+        if scn not in l.get("scenarios", ALL_RUNS):
             continue
         lag = l["lag"]
         lag = int(round(float(A(lag, scn)))) if isinstance(lag, str) else int(lag)
@@ -1764,7 +2009,8 @@ def _schedule_once(network, state, assumptions, scn, data_date, overrides, extra
         # retained logic: a started activity's open FS PREREQUISITE bounds its
         # FINISH, not its start (it is already under way). A crew (resource)
         # link stays FS: the same crew cannot be in two places.
-        if t == "FS" and l["kind"] == "prerequisite" and l["to"] in started and l["from"] not in pinned_ids:
+        if t == "FS" and l["kind"] == "prerequisite" and l["to"] in started and l["from"] not in pinned_ids \
+                and kinds.get(l["from"]) != "inspection_gate":
             t = "FF"
         links.append({"from": l["from"], "to": l["to"], "type": t, "lag": lag, "kind": l["kind"]})
     res = cpm(acts, links)
@@ -1798,8 +2044,34 @@ OWNER_RULES = (
     "ESTIMATE, not a baseline: never written to project_schedules, never shown as a file date.",
     "PROPOSED sequence, offered for approval, separate from any official schedule.",
     "Production rates are industry assumptions; activity dates, crews moving between floors and photo counts are "
-    "not used as a rate. Crew SIZE (check-ins per day) is measured, with its sample size.",
-    "Every assumption carries a tag: measured, drawing, regulatory or industry-assumption.",
+    "not used as a rate. Crew SIZE is MEASURED only from original filed daily-log rows (records/AUDIT.md), with its "
+    "sample; report-engine figures are labelled derived-report (unaudited).",
+    "An inferred or reported inspection pass is never a passed inspection, in any scenario.",
+    "Every assumption carries a tag: measured, derived-report, drawing, regulatory or industry-assumption.",
+)
+
+#: links removed or replaced in the review of 2026-11-10 (adversarial review 1, item A).
+LINK_REVIEW_REMOVED = (
+    {"from": "gate_dob_elec_final", "to": "gate_tr8_final", "why": "no code basis: the TR8 progress inspector does "
+     "not wait for the DOB electrical final; replaced by elec_trim_* -> gate_tr8_final (TR8 IIC2-IIC5)"},
+    {"from": "elec_rough_*", "to": "insulation_*", "why": "replaced by gate_elec_rough_* -> insulation_*: foam "
+     "conceals the cable, so the INSPECTION comes first (BC 110.3)"},
+    {"from": "plumbing_rough_*", "to": "insulation_*", "why": "replaced by gate_plumbing_rough_* -> insulation_*"},
+    {"from": "firestopping_*", "to": "gate_firestop_* -> board_hang_*", "why": "split: firestop_pre (concealed "
+     "penetrations) -> gate_firestop_pre -> board; board -> firestop_post (membrane penetrations, rated joints, "
+     "head-of-wall) -> gate_firestop -> tape (BC 1704.27)"},
+    {"from": "coned_energize", "to": "gate_dob_elec_final", "why": "no code basis cited"},
+    {"from": "gate_bpp", "to": "gate_tco", "why": "conservative-only, no code basis; BPP stays before the final CO"},
+    {"from": "scaffold_shed_removal", "to": "gate_tco", "why": "no code basis for the TCO; the shed still precedes the "
+     "sidewalk, the BPP sign-off and the final CO"},
+    {"from": "dhw_startup", "to": "gate_plumbing_final", "why": "moved to gate_tco (HMC 27-2031 hot water)"},
+    {"from": "gate_dep_connection", "to": "gate_plumbing_final", "why": "moved to gate_tco (an occupied building must "
+     "drain; DEP condition)"},
+    {"from": "punch_clean_*", "to": "ventilation_tab", "why": "replaced by final_paint_* (grilles set after paint)"},
+    {"from": "sprinkler_trim_*", "to": "fa_pretest", "why": "replaced by sprinkler_riser (flow/tamper switches are "
+     "on the riser)"},
+    {"from": "reinspect_factor", "to": "gate_tco", "why": "a re-inspection is one extra cycle of the inspection itself "
+     "(kept on the DOB electrical final and FDNY), not a doubling of the TCO review"},
 )
 
 
@@ -1818,30 +2090,41 @@ def superstructure_cycles(facts: Dict[str, Any], state: Dict[str, Dict[str, Any]
             "The frame is cold-formed steel bearing walls with CFS joists @16 in and a 3/4 in USG structural concrete "
             "panel subfloor (S-102/S-106); there is no cast-in-place deck above the 6 in slab on grade, so there is "
             "no pour, cure or reshore cycle to compare.",
-            "Frame state: " + (frame.get("basis") or "unknown") + ".",
+            f"Frame state ({frame.get('evidence', 'unknown')}; an inference, not a passed inspection): "
+            + (frame.get("basis") or "unknown") + ".",
             "The repeating unit left is the per-floor close-in-to-finish sequence. Its working-day span per floor "
-            "(board hang start to punch finish) under each scenario is in floor_cycles; it is driven by inspection "
-            "gates and finish crews, not by framing.",
+            "(board hang start to punch finish) under each scenario is in floor_cycles_working_days.",
         ],
         "floor_cycles_working_days": floor_cycles,
     }
 
 
-def _company_of(network, aid):
-    return next((a.get("company") for a in network["activities"] if a["id"] == aid), None)
+def _eifs_crew(net) -> Optional[str]:
+    return next((a["crew"] for a in net["activities"] if a["family"] == "eifs" and a.get("crew")), None)
+
+
+def _lever_overrides(lv, net, table):
+    ov = {}
+    for k, v in lv["overrides"].items():
+        k = _eifs_crew(net) if k == "@eifs_crew" else k
+        if k in table:
+            ov[k] = v
+    return ov
 
 
 LEVERS: Tuple[Dict[str, Any], ...] = (
-    {"id": "eifs_staff_and_enclose", "lever": "Staff EIFS to 5 applicators and enclose/heat the scaffold",
-     "overrides": {"crew_j_p_construction": {"normal": 5.0}, "weather_exterior": {"normal": ENCLOSED_WEATHER}},
+    {"id": "eifs_one_more_applicator", "lever": "One more EIFS applicator (2 a day, the highest day reported)",
+     "overrides": {"@eifs_crew": {"normal": 2.0}},
+     "requires": ["J&P sends a second applicator every working day"]},
+    {"id": "eifs_staff_and_enclose", "lever": "EIFS to 5 applicators with an enclosed, heated scaffold",
+     "overrides": {"@eifs_crew": {"normal": 5.0}, "weather_exterior": {"normal": ENCLOSED_WEATHER}},
      "requires": ["J&P adds ~4 applicators or a second EIFS sub is bought out",
                   "scaffold shrink-wrap/tarps + temporary heat (FDNY permit for propane, or electric heat on temp power)",
                   "sidewalk shed permit renewed by 2026-11-22 and scaffold permit by 2026-12-22",
                   "EIFS special inspector available per elevation (BC 1704.13)"]},
     {"id": "breezco_staff_up", "lever": "BreezCo to 4 mechanics (PTAC sleeves, duct rough, roof fan in parallel)",
      "overrides": {"crew_breezco": {"normal": 4.0}},
-     "requires": ["BreezCo commits 3 more mechanics, or the framers take the PTAC sleeves",
-                  "PTAC sleeves on site (Amana PTH sleeves + drain kits per M-200)"]},
+     "requires": ["BreezCo commits 3 more mechanics, or the framers take the PTAC sleeves"]},
     {"id": "second_board_tape_crews", "lever": "Second taping crew and a full framer crew on board",
      "overrides": {"crew_tapers": {"normal": 8.0}, "share_arkon_board": {"normal": 0.8}},
      "requires": ["taping sub bought out (none on the roster)", "board stocked floor by floor: 20 psf storage limit "
@@ -1853,7 +2136,7 @@ LEVERS: Tuple[Dict[str, Any], ...] = (
     {"id": "inspections_prebooked", "lever": "Book inspections ahead and keep agencies on call",
      "overrides": {"lead_dob_electrical": {"normal": 5}, "lead_fdny_fa": {"normal": 10}, "lead_special": {"normal": 1},
                    "lead_tco": {"normal": 10}},
-     "requires": ["readiness walk before each request (measured DOB request-to-result: 7 working days)",
+     "requires": ["readiness walk before each request (measured DOB request-to-result: 7 working days, n=1)",
                   "TR1/TR8 agency retained with standing visits", "FDNY FA test date requested at pre-test"]},
     {"id": "mobilize_unstarted_now", "lever": "Mobilize sprinkler, low-voltage and finish trades now",
      "overrides": {"mobilization": {"normal": 0}, "lead_cabinet_delivery": {"normal": 0}},
@@ -1864,14 +2147,13 @@ LEVERS: Tuple[Dict[str, Any], ...] = (
 
 def acceleration(network, state, assumptions, data_date, base: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Each lever on the normal scenario ALONE, and CUMULATIVE (with every
-    lever above it): a lever off the critical path saves nothing alone and can
-    matter once the levers above have moved the path."""
+    lever above it)."""
     out = []
     table = {a["id"] for a in assumptions}
     combined: Dict[str, Dict[str, Any]] = {}
     prev = base["tco_working_days"]
     for lv in LEVERS:
-        ov = {k: v for k, v in lv["overrides"].items() if k in table}
+        ov = _lever_overrides(lv, network, table)
         if not ov:
             continue
         alone = schedule_scenario(network, state, assumptions, "normal", data_date, ov)
@@ -1907,51 +2189,135 @@ BRANCHES: Tuple[Dict[str, Any], ...] = (
      "families": ("gate_detention", "dep_permit", "dot_permit", "sewer_connection", "gate_dep"),
      "a": ("done", "already connected under an earlier permit"), "b": ("not_started", "still ahead")},
 )
+OVERRIDE_BRANCHES: Tuple[Dict[str, Any], ...] = (
+    {"id": "facade_eifs_share", "what": "Facade finish split, brick vs EIFS (not determinable from the drawings)",
+     "key": "facade_eifs_share", "a": 1.0, "a_words": "all EIFS/stucco (scenario value)", "b": 0.5,
+     "b_words": "half EIFS, half brick veneer by a mason not yet on the roster"},
+    {"id": "other_neighbour", "what": "Height of the neighbour on the side the drawings do not describe",
+     "key": "unknown_neighbour_storeys", "a": 2, "a_words": "2 storeys, like No. 586 (scenario value)", "b": 0,
+     "b_words": "no building: the whole lot-line wall is exposed"},
+    {"id": "coned_lead", "what": "Con Ed service lead (application status unknown)", "key": "lead_coned",
+     "a": "fast", "b": STRESS},
+    {"id": "ng_service_lead", "what": "National Grid gas service (request status unknown)", "key": "lead_ng_service",
+     "a": "fast", "b": STRESS},
+)
 
 
 def _with_state(state, net, families, status):
     st = dict(state)
     for a in net["activities"]:
-        if a["family"] in families:
+        if a["family"] in families or a["id"] in families:
             st[a["id"]] = state_entry(status, "verified_public_record" if status == "done" else "inferred",
                                       f"BRANCH: assumed {status} to bound an unknown")
     return st
 
 
+def _branch_row(bid, what, a_words, ra, b_words, rb):
+    return {"id": bid, "unknown": what, "if_a": a_words, "tco_if_a": ra["tco"], "if_b": b_words, "tco_if_b": rb["tco"],
+            "interior_ready_if_a": ra["interior_ready"], "interior_ready_if_b": rb["interior_ready"],
+            "spread_working_days": rb["tco_working_days"] - ra["tco_working_days"]}
+
+
 def branches(net, state, assumptions, data_date) -> List[Dict[str, Any]]:
     out = []
     worst, best = dict(state), dict(state)
+    run = lambda st, ov=None: schedule_scenario(net, st, assumptions, "normal", data_date, ov)  # noqa: E731
     for b in BRANCHES:
         if not any(a["family"] in b["families"] for a in net["activities"]):
             continue
-        ra = schedule_scenario(net, _with_state(state, net, b["families"], b["a"][0]), assumptions, "normal", data_date)
-        rb = schedule_scenario(net, _with_state(state, net, b["families"], b["b"][0]), assumptions, "normal", data_date)
+        ra = run(_with_state(state, net, b["families"], b["a"][0]))
+        rb = run(_with_state(state, net, b["families"], b["b"][0]))
         best = _with_state(best, net, b["families"], b["a"][0])
         worst = _with_state(worst, net, b["families"], b["b"][0])
-        out.append({"id": b["id"], "unknown": b["what"], "if_a": b["a"][1], "tco_if_a": ra["tco"],
-                    "if_b": b["b"][1], "tco_if_b": rb["tco"], "interior_ready_if_a": ra["interior_ready"],
-                    "interior_ready_if_b": rb["interior_ready"],
-                    "spread_working_days": rb["tco_working_days"] - ra["tco_working_days"]})
+        out.append(_branch_row(b["id"], b["what"], b["a"][1], ra, b["b"][1], rb))
+    # every gate whose 'pass' is only an inference: passed (if it were verified) vs pending
+    for a in net["activities"]:
+        st = state.get(a["id"], DEFAULT_STATE)
+        if a["kind"] == "inspection_gate" and st["status"] == "done" and st["evidence"] != "verified_public_record":
+            ra = run(_with_state(state, net, (a["id"],), "done"))
+            out.append(_branch_row(f"inferred_gate:{a['id']}", f"{a['name']} (inferred: {st['basis'][:120]})",
+                                   "passed (if it were verified)", ra, "pending (how every scenario treats it)",
+                                   run(state)))
     tab = {x["id"]: x for x in assumptions}
-    for b in ({"id": "coned_lead", "what": "Con Ed service lead (application status unknown)", "key": "lead_coned"},
-              {"id": "ng_service_lead", "what": "National Grid gas service (request status unknown)",
-               "key": "lead_ng_service"}):
+    for b in OVERRIDE_BRANCHES:
         if b["key"] not in tab:
             continue
         v = tab[b["key"]]["values"]
-        ra = schedule_scenario(net, state, assumptions, "normal", data_date, {b["key"]: {"normal": v["fast"]}})
-        rb = schedule_scenario(net, state, assumptions, "normal", data_date, {b["key"]: {"normal": v["conservative"]}})
-        out.append({"id": b["id"], "unknown": b["what"], "if_a": f"{v['fast']} working days", "tco_if_a": ra["tco"],
-                    "interior_ready_if_a": ra["interior_ready"], "interior_ready_if_b": rb["interior_ready"],
-                    "if_b": f"{v['conservative']} working days", "tco_if_b": rb["tco"],
-                    "spread_working_days": rb["tco_working_days"] - ra["tco_working_days"]})
-    ra = schedule_scenario(net, best, assumptions, "normal", data_date)
-    rb = schedule_scenario(net, worst, assumptions, "normal", data_date)
-    out.append({"id": "all_state_branches", "unknown": "every state branch above at once (utility leads at normal)",
-                "if_a": "all already done", "tco_if_a": ra["tco"], "if_b": "all still ahead", "tco_if_b": rb["tco"],
-                "interior_ready_if_a": ra["interior_ready"], "interior_ready_if_b": rb["interior_ready"],
-                "spread_working_days": rb["tco_working_days"] - ra["tco_working_days"]})
+        va = v[b["a"]] if isinstance(b["a"], str) else b["a"]
+        vb = v[b["b"]] if isinstance(b["b"], str) else b["b"]
+        ra, rb = run(state, {b["key"]: {"normal": va}}), run(state, {b["key"]: {"normal": vb}})
+        out.append(_branch_row(b["id"], b["what"], b.get("a_words", f"{va}"), ra, b.get("b_words", f"{vb}"), rb))
+    out.append(_branch_row("all_state_branches", "every state branch above at once (utility leads at normal)",
+                           "all already done", run(best), "all still ahead", run(worst)))
     return out
+
+
+SENS_EIFS_CREWS = (0.8, 1, 2, 3, 5)
+SENS_DOB_WAITS = (5, 7, 10, 15)
+
+
+def sensitivity(net, state, assumptions, data_date) -> Dict[str, Any]:
+    """Normal TCO against the two numbers that decide it most: the EIFS crew
+    and the DOB request-to-result wait. No single number decides silently."""
+    cid = _eifs_crew(net)
+    tab = {a["id"]: a for a in assumptions}
+    rows, waits = [], []
+    for c in SENS_EIFS_CREWS:
+        r = schedule_scenario(net, state, assumptions, "normal", data_date, {cid: {"normal": c}}) if cid else None
+        rows.append({"crew": c, "tco": r["tco"] if r else None, "tco_working_days": r["tco_working_days"] if r else None,
+                     "note": "0.8 = 1.3 per day present x 6 of 10 days present (derived report)" if c == 0.8 else ""})
+    for w in SENS_DOB_WAITS:
+        ov = {k: {"normal": w} for k in ("lead_dob_plumbing", "lead_dob_electrical") if k in tab}
+        r = schedule_scenario(net, state, assumptions, "normal", data_date, ov)
+        waits.append({"working_days": w, "tco": r["tco"], "tco_working_days": r["tco_working_days"]})
+    grid = []
+    for c in (1, 2, 5):
+        for w in (5, 7, 15):
+            ov = {k: {"normal": w} for k in ("lead_dob_plumbing", "lead_dob_electrical") if k in tab}
+            if cid:
+                ov[cid] = {"normal": c}
+            r = schedule_scenario(net, state, assumptions, "normal", data_date, ov)
+            grid.append({"eifs_crew": c, "dob_wait": w, "tco": r["tco"]})
+    return {"eifs_crew_assumption": cid, "eifs_crew_normal": tab[cid]["values"]["normal"] if cid in tab else None,
+            "eifs_crew_tag": tab[cid]["tag"] if cid in tab else None,
+            "eifs_crew": rows, "dob_wait": waits, "grid": grid}
+
+
+def state_contradictions(net, state, scen: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Where the state cannot be true as stated. Each is REPORTED, and the
+    schedule's resolution is said: done work is kept done (it imposes nothing
+    on what is left), work under way still waits for its gate."""
+    out = []
+    kinds = {a["id"]: a["kind"] for a in net["activities"]}
+    names = {a["id"]: a["name"] for a in net["activities"]}
+    st = lambda i: state.get(i, DEFAULT_STATE)  # noqa: E731
+    for l in net["links"]:
+        if l["kind"] != "prerequisite" or l["type"] not in ("FS", "FF"):
+            continue
+        p, q = st(l["from"]), st(l["to"])
+        if q["status"] == "done" and p["status"] != "done":
+            out.append({"id": l["to"], "kind": "done_with_open_prerequisite", "open": l["from"],
+                        "what": f"{names[l['to']]} is {q['status']} ({q['evidence']}) while its prerequisite "
+                                f"{names[l['from']]} is {p['status']}",
+                        "resolution": "kept as done; it imposes nothing on the remaining work (no negative float)"})
+        p_done_verified = p["status"] == "done" and p["evidence"] == "verified_public_record"
+        if q["status"] == "in_progress" and kinds.get(l["from"]) == "inspection_gate" and not p_done_verified:
+            out.append({"id": l["to"], "kind": "covering_before_inspection", "open": l["from"],
+                        "what": f"{names[l['to']]} is reported under way while {names[l['from']]} is not on record as "
+                                "passed: either it was inspected (not public) or work went over it uninspected",
+                        "resolution": "the REMAINING work is scheduled after the gate; see the branches"})
+    for s, r in scen.items():
+        for i, row in r["activities"].items():
+            if row["total_float_days"] < 0:
+                out.append({"id": i, "kind": "negative_float", "scenario": s, "float": row["total_float_days"],
+                            "what": "negative total float", "resolution": "unresolved: reported"})
+    seen, uniq = set(), []
+    for c in out:
+        k = (c["id"], c["kind"], c.get("open"), c.get("scenario"))
+        if k not in seen:
+            seen.add(k)
+            uniq.append(c)
+    return uniq
 
 
 def concurrency(net, r: Dict[str, Any], assumptions, scn: str) -> Dict[str, Any]:
@@ -2002,9 +2368,10 @@ def concurrency(net, r: Dict[str, Any], assumptions, scn: str) -> Dict[str, Any]
             ]}
 
 
-def prepare(building, records, inspections=None, timeline=()) -> Dict[str, Any]:
+
+def prepare(building, records, inspections=None, timeline=(), audit=None) -> Dict[str, Any]:
     facts = facts_from_building(building)
-    crews = measured_crews(records)
+    crews = measured_crews(records, audit)
     leads = measured_inspection_leads(inspections)
     measured = measured_assumptions(crews, leads)
     defaults = default_assumptions()
@@ -2012,22 +2379,24 @@ def prepare(building, records, inspections=None, timeline=()) -> Dict[str, Any]:
         defaults.append(assumption("lead_dob_plumbing", "DOB plumbing/sprinkler/gas inspection request to result",
                                    "working days", "industry-assumption", 5, 7, 12, faster="lower",
                                    basis="no measured sample"))
-    assumptions = measured + defaults
+    assumptions = coherent_conservative(measured + defaults)
     bad = [a["id"] for a in assumptions if not monotone(a)]
     if bad:
-        raise ValueError(f"assumptions not ordered fast <= normal <= conservative: {bad}")
+        raise ValueError(f"assumptions not ordered fast <= normal <= conservative <= stress: {bad}")
     role_company: Dict[str, str] = {}
     for comp, c in crews.items():
         if c.get("role") and (c.get("avg") or c["role"] not in role_company):
             role_company[c["role"]] = comp
-    measured_ids = {a["id"] for a in measured if a["id"].startswith("crew_")}
-    net = build_network(facts, role_company, measured_ids)
+    crew_ids = {a["id"] for a in measured if a["id"].startswith("crew_")}
+    net = build_network(facts, role_company, crew_ids)
     known = {a["id"] for a in assumptions}
     for a in net["activities"]:
         if a.get("crew") and a["crew"] not in known:
             a["crew_note"] = f"{a['crew']} has no sample; using crew_carpenters"
             a["crew"] = "crew_carpenters"
     prov, notes = provisional_state(net, records, inspections, timeline, crews)
+    if audit is None:
+        notes.append("No records audit was given: no crew size is called measured.")
     return {"facts": facts, "crews": crews, "leads": leads, "assumptions": assumptions, "net": net,
             "provisional": prov, "notes": list(facts["warnings"]) + notes}
 
@@ -2035,23 +2404,29 @@ def prepare(building, records, inspections=None, timeline=()) -> Dict[str, Any]:
 def generate(building: Dict[str, Any], records: Sequence[Dict[str, Any]], *, data_date: date,
              inspections: Optional[Dict[str, Any]] = None, timeline: Sequence[Dict[str, Any]] = (),
              state: Optional[Dict[str, Dict[str, Any]]] = None, state_source: str = "provisional",
-             project: str = "", extras: bool = True) -> Dict[str, Any]:
-    p = prepare(building, records, inspections, timeline)
+             project: str = "", extras: bool = True, audit: Optional[Iterable[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    p = prepare(building, records, inspections, timeline, audit)
     return assemble(p, state if state is not None else p["provisional"], state_source, data_date, project,
                     extras=extras)
 
 
-def model_run(building, records, model, *, data_date: date, inspections=None, timeline=(), project="") -> Dict[str, Any]:
-    """The same generator with 588_model.json laid over the provisional state."""
-    p = prepare(building, records, inspections, timeline)
+def model_run(building, records, model, *, data_date: date, inspections=None, timeline=(), project="", audit=None,
+              model_meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The same generator with 588_model.json laid over the provisional state.
+    `model_meta` (sha256, mtime) is recorded so a rewritten model is visible."""
+    p = prepare(building, records, inspections, timeline, audit)
     st, notes = state_from_model(model, p["net"], p["provisional"])
     doc = assemble(p, st, "provisional + 588_model.json", data_date, project, extras=True)
-    changed = sorted(k for k in st if st[k]["status"] != p["provisional"].get(k, DEFAULT_STATE)["status"])
-    return {"present": True, "notes": notes, "completion": doc["completion"], "critical_path": doc["critical_path"],
-            "branches": doc["branches"], "next_three_weeks": doc["next_three_weeks"],
-            "acceleration_levers": doc["acceleration_levers"],
-            "state_changes_vs_provisional": [{"id": k, "provisional": p["provisional"].get(k, DEFAULT_STATE)["status"],
-                                              "model": st[k]["status"], "basis": st[k]["basis"]} for k in changed]}
+    changed = sorted(k for k in st if (st[k]["status"], st[k]["evidence"]) !=
+                     (p["provisional"].get(k, DEFAULT_STATE)["status"], p["provisional"].get(k, DEFAULT_STATE)["evidence"]))
+    return {"present": True, "model": model_meta, "notes": notes, "completion": doc["completion"],
+            "stress_test": doc["stress_test"], "critical_path": doc["critical_path"], "branches": doc["branches"],
+            "sensitivity": doc["sensitivity"], "next_three_weeks": doc["next_three_weeks"],
+            "state_contradictions": doc["state_contradictions"], "acceleration_levers": doc["acceleration_levers"],
+            "state_changes_vs_provisional": [
+                {"id": k, "provisional": f"{p['provisional'].get(k, DEFAULT_STATE)['status']} "
+                                         f"({p['provisional'].get(k, DEFAULT_STATE)['evidence']})",
+                 "model": f"{st[k]['status']} ({st[k]['evidence']})", "basis": st[k]["basis"]} for k in changed]}
 
 
 def assemble(p: Dict[str, Any], state: Dict[str, Dict[str, Any]], state_source: str, data_date: date, project: str,
@@ -2060,6 +2435,7 @@ def assemble(p: Dict[str, Any], state: Dict[str, Dict[str, Any]], state_source: 
     notes = list(p["notes"])
     full_state = {a["id"]: state.get(a["id"], dict(DEFAULT_STATE)) for a in net["activities"]}
     scen = {s: schedule_scenario(net, full_state, assumptions, s, data_date) for s in SCENARIOS}
+    stress = schedule_scenario(net, full_state, assumptions, STRESS, data_date)
     normal = scen["normal"]
     zones = [z["id"] for z in facts["zones"]]
     by_id = {a["id"]: a for a in net["activities"]}
@@ -2070,13 +2446,14 @@ def assemble(p: Dict[str, Any], state: Dict[str, Dict[str, Any]], state_source: 
         a = by_id[aid]
         nxt.append({"id": aid, "name": a["name"], "kind": a["kind"], "zone": a["zone"], "company": a.get("company"),
                     "start": r["start"], "finish": r["finish"], "critical": r["critical"],
-                    "total_float_days": r["total_float_days"], "state": full_state[aid]["status"]})
+                    "total_float_days": r["total_float_days"], "state": full_state[aid]["status"],
+                    "evidence": full_state[aid]["evidence"]})
     crit = normal["critical_path"]
     by_company: Dict[str, float] = {}
     for aid in crit:
         c = by_id[aid].get("company") or by_id[aid].get("authority") or by_id[aid]["kind"]
-        by_company[c] = round(by_company.get(c, 0.0) + normal["activities"][aid]["effort_days"], 2)
-    thin = [{"company": c, "measured_avg": v["avg"], "n_days": v["days"]} for c, v in crews.items()
+        by_company[c] = round(by_company.get(c, 0.0) + normal["activities"][aid]["effort_days"])
+    thin = [{"company": c, "avg": v["avg"], "n_days": v["days"], "source": v["source"]} for c, v in crews.items()
             if v.get("avg") and v["avg"] < 2.5]
     externals = [{"id": a["id"], "name": a["name"], "total_float_days": normal["activities"][a["id"]]["total_float_days"],
                   "effort_days": normal["activities"][a["id"]]["effort_days"]}
@@ -2084,7 +2461,7 @@ def assemble(p: Dict[str, Any], state: Dict[str, Dict[str, Any]], state_source: 
                  and normal["activities"][a["id"]]["start"] and normal["activities"][a["id"]]["total_float_days"] <= 10
                  and normal["activities"][a["id"]]["effort_days"] >= 5]
     bottlenecks = {"critical_path_effort_by_party": dict(sorted(by_company.items(), key=lambda kv: -kv[1])),
-                   "thin_measured_crews": thin, "agency_and_utility_items_near_critical": externals}
+                   "thin_crews": thin, "agency_and_utility_items_near_critical": externals}
     deadlines = []
     for a in net["activities"]:
         if not a.get("deadline"):
@@ -2094,24 +2471,39 @@ def assemble(p: Dict[str, Any], state: Dict[str, Dict[str, Any]], state_source: 
             deadlines.append({"id": a["id"], "scenario": s, "deadline": a["deadline"], "finish": r["finish"],
                               "meets_deadline": bool(r["finish"] and r["finish"] <= a["deadline"])})
     shed_need = {s: scen[s]["activities"].get("scaffold_shed_removal", {}).get("start") for s in SCENARIOS}
-    order = [scen[s]["tco_working_days"] or 0 for s in SCENARIOS]
-    if not order[0] <= order[1] <= order[2]:
+    order = [scen[s]["tco_working_days"] or 0 for s in SCENARIOS] + [stress["tco_working_days"] or 0]
+    if not all(x <= y for x, y in zip(order, order[1:])):
         notes.append("WARNING: floor-plate levelling left the scenario finishes out of order: " + str(order))
+    contradictions = state_contradictions(net, full_state, dict(scen, **{STRESS: stress}))
+    basis_kinds: Dict[str, int] = {}
+    for l in net["links"]:
+        k = "code/drawing" if not l["basis"].startswith(("physical", "crew continuity")) else l["basis"].split(":")[0]
+        basis_kinds[k] = basis_kinds.get(k, 0) + 1
     doc = {
         "kind": DOC_KIND, "is_baseline": False, "status": "ESTIMATE - proposed sequence, not a baseline, not approved",
         "engine": ENGINE, "project": project, "data_date": data_date.isoformat(), "state_source": state_source,
         "rules": list(OWNER_RULES),
+        "scenario_definitions": {s: {"story": SCENARIO_STORIES[s],
+                                     "adverse": list(CONSERVATIVE_ADVERSE) if s == "conservative" else None}
+                                 for s in ALL_RUNS},
         "completion": {s: {"tco": scen[s]["tco"], "final_co": scen[s]["final_co"],
                            "interior_ready": scen[s]["interior_ready"],
                            "tco_working_days": scen[s]["tco_working_days"]} for s in SCENARIOS},
+        "stress_test": {"what": SCENARIO_STORIES[STRESS], "tco": stress["tco"], "final_co": stress["final_co"],
+                        "interior_ready": stress["interior_ready"], "tco_working_days": stress["tco_working_days"],
+                        "critical_path": stress["critical_path"]},
         "critical_path": [{"id": i, "name": by_id[i]["name"], "start": normal["activities"][i]["start"],
                            "finish": normal["activities"][i]["finish"],
                            "effort_days": normal["activities"][i]["effort_days"]} for i in crit],
         "critical_path_by_scenario": {s: scen[s]["critical_path"] for s in SCENARIOS},
         "next_three_weeks": nxt,
         "bottlenecks": bottlenecks,
+        "sensitivity": sensitivity(net, full_state, assumptions, data_date) if extras else {},
         "acceleration_levers": acceleration(net, full_state, assumptions, data_date, normal) if extras else [],
         "branches": branches(net, full_state, assumptions, data_date) if extras else [],
+        "state_contradictions": contradictions,
+        "link_review": {"removed": list(LINK_REVIEW_REMOVED), "basis_counts": basis_kinds,
+                        "skipped_links_to_absent_activities": len(net.get("skipped_links") or [])},
         "concurrency": {s: concurrency(net, scen[s], assumptions, s) for s in SCENARIOS},
         "space_links": {s: scen[s].get("space_links") or [] for s in SCENARIOS},
         "superstructure_cycles": superstructure_cycles(facts, full_state, scen, zones),
@@ -2119,7 +2511,7 @@ def assemble(p: Dict[str, Any], state: Dict[str, Dict[str, Any]], state_source: 
         "shed_and_scaffold_needed_until": shed_need,
         "assumptions": assumptions,
         "measured": {"crews": crews, "inspection_leads": leads},
-        "facts": {"systems": facts["systems"], "building": facts["building"],
+        "facts": {"systems": facts["systems"], "building": facts["building"], "neighbours": facts["neighbours"],
                   "zones": [{k: v for k, v in z.items() if k not in ("notes",)} for z in facts["zones"]]},
         "network": {"counts": _counts(net), "not_applicable": net["not_applicable"],
                     "activities": [dict(a, state=full_state[a["id"]],
@@ -2198,56 +2590,85 @@ def _row(*cells: Any) -> str:
     return "| " + " | ".join(str(c) for c in cells) + " |"
 
 
+#: the published run before adversarial review 1 (schedule/588_schedule.json, 2026-11-10 09:10)
+BEFORE_REVIEW_1 = {"fast": "2027-02-22", "normal": "2027-06-14", "conservative": "2028-02-02"}
+
+
 def readme(doc: Dict[str, Any]) -> str:
     """A short human summary of the document (the JSON is the record)."""
     c = doc["completion"]
     acts = {a["id"]: a for a in doc["network"]["activities"]}
+    tab = {a["id"]: a for a in doc["assumptions"]}
     tags: Dict[str, int] = {}
     for a in doc["assumptions"]:
         tags[a["tag"]] = tags.get(a["tag"], 0) + 1
+    sens = doc.get("sensitivity") or {}
+    cid = sens.get("eifs_crew_assumption")
     L = [f"# 588 remaining-work schedule - ESTIMATE (data date {doc['data_date']})", "",
          "**An estimate with its basis. Not a baseline, not a schedule file, not approved.** A PROPOSED sequence, "
          "offered for approval, separate from any official schedule. Built by `backend/lib/schedule_generator.py` "
-         "(runner `backend/scripts/intel_588_schedule.py`) from the drawings lane's building model, the records, the "
-         "public inspection record and a STATE. Full detail: `588_schedule.json`.", "",
-         f"Network: {doc['network']['counts']['activities']} activities "
-         f"({', '.join(f'{v} {k}' for k, v in doc['network']['counts']['by_kind'].items())}), "
-         f"{doc['network']['counts']['links']} links "
-         f"({', '.join(f'{v} {k}' for k, v in doc['network']['counts']['links_by_kind'].items())}). "
-         f"Not applicable: {', '.join(x['id'] for x in doc['network']['not_applicable'])}.", "",
-         "## Completion (TCO = DOB Temporary Certificate of Occupancy)", "",
-         _row("scenario", "TCO", "final CO", "interior ready", "working days"), _row("---", "---", "---", "---", "---")]
+         "(runner `backend/scripts/intel_588_schedule.py`) from the drawings lane's building model, the ORIGINAL "
+         "records (records/AUDIT.md), the public inspection record and a STATE. Full detail: `588_schedule.json`.", ""]
+    if cid in tab:
+        L += [f"**Read this first:** the normal TCO is decided by the EIFS crew, `{cid}` = "
+              f"{tab[cid]['values']['normal']:g} per day present, a **{tab[cid]['tag']}** figure "
+              f"({tab[cid]['sample'].get('n_days')} days in a generated report, no original crew row). At 2 a day the "
+              "normal TCO is " + next((r["tco"] for r in sens["eifs_crew"] if r["crew"] == 2), "?")
+              + "; see the sensitivity table.", ""]
+    L += [f"Network: {doc['network']['counts']['activities']} activities "
+          f"({', '.join(f'{v} {k}' for k, v in doc['network']['counts']['by_kind'].items())}), "
+          f"{doc['network']['counts']['links']} links "
+          f"({', '.join(f'{v} {k}' for k, v in doc['network']['counts']['links_by_kind'].items())}); every link "
+          "carries a basis (" + ", ".join(f"{v} {k}" for k, v in doc["link_review"]["basis_counts"].items()) + "). "
+          f"Not applicable: {', '.join(x['id'] for x in doc['network']['not_applicable'])}.", "",
+          "## Completion (TCO = DOB Temporary Certificate of Occupancy)", "",
+          _row("scenario", "TCO", "final CO", "interior ready", "working days", "before review 1"),
+          _row("---", "---", "---", "---", "---", "---")]
     for s in SCENARIOS:
-        L.append(_row(s, c[s]["tco"], c[s]["final_co"], c[s]["interior_ready"], c[s]["tco_working_days"]))
-    L += ["", "Scenario rules: crews of measured trades = measured PEAK (fast) / AVERAGE (normal) / 80% of average "
-          "(conservative); unmeasured crews, production rates, inspection and utility leads, weather and the share "
-          "of unknown scope left are labelled industry assumptions, ordered fast <= normal <= conservative.", ""]
-    if doc.get("model_run") and doc["model_run"].get("completion"):
-        m = doc["model_run"]["completion"]
-        L += ["With `model/588_model.json` laid over the provisional state: TCO "
-              + ", ".join(f"{s} {m[s]['tco']}" for s in SCENARIOS) + ". Changes: "
-              + "; ".join(f"{x['id']} {x['provisional']}->{x['model']}"
-                          for x in doc["model_run"]["state_changes_vs_provisional"][:8]) + ".", ""]
-    L += ["## Critical path (normal)", ""]
+        L.append(_row(s, c[s]["tco"], c[s]["final_co"], c[s]["interior_ready"], c[s]["tco_working_days"],
+                      BEFORE_REVIEW_1[s]))
+    st = doc["stress_test"]
+    L.append(_row("stress test (not a forecast)", st["tco"], st["final_co"], st["interior_ready"],
+                  st["tco_working_days"], "(was the conservative)"))
+    L += [""] + [f"- **{s}**: {doc['scenario_definitions'][s]['story']}" for s in ALL_RUNS] + [""]
+    m = doc.get("model_run") or {}
+    if m.get("completion"):
+        mm = m["model"] or {}
+        L += [f"With `model/588_model.json` (sha256 {str(mm.get('sha256', ''))[:12]}...) laid over the provisional "
+              "state: TCO " + ", ".join(f"{s} {m['completion'][s]['tco']}" for s in SCENARIOS)
+              + f"; stress {m['stress_test']['tco']}. {len(m['state_changes_vs_provisional'])} state changes vs the "
+              "provisional state ("
+              + ("same TCO in every scenario" if all(m["completion"][s]["tco"] == c[s]["tco"] for s in SCENARIOS)
+                 else "TCO differs, see model_run") + "). " + " ".join(m["notes"]), ""]
+    L += ["## Sensitivity (normal TCO)", "",
+          _row("EIFS crew per working day", "TCO", ""), _row("---", "---", "---")]
+    L += [_row(r["crew"], r["tco"], r["note"]) for r in sens.get("eifs_crew", [])]
+    L += ["", _row("DOB request-to-result wait (plumbing and electrical), working days", "TCO"), _row("---", "---")]
+    L += [_row(r["working_days"], r["tco"]) for r in sens.get("dob_wait", [])]
+    L += ["", "## Critical path (normal)", ""]
     L += [f"- {x['name']} ({x['id']}): {x['start']} to {x['finish']}" for x in doc["critical_path"]]
     L += ["", "By scenario: " + "; ".join(f"{s}: {' > '.join(doc['critical_path_by_scenario'][s][:6])}"
                                           + (" ..." if len(doc['critical_path_by_scenario'][s]) > 6 else "")
                                           for s in SCENARIOS), ""]
     sc = doc["superstructure_cycles"]
     L += ["## Superstructure cycles (3/5/7-day)", "", sc["answer"], ""] + [f"- {w}" for w in sc["why"]] + [""]
+    L += ["## State contradictions (reported, not hidden)", ""]
+    L += [f"- {x['kind']}: {x['what']}. Resolution: {x['resolution']}." for x in doc["state_contradictions"][:12]]
+    if not doc["state_contradictions"]:
+        L.append("- none")
+    neg = [x for x in doc["state_contradictions"] if x["kind"] == "negative_float"]
+    L += [f"- Negative float: {len(neg)} activities.", ""]
     L += ["## Next three weeks (normal)", ""]
     nx = sorted(doc["next_three_weeks"], key=lambda x: (not x["critical"], x["kind"] != "regulatory",
                                                          x["total_float_days"], x["start"]))
     L += [f"- {x['start']}..{x['finish']} {x['name']}{' [CRITICAL]' if x['critical'] else ''} "
-          f"(float {x['total_float_days']} wd, state {x['state']})" for x in nx[:25]]
-    if len(nx) > 25:
-        L.append(f"- ...and {len(nx) - 25} more in the JSON (next_three_weeks).")
+          f"(float {x['total_float_days']} wd, state {x['state']} ({x['evidence']}))" for x in nx[:22]]
     L += ["", "## Bottlenecks", ""]
     b = doc["bottlenecks"]
-    L += ["- Critical-path effort by party (normal): " + ", ".join(f"{k} {v:g} wd" for k, v in
-                                                              b["critical_path_effort_by_party"].items())]
-    L += ["- Thin measured crews: " + ", ".join(f"{t['company']} {t['measured_avg']:g}/day (n={t['n_days']} days)"
-                                              for t in b["thin_measured_crews"])]
+    L += ["- Critical-path effort by party (normal, working days): "
+          + ", ".join(f"{k} {v:g}" for k, v in b["critical_path_effort_by_party"].items())]
+    L += ["- Thin crews: " + ", ".join(f"{t['company']} {t['avg']:g}/day ({t['source']}, n={t['n_days']})"
+                                      for t in b["thin_crews"])]
     L += ["", "## Acceleration levers (normal; alone, then cumulative in this order)", "",
           _row("lever", "TCO alone", "saved alone (wd)", "TCO cumulative", "saved by adding (wd)", "requires"),
           _row("---", "---", "---", "---", "---", "---")]
@@ -2261,21 +2682,46 @@ def readme(doc: Dict[str, Any]) -> str:
                       f"{br['tco_if_b']} / {br['interior_ready_if_b']}"))
     cn = doc["concurrency"]["normal"]
     L += ["", "## Concurrency (normal)", "",
-          f"Site peak {cn['site_peak_workers']:g} workers on {cn['site_peak_day']} (measured site peak: 47 on "
-          f"2026-10-30). {cn['space_links_added']} floor-plate links added by levelling."]
+          f"Site peak about {round(cn['site_peak_workers'])} workers on {cn['site_peak_day']}. "
+          f"{cn['space_links_added']} floor-plate links added by levelling."]
+    for s in SCENARIOS:
+        over = [z for z, v in doc["concurrency"][s]["per_floor_peak"].items() if not v["within_limits"]]
+        if over:
+            L.append(f"- {s}: over the floor limit on {', '.join(over)} only where work already under way is not moved.")
     for z, v in cn["per_floor_peak"].items():
-        L.append(f"- {z}: {v['trades']} trades / {v['workers']:g} workers on {v['day']} (limits {v['limit_trades']} / "
-                 f"{v['limit_workers']:g}): {', '.join(v['activities'])}")
+        L.append(f"- {z}: {v['trades']} trades / {round(v['workers'])} workers on {v['day']} (limits "
+                 f"{v['limit_trades']} / {round(v['limit_workers'])}): {', '.join(v['activities'])}")
     L += [f"- {w}" for w in cn["why_feasible"]]
-    L += ["", "## What is measured and what is assumed", "",
-          "Assumptions by tag: " + ", ".join(f"{k} {v}" for k, v in sorted(tags.items())) + ". Measured:"]
+    L += ["", "## What is measured, derived or assumed", "",
+          "Assumptions by tag: " + ", ".join(f"{k} {v}" for k, v in sorted(tags.items())) + "."]
     for a in doc["assumptions"]:
-        if a["tag"] == "measured":
-            L.append(f"- {a['label']}: normal {a['values']['normal']:g} ({a['basis'].split('. fast')[0]})")
-    L += ["", "Everything else (production rates, unmeasured crews, agency and utility leads, weather, unknown-scope "
-          "shares) is an industry assumption or a regulatory condition with an assumed duration. Activity dates and "
-          "crews moving between floors are NOT used as a production rate (owner ruling).", "",
-          "## Notes", ""] + [f"- {n}" for n in doc["notes"]]
+        if a["tag"] in ("measured", "derived-report"):
+            L.append(f"- [{a['tag']}] {a['label']}: normal {a['values']['normal']:g}. {a['basis'].split('. fast')[0]}")
+    L += ["", "## What changed after review 1 (2026-11-10)", "",
+          "Before -> after TCO: " + "; ".join(f"{s} {BEFORE_REVIEW_1[s]} -> {c[s]['tco']}" for s in SCENARIOS)
+          + f"; the old conservative (every worst value at once) is now the stress test: {st['tco']}.",
+          "- Crews: MEASURED only from original filed daily-log rows (records/audit_flags.jsonl, is_original and not a "
+          "duplicate, >= 3 dates): " + ", ".join(a["label"].split(", ", 1)[1].split(" (")[0] for a in doc["assumptions"]
+                                                  if a["tag"] == "measured" and a["id"].startswith("crew_"))
+          + ". Every other crew is a derived-report figure (unaudited) or an assumption, and says so. The order "
+          "in which J&P works the elevations is not on record; one crew works one elevation at a time.",
+          "- Sequencing: insulation waits for the DOB electrical and plumbing ROUGH INSPECTIONS on its floor; "
+          "firestopping split into pre-board (concealed penetrations, inspected before board) and post-board "
+          "(membrane penetrations, rated joints, head-of-wall, inspected before tape); work under way still waits "
+          "for its inspect-before-cover gate (remaining work after the gate), and the overlap is reported as a "
+          "state contradiction.",
+          "- Facade: the brick/EIFS split is a branch; the lot-line wall below neighbour No. 586's 2 storeys gets no "
+          "EIFS; the other side's neighbour is an assumption with a branch; adjoining-roof access activities added; "
+          "window and PTAC openings deducted; bulkhead walls added.",
+          "- Links: every link carries a basis; removed or replaced: "
+          + "; ".join(f"{r['from']} -> {r['to']} ({r['why'].split(':')[0]})" for r in doc["link_review"]["removed"])
+          + ".",
+          "- An inferred or reported inspection pass is never a pass in any scenario; such gates get a "
+          "passed/pending branch and keep their '(inferred)' label.",
+          "- Conservative is one adverse story (above); a failed inspection adds one re-test cycle at the normal "
+          "wait, not a doubled lead; the TCO review is no longer doubled.",
+          "- Done work imposes nothing on remaining work, so no negative float; a done activity with an open "
+          "prerequisite is reported as a contradiction.", "", "## Notes", ""] + [f"- {n}" for n in doc["notes"]]
     dl = [d for d in doc["deadline_checks"] if d["scenario"] == "normal"]
     L += [f"- Deadline {d['deadline']}: {acts[d['id']]['name']}" for d in dl]
     L += ["", "Re-run: `PYTHONUTF8=1 python backend/scripts/intel_588_schedule.py C:/Users/asddd/bv-worktrees/intel588-data`", ""]
