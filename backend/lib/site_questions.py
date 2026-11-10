@@ -66,6 +66,8 @@ SUPPRESSED, with the reason, never silently:
   not_permitted        no role that could answer may be asked it (dm_roles).
   outside_horizon      a deadline beyond REGULATORY_HORIZON_DAYS.
   daily_cap            every permitted person already has MAX_PER_PERSON today.
+  activity_missing     the question names schedule activities the current
+                       network does not have (it changed): skipped, never a crash.
   asked_recently       asked within REPEAT_DAYS (history).
   premise_not_established  it presumes work no record shows (a test of pipe
                        nobody has recorded installing).
@@ -74,8 +76,18 @@ VALUE (`VALUE_FORMULA`, stated on every question with its terms):
   value = (T + N + D) x U x G x C
   T  schedule swing, working days: max over branches |dTCO normal|
      + 0.5 x max over branches max(|dTCO fast|, |dTCO conservative|)
-  N  0.25 x min(20, max over branches |move of the first open successor|),
-     counted only when that successor starts inside the three-week window
+  N  0.5 x min(20, max over branches of the working days moved, summed over
+     the CREW WORK and inspection gates (not the asked work itself) that start
+     NEXT WEEK, i.e. within NEXT_WEEK_WD working days, before or after the
+     answer), each move weighted 1 / (1 + its least float in any scenario / 10)
+     so a crew date that cannot slip counts fully and one with months of float
+     hardly at all. Changed 2026-11-10 after the first 588 run: N used to count the
+     move of the first successor anywhere in three weeks, whatever it was, so
+     "has the steel-stair work started" (it moves a TR1 paperwork close-out
+     with 108 days of float) outranked "did Floor 1 electrical rough-in
+     finish" (it moves the electrical inspection and the insulation crew).
+     The weight doubled (0.25 -> 0.5) so that what crews do next week is
+     not crowded out by low-value questions.
   D  decision weight for what the generator does not model (a permit deadline:
      3 within 14 days, 2 within 30, 1 within the horizon; a contradiction or a
      record decision: its stated weight; else 0)
@@ -113,11 +125,14 @@ REPEAT_DAYS = CQ.REPEAT_DAYS
 TRIGGERS = ("unknown_state", "inspection_not_public", "regulatory_deadline", "utility_status", "acceleration_lever",
             "inference_disproof", "contradiction", "statement_gap", "stale_sub", "multi_floor_statement")
 SUPPRESSION_REASONS = ("answered_by_records", "redundant", "no_decision", "floor_does_not_matter", "not_permitted",
-                       "outside_horizon", "daily_cap", "asked_recently", "premise_not_established")
+                       "outside_horizon", "daily_cap", "asked_recently", "premise_not_established", "activity_missing")
+#: "Next week": the working days whose crew plans an answer can still change.
+NEXT_WEEK_WD = 10
 
 VALUE_FORMULA = ("value = (T + N + D) x U x G x C; T = max|dTCO normal| + 0.5 x max(|dTCO fast|, |dTCO conservative|) "
-                 "over branches (working days); N = 0.25 x min(20, max |first open successor move|) when it starts in "
-                 "the 3-week window; D = decision weight the generator does not model (permit deadline 3/2/1 by "
+                 "over branches (working days); N = 0.5 x min(20, max over branches of the working days moved, summed "
+                 "over the crew work and inspection gates other than the asked work that start within the next 10 "
+                 "working days, each weighted 1/(1 + least float in any scenario/10)); D = decision weight the generator does not model (permit deadline 3/2/1 by "
                  "<=14/<=30/<=45 days; contradiction or record decision: stated); U = 1 + max(0, 21 - days until "
                  "needed)/21; G = evidence gap (unknown 1.0, inferred 0.9, in progress unmeasured 0.8, attested 0.5); "
                  "C = cost to answer (look on site 1.0, office lookup 0.9, third party 0.7). Branch probabilities are "
@@ -171,6 +186,22 @@ LABELS: Dict[str, Tuple[str, str]] = {
     "elec_service_equipment": ("the electrical service equipment (meter bank and main)",
                                "el equipo de servicio eléctrico (banco de medidores y principal)"),
     "eifs": ("EIFS", "el EIFS"),
+    "eifs_side_known": ("the EIFS on the side wall above No. 586", "el EIFS de la pared lateral sobre el No. 586"),
+    "eifs_side_other": ("the EIFS on the other side wall", "el EIFS de la otra pared lateral"),
+    "eifs_front_rear": ("the EIFS on the front and rear walls", "el EIFS de las paredes del frente y de atrás"),
+    "eifs_bulkhead": ("the EIFS on the roof bulkhead", "el EIFS del bulkhead del techo"),
+    "brick_veneer": ("the brick veneer", "el revestimiento de ladrillo"),
+    "firestop_pre": ("firestopping before board (rated penetrations)",
+                     "el sellado cortafuego antes del sheetrock (penetraciones)"),
+    "gate_firestop_pre": ("firestop special inspection before board",
+                          "la inspección especial de cortafuego antes del sheetrock"),
+    "gate_air_barrier_side_known": ("air-barrier inspection on the side wall above No. 586",
+                                    "la inspección de la barrera de aire en la pared lateral sobre el No. 586"),
+    "gate_air_barrier_side_other": ("air-barrier inspection on the other side wall",
+                                    "la inspección de la barrera de aire en la otra pared lateral"),
+    "gate_air_barrier_bulkhead": ("air-barrier inspection on the bulkhead",
+                                  "la inspección de la barrera de aire en el bulkhead"),
+    "backflow_devices": ("the backflow devices (RPZ and DCDA)", "los dispositivos antirretorno (RPZ y DCDA)"),
     "roofing": ("roofing", "el techado"),
     "roof_coping": ("the roof coping", "el coping del techo"),
     "windows": ("window installation", "la instalación de ventanas"),
@@ -213,6 +244,21 @@ def zone_words(zone: Optional[str]) -> Tuple[str, str]:
     return ZONE_WORDS.get(z, (z.lower() or "the building", z.lower() or "el edificio"))
 
 
+def facade_roles(net: Dict[str, Any]) -> Dict[str, List[str]]:
+    """The facade activities by ROLE, read from the network (never a
+    hard-coded id): {"side": [...], "front_rear": [...], "bulkhead": [...],
+    "brick": [...], "other": [...]}. An EIFS activity's role is its elevation
+    name after "eifs_"; brick veneer is its own family."""
+    out: Dict[str, List[str]] = {"side": [], "front_rear": [], "bulkhead": [], "brick": [], "other": []}
+    for a in net["activities"]:
+        if a.get("family") == "eifs":
+            el = a["id"].split("eifs_", 1)[-1]
+            out["side" if el.startswith("side") else el if el in out else "other"].append(a["id"])
+        elif a.get("family") == "brick_veneer":
+            out["brick"].append(a["id"])
+    return out
+
+
 def key_of(aid: str) -> str:
     """An activity's kind of work without its floor: elec_rough_L3 ->
     elec_rough. (The generator's `family` is coarser: roof coping and stairs
@@ -232,7 +278,7 @@ def label(family: str, name: str = "") -> Tuple[str, str, bool]:
         en, es = LABELS[family]
         return en, es, False
     en = (name or family).strip()
-    return en[:1].lower() + en[1:], f"«{en}»", True
+    return (en if en[:2].isupper() else en[:1].lower() + en[1:]), f"«{en}»", True
 
 
 # ═══ RE-RUNNING THE SCHEDULE PER BRANCH ═══════════════════════════════════════
@@ -268,17 +314,6 @@ class Rescheduler:
         for aid, st in ((change or {}).get("state") or {}).items():
             state[aid] = st
         base_net = self.net
-        # An answer "done" means the work is at least UNDER WAY. The generator
-        # turns an open FS prerequisite into FF only for an in-progress activity
-        # (its retained logic), so an attested "done" (which keeps
-        # remaining_operator_done of the scope) would wait to START behind
-        # predecessors it already finished alongside. Here the same retained
-        # logic is applied to what an answer marks done; the base is untouched.
-        done_now = {aid for aid, v in ((change or {}).get("state") or {}).items()
-                    if v.get("status") == "done" and v.get("evidence") != "verified_public_record"}
-        if done_now:
-            base_net = {**self.net, "links": [dict(l, type="FF") if l["to"] in done_now and l["type"] == "FS"
-                                              and l["kind"] == "prerequisite" else l for l in self.net["links"]]}
         net = base_net
         holds = (change or {}).get("holds") or {}
         out = {}
@@ -349,6 +384,29 @@ class Rescheduler:
             if d:
                 moved.append({"id": aid, "base_start": b["start"], "branch_start": n["start"], "move_wd": d})
         out["window_moves"] = sorted(moved, key=lambda m: (-abs(m["move_wd"]), m["id"]))[:5]
+        nw = []
+        for aid, b in self.base["normal"]["acts"].items():
+            a = self.by_id[aid]
+            if aid in subject or a["kind"] not in ("work", "inspection_gate"):
+                continue
+            n = run["normal"]["acts"][aid]
+            if not b["start"] or not n["start"] or n["es"] == b["es"]:
+                continue
+            if min(b["es"], n["es"]) < NEXT_WEEK_WD:
+                fl = min(self.base[sc]["acts"][aid]["float"] for sc in self.scenarios)
+                nw.append({"id": aid, "base_start": b["start"], "branch_start": n["start"], "move_wd": n["es"] - b["es"],
+                           "min_float_wd": fl, "weight": round(1.0 / (1.0 + max(0, fl) / 10.0), 3)})
+        out["next_week_crew_moves"] = sorted(nw, key=lambda m: (-abs(m["move_wd"]), m["id"]))
+        out["next_week_crew_move_wd"] = sum(abs(m["move_wd"]) for m in nw)
+        # weighted by how little float the moved work has in any scenario: a crew date that cannot slip counts fully
+        out["next_week_crew_move_weighted"] = round(sum(abs(m["move_wd"]) * m["weight"] for m in nw), 2)
+        # an answer "done" over open prerequisites: reported, and asked, never a delay (schedule_generator)
+        st = dict(self.state, **((change or {}).get("state") or {}))
+        out["contradictions_created"] = [
+            {"done": l["to"], "open_prerequisite": l["from"]} for l in self.net["links"]
+            if l["kind"] == "prerequisite" and l["to"] in ((change or {}).get("state") or {})
+            and st[l["to"]]["status"] == "done" and st.get(l["from"], G.DEFAULT_STATE)["status"] != "done"
+            and self.state.get(l["to"], G.DEFAULT_STATE)["status"] != "done"]
         out["critical_path_head_normal"] = run["normal"]["critical_path"][:3]
         return out
 
@@ -456,59 +514,116 @@ def _work_questions(ctx) -> List[Dict[str, Any]]:
             continue
         if st["status"] == "not_started" and st["evidence"] == "inferred":
             continue                     # an inference: _inference_questions asks it, if anyone can check
-        unknown = st["status"] == "unknown"
         if st["status"] == "in_progress" and _measured(st) and aid not in crit:
             continue                     # measured man-days off every critical path: nothing to narrow
-        fam, zone = key_of(aid), a.get("zone")
-        en, es, fb = label(fam, a["name"])
-        zen, zes = zone_words(zone)
-        node, lvl = MODEL_NODE.get(fam), MODEL_LEVEL.get(zone)
-        ev, shared, mf = _model_refs(ctx, lvl, node) if node and lvl else ([], False, [])
-        ev = _act_evidence(ctx, aid) + ev
-        company = a.get("company")
-        trig = ["unknown_state"] + (["multi_floor_statement"] if shared else [])
-        on_en = f" on {zen}" if _is_place(zone) else ""
-        on_es = f" en {zes}" if _is_place(zone) else ""
-        if unknown:
-            t_en = f"Has work on {en} started{on_en}? Not started, started, or done?"
-            t_es = f"¿Ya empezó el trabajo de {es}{on_es}? ¿No ha empezado, empezó o ya está terminado?".replace(
-                " de el ", " del ")
-            brs = [branch("not_yet", "not started", "no ha empezado", claim="not_yet",
-                          change={"state": {aid: stated("not_started", f"{a['name']}: not started")}},
-                          model=f"attested not_yet on {node or aid} at {lvl or zone}: unknown becomes not started "
-                                "(the full scope stays, plus mobilization for a trade not yet on site)"),
-                   branch("started", "started", "empezó", claim="started",
-                          change={"state": {aid: stated("in_progress", f"{a['name']}: started")}},
-                          model=f"attested started on {node or aid} at {lvl or zone}"),
-                   branch("done", "done", "terminado", claim="done",
-                          change={"state": {aid: stated("done", f"{a['name']}: done")}},
-                          model=f"attested done on {node or aid} at {lvl or zone} (not verified; the generator leaves "
-                                "remaining_operator_done of the scope)"),
-                   dont_know(f"{company} (through the PM)" if company else "the PM")]
-            reads, gap = CQ.START_PASSED, "unknown"
-        else:
-            t_en = f"Did {en} finish{on_en}, or is part of it still pending?"
-            t_es = f"¿Se terminó {es}{on_es}, o todavía falta una parte?"
-            brs = [branch("done", "finished", "terminado", claim="done",
-                          change={"state": {aid: stated("done", f"{a['name']}: finished")}},
-                          model=f"attested done on {node or aid} at {lvl or zone} (not verified)"),
-                   branch("not_yet", "part still pending", "todavía falta", claim="not_yet",
-                          model=f"attested not_yet on {node or aid} at {lvl or zone}: confirms in progress; no "
-                                "schedule change"),
-                   branch("blocked", "blocked: why", "bloqueado: por qué", claim="blocked",
-                          change={"holds": {aid: HOLDS["blocked"]["values"]}},
-                          model="attested blocked with the reason; the hold is an ASSUMPTION (q_hold_blocked)"),
-                   dont_know(f"{company} (through the PM)" if company else "the PM")]
-            reads, gap = CQ.DONE_UNBACKED, "in_progress"
-        who = ["superintendent", "cp"] + ([f"company:{company}"] if company else [])
-        why = (f"{a['name']} is {'on the critical path' if aid in crit else 'in the next three weeks'}"
-               f" ({', '.join(s for s in SCENARIOS if aid in S.base[s]['critical_path']) or 'no scenario critical'}); "
-               f"its state is {st['status']} ({st['evidence']}).")
-        out.append(question(f"work:{aid}", triggers=trig, subject=fam, aspect="state", place=str(zone), text_en=t_en,
-                            text_es=t_es, es_fallback=fb, answerers=who, topic="progress", why=why, evidence=ev,
-                            branches=brs, activities=[aid], gap=gap, cost="look", reads_as=reads,
-                            model_node=node, model_level=lvl, multi_floor=mf))
+        out.append(work_question(ctx, aid))
     return out
+
+
+def work_question(ctx, aid: str) -> Dict[str, Any]:
+    """The state question for one work activity, worded by its state."""
+    S = ctx["sched"]
+    crit = S.critical_anywhere()
+    a = S.by_id[aid]
+    st = _state_of(ctx, aid)
+    unknown = st["status"] in ("unknown", "not_started")
+    fam, zone = key_of(aid), a.get("zone")
+    en, es, fb = label(fam, a["name"])
+    zen, zes = zone_words(zone)
+    node, lvl = MODEL_NODE.get(fam), MODEL_LEVEL.get(zone)
+    ev, shared, mf = _model_refs(ctx, lvl, node) if node and lvl else ([], False, [])
+    ev = _act_evidence(ctx, aid) + ev
+    company = a.get("company")
+    trig = ["unknown_state"] + (["multi_floor_statement"] if shared else [])
+    on_en = f" on {zen}" if _is_place(zone) else ""
+    on_es = f" en {zes}" if _is_place(zone) else ""
+    if unknown:
+        t_en = f"Has work on {en} started{on_en}? Not started, started, or done?"
+        t_es = f"¿Ya empezó el trabajo de {es}{on_es}? ¿No ha empezado, empezó o ya está terminado?".replace(
+            " de el ", " del ")
+        brs = [branch("not_yet", "not started", "no ha empezado", claim="not_yet",
+                      change={"state": {aid: stated("not_started", f"{a['name']}: not started")}},
+                      model=f"attested not_yet on {node or aid} at {lvl or zone}: unknown becomes not started "
+                            "(the full scope stays, plus mobilization for a trade not yet on site)"),
+               branch("started", "started", "empezó", claim="started",
+                      change={"state": {aid: stated("in_progress", f"{a['name']}: started")}},
+                      model=f"attested started on {node or aid} at {lvl or zone}"),
+               branch("done", "done", "terminado", claim="done",
+                      change={"state": {aid: stated("done", f"{a['name']}: done")}},
+                      model=f"attested done on {node or aid} at {lvl or zone} (not verified; the generator leaves "
+                            "remaining_operator_done of the scope)"),
+               dont_know(f"{company} (through the PM)" if company else "the PM")]
+        reads, gap = CQ.START_PASSED, "unknown"
+    else:
+        t_en = f"Did {en} finish{on_en}, or is part of it still pending?"
+        t_es = f"¿Se terminó {es}{on_es}, o todavía falta una parte?"
+        brs = [branch("done", "finished", "terminado", claim="done",
+                      change={"state": {aid: stated("done", f"{a['name']}: finished")}},
+                      model=f"attested done on {node or aid} at {lvl or zone} (not verified)"),
+               branch("not_yet", "part still pending", "todavía falta", claim="not_yet",
+                      model=f"attested not_yet on {node or aid} at {lvl or zone}: confirms in progress; no "
+                            "schedule change"),
+               branch("blocked", "blocked: why", "bloqueado: por qué", claim="blocked",
+                      change={"holds": {aid: HOLDS["blocked"]["values"]}},
+                      model="attested blocked with the reason; the hold is an ASSUMPTION (q_hold_blocked)"),
+               dont_know(f"{company} (through the PM)" if company else "the PM")]
+        reads, gap = CQ.DONE_UNBACKED, "in_progress"
+    who = ["superintendent", "cp"] + ([f"company:{company}"] if company else [])
+    where = ("on the critical path" if aid in crit else "in the next three weeks" if aid in set(S.window())
+             else "outside the three-week window")
+    why = (f"{a['name']} is {where}"
+           f" ({', '.join(s for s in SCENARIOS if aid in S.base[s]['critical_path']) or 'no scenario critical'}); "
+           f"its state is {st['status']} ({st['evidence']}).")
+    return question(f"work:{aid}", triggers=trig, subject=fam, aspect="state", place=str(zone), text_en=t_en,
+                    text_es=t_es, es_fallback=fb, answerers=who, topic="progress", why=why, evidence=ev,
+                    branches=brs, activities=[aid], gap=gap, cost="look", reads_as=reads,
+                    model_node=node, model_level=lvl, multi_floor=mf)
+
+
+def done_over_open(ctx) -> List[Dict[str, Any]]:
+    """schedule_generator's rule: work recorded DONE is done, and each of its
+    prerequisites that is not done is a CONTRADICTION (never a delay). Each
+    becomes a question about the open prerequisite."""
+    S = ctx["sched"]
+    out = []
+    for l in S.net["links"]:
+        if l["kind"] != "prerequisite":
+            continue
+        q, p = _state_of(ctx, l["to"]), _state_of(ctx, l["from"])
+        if q["status"] == "done" and p["status"] != "done" and S.by_id[l["to"]]["kind"] != "inspection_gate":
+            out.append({"done": l["to"], "open": l["from"], "done_state": q, "open_state": p})
+    return out
+
+
+def _contradiction_questions(ctx, qs: List[Dict[str, Any]], suppressed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_act = {}
+    for q in qs:
+        for aid in q["activities"]:
+            by_act.setdefault(aid, q)
+    new = []
+    for c in done_over_open(ctx):
+        S = ctx["sched"]
+        e = evid("588_schedule estimate", f"{c['done']}<-{c['open']}", ctx["today"],
+                 f"{S.by_id[c['done']]['name']} is done ({c['done_state']['evidence']}) while its prerequisite "
+                 f"{S.by_id[c['open']]['name']} is {c['open_state']['status']} ({c['open_state']['evidence']}): a "
+                 "contradiction, not a delay", "schedule estimate")
+        q = by_act.get(c["open"])
+        if q is None and S.by_id[c["open"]]["kind"] == "work":
+            q = work_question(ctx, c["open"])
+            new.append(q)
+            by_act[c["open"]] = q
+        if q is None:
+            suppressed.append({"id": f"contra:{c['done']}<-{c['open']}", "subject": key_of(c["open"]),
+                               "place": str(S.by_id[c["open"]].get("zone")), "reason": "no_decision",
+                               "detail": f"{e['what']}; the open prerequisite is a {S.by_id[c['open']]['kind']} "
+                                         "with no state a person can report (asked through its own question, if any)",
+                               "evidence": [e]})
+            continue
+        q["triggers"] = list(dict.fromkeys(q["triggers"] + ["contradiction"]))
+        q["evidence"].append(e)
+        q["decision_weight"] = max(float(q.get("decision_weight") or 0), 1.0)
+        q["decision_why"] = (q.get("decision_why") or "") + " a recorded-done successor contradicts this state"
+    return new
 
 
 def _gate_questions(ctx) -> List[Dict[str, Any]]:
@@ -551,7 +666,8 @@ def _gate_questions(ctx) -> List[Dict[str, Any]]:
         t_es = f"¿Ya se pidió, se programó o se pasó {es} para {zes}?"
         brs = [branch("passed", "passed", "pasó", claim="done", change={"state": passed},
                       model=f"attested pass on {MODEL_NODE.get(fam, fam)}; STAYS ATTESTED until the {auth} record or "
-                            "the inspector's sign-off sheet is on file",
+                            "the inspector's sign-off sheet is on file (schedule_generator keeps an unverified pass "
+                            "PENDING, so the schedule does not move on the word alone)",
                       verified_when=f"the {auth} result is read from its own record, or the signed sheet is sent"),
                branch("scheduled", "booked: date", "programada: fecha", claim="scheduled",
                       model="attested scheduled item with its date; no state change until a result"),
@@ -606,11 +722,22 @@ def _regulatory_questions(ctx) -> List[Dict[str, Any]]:
             continue
         lapse_hold = {aid: {s: _wd_until(ctx, d) + HOLDS["permit_lapse"]["values"][s] for s in SCENARIOS}
                       for aid in ids}
+        # THE CONSEQUENCE, modelled: work that waits on the permit and is
+        # already under way (or critical) STOPS at the expiry until the permit is
+        # reinstated (q_hold_permit_lapse). Pushing only the renewal is not
+        # enough: work under way finishes behind it (retained logic), so the
+        # stoppage itself is the cost.
+        crit = S.critical_anywhere()
+        stopped = [x for x in S.successors(ids) if S.by_id[x]["kind"] == "work"
+                   and (_state_of(ctx, x)["status"] == "in_progress" or x in crit)]
+        for x in stopped:
+            lapse_hold[x] = {s: HOLDS["permit_lapse"]["values"][s] for s in SCENARIOS}
         what_en = " and ".join(ctx["permit_words"].get(aid, (aid, aid))[0] for aid in sorted(ids))
         what_es = " y ".join(ctx["permit_words"].get(aid, (aid, aid))[1] for aid in sorted(ids))
         what_en, what_es = what_en[:1].upper() + what_en[1:], what_es[:1].upper() + what_es[1:]
         t_en = f"{what_en}: {'expires' if len(ids) == 1 else 'expire'} {d:%b} {d.day}. Has the renewal been filed?"
         t_es = f"{what_es}: {'vence' if len(ids) == 1 else 'vencen'} el {d.day} de {_MES[d.month]}. ¿Ya se presentó la renovación?"
+        # D carries only what the generator cannot model (a violation, public safety); the stoppage is in T
         weight = 3.0 if days <= 14 else 2.0 if days <= 30 else 1.0
         brs = [branch("done", "filed", "presentada", claim="done",
                       change={"state": {aid: stated("done", "renewal filed") for aid in ids}},
@@ -618,8 +745,11 @@ def _regulatory_questions(ctx) -> List[Dict[str, Any]]:
                       verified_when="the DOB NOW permit record (rbx6-tga4 / the portal) shows a later expiry"),
                branch("not_yet", "not filed yet", "todavía no", claim="not_yet",
                       change={"holds": lapse_hold},
-                      model="attested not_yet; the lapse branch ASSUMES renewal only after expiry "
-                            "(q_hold_permit_lapse) and re-runs what waits on the permit"),
+                      model="attested not_yet; the lapse branch ASSUMES the permit lapses at expiry and is "
+                            "reinstated q_hold_permit_lapse later; work under way that needs it STOPS for that long "
+                            f"({', '.join(stopped) or 'none under way'})"
+                            + (f"; consequence: {ctx['permit_consequence'][day]}"
+                               if ctx.get("permit_consequence", {}).get(day) else "")),
                dont_know("the admin")]
         dependents = S.successors(ids)
         out.append(question(f"permit:{day}", triggers=["regulatory_deadline"], subject="permit_renewal",
@@ -667,7 +797,7 @@ def _lever_questions(ctx) -> List[Dict[str, Any]]:
     out = []
     table = {a["id"] for a in S.assumptions}
     for lv in ctx.get("levers") or ():
-        ov = {k: v for k, v in lv["overrides"].items() if k in table}
+        ov = G._lever_overrides(lv, S.net, table)
         if not ov:
             continue
         tab = {a["id"]: a for a in S.assumptions}
@@ -782,9 +912,8 @@ def evaluate(ctx, q: Dict[str, Any]) -> Dict[str, Any]:
     t_norm = max(abs(e["tco_delta_wd"]["normal"]) for e in effs)
     t_side = max(max(abs(e["tco_delta_wd"]["fast"]), abs(e["tco_delta_wd"]["conservative"])) for e in effs)
     T = t_norm + 0.5 * t_side
-    nmove = max([abs(e["next_activity"]["move_wd"] or 0) for e in effs
-                 if e.get("next_activity") and e["next_activity"]["in_window"]] or [0])
-    N = 0.25 * min(20, nmove)
+    nmove = max([e.get("next_week_crew_move_weighted") or 0 for e in effs] or [0])
+    N = round(0.5 * min(20, nmove), 2)
     D = float(q.get("decision_weight") or 0.0)
     U, need, days = _urgency(ctx, q)
     Gp, C = GAP[q["gap"]], COST[q["cost"]]
@@ -934,14 +1063,37 @@ def generate(ctx: Dict[str, Any]) -> Dict[str, Any]:
             g["triggers"] = list(dict.fromkeys(list(old["triggers"]) + list(g["triggers"])))
             g["evidence"] = list(old["evidence"]) + [e for e in g["evidence"] if e not in old["evidence"]]
         by_id[g["id"]] = g
+    # A worded STATE question covers the generated state questions of the
+    # activities it names (e.g. the side-wall EIFS question covers each
+    # side-wall elevation): those are replaced, and said so.
+    replaced = []
+    given_ids = {g["id"] for g in given}
+    for g in given:
+        if g.get("_suppressed") or g.get("aspect") != "state":
+            continue
+        for qid, q in list(by_id.items()):
+            if (qid not in given_ids and qid.startswith("work:") and not q.get("_suppressed") and q.get("aspect") == "state"
+                    and q["activities"] and set(q["activities"]) <= set(g["activities"])):
+                replaced.append(_sup(q, "redundant", f"covered by the worded question {g['id']}"))
+                del by_id[qid]
     raw = list(by_id.values())
-    suppressed = [dict(s) for s in ctx.get("answered_by_records") or ()] + answered_predecessors(ctx)
+    suppressed = ([dict(s) for s in ctx.get("answered_by_records") or ()] + answered_predecessors(ctx)
+                  + replaced)
     qs = []
+    S = ctx["sched"]
     for q in raw:
         if q.get("_suppressed"):
             suppressed.append({k: v for k, v in q.items() if k != "_suppressed"})
-        else:
-            qs.append(q)
+            continue
+        missing = sorted({aid for aid in q["activities"] if aid not in S.by_id}
+                         | {aid for b in q["branches"] for k in ("state", "holds")
+                            for aid in (b["change"].get(k) or {}) if aid not in S.by_id})
+        if missing or not q["activities"]:
+            suppressed.append(_sup(q, "activity_missing", "the current schedule network has no "
+                                   + (", ".join(missing) or "activity for it") + "; skipped, not asked"))
+            continue
+        qs.append(q)
+    qs += _contradiction_questions(ctx, qs, suppressed)
     # never what a person already answered
     keep = []
     for q in qs:
@@ -975,8 +1127,25 @@ def generate(ctx: Dict[str, Any]) -> Dict[str, Any]:
                                                      "decision rides on it"))
         else:
             keep.append(q)
+    qs = keep
+    # One floor per trade a day: the lower-value floor of the same trade
+    # waits, because the answer for the floor asked decides whether its
+    # question still stands (a trade not started on Floor 1 has not started
+    # on Floor 2).
+    per_trade: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    keep = []
+    for q in sorted(qs, key=lambda q: (-q["value"]["score"], q["id"])):
+        if q["id"].startswith("work:") and _is_place(q["place"]) and q["aspect"] == "state":
+            k = (q["subject"], q["aspect"])
+            if k in per_trade:
+                suppressed.append(_sup(q, "redundant", f"one floor per trade a day: {per_trade[k]['id']} is asked, "
+                                                       "and its answer decides whether this floor's question stands"))
+                continue
+            per_trade[k] = q
+        keep.append(q)
+    qs = keep
     people = ctx.get("people") or [{"role": r} for r in ROLE_SLOTS]
-    load = plan(ctx, keep, suppressed, people)
+    load = plan(ctx, qs, suppressed, people)
     S = ctx["sched"]
     by_person = {r: [_public(q) for q in items] for r, items in load.items()}
     return {
@@ -991,8 +1160,26 @@ def generate(ctx: Dict[str, Any]) -> Dict[str, Any]:
                    "asked": sum(len(v) for v in by_person.values()), "suppressed": len(suppressed),
                    "by_reason": _count(s["reason"] for s in suppressed), "schedule_runs": S.runs},
         #: the asked questions WITH their branch changes, for a caller that re-runs an answer; not for output.
+        "cap_audit": cap_audit(load, suppressed),
         "_asked": [q for items in load.values() for q in items],
     }
+
+
+def cap_audit(load: Dict[str, List[Dict[str, Any]]], suppressed: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Did anything the cap held back outrank what a person was asked?
+    Per recipient: the lowest asked value against the highest capped value
+    that could have gone to them. Holds by construction (ranked placement);
+    stated so the check is visible."""
+    out = {}
+    capped = [x for x in suppressed if x["reason"] == "daily_cap"]
+    for role, items in load.items():
+        low = min((q["value"]["score"] for q in items), default=None)
+        mine = [x for x in capped if role in x["detail"].split(" already ")[0].split(", ")]
+        high = max(mine, key=lambda x: x.get("value") or 0, default=None)
+        out[role] = {"lowest_asked": low, "highest_capped": (high or {}).get("value"),
+                     "highest_capped_id": (high or {}).get("id"),
+                     "holds": low is None or high is None or (high.get("value") or 0) <= low}
+    return out
 
 
 def _count(xs: Iterable[str]) -> Dict[str, int]:

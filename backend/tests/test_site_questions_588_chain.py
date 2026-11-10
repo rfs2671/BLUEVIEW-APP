@@ -40,6 +40,7 @@ class Chain588(unittest.TestCase):
         from lib import site_questions as SQ
         cls.Q, cls.SQ = Q, SQ
         cls.doc = Q.run(DATA)
+        cls.ctx_net = Q.build_ctx(Q.load(DATA))["sched"].net
         cls.asked = [q for qs in cls.doc["by_person"].values() for q in qs]
 
     def test_at_most_three_a_role_a_day_and_role_slots_only(self):
@@ -60,7 +61,7 @@ class Chain588(unittest.TestCase):
 
     def test_the_top_three_run_the_whole_chain_for_every_branch(self):
         demo = self.doc["chain_demo"]
-        self.assertEqual(len(demo), 3)
+        self.assertIn(len(demo), (3, 4), "the top 3, and the top field question when it is not among them")
         for c in demo:
             t = c["trace"]
             for step in ("plans", "logs_and_photos", "work_progress", "dependency_state", "schedule"):
@@ -76,6 +77,18 @@ class Chain588(unittest.TestCase):
                                  f"{c['question']} {r['branch']}: an answer cannot make a cell verified")
                 self.assertTrue(r["schedule"]["agrees_with_the_question_branch"],
                                 f"{c['question']} {r['branch']}: the chain's re-run differs from the branch")
+
+    def test_no_facade_answer_marks_another_elevation(self):
+        roles = self.SQ.facade_roles(self.ctx_net)
+        for q in self.asked:
+            if q["id"] == "work:eifs_side_walls":
+                for b in q["branches"]:
+                    touched = set((b["schedule_change"].get("state") or {})) | set(b["schedule_change"].get("holds_wd") or {})
+                    self.assertTrue(touched <= set(roles["side"]), f"{b['key']}: {touched}")
+
+    def test_cap_check_holds(self):
+        for role, a in self.doc["cap_audit"].items():
+            self.assertTrue(a["holds"], role)
 
     def test_dont_know_changes_nothing_on_real_data(self):
         for c in self.doc["chain_demo"]:
