@@ -796,8 +796,10 @@ class ADocument(_Brain):
             out = self.send(c, "plumbing rough sign off 588 floor 3", punch=True)
         self.assertEqual(self.posted.posts, [])
         (r,) = self.rows()
-        self.assertEqual((r["status"], r["result"], r["read_ok"]), (IR.DOCUMENT, None, False))
-        self.assertIn("result not read", out[0])
+        # Kept, with no result: unresolved (owner ruling 2026-11-09), asked.
+        self.assertEqual((r["status"], r["result"], r["read_ok"]), (IR.UNRESOLVED, None, False))
+        self.assertIn("No result recorded: the page could not be read", out[0])
+        self.assertIn("pass, fail, partly pass, or is it booked?", out[0])
 
     def test_a_redelivered_webhook_is_not_read_twice(self):
         with _Ctx(db=self.db) as c:
@@ -824,8 +826,9 @@ class ADocument(_Brain):
         with _Ctx(db=self.db) as c:
             out = self.send(c, "firestopping inspection report 588 floor 3", http=_FakeHttp("", boom=True), punch=True)
         (r,) = self.rows()
-        self.assertEqual((r["gate"], r["levels"], r["result"], r["read_ok"]), (IR.FIRESTOPPING, ["FLOOR_3"], None, False))
-        self.assertIn("result not read", out[0])
+        self.assertEqual((r["gate"], r["levels"], r["result"], r["read_ok"], r["status"]),
+                         (IR.FIRESTOPPING, ["FLOOR_3"], None, False, IR.UNRESOLVED))
+        self.assertIn("No result recorded: the page could not be read", out[0])
 
     def test_a_floor_it_cannot_read_is_asked_and_changes_no_gate(self):
         said = json.dumps({"is_signoff": True, "inspection": "Plumbing rough", "levels": None, "result": "passed"})
@@ -834,7 +837,10 @@ class ADocument(_Brain):
         (r,) = self.rows()
         self.assertEqual(r["levels"], [])
         self.assertEqual(IR.current_state([r]), {})
-        self.assertIn("Which floor does it cover?", out[0])
+        # No result line was quoted and the page's OCR reads nothing: the
+        # model's "passed" is not confirmed by any words, so it is not stored.
+        self.assertEqual((r["status"], r["result"], r["model_result"]), (IR.UNRESOLVED, None, "passed"))
+        self.assertIn("which floor does it cover?", out[0])
 
     def test_the_page_and_the_caption_disagreeing_is_not_settled(self):
         with _Ctx(db=self.db) as c:

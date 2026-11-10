@@ -23,6 +23,13 @@ a different inspection from "rough", and a report of one must not open the other
 
 THE QUOTE IS THE PROOF IT WAS SAID. The model fills in the fields, so the server
 requires that `quote` is really in the person's own words this turn.
+
+THE RESULT IS READ BACK FROM THE WORDS (owner ruling, 2026-11-09). The model's
+result is a claim: `read_result` reads the person's own sentence (a sign-off:
+its OCR text) by fixed rules, negation included, and a result is stored only
+when those words state exactly that one. Otherwise the row is UNRESOLVED: kept
+with the words, the model's claim and why, no result, no gate moved, and one
+short question asked. Every row carries that check (`audit`).
 """
 
 from __future__ import annotations
@@ -37,6 +44,9 @@ COLLECTION = "inspection_reports"
 
 ATTESTED = "attested"
 DOCUMENT = "document_on_file"
+#: Kept with their words (or the file) and NO result: the result the model
+#: claimed could not be read back from the words. Changes no gate.
+UNRESOLVED = "unresolved"
 RESULTS = ("passed", "failed", "partial", "scheduled")
 
 PLUMBING_ROUGH = "gate_plumbing_rough"
@@ -124,6 +134,225 @@ def quote_is_theirs(own: Any, quote: Any) -> bool:
     return False
 
 
+# ── THE RESULT, READ BACK FROM THE WORDS ───────────────────────────────────
+#
+# OWNER RULING (2026-11-09): the model's `result` is a claim, never a fact.
+# It is read again, by the fixed rules below, from the person's own sentence
+# (or, for a document, from its OCR text) and stored ONLY when those words
+# state exactly one result and it is the model's. The words stating none,
+# several, or a different one: the report is kept as UNRESOLVED, with the
+# words, the model's claim and why, and one short question is asked. So a
+# failure in the words can never be stored as "passed": it is either the
+# result read, or the reason nothing was.
+#
+# NEGATION. "didn't pass", "did not pass", "not passed", "never passed",
+# "wasn't approved", "no pass", "no-go", "rejected", "red tag", "no pasó",
+# "rechazado" read as FAILED. "not passed yet" / "todavía no" is not a result.
+# A negated failure ("didn't fail") is not read as a pass: it is unclear. A
+# pass word with any negator before it in the sentence is not read as a pass
+# ("didn't get the inspector till noon but passed" is asked, never assumed).
+# A result after "should", "hope", "supposed to", "if", "will", "awaiting",
+# "need" ... is not a statement of what happened. "failed to show" is a
+# no-show, not a result. Voice-transcript fillers ("didn't, uh, pass") do not
+# break a negation. Whole words only; English and Spanish.
+
+_FILLER = re.compile(r"\b(?:uh+|um+|erm?|ah+|hmm+|like|you know|i mean)\b", re.I)
+_W = r"[\w']+"
+#: Negators that negate a word up to two words on ("did not even pass").
+_NEG = (r"(?:not|never|didn't|didnt|did not|doesn't|doesnt|does not|don't|dont|do not|wasn't|wasnt|was not|"
+        r"weren't|were not|isn't|isnt|is not|hasn't|hasnt|has not|haven't|havent|have not|hadn't|had not|"
+        r"won't|wont|couldn't|couldnt|could not|can't|cant|cannot|failed to|fail to|nunca|tampoco)")
+#: "no" negates only the word right after it (and Spanish clitics): "No, it
+#: passed" is an answer, not a negation.
+_NO = r"\bno(?:\s+(?:lo|la|los|las|le|les|se|ha|han|fue|fueron|me|nos))*\s+"
+_PASS = (r"(?:pass|passed|passes|got a pass|approved|accepted|signed[\s-]off|green[\s-]tag(?:ged)?|"
+         r"pas[oó]|pasaron|ha pasado|han pasado|aprobad[oa]s?|aprob[oó]|aprobaron|aceptad[oa]s?)")
+_FAIL = (r"(?:fail|failed|fails|failing|failure|rejected|disapproved|denied|red[\s-]tag(?:ged)?|flunked|"
+         r"no[\s-]go|fall[oó]|fallaron|rechazad[oa]s?|rechaz[oó]|rechazaron|reprobad[oa]s?|reprob[oó])")
+_PARTIAL = r"(?:partially|partial|partly|parcialmente|parcial)"
+_SCHED = (r"(?:booked|scheduled|rescheduled|set for|set up for|lined up|programad[oa]s?|agendad[oa]s?|"
+          r"reservad[oa]s?)")
+_GAP = r"(?:[\s,]+[\w']+){0,2}?[\s,]+"
+_HEDGED = re.compile(
+    r"\b(?:should|shoulda|supposed to|hope|hoping|hopefully|expect|expected|expecting|going to|gonna|will|"
+    r"would|might|maybe|probably|if|need|needs|needed|has to|have to|got to|awaiting|pending|waiting|"
+    r"deber[ií]a|espero|ojal[aá]|va a|vamos a)\b(?:\W+(?!but\b|pero\b|however\b|though\b)[\w']+){0,3}\W*$",
+    re.I)
+_NEG_BEFORE = re.compile(rf"\b{_NEG}\b|\bno\b(?!\s*,)(?:\s+[\w']+){{0,3}}\s*$", re.I)
+_UNCLEAR = ("no_show", "negated_fail", "not_yet", "negated_scheduled")
+
+
+def _words(text: Any) -> str:
+    return " ".join(_FILLER.sub(" ", _norm(text)).split())
+
+
+def read_result(text: Any) -> Dict[str, Any]:
+    """{"results": [the results the words state, sorted], "unclear": [why a
+    result word was set aside]}. Pure and deterministic, whole words only."""
+    raw = _words(text)
+    t, found = raw, []
+
+    def take(pattern: str, kind: str) -> None:
+        nonlocal t
+
+        def blank(m):
+            found.append((kind, m.start()))
+            return " " * len(m.group(0))
+        t = re.sub(pattern, blank, t, flags=re.I)
+    take(rf"\bfail(?:ed|s)?\s+to\s+(?!pass\b|get\s+(?:approved|passed)\b|be\s+approved\b){_W}", "no_show")
+    take(rf"\b{_NEG}{_GAP}{_FAIL}\b|{_NO}{_FAIL}\b", "negated_fail")
+    take(rf"\b(?:{_NEG}{_GAP}|{_NO}){_PASS}\b(?:[\s,]+[\w']+){{0,2}}?[\s,]+(?:yet|todav[ií]a|a[uú]n)\b"
+         rf"|\b(?:not\s+yet|todav[ií]a\s+no|a[uú]n\s+no){_GAP}{_PASS}\b", "not_yet")
+    take(rf"\b{_PARTIAL}\b(?:{_GAP}{_PASS}\b)?|\b{_PASS}{_GAP}{_PARTIAL}\b", "partial")
+    take(rf"\b{_NEG}{_GAP}{_PASS}\b|{_NO}{_PASS}\b", "failed")
+    take(rf"\b{_FAIL}\b", "failed")
+    take(rf"\b{_PASS}\b", "passed")
+    take(rf"\b{_NEG}{_GAP}{_SCHED}\b|{_NO}{_SCHED}\b", "negated_scheduled")
+    take(rf"\b{_SCHED}\b", "scheduled")
+    results, unclear = set(), set()
+    for kind, at in found:
+        before = raw[:at]
+        if kind in _UNCLEAR:
+            unclear.add(kind)
+        elif _HEDGED.search(before):
+            unclear.add(f"hedged_{kind}")
+        elif kind == "passed" and _NEG_BEFORE.search(before):
+            unclear.add("negation_before_pass")
+        else:
+            results.add(kind)
+    return {"results": sorted(results), "unclear": sorted(unclear)}
+
+
+def _sentences(text: str) -> List[Tuple[int, int]]:
+    """(start, end) of each sentence, split at . ! ? ; and line breaks; the
+    end includes the closing mark."""
+    out, start = [], 0
+    for m in re.finditer(r"[.!?;\n]+", text):
+        out.append((start, m.end()))
+        start = m.end()
+    if start < len(text):
+        out.append((start, len(text)))
+    return [(a, b) for a, b in out if text[a:b].strip()]
+
+
+def statement_span(own: Any, quote: Any) -> str:
+    """The whole sentence(s) of their own message the quote sits in: the
+    result is read from what they said, not from the part the model chose to
+    copy. "" when the quote is not in their words."""
+    said, q = _norm(own), _norm(quote).strip(" .,;:!?\"'")
+    if not said or not q:
+        return ""
+    at = said.find(q)
+    while at >= 0:
+        end = at + len(q)
+        if (at == 0 or not said[at - 1].isalnum()) and (end == len(said) or not said[end].isalnum()):
+            return " ".join(said[a:b].strip() for a, b in _sentences(said) if a < end and b > at)
+        at = said.find(q, at + 1)
+    return ""
+
+
+def is_question(span: Any) -> bool:
+    """A sentence that asks: ends in "?", opens with "¿", or opens with a
+    question word (a voice transcript often drops the "?")."""
+    s = _norm(span).strip()
+    return bool(s) and (s.endswith("?") or s.startswith("¿") or bool(_ASKING.search(s)))
+
+
+_SAID_AS = {"passed": "passed", "failed": "failed", "partial": "partly passed", "scheduled": "booked"}
+
+
+def _verdict(read: Dict[str, Any], claimed: Any, span: str, source: str) -> Dict[str, Any]:
+    claim = str(claimed or "").strip().lower()
+    words = read["results"]
+    if claim not in RESULTS:
+        reason = "no result was claimed for it"
+    elif not words:
+        reason = "the words state no result" + (f" ({', '.join(read['unclear'])})" if read["unclear"] else "")
+    elif len(words) > 1:
+        reason = "the words state more than one result: " + " and ".join(_SAID_AS[w] for w in words)
+    elif words[0] != claim:
+        reason = f"the words say {_SAID_AS[words[0]]}, not {_SAID_AS[claim]}"
+    else:
+        reason = None
+    return {"result": claim if reason is None else None, "agree": reason is None, "read": list(words),
+            "unclear": list(read["unclear"]), "model_result": claim or None, "reason": reason,
+            "span": _clip(span) or "", "source": source}
+
+
+def validate_statement(own: Any, quote: Any, claimed: Any) -> Dict[str, Any]:
+    """The model's `claimed` result against their own sentence, plus
+    "question": that sentence asks rather than states."""
+    span = statement_span(own, quote)
+    out = _verdict(read_result(span), claimed, span, "statement")
+    out["question"] = bool(span) and is_question(span)
+    return out
+
+
+def _tokens(text: Any) -> List[str]:
+    return re.findall(r"[\w']+", _norm(text))
+
+
+def document_span(ocr_text: Any, quote: Any) -> Tuple[str, str]:
+    """(the text to read the result from, where it came from). The OCR
+    line(s) holding the model's quoted result line; the whole OCR text when
+    that line is not found on the page; with no OCR text at all, the model's
+    own quote, marked "vision_quote" (weaker: the model checked against
+    itself); nothing: "none"."""
+    lines = [ln.strip() for ln in str(ocr_text or "").splitlines() if ln.strip()]
+    want = set(_tokens(quote))
+    if not lines:
+        return (_norm(quote), "vision_quote") if want else ("", "none")
+    if want:
+        need = max(1, -(-4 * len(want) // 5))           # 80% of the quote's words, rounded up
+        for size in (1, 2, 3):
+            for i in range(len(lines) - size + 1):
+                window = " ".join(lines[i:i + size])
+                if len(want & set(_tokens(window))) >= need:
+                    return _norm(window), "ocr"
+    return _norm(" ".join(lines))[:4000], "ocr"
+
+
+def validate_document(ocr_text: Any, quote: Any, claimed: Any) -> Dict[str, Any]:
+    """The vision model's reading of a sign-off against the page's OCR text."""
+    span, source = document_span(ocr_text, quote)
+    return _verdict(read_result(span), claimed, span, source)
+
+
+def ocr_lines(boxes: Iterable[Sequence[Any]], tolerance: float = 12.0) -> str:
+    """OCR boxes (centre x, centre y, text[, score]) as the page's lines, top
+    to bottom, left to right: a box joins the line above when its centre is
+    within `tolerance` pixels of that line's first box."""
+    lines: List[List[Tuple[float, str]]] = []
+    tops: List[float] = []
+    for box in sorted(boxes, key=lambda b: (float(b[1]), float(b[0]))):
+        x, y, text = float(box[0]), float(box[1]), str(box[2] or "").strip()
+        if not text:
+            continue
+        if tops and abs(y - tops[-1]) <= tolerance:
+            lines[-1].append((x, text))
+        else:
+            lines.append([(x, text)])
+            tops.append(y)
+    return "\n".join(" ".join(t for _x, t in sorted(ln)) for ln in lines)
+
+
+def question_for(inspection: Any, level_labels: Sequence[str]) -> str:
+    """The one short question an unresolved report asks."""
+    what = _clip(inspection) or "the inspection"
+    where = f" on {', '.join(level_labels)}" if level_labels else ""
+    return f"Did the {what}{where} pass, fail, partly pass, or is it booked?"
+
+
+def audit(v: Dict[str, Any]) -> Dict[str, Any]:
+    """What a row keeps of the check (append-only, with the row): the model's
+    claim, the validated result, what the words read, why it was unresolved,
+    and the text it was read from."""
+    return {"model_result": v.get("model_result"), "validated_result": v.get("result"),
+            "validation": {"read": list(v.get("read") or []), "unclear": list(v.get("unclear") or []),
+                           "agree": bool(v.get("agree")), "reason": v.get("reason"),
+                           "span": v.get("span") or "", "source": v.get("source")}}
+
+
 def clean_date(said: Any, today: date, result: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """(YYYY-MM-DD or None, problem or None). No date said is not a problem. A
     date that isn't one, or a result already known for a day still to come, is."""
@@ -169,7 +398,7 @@ def new_row(*, project_id: Any, company_id: Any, gate: Optional[str], inspection
         "source": source, "quote": _clip(quote), "message_id": str(message_id or ""),
         "status": status, "created_at": created_at,
     }
-    if status == DOCUMENT:
+    if status == DOCUMENT or source == "document":
         row.update(r2_key=r2_key, file_name=_clip(file_name), read_ok=bool(read_ok))
     rid = row_id or report_id(message_id, project_id, inspection, levels, result)
     if rid:
@@ -303,6 +532,18 @@ def document_line(name: Any, job: Any, inspection: Any, level_labels: Sequence[s
     if not gate:
         return head + "." + tail + " It doesn't match an inspection step we track, so no step changed."
     return head + "." + tail
+
+
+def document_unresolved_line(name: Any, job: Any, inspection: Any, level_labels: Sequence[str],
+                             reason: Any) -> str:
+    """The reply for a sign-off kept with NO result: what was kept, why no
+    result, and one short question."""
+    where = ", ".join(level_labels)
+    head = f"Kept the sign-off for {job}: {inspection or 'inspection not read'}" + (f", {where}" if where else "")
+    ask = question_for(inspection, level_labels)
+    if not level_labels:
+        ask = ask[:-1] + ", and which floor does it cover?"
+    return f"{head}. No result recorded: {reason or 'it could not be confirmed'}. Reported by {name}, not verified. {ask}"
 
 
 # ── A DOCUMENT OR PHOTO OF A SIGN-OFF ──────────────────────────────────────

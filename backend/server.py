@@ -56689,10 +56689,20 @@ async def _dm_report_inspection(ctx: dict, job: dict, args: dict) -> str:
         return "NOT RECORDED: the result isn't clear. Ask one short question: passed, failed, partial or scheduled?"
     if len(ir.gates_named(inspection)) > 1:
         return "NOT RECORDED: that names more than one inspection. Call report_inspection once for each."
+    # THE MODEL'S RESULT IS A CLAIM (owner ruling 2026-11-09): read again from
+    # their own sentence; stored only when the words state exactly that one.
+    checked = ir.validate_statement(own, quote, result)
+    if checked["question"]:
+        return ("NOT RECORDED: their sentence asks rather than states. Answer the question; do not say it was "
+                "noted.")
     said = args.get("levels")
     levels = work_state.levels_named(", ".join(map(str, said)) if isinstance(said, list) else said)
     theirs = [str(own or "")] + [str(x) for x in turn.get("recent") or []]
-    if not levels or not all(any(work_state.level_said(lv, t) for t in theirs) for lv in levels):
+    floor_ok = bool(levels) and all(any(work_state.level_said(lv, t) for t in theirs) for lv in levels)
+    if not checked["agree"]:
+        return await _dm_inspection_unresolved(ctx, job, args, inspection, quote, levels if floor_ok else [],
+                                               checked)
+    if not floor_ok:
         return "NOT RECORDED: the floor isn't clear from what they said. Ask one short question: which floor?"
     now = datetime.now(timezone.utc)
     inspected_on, problem = ir.clean_date(args.get("date"), now.astimezone(_MemoryZone("America/New_York")).date(), result)
@@ -56710,6 +56720,7 @@ async def _dm_report_inspection(ctx: dict, job: dict, args: dict) -> str:
         levels=levels, space=args.get("space"), result=result, inspected_on=inspected_on,
         inspector=args.get("inspector"), reporter_user_id=ident.get("user_id"), reporter_name=name,
         source=turn.get("source") or "text", quote=quote, message_id=turn.get("message_id"), created_at=now)
+    row.update(ir.audit(checked))
     line = ir.noted_line(name, inspection, [work_state.level_label(lv) for lv in levels], result, inspected_on)
     tail = "" if row["gate"] else " (Kept as said: it matches no inspection step we track, so no step changed.)"
     if ctx.get("dry_run"):
@@ -56722,6 +56733,37 @@ async def _dm_report_inspection(ctx: dict, job: dict, args: dict) -> str:
         logger.warning(f"[inspection-report] write failed: {type(e).__name__}: {e!r}")
         return "NOT RECORDED: it couldn't be saved just now. Tell them to send it again."
     return f"{line}{tail} Answer with that one line."
+
+
+async def _dm_inspection_unresolved(ctx: dict, job: dict, args: dict, inspection: str, quote: str,
+                                    levels: list, checked: dict) -> str:
+    """Their words kept, NO result stored (status unresolved, which changes no
+    gate), with the model's claim and why; the model asks one question."""
+    ir, ident = inspection_reports, ctx["ident"]
+    turn = ctx.get("turn") or {}
+    user = ident.get("user") or {}
+    labels = [work_state.level_label(lv) for lv in levels]
+    ask = ir.question_for(inspection, labels)
+    tail = (f"UNRESOLVED: their words were kept but no result was recorded ({checked['reason']}). "
+            f"Ask exactly this one question: \"{ask}\" Do not say it passed, failed or was noted.")
+    if ctx.get("dry_run"):
+        return "(eval) Would keep it as UNRESOLVED. " + tail
+    now = datetime.now(timezone.utc)
+    row = ir.new_row(
+        project_id=job["id"], company_id=ident["company_id"], gate=ir.gate_for(inspection), inspection=inspection,
+        levels=levels, space=args.get("space"), result=None, inspected_on=None, inspector=args.get("inspector"),
+        reporter_user_id=ident.get("user_id"), reporter_name=user.get("name") or user.get("full_name") or "the sender",
+        source=turn.get("source") or "text", quote=quote, message_id=turn.get("message_id"), created_at=now,
+        status=ir.UNRESOLVED, row_id=ir.report_id(turn.get("message_id"), job["id"], inspection, levels,
+                                                  f"{ir.UNRESOLVED}:{checked.get('model_result')}"))
+    row.update(ir.audit(checked))
+    try:
+        await db[INSPECTION_REPORTS].insert_one(row)
+    except _DuplicateKeyError:
+        pass                                     # this statement is already on record
+    except Exception as e:
+        logger.warning(f"[inspection-report] unresolved write failed: {type(e).__name__}: {e!r}")
+    return tail
 
 
 def _inspection_doc_caption(parsed: dict, body: Any) -> str:
@@ -56789,6 +56831,16 @@ def _inspection_doc_page(raw: bytes) -> Tuple[Optional[bytes], str, str]:
         page = _render_pdf_page(raw, 1, 150)
         return (_vision_jpeg(page)[0] if page else None), "pdf", "application/pdf"
     return _vision_jpeg(raw)[0], "jpg", "image/jpeg"
+
+
+def _inspection_doc_ocr(page: bytes) -> str:
+    """The page's printed words, a line each (RapidOCR, lib/plan_ocr), or ""
+    when OCR is not available here or reads nothing. Blocking: run in a thread."""
+    try:
+        return inspection_reports.ocr_lines(plan_ocr._boxes(page))
+    except Exception as e:
+        logger.warning(f"[inspection-doc] OCR failed: {type(e).__name__}")
+        return ""
 
 
 async def _inspection_doc_read(page: bytes, project_id: str, today: _Date) -> Optional[dict]:
@@ -56880,12 +56932,21 @@ async def _inspection_doc_turn(ident: dict, dm_chat: str, parsed: dict, body: An
     user = ident.get("user") or {}
     name = user.get("name") or user.get("full_name") or "the sender"
     gate = ir.gate_for(inspection)
+    # THE MODEL'S READING IS A CLAIM (owner ruling 2026-11-09): the result is
+    # read again from the page's own printed words (RapidOCR), else from the
+    # line the model quoted, and kept only when they state that one result.
+    ocr = await asyncio.to_thread(_inspection_doc_ocr, page) if read else ""
+    checked = ir.validate_document(ocr, read.get("quote"), read.get("result"))
+    if not read:
+        checked["reason"] = "the page could not be read"
     row = ir.new_row(
         project_id=pid, company_id=ident["company_id"], gate=gate, inspection=inspection, levels=levels,
-        space=work_state.places_in(caption)["space"], result=read.get("result"), inspected_on=read.get("date"),
+        space=work_state.places_in(caption)["space"], result=checked["result"], inspected_on=read.get("date"),
         inspector=read.get("inspector"), reporter_user_id=ident.get("user_id"), reporter_name=name, source="document",
-        quote=read.get("quote") or caption or file_name, message_id=mid, created_at=now, status=ir.DOCUMENT,
+        quote=read.get("quote") or caption or file_name, message_id=mid, created_at=now,
+        status=ir.DOCUMENT if checked["agree"] else ir.UNRESOLVED,
         r2_key=key, file_name=file_name, read_ok=bool(read), row_id=rid)
+    row.update(ir.audit(checked))
     try:
         await db[INSPECTION_REPORTS].insert_one(row)
     except _DuplicateKeyError:
@@ -56894,8 +56955,10 @@ async def _inspection_doc_turn(ident: dict, dm_chat: str, parsed: dict, body: An
         logger.warning(f"[inspection-doc] write failed: {type(e).__name__}: {e!r}")
         await send_whatsapp_message(dm_chat, "I couldn't keep that file just now. Send it again in a moment, please.")
         return True
-    reply = ir.document_line(name, job["label"], read.get("inspection") or (caption if gate else None),
-                             [work_state.level_label(lv) for lv in levels], read.get("result"), gate)
+    shown = read.get("inspection") or (caption if gate else None)
+    labels = [work_state.level_label(lv) for lv in levels]
+    reply = (ir.document_line(name, job["label"], shown, labels, checked["result"], gate) if checked["agree"]
+             else ir.document_unresolved_line(name, job["label"], shown, labels, checked["reason"]))
     await send_whatsapp_message(dm_chat, reply)
     await _dm_log_answer(ident, pid, caption or file_name, reply, "inspection_doc")
     return True
