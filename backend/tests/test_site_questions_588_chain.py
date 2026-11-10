@@ -86,6 +86,18 @@ class Chain588(unittest.TestCase):
                     touched = set((b["schedule_change"].get("state") or {})) | set(b["schedule_change"].get("holds_wd") or {})
                     self.assertTrue(touched <= set(roles["side"]), f"{b['key']}: {touched}")
 
+    def test_every_question_is_plain_field_language(self):
+        texts = [(q["id"], q["text_en"], q["text_es"]) for q in self.asked]
+        texts += [(s["id"], s["text_en"], None) for s in self.doc["suppressed"] if s.get("text_en")]
+        for qid, en, es in texts:
+            self.assertEqual(self.SQ.plain_problems(en), [], f"{qid}: {en}")
+            if es:
+                self.assertEqual(self.SQ.plain_problems(es, self.SQ.MAX_TEXT_ES), [], f"{qid}: {es}")
+
+    def test_the_near_certain_frame_is_not_asked(self):
+        self.assertNotIn("work:cfs_superstructure", [q["id"] for q in self.asked],
+                         "DOB passed rough on every level to the roof: a verified implication")
+
     def test_cap_check_holds(self):
         for role, a in self.doc["cap_audit"].items():
             self.assertTrue(a["holds"], role)

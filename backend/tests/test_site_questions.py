@@ -63,6 +63,8 @@ ACTS = [
     _w("roof_coping", "ROOF", "d_coping", "RoofCo"),
     _w("ptac_sleeves_L1", "L1", "d_frame", "SleeveCo"),
     _w("insulation_L1", "L1", "d_frame", "InsulCo"),
+    dict(_w("cfs_superstructure", "BUILDING", "d_frame", "FrameCo"),
+         name="CFS bearing walls, 8J12/10J12 joists @16 in, USG panel subfloor, SW1-7 braced frames, all levels to roof"),
     {"id": "gate_elec_rough_L1", "name": "DOB electrical rough inspection, Floor 1", "kind": "inspection_gate",
      "zone": "L1", "family": "gate_elec_rough", "rule": "lead", "lead": "lead_elec", "authority": "DOB Electrical",
      "gate_of": ["elec_rough_L1", "lv_rough_L1"]},
@@ -89,7 +91,7 @@ LINKS = [_l("framing_close_L1", "elec_rough_L1"), _l("elec_rough_L1", "gate_elec
          _l("gate_sprinkler_hydro_L1", "board_hang_L1"), _l("board_hang_L1", "gate_tco"),
          _l("eifs_sides", "gate_tco"), _l("roof_coping", "gate_tco"), _l("elec_rough_L1", "elec_rough_L2", "resource"),
          _l("ptac_sleeves_L1", "insulation_L1"), _l("insulation_L1", "board_hang_L1"),
-         _l("renew_permit_shed", "eifs_sides")]
+         _l("renew_permit_shed", "eifs_sides"), _l("cfs_superstructure", "eifs_sides")]
 
 ST = G.state_entry
 STATE = {
@@ -103,6 +105,7 @@ STATE = {
     "eifs_sides": ST("in_progress", "reported_log", "synthetic photo"),
     "ptac_sleeves_L1": ST("in_progress", "reported_log", "synthetic log"),
     "insulation_L1": ST("unknown", "no_record", "no record"),
+    "cfs_superstructure": ST("done", "inferred", "rough passed on every level through the roof", sources=["V1"]),
     "roof_coping": ST("unknown", "no_record", "no record"),
 }
 #: A model current_state: Floor 2 electrical is placed only by a multi-floor photo.
@@ -167,9 +170,9 @@ class SiteQuestionsSynthetic(unittest.TestCase):
     def test_spanish_is_written_not_copied(self):
         q = _find(self.doc, "work:elec_rough_L1")
         self.assertIsNotNone(q, "electrical rough Floor 1 is asked (fast-critical, in the window)")
-        self.assertEqual(q["text_en"], "Did electrical rough-in finish on Floor 1, or is part of it still pending?")
-        self.assertEqual(q["text_es"], "¿Se terminó la instalación eléctrica en bruto (rough-in) en el piso 1, o todavía "
-                                       "falta una parte?")
+        self.assertEqual(q["text_en"], "Did electrical rough-in finish on Floor 1, or is part still open?")
+        self.assertEqual(q["text_es"], "¿Se terminó la instalación eléctrica en bruto (rough-in) en el piso 1, o falta "
+                                       "una parte?")
 
     def test_the_recipient_is_a_role_never_a_name(self):
         for q in _asked(self.doc):
@@ -285,6 +288,44 @@ class SiteQuestionsSynthetic(unittest.TestCase):
         self.assertEqual(far["value"]["terms"]["N"], 0, "a far successor is not next week's crew plan")
         near = self.full["work:elec_rough_L1"]
         self.assertGreater(near["value"]["terms"]["N"], 0, "Floor 1 rough-in moves next week's inspection request")
+
+    def test_question_text_is_plain_field_language(self):
+        """Never a drawing-spec string: the frame's activity name is one
+        ("8J12/10J12 joists @16 in ... SW1-7"); its question must not be."""
+        S = self.ctx["sched"]
+        built = (SQ._work_questions(self.ctx) + SQ._gate_questions(self.ctx) + SQ._regulatory_questions(self.ctx)
+                 + [SQ.work_question(self.ctx, a) for a in S.by_id if S.by_id[a]["kind"] == "work"])
+        self.assertTrue(any(q.get("id") == "work:cfs_superstructure" for q in built))
+        for q in built:
+            if q.get("_suppressed"):
+                continue
+            self.assertEqual(SQ.plain_problems(q["text_en"]), [], q["text_en"])
+            self.assertEqual(SQ.plain_problems(q["text_es"], SQ.MAX_TEXT_ES), [], q["text_es"])
+        frame = SQ.work_question(self.ctx, "cfs_superstructure")
+        self.assertEqual(frame["text_en"], "Is the steel frame finished up to the roof?")
+        self.assertEqual(SQ.label("no_such_family", self.ctx["sched"].by_id["cfs_superstructure"]["name"])[0],
+                         "CFS bearing walls")
+
+    def test_the_spec_checker_catches_what_it_names(self):
+        for bad in ("8J12 joists", "studs @16 in", "16 in o.c.", "per S-102", "600S162-54 track", "2x4 plate",
+                    "SW1-7 braced frames", "x" * 111):
+            self.assertTrue(SQ.plain_problems(bad), bad)
+        self.assertEqual(SQ.plain_problems("Did electrical rough-in finish on Floor 1, or is part still open?"), [])
+
+    def test_a_strong_inference_is_worth_little_and_asked_only_if_something_moves(self):
+        """The frame: DOB passed rough on every level (a verified implication).
+        G 0.1 against 0.9 for a single unverified signal, same branches."""
+        strong = SQ.evaluate(_ctx(verified_refs={"V1"}), SQ.work_question(_ctx(verified_refs={"V1"}),
+                                                                           "cfs_superstructure"))
+        weak = SQ.evaluate(_ctx(), SQ.work_question(_ctx(), "cfs_superstructure"))
+        self.assertEqual((strong["value"]["terms"]["G"], weak["value"]["terms"]["G"]), (0.1, 0.9))
+        self.assertEqual([b["key"] for b in strong["branches"]], ["done", "not_yet", "dont_know"],
+                         "an inferred done is confirmed or opened; no assumed 'blocked' hold")
+        if weak["value"]["score"]:
+            self.assertAlmostEqual(strong["value"]["score"] / weak["value"]["score"], 0.1 / 0.9, places=2)
+        quiet = dict(strong, value=dict(strong["value"], terms=dict(strong["value"]["terms"], T=0, N=0, D=0)),
+                     window_moves_any_branch=True)
+        self.assertFalse(SQ.changes_a_decision(quiet), "a three-week date shift alone does not ask an inferred done")
 
     def test_facade_activities_are_found_by_role(self):
         net = {"activities": [{"id": "eifs_side_known", "family": "eifs"}, {"id": "eifs_side_other", "family": "eifs"},

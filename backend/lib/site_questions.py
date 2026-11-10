@@ -94,7 +94,9 @@ VALUE (`VALUE_FORMULA`, stated on every question with its terms):
   U  urgency 1 + max(0, 21 - days until needed) / 21  (needed = the deadline or
      the first successor's start, whichever is sooner)
   G  evidence gap: unknown 1.0, inferred 0.9, in progress unmeasured 0.8,
-     attested (a document request) 0.5
+     attested (a document request) 0.5; for an INFERRED "done", by the
+     inference's strength: a verified implication 0.1, two or more independent
+     signals 0.5, one signal 0.9 (inference_strength)
   C  cost to answer: a look on site 1.0, an office lookup 0.9, a third party 0.7
 Branch probabilities are NOT known and NOT used: T is the swing the answer can
 produce, not an expected value.
@@ -134,10 +136,13 @@ VALUE_FORMULA = ("value = (T + N + D) x U x G x C; T = max|dTCO normal| + 0.5 x 
                  "over the crew work and inspection gates other than the asked work that start within the next 10 "
                  "working days, each weighted 1/(1 + least float in any scenario/10)); D = decision weight the generator does not model (permit deadline 3/2/1 by "
                  "<=14/<=30/<=45 days; contradiction or record decision: stated); U = 1 + max(0, 21 - days until "
-                 "needed)/21; G = evidence gap (unknown 1.0, inferred 0.9, in progress unmeasured 0.8, attested 0.5); "
+                 "needed)/21; G = evidence gap (unknown 1.0, inferred 0.9, in progress unmeasured 0.8, attested 0.5; an inferred "
+                 "done by strength: verified implication 0.1, >=2 independent signals 0.5, one 0.9); "
                  "C = cost to answer (look on site 1.0, office lookup 0.9, third party 0.7). Branch probabilities are "
                  "not known and not used.")
 GAP = {"unknown": 1.0, "inferred": 0.9, "in_progress": 0.8, "attested": 0.5}
+#: G for an inferred "done", by the inference's strength (inference_strength).
+GAP_INFERRED = {"verified_implication": 0.1, "several": 0.5, "single": 0.9}
 COST = {"look": 1.0, "office": 0.9, "third_party": 0.7}
 
 #: Topic -> the dm_roles tool that stands for it (lib/dm_roles.tool_refusal
@@ -171,21 +176,18 @@ HOLDS = {
 
 #: The kind of work (key_of) -> (English, Spanish) words for it.
 LABELS: Dict[str, Tuple[str, str]] = {
-    "framing_close": ("interior framing close-out (partitions, blocking, ceiling drops)",
-                      "el cierre del framing interior (particiones, blocking, bajadas de techo)"),
+    "framing_close": ("interior framing close-out", "el cierre del framing interior"),
     "elec_rough": ("electrical rough-in", "la instalación eléctrica en bruto (rough-in)"),
-    "lv_rough": ("fire alarm / smoke-CO / low-voltage rough-in",
-                 "el cableado en bruto de alarma contra incendios, detectores de humo/CO y bajo voltaje"),
+    "lv_rough": ("fire alarm and low-voltage wiring", "el cableado de alarma y bajo voltaje"),
     "sprinkler_rough": ("sprinkler rough-in", "la tubería de rociadores (sprinklers) en bruto"),
-    "sprinkler_riser": ("the sprinkler riser and double-check detector",
-                        "el montante (riser) de rociadores y la válvula de doble retención"),
+    "sprinkler_riser": ("the sprinkler riser", "el montante (riser) de rociadores"),
     "duct_rough": ("exhaust and corridor duct rough-in", "los ductos de extracción y del pasillo"),
     "ptac_sleeves": ("the PTAC wall sleeves", "las camisas (sleeves) de los PTAC en las paredes"),
     "insulation": ("exterior and demising wall insulation", "el aislamiento de las paredes exteriores y divisorias"),
     "firestopping": ("firestopping of penetrations and joints", "el sellado cortafuego de penetraciones y juntas"),
-    "elec_service_equipment": ("the electrical service equipment (meter bank and main)",
-                               "el equipo de servicio eléctrico (banco de medidores y principal)"),
+    "elec_service_equipment": ("the meter bank and main", "el banco de medidores y el principal"),
     "eifs": ("EIFS", "el EIFS"),
+    "cfs_superstructure": ("the steel frame", "la estructura de acero"),
     "eifs_side_known": ("the EIFS on the side wall above No. 586", "el EIFS de la pared lateral sobre el No. 586"),
     "eifs_side_other": ("the EIFS on the other side wall", "el EIFS de la otra pared lateral"),
     "eifs_front_rear": ("the EIFS on the front and rear walls", "el EIFS de las paredes del frente y de atrás"),
@@ -271,14 +273,44 @@ def _is_place(zone: Optional[str]) -> bool:
     return (z.startswith("L") and z[1:].isdigit()) or z in ("MEZ", "ROOF")
 
 
+#: Question text is plain field language: short, and never a drawing spec.
+MAX_TEXT_EN = 110
+MAX_TEXT_ES = 140
+#: Drawing-spec tokens no question may carry: member sizes (8J12, 600S162,
+#: 2x4), spacing (@16, o.c.), sheet ids (S-102, A-101), braced-frame marks (SW1).
+SPEC_TOKENS = re.compile(r"\b\d+J\d+\b|\b\d{3}[ST]\d{3}\b|\b\d+\s?x\s?\d+\b|@|\bo\.?\s?c\.|\b[A-Z]{1,3}-\d{3}\b"
+                         r"|\bSW\d", re.I)
+
+
+def plain_problems(text: str, limit: int = MAX_TEXT_EN) -> List[str]:
+    """Why a question text is not plain field language ([] when it is)."""
+    out = []
+    if len(text) > limit:
+        out.append(f"{len(text)} characters (limit {limit})")
+    m = SPEC_TOKENS.search(text)
+    if m:
+        out.append(f"drawing-spec token {m.group(0)!r}")
+    return out
+
+
+def short_noun(name: str) -> str:
+    """A short noun from an activity's long name: the words before the first
+    ':', '(' or ',', with any spec token dropped, at most six words."""
+    head = re.split(r"[:(,]", name or "", maxsplit=1)[0]
+    words = [w for w in head.split() if not SPEC_TOKENS.search(w)]
+    return " ".join(words[:6]).strip() or "the work"
+
+
 def label(family: str, name: str = "") -> Tuple[str, str, bool]:
-    """(English, Spanish, fallback?) for a family. A family with no Spanish
-    words of its own is quoted in English inside the Spanish text and flagged."""
+    """(English, Spanish, fallback?) for a family. A family with no words of
+    its own gets a SHORT noun from its name (never the spec string), quoted in
+    English inside the Spanish text, and is flagged."""
     if family in LABELS:
         en, es = LABELS[family]
         return en, es, False
-    en = (name or family).strip()
-    return (en if en[:2].isupper() else en[:1].lower() + en[1:]), f"«{en}»", True
+    en = short_noun(name or family)
+    en = en if en[:2].isupper() else en[:1].lower() + en[1:]
+    return en, f"«{en}»", True
 
 
 # ═══ RE-RUNNING THE SCHEDULE PER BRANCH ═══════════════════════════════════════
@@ -527,6 +559,7 @@ def work_question(ctx, aid: str) -> Dict[str, Any]:
     a = S.by_id[aid]
     st = _state_of(ctx, aid)
     unknown = st["status"] in ("unknown", "not_started")
+    inferred_done = st["status"] == "done" and st["evidence"] == "inferred"
     fam, zone = key_of(aid), a.get("zone")
     en, es, fb = label(fam, a["name"])
     zen, zes = zone_words(zone)
@@ -537,10 +570,23 @@ def work_question(ctx, aid: str) -> Dict[str, Any]:
     trig = ["unknown_state"] + (["multi_floor_statement"] if shared else [])
     on_en = f" on {zen}" if _is_place(zone) else ""
     on_es = f" en {zes}" if _is_place(zone) else ""
-    if unknown:
-        t_en = f"Has work on {en} started{on_en}? Not started, started, or done?"
-        t_es = f"¿Ya empezó el trabajo de {es}{on_es}? ¿No ha empezado, empezó o ya está terminado?".replace(
-            " de el ", " del ")
+    if inferred_done:
+        # The schedule INFERS it done; the answer can only confirm or open it.
+        up_en = " up to the roof" if not _is_place(zone) and "roof" in (st.get("basis") or "").lower() else on_en
+        up_es = " hasta el techo" if up_en == " up to the roof" else on_es
+        t_en = f"Is {en} finished{up_en}?"
+        t_es = f"¿Está terminada {es}{up_es}?" if es.startswith("la ") else f"¿Está terminado {es}{up_es}?"
+        brs = [branch("done", "yes, finished", "sí, terminado", claim="done",
+                      model=f"attested done: confirms the inference on {aid} (still not verified); no schedule change"),
+               branch("not_yet", "no, part is still open", "no, falta una parte", claim="not_yet",
+                      change={"state": {aid: stated("in_progress", f"{a['name']}: not finished")}},
+                      model=f"attested not finished: the inference on {aid} is DISPROVED; it becomes in progress"),
+               dont_know(f"{company} (through the PM)" if company else "the PM")]
+        reads, gap = CQ.DONE_UNBACKED, "inferred"
+        trig = ["inference_disproof"]
+    elif unknown:
+        t_en = f"Has work on {en} started{on_en}?"
+        t_es = f"¿Ya empezó el trabajo de {es}{on_es}?".replace(" de el ", " del ").replace(" de los ", " de los ")
         brs = [branch("not_yet", "not started", "no ha empezado", claim="not_yet",
                       change={"state": {aid: stated("not_started", f"{a['name']}: not started")}},
                       model=f"attested not_yet on {node or aid} at {lvl or zone}: unknown becomes not started "
@@ -555,8 +601,8 @@ def work_question(ctx, aid: str) -> Dict[str, Any]:
                dont_know(f"{company} (through the PM)" if company else "the PM")]
         reads, gap = CQ.START_PASSED, "unknown"
     else:
-        t_en = f"Did {en} finish{on_en}, or is part of it still pending?"
-        t_es = f"¿Se terminó {es}{on_es}, o todavía falta una parte?"
+        t_en = f"Did {en} finish{on_en}, or is part still open?"
+        t_es = f"¿Se terminó {es}{on_es}, o falta una parte?"
         brs = [branch("done", "finished", "terminado", claim="done",
                       change={"state": {aid: stated("done", f"{a['name']}: finished")}},
                       model=f"attested done on {node or aid} at {lvl or zone} (not verified)"),
@@ -574,10 +620,35 @@ def work_question(ctx, aid: str) -> Dict[str, Any]:
     why = (f"{a['name']} is {where}"
            f" ({', '.join(s for s in SCENARIOS if aid in S.base[s]['critical_path']) or 'no scenario critical'}); "
            f"its state is {st['status']} ({st['evidence']}).")
-    return question(f"work:{aid}", triggers=trig, subject=fam, aspect="state", place=str(zone), text_en=t_en,
+    if inferred_done:
+        strength = inference_strength(ctx, aid)
+        why += f" The 'done' is an INFERENCE ({strength['label']}: {st.get('basis')})."
+    q = question(f"work:{aid}", triggers=trig, subject=fam, aspect="state", place=str(zone), text_en=t_en,
                     text_es=t_es, es_fallback=fb, answerers=who, topic="progress", why=why, evidence=ev,
                     branches=brs, activities=[aid], gap=gap, cost="look", reads_as=reads,
                     model_node=node, model_level=lvl, multi_floor=mf)
+    if inferred_done:
+        q["inference_strength"] = inference_strength(ctx, aid)
+    return q
+
+
+def inference_strength(ctx, aid: str) -> Dict[str, Any]:
+    """How strongly the schedule's 'done' inference stands: its independent
+    signals (the state's sources plus any support the caller names in
+    ctx['inference_support']) and whether one is a VERIFIED record
+    (ctx['verified_refs']). Sets the evidence-gap factor G of the question:
+    a verified implication 0.1, two or more independent signals 0.5, one 0.9.
+    Probability-free: it scales how much an answer can still tell us."""
+    st = _state_of(ctx, aid)
+    sources = [str(x) for x in st.get("sources") or []]
+    support = list((ctx.get("inference_support") or {}).get(aid) or [])
+    n = len(set(sources)) + len(support)
+    verified = [x for x in sources if x in (ctx.get("verified_refs") or set())]
+    g = GAP_INFERRED["verified_implication"] if verified else GAP_INFERRED["several"] if n >= 2 \
+        else GAP_INFERRED["single"]
+    lab = ("a verified implication" if verified else f"{n} independent signals" if n >= 2 else "one signal")
+    return {"independent_signals": n, "verified": verified, "support": support, "G": g,
+            "label": lab + (f" + {n - 1} more" if verified and n > 1 else "")}
 
 
 def done_over_open(ctx) -> List[Dict[str, Any]]:
@@ -735,8 +806,10 @@ def _regulatory_questions(ctx) -> List[Dict[str, Any]]:
         what_en = " and ".join(ctx["permit_words"].get(aid, (aid, aid))[0] for aid in sorted(ids))
         what_es = " y ".join(ctx["permit_words"].get(aid, (aid, aid))[1] for aid in sorted(ids))
         what_en, what_es = what_en[:1].upper() + what_en[1:], what_es[:1].upper() + what_es[1:]
-        t_en = f"{what_en}: {'expires' if len(ids) == 1 else 'expire'} {d:%b} {d.day}. Has the renewal been filed?"
-        t_es = f"{what_es}: {'vence' if len(ids) == 1 else 'vencen'} el {d.day} de {_MES[d.month]}. ¿Ya se presentó la renovación?"
+        t_en = (f"{what_en} {'expires' if len(ids) == 1 else 'expire'} {d:%b} {d.day}. "
+                f"{'Is the renewal' if len(ids) == 1 else 'Are the renewals'} filed?")
+        t_es = (f"{what_es} {'vence' if len(ids) == 1 else 'vencen'} el {d.day} de {_MES[d.month]}. "
+                "¿Ya se presentó la renovación?")
         # D carries only what the generator cannot model (a violation, public safety); the stoppage is in T
         weight = 3.0 if days <= 14 else 2.0 if days <= 30 else 1.0
         brs = [branch("done", "filed", "presentada", claim="done",
@@ -917,6 +990,8 @@ def evaluate(ctx, q: Dict[str, Any]) -> Dict[str, Any]:
     D = float(q.get("decision_weight") or 0.0)
     U, need, days = _urgency(ctx, q)
     Gp, C = GAP[q["gap"]], COST[q["cost"]]
+    if q.get("inference_strength"):
+        Gp = q["inference_strength"]["G"]
     q["urgency"] = {"needed_by": need, "days": days, "factor": U}
     q["downstream"] = [{"id": s, "name": S.by_id[s]["name"], "start": S.base["normal"]["acts"][s]["start"]}
                        for s in S.successors(q["activities"])[:6]]
@@ -929,6 +1004,10 @@ def evaluate(ctx, q: Dict[str, Any]) -> Dict[str, Any]:
 
 def changes_a_decision(q: Dict[str, Any]) -> bool:
     t = q["value"]["terms"]
+    if q.get("inference_strength"):
+        # an inferred "done" is asked only when an answer moves the finish,
+        # next week's crews, or a decision: a three-week date shift is not enough
+        return bool(t["T"] or t["N"] or t["D"])
     return bool(t["T"] or t["N"] or t["D"] or q.get("window_moves_any_branch"))
 
 

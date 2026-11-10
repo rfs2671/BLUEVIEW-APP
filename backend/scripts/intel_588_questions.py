@@ -119,13 +119,11 @@ def permits(src) -> Dict[str, List[Dict[str, Any]]]:
 
 
 PERMIT_WORDS = {
-    "renew_permit_shed": ("Sidewalk shed permit B01409772",
-                          "El permiso del sidewalk shed (protección de acera) B01409772"),
-    "renew_permit_plumbing": ("Plumbing permit B01141294-S5 (Quality Piping)",
-                              "El permiso de plomería B01141294-S5 (Quality Piping)"),
-    "renew_permit_sprinkler": ("sprinkler permit B01141294-S7", "el permiso de rociadores B01141294-S7"),
-    "renew_permit_scaffold": ("Supported scaffold permit B01467559", "El permiso del andamio B01467559"),
-    "renew_permits_gc": ("GC, structural and mechanical permits", "Los permisos de GC, estructura y mecánica"),
+    "renew_permit_shed": ("The sidewalk shed permit", "El permiso del sidewalk shed"),
+    "renew_permit_plumbing": ("the plumbing permit (S5)", "el permiso de plomería (S5)"),
+    "renew_permit_sprinkler": ("the sprinkler permit (S7)", "el permiso de rociadores (S7)"),
+    "renew_permit_scaffold": ("The scaffold permit", "El permiso del andamio"),
+    "renew_permits_gc": ("The GC, structural and mechanical permits", "Los permisos de GC, estructura y mecánica"),
 }
 PERMIT_WHY = {
     "2026-11-22": " The shed stays until the facade is finished (scaffold_shed_removal follows the EIFS, 2027-04); the "
@@ -188,10 +186,8 @@ def levers(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
     return [
         dict(by["eifs_staff_and_enclose"], subject="eifs", place="ENVELOPE",
              activities=roles["side"] + roles["front_rear"] + roles["bulkhead"],
-             text_en=f"The EIFS crew is taken at {n:g} applicators a day ({cw['tag']}), and EIFS now sets the finish "
-                     "date. Can J&P put 5 applicators on it from next week?",
-             text_es=f"El equipo de EIFS se toma en {n:g} aplicadores por día ({cw['tag']}) y el EIFS ahora define la "
-                     "fecha de terminación. ¿Puede J&P poner 5 aplicadores desde la próxima semana?",
+             text_en=f"EIFS sets the finish date and J&P averages {n:g} applicators. Can J&P put 5 on it next week?",
+             text_es=f"El EIFS define la fecha final y J&P tiene {n:g} aplicadores. ¿Puede poner 5 la próxima semana?",
              yes_en="yes, about 5", yes_es="sí, unos 5", no_en="no, same crew", no_es="no, el mismo equipo",
              why=f"EIFS by elevation ({', '.join(roles['side'] + roles['front_rear'] + roles['bulkhead'])}) is the "
                  f"normal critical path; crew {cw['id']} = {n:g}/day ({cw['tag']}: {cw['basis']}). A crew commitment is "
@@ -262,10 +258,9 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
         # EIFS: the critical path's own state, worded as an amount.
         SQ.question("work:eifs_side_walls", triggers=["unknown_state"], subject="eifs_side_walls", aspect="state",
                     place="ENVELOPE",
-                    text_en="How much of the EIFS on the two side walls is done: under a quarter, about half, or most "
-                            "of it?",
-                    text_es="¿Cuánto del EIFS de las dos paredes laterales está hecho: menos de una cuarta parte, "
-                            "más o menos la mitad, o la mayor parte?",
+                    text_en="How much of the side-wall EIFS is done: under a quarter, about half, or most of it?",
+                    text_es="¿Cuánto del EIFS de las paredes laterales está hecho: menos de un cuarto, la mitad o "
+                            "casi todo?",
                     answerers=["superintendent", "cp", "company:J&P Construction"], topic="progress",
                     why=f"The side-wall EIFS leads the normal critical path ({side_when}); how much is in place is "
                         "not measured by any original record.",
@@ -274,9 +269,8 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
         # The scaffold the EIFS crew works from: J&G has no record.
         SQ.question("work:scaffold_sides", triggers=["unknown_state", "stale_sub"], subject="scaffold", aspect="state",
                     place="ENVELOPE",
-                    text_en="Is the J&G pipe scaffold up the full height of both side walls for the EIFS crew?",
-                    text_es="¿El andamio de J&G está armado en toda la altura de las dos paredes laterales para el "
-                            "equipo de EIFS?",
+                    text_en="Is the J&G scaffold up the full height of both side walls for the EIFS crew?",
+                    text_es="¿El andamio de J&G está armado en toda la altura de las dos paredes laterales?",
                     answerers=["cp", "superintendent", "company:J&G"], topic="progress",
                     why=f"The side-wall EIFS ({side_when}) is applied from the supported scaffold (permit "
                         "B01467559). J&G, the scaffold sub, has no original record at all.",
@@ -294,10 +288,10 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
         # The plumber's "trim out" / "fixtures" vs the inferred "no board anywhere".
         SQ.question("infer:board_hang", triggers=["inference_disproof", "contradiction"], subject="board_hang",
                     aspect="state", place="L1",
-                    text_en="Quality Plumbing's report says 'trim out' and 'fixtures' on floors 1-4. Is that tubs and "
-                            "valves set at rough, or is sheetrock up on Floor 1?",
-                    text_es="El reporte de Quality Plumbing dice 'trim out' y 'fixtures' en los pisos 1-4. ¿Son "
-                            "bañeras y válvulas puestas en la etapa de rough, o ya hay sheetrock en el piso 1?",
+                    text_en="The plumber logged 'trim out' on floors 1-4. Is that tubs and valves at rough, or is "
+                            "sheetrock up?",
+                    text_es="El plomero anotó 'trim out' en los pisos 1-4. ¿Son bañeras y válvulas en rough, o ya hay "
+                            "sheetrock?",
                     answerers=["superintendent", "cp", "company:Quality Plumbing"], topic="progress",
                     why="The schedule INFERS no board on any floor (no record of board, no pre-board inspection on "
                         "record). Board on Floor 1 would mean close-in started before the electrical rough "
@@ -319,10 +313,8 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
         # The punch walk of Oct 13 tags floors 588 does not have.
         SQ.question("contra:punch_walk_levels", triggers=["contradiction"], subject="punch_walk_2026-10-13",
                     aspect="binding", place="SITE",
-                    text_en="The Oct 13 punch walk tags photos on floors 5, 6, 7 and a cellar; 588 has floors 1-4, a "
-                            "mezzanine and a roof. Was that walk of this building?",
-                    text_es="El recorrido de punch del 13 de oct. marca fotos en los pisos 5, 6, 7 y un sótano; el 588 "
-                            "tiene pisos 1-4, mezzanine y techo. ¿Ese recorrido fue de este edificio?",
+                    text_en="The Oct 13 punch walk tags floors 5-7 and a cellar. Was that walk of this building?",
+                    text_es="El recorrido de punch del 13 de oct. marca pisos 5-7 y un sótano. ¿Fue de este edificio?",
                     answerers=["superintendent", "cp"], topic="evidence",
                     why=f"{len(imp_refs)} photos of the 47-item walk sit on levels this building does not have, so "
                         "their punch items cannot be placed or closed. One says 'Roof missing coping', and the roof "
@@ -343,10 +335,8 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
         # Contradictions whose answer changes nothing: put through the same evaluation, so the engine says so.
         SQ.question("contra:cellar_piles_concrete", triggers=["contradiction"], subject="foundation_words",
                     aspect="binding", place="SITE",
-                    text_en="Logs name a cellar slab, piles and concrete columns; the drawings show a slab on grade, "
-                            "footings and a steel-stud frame. Were those words from another job?",
-                    text_es="Los logs nombran un sótano, pilotes y columnas de concreto; los planos muestran losa sobre "
-                            "terreno, zapatas y estructura de acero liviano. ¿Esas palabras eran de otra obra?",
+                    text_en="Logs mention a cellar, piles and concrete columns. Were those words from another job?",
+                    text_es="Los logs mencionan sótano, pilotes y columnas de concreto. ¿Eran palabras de otra obra?",
                     answerers=["superintendent", "cp"], topic="progress",
                     why="Three model contradictions (names_a_cellar, piles_not_on_drawings, concrete_frame_in_a_cfs_"
                         "building) on foundation-era rows; the foundation and SOE are signed off (LOC 2026-11-05, "
@@ -362,10 +352,8 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
         # The electrical permit two systems label differently.
         SQ.question("conflict:electrical_B01331892", triggers=["contradiction"], subject="electrical_permit",
                     aspect="record", place="SITE",
-                    text_en="DOB shows the Hivolts electrical filing B01331892 as Cancelled in Open Data but Permit "
-                            "Issued on the portal; Power Direct works under B01445590. Was the Hivolts filing withdrawn?",
-                    text_es="El DOB muestra la solicitud eléctrica de Hivolts B01331892 como Cancelada en Open Data pero "
-                            "Permiso Emitido en el portal; Power Direct trabaja bajo B01445590. ¿Se retiró la de Hivolts?",
+                    text_en="Was the old Hivolts electrical filing withdrawn? DOB shows it both cancelled and issued.",
+                    text_es="¿Se retiró la solicitud eléctrica vieja de Hivolts? El DOB la muestra cancelada y emitida.",
                     answerers=["pm", "admin"], topic="agency_record",
                     why="An electrical filing left open by a replaced electrician must be withdrawn or signed off before "
                         "the electrical final and the TCO; the network has no activity for it.",
@@ -383,12 +371,8 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
         # Two plumbing firms.
         SQ.question("conflict:second_plumber", triggers=["contradiction", "stale_sub"], subject="plumber_of_record",
                     aspect="record", place="SITE",
-                    text_en="Two plumbing permits are open: Quality Piping (S5, expires Dec 3, holds the Nov 5 rough "
-                            "passes) and 24 Seven (B23173802-S5). Is 24 Seven added for the street connection, or "
-                            "replacing Quality Piping?",
-                    text_es="Hay dos permisos de plomería: Quality Piping (S5, vence el 3 de dic., tiene las "
-                            "inspecciones de rough del 5 de nov.) y 24 Seven (B23173802-S5). ¿24 Seven se agregó para la "
-                            "conexión a la calle, o reemplaza a Quality Piping?",
+                    text_en="Is 24 Seven Plumbing added for the street connection, or replacing Quality Piping?",
+                    text_es="¿24 Seven Plumbing se agregó para la conexión a la calle, o reemplaza a Quality Piping?",
                     answerers=["pm", "admin"], topic="agency_record",
                     why="It decides which permit must be renewed by Dec 3 and who books the gas final, the detention "
                         "certification and the DEP connection.",
@@ -405,10 +389,8 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
         # The house sewer: 24 Seven's street permit ran; DEP results are not public.
         SQ.question("work:house_sewer_connection", triggers=["inspection_not_public", "stale_sub"],
                     subject="sewer_connection", aspect="state", place="SITE",
-                    text_en="Is the house sewer connected at the street? 24 Seven's DOT 'install water and sewer "
-                            "service' permit ran Sep 23-Oct 16, renewed to Nov 1.",
-                    text_es="¿Ya está conectada la cloaca del edificio en la calle? El permiso del DOT de 24 Seven "
-                            "'instalar servicio de agua y cloaca' fue del 23 sep. al 16 oct., renovado al 1 nov.",
+                    text_en="Is the building sewer connected at the street yet?",
+                    text_es="¿Ya está conectada la cloaca del edificio en la calle?",
                     answerers=["superintendent", "pm", "company:24/7 Plumbing"], topic="progress",
                     why="The DEP connection inspection gates the plumbing final; no DEP result is public; the schedule "
                         "puts the drill-in in January.",
@@ -434,10 +416,8 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
         # R0590: "fire alarm dob scheduled": no date, no fire-alarm filing in DOB.
         SQ.question("statement:fire_alarm_scheduled", triggers=["statement_gap", "inspection_not_public"],
                     subject="fire_alarm_inspection", aspect="date", place="SITE",
-                    text_en="On Nov 10 you said the fire alarm inspection is scheduled. For what date, and is it FDNY's "
-                            "acceptance test? No fire-alarm filing shows in DOB.",
-                    text_es="El 10 de nov. dijo que la inspección de alarma contra incendios está programada. ¿Para qué "
-                            "fecha, y es la prueba de aceptación del FDNY? No aparece ninguna solicitud de alarma en el DOB.",
+                    text_en="You said the fire alarm inspection is scheduled. What date, and is it FDNY's test?",
+                    text_es="Dijo que la inspección de alarma está programada. ¿Qué fecha, y es la prueba del FDNY?",
                     answerers=["admin", "pm"], topic="agency_record",
                     why="An FDNY test needs the fire-alarm rough (Voltec: roster only, no record) and a pre-test; the "
                         "schedule puts the FDNY acceptance in March. A near date would mean the alarm is installed.",
@@ -550,6 +530,12 @@ def build_ctx(src: Dict[str, Any]) -> Dict[str, Any]:
            "utilities": utilities(src),
            "sub_last_original": last, "answered_by_records": answered_by_records(src), "answers": [], "history": [],
            "schedule_notes": sb["notes"]}
+    # what an inferred "done" stands on: the verified public records (by id) and the support the schedule names
+    pl = src["dob_now"].get("plumbing_permit_B01141294-S5-PL") or {}
+    ctx["verified_refs"] = {str(c.get("id")) for c in pl.get("completed_inspections") or [] if c.get("id")}
+    roof = sched.state.get("roofing") or {}
+    ctx["inference_support"] = {"cfs_superstructure": [f"roofing {roof.get('status')} ({roof.get('evidence')})"]
+                                if roof.get("status") in ("in_progress", "done") else []}
     ctx["given"] = given(src, sched)
     ctx["levers"] = levers(src, sched)
     return ctx
