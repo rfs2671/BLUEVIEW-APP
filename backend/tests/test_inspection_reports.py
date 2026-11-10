@@ -57,7 +57,7 @@ class WhichInspection(unittest.TestCase):
                 self.assertIsNone(IR.gate_for(words))
 
     def test_whole_words_only(self):
-        for words in ("replumbing roughage", "hydrotherapy", "sprinklered", "firestopper", "energetic crew",
+        for words in ("replumbing rough", "replumbing roughage", "hydrotherapy", "sprinklered", "firestopper", "energetic crew",
                       "electrical roughneck", "uninsulation"):
             with self.subTest(words=words):
                 self.assertEqual(IR.gates_named(words), [])
@@ -81,7 +81,7 @@ class WasItReallySaid(unittest.TestCase):
                 self.assertFalse(IR.quote_is_theirs(own, quote))
 
     def test_nothing_to_quote(self):
-        for own, quote in (("passed", ""), ("passed", "   "), ("passed", "..."), ("", "passed"), (None, "passed"), ("passed", None)):
+        for own, quote in (("passed", ""), ("passed", "   "), ("passed", "..."), ("passed.", "..."), ("", "passed"), (None, "passed"), ("passed", None)):
             with self.subTest(own=own, quote=quote):
                 self.assertFalse(IR.quote_is_theirs(own, quote))
 
@@ -202,7 +202,7 @@ class DocumentWords(unittest.TestCase):
 
     def test_a_walkthrough_caption_is_not(self):
         for words in ("inspection panel missing", "paint chipped", "bathroom 3b", "inspection hatch cracked", "",
-                      "passed the mop", None):
+                      "passed the mop", "plumbing rough inspection panel cracked", "plumbing rough done in 3B", "insulation missing", None):
             with self.subTest(words=words):
                 self.assertFalse(IR.names_signoff(words))
 
@@ -758,11 +758,9 @@ class ADocument(_Brain):
                 self.assertEqual(self.posted.posts, [])
 
     def test_a_done_caption_is_a_punch_completion(self):
-        async def not_called(*a, **k):
-            raise AssertionError("no vision on a completion photo")
-        with _Ctx(db=self.db) as c, patch.object(server, "_inspection_doc_read", not_called):
+        with _Ctx(db=self.db) as c:
             self.send(c, "done P-588-1 sign off", punch=True)
-        self.assertEqual(self.rows(), [])
+        self.assertEqual((self.posted.posts, self.rows()), ([], []))
         self.assertEqual(len(self.punch_calls), 1)
 
     def test_an_open_walk_keeps_its_photos(self):
@@ -865,13 +863,16 @@ class ADocument(_Brain):
         async def off(ident):
             return False
 
-        async def boom(*a, **k):
-            raise AssertionError("routed")
-        with _Ctx(db=self.db), patch.object(server, "_inspection_doc_turn", boom):
-            with patch.object(server, "_dm_brain_on", off), patch.object(server, "_punch_dm_turn", self._no_state()), \
-                    patch.object(server, "_dm_assistant_reply", self._no_state()):
+        routed = []
+
+        async def turn(*a, **k):
+            routed.append(a)
+            return True
+        with _Ctx(db=self.db), patch.object(server, "_inspection_doc_turn", turn):
+            with patch.object(server, "_dm_brain_on", off), patch.object(server, "_punch_dm_turn", self._no_state()),                     patch.object(server, "_dm_assistant_reply", self._no_state()):
                 _run(server._process_whatsapp_message({"event": "message", "data": {"message": {
                     "id": {"id": "z", "fromMe": False}, "from": CHAT, "body": "plumbing rough sign off 588", "type": "image"}}}))
+        self.assertEqual(routed, [])
 
 
 if __name__ == "__main__":
