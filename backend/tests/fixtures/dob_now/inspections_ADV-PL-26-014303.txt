@@ -54,4 +54,4 @@
                 </div>
 </div>
         <input type="submit" name="ctl00$PlaceHolderMain$InspectionList$btnRefreshGridView" value="" id="ctl00_PlaceHolderMain_InspectionList_btnRefreshGridView" class="ACA_Hide" />
-    |9|hiddenField|__VIEWSTATE|SANITIZED|
+    |9|hiddenField|__VIEWSTATE|SANITIZED|59|panelsToRefreshIDs||ctl00$PlaceHolderMain$InspectionList$inspectionUpdatePanel,|225|scriptStartupBlock|ScriptContentWithTags|{"text":"\r\n                        if (typeof (onUpcomingListLoaded) != \"undefined\") {\r\n                            onUpcomingListLoaded();\r\n                        }\r\n                    ","type":"text/javascript"}|227|scriptStartupBlock|ScriptContentWithTags|{"text":"\r\n                        if (typeof (onCompletedListLoaded) != \"undefined\") {\r\n                            onCompletedListLoaded();\r\n                        }\r\n                    ","type":"text/javascript"}|

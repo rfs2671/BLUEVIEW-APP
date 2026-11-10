@@ -426,6 +426,15 @@ def parse_inspection_list(async_delta_text: Any) -> Dict[str, Any]:
     panel = next((c for t, i, c in segs if t == "updatePanel" and i.endswith("inspectionUpdatePanel")), None)
     if panel is None:
         return {"loaded": False, "why": problem or "the delta holds no inspection list", "completed": [], "upcoming": []}
+    # The REFRESH's own markers (every real list reply, 2026-11-10, carries
+    # both): the panel named in panelsToRefreshIDs, and the startup script the
+    # completed list runs when it has loaded. Without them the panel is a
+    # re-render, not the refreshed list.
+    refreshed = any(t == "panelsToRefreshIDs" and "InspectionList$inspectionUpdatePanel" in c for t, _i, c in segs) \
+        and any(t == "scriptStartupBlock" and "onCompletedListLoaded" in c for t, _i, c in segs)
+    if not refreshed:
+        return {"loaded": False, "why": "the reply re-rendered the inspection panel without the refresh's markers",
+                "completed": [], "upcoming": []}
     completed = _list_rows(panel, "gvListCompleted")
     upcoming = _list_rows(panel, "gvListUpcoming")
     count = re.search(r"Completed Inspections:(?:</FONT>)?\s*\((\d+)\)", panel)
@@ -438,6 +447,23 @@ def parse_inspection_list(async_delta_text: Any) -> Dict[str, Any]:
         return {"loaded": False, "why": f"read {len(completed)} of the {stated} completed inspections the portal lists",
                 "completed": completed, "upcoming": upcoming}
     return {"loaded": True, "completed": completed, "upcoming": upcoming, "stated_count": stated}
+
+
+def corroborate(record: Optional[Dict[str, Any]], lst: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The list as read, or NOT LOADED when it says none and the record says
+    otherwise. The portal's real empty reply and an un-refreshed panel carry
+    the same words ('There are no completed inspections on this record.'), so
+    an EMPTY list is checked only when the record itself shows no results: a
+    floor-results table holding a result means inspections were resulted."""
+    lst = dict(lst or {"loaded": False, "why": "not fetched", "completed": [], "upcoming": []})
+    if not lst.get("loaded") or lst.get("completed"):
+        return lst
+    shown = [f"floor {fl} {t}: {r}" for tbl in ((record or {}).get("floor_results") or {}).values()
+             for fl, cells in tbl.items() for t, r in cells.items() if outcome(r) != "unresolved"]
+    if shown:
+        return dict(lst, loaded=False, why=("the list came back empty but the record's floor-results table shows "
+                                            f"results ({shown[0]}, {len(shown)} in all): not read as none"))
+    return lst
 
 
 # ── ONE INSPECTION'S DETAILS PAGE (the "View Details" popup) ───────────────
@@ -610,7 +636,7 @@ def to_evidence(records: Iterable[Dict[str, Any]], project_id: Any, *,
         rec = entry.get("record") or {}
         rid = rec.get("record_id") or entry.get("record_id") or "?"
         cov["records"] += 1
-        lst = entry.get("inspections") or {"loaded": False, "why": "not fetched"}
+        lst = corroborate(rec, entry.get("inspections"))
         completed = list(lst.get("completed") or []) if lst.get("loaded") else []
         if lst.get("loaded"):
             cov["lists_loaded"] += 1

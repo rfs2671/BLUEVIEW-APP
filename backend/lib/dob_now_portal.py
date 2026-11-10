@@ -274,8 +274,12 @@ def search_reply_kind(text: str) -> str:
     if "pageRedirect" in kinds:
         return "redirect" if parse_redirect(text) else "redirect_elsewhere"
     panels = " ".join(c for t, _i, c in segs if t == "updatePanel")
-    if NO_RESULTS_TEXT in _html.unescape(panels) and not parse_search_results(panels):
-        return "no_results"
+    if NO_RESULTS_TEXT in _html.unescape(panels):
+        # The notice counts only ALONE: no stated total above 0, no results
+        # grid, no pager, no row. Beside any of them the reply contradicts itself.
+        alone = (stated_total(panels) in (None, 0) and "dgvPermitList_gdvPermitList" not in panels
+                 and not page_links(panels) and not parse_search_results(panels))
+        return "no_results" if alone else "unrecognised"
     if "dgvPermitList_gdvPermitList" in panels and stated_total(panels) is not None and parse_search_results(panels):
         return "grid"
     return "unrecognised"
@@ -376,8 +380,10 @@ def check_bins(bins: Sequence[str], portal: Optional[Portal] = None, *, keep_raw
             continue
         out["searched"][b] = {"pages": res["pages"], "stated_total": res["stated_total"], "found": len(res["records"]),
                               "recognised": res.get("recognised")}
-        if res["stated_total"] is not None and len(res["records"]) < res["stated_total"]:
-            # Fewer rows than the portal says it has: the rest are UNREAD, not absent.
+        if res["stated_total"] is not None and len(res["records"]) != res["stated_total"]:
+            # The rows read across every page must equal the portal's own total:
+            # fewer means the rest are UNREAD (not absent); more means the reply
+            # is not what it says. Either way, not checked.
             out["unreachable"].append({"what": f"BIN {b} search",
                                        "why": f"read {len(res['records'])} of the {res['stated_total']} records "
                                               "the portal lists"})
@@ -403,7 +409,7 @@ def check_bins(bins: Sequence[str], portal: Optional[Portal] = None, *, keep_raw
         entry["record"], entry["fetched_at"] = rec, page["fetched_at"]
         try:
             lst = portal.fetch_inspection_list(slot["capid"], page)
-            entry["inspections"] = D.parse_inspection_list(lst["text"])
+            entry["inspections"] = D.corroborate(rec, D.parse_inspection_list(lst["text"]))
             if keep_raw:
                 entry["raw"] = {"record": page["text"], "inspections": lst["text"]}
         except Unreachable as e:
