@@ -294,3 +294,87 @@ class EcbDiscovery(unittest.TestCase):
         self.assertEqual(w["bis_complaints"]["last_success_at"], NOW)
         self.assertNotIn("last_success_at", w["bis_ecb"])
         self.assertIn("HTTP 503", w["bis_ecb"]["last_error"])
+
+
+class BothBinsAreMonitored(unittest.TestCase):
+    """546 Saratoga has two BINs on one lot. The rear BIN (3423445) shares no
+    job with 3255205, so the job-sharing rule never reached it."""
+
+    def test_the_watch_records_the_lots_bins_even_in_shadow(self):
+        db, emails = _seed(), []
+        s = _run(db, _BIS(), "shadow", emails=emails)
+        self.assertEqual(s["lot_bins"], ["3423445"])
+        self.assertEqual(db.source_sync_state.docs[0]["watch"]["bis_complaints"]["lot_bins"], ["3423445"])
+        self.assertEqual(sorted(b["bin"] for b in s["bins"]), ["3255205", "3423445"])
+        self.assertEqual(sorted(e["bin"] for e in s["ecb"]), ["3255205", "3423445"])
+
+    def test_the_open_data_scan_then_reads_the_rear_bin_too(self):
+        db, emails = _seed(), []
+        _run(db, _BIS(), "shadow", emails=emails)
+        asked = []
+
+        async def query(nyc_bin, address="", answered=None):
+            asked.append(nyc_bin)
+            return []
+        fetched = []
+        with patch.object(server, "db", db), patch.object(server, "_query_dob_apis", query):
+            asyncio.run(server._with_site_bins("p546", "3255205", [], {}, fetched))
+        self.assertEqual((asked, fetched), (["3423445"], ["3423445"]))
+
+
+class DisplayedOnTheComplianceScreen(unittest.TestCase):
+    """GET /api/projects/{id}/dob-logs -- what the Compliance screen reads,
+    with the screen's own arguments (date_range='all', limit 200)."""
+
+    def test_the_two_complaints_are_in_the_feed_as_open_action_items(self):
+        db, emails = _seed(), []
+        _run(db, _BIS(), "live", emails=emails)
+        user = {"id": "u_admin", "_id": "u_admin", "company_id": "co_blueview", "role": "admin"}
+        with patch.object(server, "db", db):
+            out = asyncio.run(server.get_dob_logs(
+                "p546", current_user=user, severity=None, record_type=None, limit=200, skip=0,
+                include_seed=False, signal_kinds=None, severity_kind=None, date_range="all",
+                unread_only=False, search=None))
+        rows = [lg if isinstance(lg, dict) else (lg.model_dump() if hasattr(lg, "model_dump") else lg.dict())
+                for lg in out["logs"]]
+        by = {lg.get("raw_dob_id"): lg for lg in rows}
+        for cn in ("3A88489", "3A88492"):
+            self.assertIn(cn, by)
+            self.assertEqual((by[cn]["record_type"], by[cn]["severity"]), ("complaint", "Action"))
+
+
+class RoutedToEmail(unittest.TestCase):
+    """The real sender: _send_critical_dob_alert_throttled -> recipients ->
+    lib.notifications.send_notification. Only the provider call is stubbed."""
+
+    def _world(self):
+        db, emails = _seed(), []
+        db.users.docs += [
+            {"_id": "u_admin", "company_id": "co_blueview", "role": "admin", "email": "admin@example.test"},
+            {"_id": "u_pm", "company_id": "co_blueview", "role": "pm", "email": "pm@example.test",
+             "assigned_projects": ["p546"]},
+            {"_id": "u_pm2", "company_id": "co_blueview", "role": "pm", "email": "pm2@example.test",
+             "assigned_projects": ["p_other"]},
+            {"_id": "u_cp", "company_id": "co_blueview", "role": "cp", "email": "cp@example.test",
+             "assigned_projects": ["p546"]},
+        ]
+        return db
+
+    def test_each_complaint_emails_the_admin_and_the_projects_pm_once(self):
+        db, sent = self._world(), []
+
+        async def fake_notify(_db, **kw):
+            sent.append((kw["recipient"], kw["permit_renewal_id"], kw["subject"], kw["text"]))
+            return {"status": "sent"}
+        with patch.object(server, "db", db), patch.object(server, "RESEND_API_KEY", "test-key"), \
+                patch("lib.notifications.send_notification", fake_notify):
+            asyncio.run(server.run_bis_complaint_watch_for_project(
+                copy.deepcopy(PROJECT), _BIS(), mode="live", now=NOW))
+            asyncio.run(server.run_bis_complaint_watch_for_project(
+                copy.deepcopy(PROJECT), _BIS(), mode="live", now=NOW + timedelta(minutes=10)))
+        got = sorted((r, eid) for r, eid, _, _ in sent)
+        self.assertEqual(got, [("admin@example.test", "dob_log:3A88489"), ("admin@example.test", "dob_log:3A88492"),
+                               ("pm@example.test", "dob_log:3A88489"), ("pm@example.test", "dob_log:3A88492")])
+        text = next(t for r, eid, _, t in sent if eid == "dob_log:3A88489")
+        self.assertIn("NO ROOF PROTECTION", text)
+        self.assertIn("A complaint is not a violation", text)

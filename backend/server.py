@@ -44346,6 +44346,26 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
                             f"(shares a job with BIN {nyc_bin}); {len(found)} records")
             else:
                 logger.info(f"[dob-sync] project {project_id}: BIN {cand} shares no job with BIN {nyc_bin}; not fetched")
+        # THE LOT'S OTHER BINS, PER BIS. A building's second BIN need not share
+        # a job with the first: 546 Saratoga's rear BIN 3423445 carries its own
+        # complaints and ECB violations and no job of 3255205's, so the rule
+        # above never reached it. BIS's property profile ("Additional BINs for
+        # Building") is DOB's own statement that it is the same lot; the BIS
+        # watch records it (watch.bis_complaints.lot_bins, also in shadow).
+        done = {re.sub(r"\D", "", str(nyc_bin))} | set(fetched_bins or [])
+        done |= {str(r.get("_site_bin")) for r in added if isinstance(r, dict)}
+        state = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id}) or {}
+        lot = ((state.get("watch") or {}).get("bis_complaints") or {}).get("lot_bins") or []
+        for cand in [b for b in lot if re.fullmatch(r"\d{7}", str(b)) and b not in done]:
+            found = await _query_dob_apis(cand, "", answered)
+            for r in found:
+                if isinstance(r, dict):
+                    r["_site_bin"] = cand
+            added += dob_site_bins.new_records(list(records) + added, found)
+            if fetched_bins is not None:
+                fetched_bins.append(cand)
+            logger.info(f"[dob-sync] project {project_id}: BIN {cand} is on the same lot per BIS; "
+                        f"{len(found)} records")
         return list(records) + added
     except Exception as e:
         logger.warning(f"[dob-sync] site BINs skipped for project {project_id}: {type(e).__name__}")
@@ -45611,11 +45631,15 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
     await _bis_ecb_pass(project, client, pbins, mode=mode, now=now, summary=summary,
                         first_done=set(((state.get("watch") or {}).get("bis_ecb") or {})
                                        .get("bins_first_synced") or []))
+    if lot_bins:
+        summary["lot_bins"] = list(lot_bins)
     upd: Dict[str, Any] = {"company_id": cid, "watch.bis_complaints.last_attempt_at": now,
                            "watch.bis_complaints.mode": mode,
                            "watch.bis_complaints.last_error": "; ".join(summary["errors"]) or None}
     if ok_bins and not summary["errors"]:
         upd["watch.bis_complaints.last_success_at"] = now
+    if lot_bins:
+        upd["watch.bis_complaints.lot_bins"] = sorted(set(lot_bins))
     await db[SOURCE_SYNC_STATE].update_one(
         {"_id": pid},
         {"$set": upd, "$addToSet": {"watch.bis_complaints.bins_first_synced": {"$each": ok_bins}}},
