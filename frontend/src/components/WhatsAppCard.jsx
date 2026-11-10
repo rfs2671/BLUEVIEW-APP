@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, Pressable, Linking } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { MessageCircle, UserPlus, ChevronRight } from 'lucide-react-native';
 import { GlassCard } from './GlassCard';
+import GlassButton from './GlassButton';
+import { SoftBox } from './SoftPanel';
 import { whatsappAPI } from '../utils/api';
 import { whatsappCardView } from '../utils/whatsappConnect';
 import { canSeeUpcoming } from '../utils/upcoming';
@@ -69,17 +71,18 @@ export default function WhatsAppCard({ isAdmin = false }) {
   ) : null);
 
   const NavButton = ({ b }) => (
-    <Pressable
+    <SoftBox
+      kind="slim"
       onPress={() => router.push(b.path)}
       accessibilityRole="button"
-      style={({ pressed }) => [s.navButton, pressed && s.pressed]}
+      contentStyle={s.navButton}
     >
       <Text style={s.navButtonText}>{b.label}</Text>
       <View style={s.navRight}>
         <Chip c={b.chip} />
         <ChevronRight size={18} color={colors.text.muted} />
       </View>
-    </Pressable>
+    </SoftBox>
   );
 
   return (
@@ -97,15 +100,12 @@ export default function WhatsAppCard({ isAdmin = false }) {
             Levelog number: <Text style={s.numberValue}>{header.number}</Text>
           </Text>
           {header.contactUrl ? (
-            <Pressable
+            <GlassButton
+              title="Save to Contacts"
+              icon={<UserPlus size={16} strokeWidth={2} color={colors.text.primary} />}
               onPress={() => Linking.openURL(header.contactUrl)}
-              accessibilityRole="button"
-              accessibilityHint="Opens WhatsApp; Levelog Assistant replies with its contact card"
-              style={({ pressed }) => [s.smallButton, pressed && s.pressed]}
-            >
-              <UserPlus size={16} strokeWidth={2} color={colors.text.primary} />
-              <Text style={s.smallButtonText}>Save to Contacts</Text>
-            </Pressable>
+              textStyle={s.smallButtonText}
+            />
           ) : null}
         </View>
       ) : null}
@@ -147,20 +147,14 @@ function buildStyles(colors) {
     numberText: { fontSize: 14, color: colors.text.muted },
     numberValue: { color: colors.text.primary, fontWeight: '600' },
     buttons: {
-      borderTopWidth: 1,
-      borderTopColor: colors.glass.border,
-      marginTop: spacing.sm,
-      paddingTop: spacing.sm,
-      gap: spacing.sm,
+      marginTop: spacing.md,
+      gap: spacing.lg,
     },
     navButton: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
       gap: spacing.sm,
-      borderRadius: borderRadius.lg,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
       paddingVertical: spacing.md,
       paddingHorizontal: spacing.lg,
       minHeight: 56,

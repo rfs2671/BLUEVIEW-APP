@@ -317,7 +317,7 @@ class ThePhotographs(unittest.TestCase):
         self.assertEqual(got[0]["caption"], "Stair installed")
         self.assertNotIn("Wooden", got[0]["caption"])
         for p in rep()["photos"]:
-            self.assertIn(p["caption"], P.WORK_CAPTION.values())
+            self.assertIn(p["caption"], [""] + list(P.WORK_CAPTION.values()))
 
     def test_a_crew_that_installs_nothing_has_no_installed_work_photo(self):
         # REAL 588: a cleaning crew (Echo) was shown with a framing photograph.
@@ -772,22 +772,22 @@ class TradeMismatchAndPhotoMinimum(unittest.TestCase):
                     "photos": [], "log": f"l{day}", "log_id": "x", "amended": False}
         return [act(9, "Domestic water rough"), act(19, "Fixtures, domestic water rough, Install metal stairs")]
 
-    def test_work_that_is_not_the_subs_trade_is_flagged_not_hidden(self):
+    def test_work_that_is_not_the_subs_trade_is_listed_as_filed(self):
+        # Nov 9: the flag was a substring match and all six on the real 588
+        # report were false ("Blocking" -> masonry, "Vapour" -> concrete).
         got = P._work(self._acts(), [], {"q": "q"}, [{"key": "q", "name": "Quality Plumbing", "trade": "Plumber"}], True)
         items = {i["work"]: i for i in got[0]["items"]}
-        self.assertTrue(items["Install metal stairs"]["trade_mismatch"])
-        self.assertFalse(items["Domestic water rough"]["trade_mismatch"])
-        self.assertFalse(items["Fixtures"]["trade_mismatch"])
+        self.assertIn("Install metal stairs", items)
+        self.assertNotIn("trade_mismatch", items["Install metal stairs"])
 
-    def test_a_flagged_line_is_marked_noted_and_not_used_in_the_summary(self):
+    def test_an_odd_line_is_shown_without_a_label_or_a_note(self):
         logs = F.logbooks()
         logs[0]["data"]["activities"][0].update(company="Quality Plumbing", trade="Plumber",
                                                 work_description="Install metal stairs")
         r = F.report(logbooks=logs + F.previous_logbooks())
-        self.assertTrue(any("does not match" in n and "metal stairs" in n for n in r["data_notes"]), r["data_notes"])
-        self.assertNotIn("metal stairs", " ".join(r["overview"]).lower())
+        self.assertFalse(any("does not match" in n for n in r["data_notes"]), r["data_notes"])
         html = RR.render_html([r], gc="", title="t", now=F.NOW, images={})
-        self.assertIn("CHECK", html)
+        self.assertNotIn(">CHECK<", html)
 
     def test_a_weak_photo_is_not_used_to_fill_the_page(self):
         cand = {"key": "k1", "date": date(2026, 10, 9), "sub": "Arkon Builders", "trade": "Framers", "where": "floor 2",

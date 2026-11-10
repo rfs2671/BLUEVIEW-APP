@@ -198,7 +198,9 @@ def day_words(d: Optional[date]) -> str:
 def _who(i: Dict[str, Any]) -> str:
     if i.get("by"):
         return str(i["by"])
-    return {"logbooks": "a filed log", "photo_index": "a photo"}.get(str(i.get("source")), "someone")
+    return {"daily_log": "a filed log", "logbooks": "a filed log", "photo_index": "a photo",
+            "superintendent_log": "the superintendent's log", "schedule_file": "the schedule file"}.get(
+        str(i.get("source")), "someone")
 
 
 # ── OPTIONS ────────────────────────────────────────────────────────────────

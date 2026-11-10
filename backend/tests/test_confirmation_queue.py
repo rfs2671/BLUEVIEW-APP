@@ -431,6 +431,19 @@ class ShadowSendsNothing(unittest.TestCase):
             again = asyncio.run(server._confirmations_tick(datetime(2026, 11, 10, 9, 0, tzinfo=timezone.utc)))
         self.assertEqual((again["rows"], len(db.confirmation_candidates.docs)), (0, n))
 
+    def test_a_job_with_an_unreadable_source_is_not_asked_about(self):
+        """"Nothing on record" from a source we could not read is our
+        blindness, not the job's: no question at all."""
+        from async_fake_mongo import AsyncFakeDB
+        server = _server()
+        db = AsyncFakeDB()
+        db.projects.docs.append({"_id": PID, "company_id": "c1", "status": "active"})
+        db.users.docs.append({"_id": "u1", "company_id": "c1", "role": "superintendent", "assigned_projects": [PID]})
+        db[server.WA_OPTINS].docs.append({"user_id": "u1", "company_id": "c1", "status": "active"})
+        with patch.object(server, "db", db), patch.dict(os.environ, {C.MODE_ENV: "shadow"}),                 patch.object(server, "_progress_evidence", AsyncMock(return_value=([], {"unreadable": ["photo_index"]}))),                 patch.object(server, "unattended_project_filter", AsyncMock(return_value={})):
+            report = asyncio.run(server._confirmations_tick(datetime(2026, 11, 10, 8, 0, tzinfo=timezone.utc)))
+        self.assertEqual((report["rows"], report["skipped"].get("job_not_read")), (0, 1))
+
     def test_a_reply_in_shadow_is_left_to_the_brain(self):
         server = _server()
         with patch.dict(os.environ, {C.MODE_ENV: "shadow"}):

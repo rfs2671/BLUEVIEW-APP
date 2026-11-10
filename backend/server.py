@@ -76,6 +76,7 @@ from lib import wa_security  # noqa: E402
 from lib import sheet_pipeline, sheet_serve, sheet_tiles  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import dob_penalty  # noqa: E402
+from lib import dob_signoffs  # noqa: E402
 from lib import model_outage  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
@@ -43500,6 +43501,15 @@ def _extract_job_status_fields(rec: dict) -> dict:
     fields["filing_date"] = rec.get("current_status_date") or rec.get("filing_date") or rec.get("latest_action_date") or None
     fields["job_type"] = rec.get("job_type") or None
     fields["job_description"] = rec.get("job_description") or None
+    # The sign-off (lib/dob_signoffs). Kept: DOB's own sign-off date, when the
+    # filing was approved and first permitted, the floors it covers, and the
+    # work types its YES/NO flags name. Dropping these is how a filing with a
+    # Letter of Completion reached the assistant as "no sign-offs".
+    fields["signoff_date"] = rec.get("signoff_date") or None
+    fields["approved_date"] = rec.get("approved_date") or None
+    fields["first_permit_date"] = rec.get("first_permit_date") or None
+    fields["work_on_floor"] = rec.get("work_on_floor") or None
+    fields["work_types"] = dob_signoffs.work_types(rec)
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
@@ -43530,6 +43540,27 @@ def _extract_permit_fields(rec: dict) -> dict:
     fields["job_number"] = rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or None
     fields["job_type"] = rec.get("job_type") or rec.get("filing_reason") or None
     fields["work_type"] = rec.get("work_type") or rec.get("permit_type") or None
+    fields["approved_date"] = rec.get("approved_date") or None
+    fields["work_on_floor"] = rec.get("work_on_floor") or None
+    # What the work is, in DOB's words: an electrical filing has no work type.
+    fields["job_description"] = rec.get("job_description") or None
+    # DOB NOW Electrical (dm9a-ab7w): `job_status` is the job's progress ('Job
+    # in Process' / 'Job is complete' / 'Inspection not complete due to
+    # withdrawal'); permit_status above reads its filing_status first, so the
+    # completion was never kept. Its `completion_date` is an estimate on an
+    # open job (2028, 2030 on 588), so it is kept only once the job IS complete.
+    fields["electrical_job_status"] = rec.get("job_status") or None
+    if dob_signoffs.is_signed_off(rec.get("job_status")):
+        fields["electrical_completion_date"] = rec.get("completion_date") or None
+    # The job-filing twin (w9ak-ipjd) the sync folded onto this permit
+    # (_collapse_job_status_twins): DOB's sign-off lives there, not here.
+    # Only written when the twin was seen, so a sync whose job-filing query
+    # failed does not blank a sign-off date already stored.
+    twin = rec.get("_job_filing") if isinstance(rec.get("_job_filing"), dict) else None
+    if twin:
+        fields["job_filing_status"] = twin.get("filing_status") or None
+        for k in ("signoff_date", "first_permit_date", "work_types"):
+            fields[k] = twin.get(k) or None
     cleaned = {k: str(v).strip() if v else None for k, v in fields.items()}
     # Derived classification — must come AFTER cleanup so we read
     # the same trimmed values the rest of the pipeline persists.
@@ -44343,6 +44374,49 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
         return records
 
 
+def _collapse_job_status_twins(raw_records: list) -> Tuple[list, int]:
+    """DOB NOW Job → Filing de-duplication: (records, twins dropped). Pure.
+
+    A permit-bearing filing appears BOTH in a permit dataset (rbx6-tga4 /
+    dm9a-ab7w, record_type="permit") AND in the job-filing dataset (w9ak-ipjd,
+    record_type="job_status") — the SAME filing, shown twice with two labels.
+    Keep ONE row per permit-bearing filing: the permit (it carries issuance +
+    expiration). Drop the redundant job_status twin. Standalone job_status
+    filings (Approved specs with no permit) survive untouched as demoted
+    "pending filings".
+
+    What the twin alone knows is folded onto EVERY permit of that filing (one
+    filing can be several permits: B01141294-S4 is an Earth Work permit and a
+    Foundation permit): the job's real `job_type` (permit datasets have none),
+    and the twin's extracted fields as `_job_filing` -- its filing status
+    ('LOC Issued'), DOB's sign-off date and its work types, which
+    _extract_permit_fields keeps. Before this the twin was dropped whole, and
+    the sign-off date went with it."""
+    def _norm_jfn(r):
+        return str(r.get("job_filing_number") or r.get("job__") or "").strip().upper()
+
+    permits_by_jfn: Dict[str, list] = {}
+    for r in raw_records:
+        if r.get("_record_type") == "permit" and _norm_jfn(r):
+            permits_by_jfn.setdefault(_norm_jfn(r), []).append(r)
+    if not permits_by_jfn:
+        return raw_records, 0
+    out, dropped = [], 0
+    for r in raw_records:
+        if r.get("_record_type") == "job_status":
+            perms = permits_by_jfn.get(_norm_jfn(r))
+            if perms:
+                twin = _extract_job_status_fields(r)
+                for perm in perms:
+                    if r.get("job_type") and not perm.get("job_type"):
+                        perm["job_type"] = r.get("job_type")
+                    perm.setdefault("_job_filing", twin)
+                dropped += 1
+                continue
+        out.append(r)
+    return out, dropped
+
+
 async def run_dob_sync_for_project(project: dict) -> list:
     """Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual.
 
@@ -44485,33 +44559,12 @@ async def run_dob_sync_for_project(project: dict) -> list:
     # the w9ak twin onto it (permit datasets have no job_type). Drop the redundant
     # job_status twin. Standalone job_status filings (Approved specs with no
     # permit) survive untouched as demoted "pending filings".
-    def _norm_jfn(r):
-        return str(r.get("job_filing_number") or r.get("job__") or "").strip().upper()
-
-    _permit_by_jfn = {
-        _norm_jfn(r): r
-        for r in raw_records
-        if r.get("_record_type") == "permit" and _norm_jfn(r)
-    }
-    if _permit_by_jfn:
-        _deduped, _dropped = [], 0
-        for r in raw_records:
-            if r.get("_record_type") == "job_status":
-                perm = _permit_by_jfn.get(_norm_jfn(r))
-                if perm is not None:
-                    # Fold the job's real type onto the permit for labelling,
-                    # then drop this duplicate filing row.
-                    if r.get("job_type") and not perm.get("job_type"):
-                        perm["job_type"] = r.get("job_type")
-                    _dropped += 1
-                    continue
-            _deduped.append(r)
-        raw_records = _deduped
-        if _dropped:
-            logger.info(
-                f"DOB sync for project {project_id}: collapsed {_dropped} "
-                f"job_status filing(s) into their matching permit rows"
-            )
+    raw_records, _dropped = _collapse_job_status_twins(raw_records)
+    if _dropped:
+        logger.info(
+            f"DOB sync for project {project_id}: collapsed {_dropped} "
+            f"job_status filing(s) into their matching permit rows"
+        )
 
     # One-time cleanup of legacy-format permit rows. Before the
     # renewal-collapse fix, permits were keyed by per-filing
@@ -56727,7 +56780,7 @@ async def _dm_schedule_lookahead(ctx: dict, job: dict, args: dict) -> str:
     if not project:
         return wa_security.BOT_SCOPE_REFUSAL
     try:
-        src, rows, today, start = await _schedule_evidence(project, cid, WORK_STATE_DAYS)
+        src, rows, today, start, items = await _forecast_inputs(project, cid)
     except Exception as e:
         logger.warning(f"[lookahead] failed: {type(e).__name__}: {e!r}")
         return "The schedule records couldn't be read just now."
@@ -56737,7 +56790,8 @@ async def _dm_schedule_lookahead(ctx: dict, job: dict, args: dict) -> str:
         days = int(args.get("days") or 7)
     except (TypeError, ValueError):
         days = 7
-    return progress_plan.lookahead_text(src["schedule"], rows, today=today, days=days, logs_from=start)
+    return schedule_forecast.lookahead_with_status(src["schedule"], items, rows, today=today, days=days, logs_from=start,
+                                                   project_id=str(project.get("_id")), job=job["label"])
 
 
 async def _dm_proposed_sequence(ctx: dict, job: dict, args: dict) -> str:
@@ -57196,13 +57250,183 @@ async def _photo_relations_job() -> None:
         logger.error(f"[photo-relations] job failed: {type(e).__name__}: {e!r}")
 
 
+# ── PROGRESS EVIDENCE (lib/evidence_sources.py) ─────────────────────────────
+#
+# ONE loader for every progress source, as lib/evidence.py items. Read-time
+# only, nothing stored. Returns (items, coverage): the shape is documented at
+# the top of lib/evidence_sources.py. The filed daily logs, check-ins, DOB rows
+# and confirmed schedule come from _report_rows (amendment chains resolved, the
+# company check made there). A source that cannot be read is named in
+# coverage["unreadable"] and gives no items: unknown, never "nothing happened".
+from lib import evidence_sources  # noqa: E402
+
+PROGRESS_LOGBOOK_TYPES = ("concrete_operations", "site_superintendent_log")
+
+
+async def _progress_evidence(project: dict, company_id: str, start: _Date, end: _Date,
+                             keep: Optional[dict] = None) -> tuple:
+    now = datetime.now(timezone.utc)
+    src = await _report_rows(project, company_id, start, end, now)
+    if keep is not None:
+        keep["sources"] = src          # the schedule and the rest, read once
+    pid, cid = str(project.get("_id")), str(company_id)
+    unreadable: List[str] = []
+
+    async def _read(name: str, query):
+        try:
+            return await query()
+        except Exception as e:
+            logger.warning(f"[progress-evidence] {name} read failed: {type(e).__name__}: {e!r}")
+            unreadable.append(name)
+            return None
+
+    days = {"$gte": start.isoformat(), "$lte": end.isoformat()}
+    index = await _read("photo_index", lambda: db[PHOTO_INDEX].find(
+        {"project_id": pid, "kind": "photo", "date": days}).to_list(20000)) or []
+    spaces, confirmed = await _photo_place_context(pid)
+    reports = await _read("inspection_reports", lambda: db[INSPECTION_REPORTS].find(
+        {"project_id": pid, "company_id": cid}).to_list(5000)) or []
+    books = await _read("logbooks", lambda: db.logbooks.find(
+        {"project_id": pid, "log_type": {"$in": list(PROGRESS_LOGBOOK_TYPES)}, "is_deleted": {"$ne": True},
+         "date": days}).to_list(5000)) or []
+    heads = [c["head"] for c in collapse_amendment_chains(books)
+             if logbook_is_filed(c["head"]) and not logbook_is_withdrawn(c["head"])]
+    closed = await _read("punch_items", lambda: db[punch.COLLECTION].find(
+        {"project_id": pid, "status": "closed"}).to_list(5000)) or []
+    logs = src["logbooks"]
+    return evidence_sources.collect(
+        pid, start=start, end=end, activities=progress_report._log_activities(logs, start, end),
+        photo_index=index, log_ids={str(lg.get("_id")) for lg in logs}, spaces=spaces, confirmations=confirmed,
+        inspections=reports, dob_rows=src["dob_rows"], bins=src.get("project_bins") or (), logbooks=heads,
+        punch_items=closed, checkins=src["checkins"], schedule=src.get("schedule"), unreadable=unreadable)
+
+
+# ── PROJECT PROGRESS (lib/project_progress.py) ──────────────────────────────
+#
+# One status of the whole building from evidence items (lib/evidence.py), read
+# at request time: nothing is stored. GET /api/projects/{project_id}/progress
+# and the assistant's project_status tool read the same build.
+from lib import evidence as _evidence, project_progress  # noqa: E402
+from lib.plans.level_suggestion import suggest_levels as _suggest_levels  # noqa: E402
+
+#: How far back the whole-building status reads (the report loader's window).
+PROJECT_PROGRESS_DAYS = 365
+
+
+async def _progress_plan_tokens(pid: str) -> list:
+    """The level tokens the job's drawings name (the answer says where each level came from)."""
+    try:
+        rows = await db.document_page_index.find({"project_id": pid}, {"sheet_number": 1, "sheet_title": 1,
+                                                                       "floor": 1, "floors": 1}).to_list(3000)
+        plan_tokens = [lv["token"] for lv in _suggest_levels(rows)["levels"]]
+    except Exception as e:
+        # The project fields and the records still name levels; the answer says where each came from.
+        logger.warning(f"[progress] plan levels not read: {type(e).__name__}: {e!r}")
+        plan_tokens = []
+    return plan_tokens
+
+
+async def _project_progress(project: dict, company_id: str, *, job: str = "", today: Optional[_Date] = None) -> dict:
+    now = datetime.now(timezone.utc)
+    today = today or now.astimezone(_MemoryZone("America/New_York")).date()
+    # Every source, through the one loader (lib/evidence_sources.py).
+    start = today - timedelta(days=PROJECT_PROGRESS_DAYS - 1)
+    keep: dict = {}
+    items, _coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    plan_tokens = await _progress_plan_tokens(str(project.get("_id")))
+    return project_progress.build(items, today=today, project=project, plan_tokens=plan_tokens,
+                                  schedule=keep["sources"].get("schedule"), job=job or str(project.get("name") or ""))
+
+
+@api_router.get("/projects/{project_id}/progress",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_progress(project_id: str, current_user=Depends(get_current_user)):
+    """The whole building's status from the records. Read-only; counts of
+    level-and-work cells, never a percent complete."""
+    cid = str(get_user_company_id(current_user) or "")
+    project = await _bot_project_scope(cid, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        model = await _project_progress(project, cid)
+    except ReportSourceUnavailable:
+        raise HTTPException(status_code=503, detail="The progress records could not be read, so no status is shown.")
+    out = project_progress.to_json(model)
+    out["project_id"] = str(project_id)
+    return out
+
+
+def _project_status_tool(job_prop: dict) -> dict:
+    """The brain's tool spec; registered beside the brain's other tools."""
+    return {"name": "project_status", "description": (
+        "The status of a whole job from the records: overall ('how is 588 doing'), one sub ('where is Arkon at') "
+        "or one floor ('how is floor 3'). Counts of level-and-work cells by status (done needs a person's statement "
+        "or stronger), what is open on the record per level, and records that disagree. Never a percent complete."),
+        "input_schema": {"type": "object", "properties": {
+            "job": job_prop,
+            "scope": {"type": "string", "enum": ["overall", "sub", "floor"]},
+            "name": {"type": "string", "description": "The sub's name (scope sub) or the floor (scope floor), as they said it."}},
+            "required": ["scope"]}}
+
+
+async def _dm_project_status(ctx: dict, job: dict, args: dict) -> str:
+    cid = str(ctx["ident"]["company_id"])
+    project = await _bot_project_scope(cid, str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    try:
+        model = await _project_progress(project, cid, job=str(job.get("label") or ""))
+    except Exception as e:
+        logger.warning(f"[progress] failed: {type(e).__name__}: {e!r}")
+        return "The progress records couldn't be read just now."
+    return project_progress.as_text(model, str(args.get("scope") or "overall"), args.get("name"))
+
+
+# ── SCHEDULE FORECAST (lib/forecast.py) ─────────────────────────────────────
+# Facts at attested or stronger, the confirmed file's dates and logic, the
+# logs' reported spans and LeveLog's estimates, each in its own group. The
+# evidence is every source, through _progress_evidence.
+from lib import forecast as schedule_forecast  # noqa: E402
+
+
+async def _forecast_inputs(project: dict, company_id: str) -> tuple:
+    """(report sources, log rows, today, first day read, evidence items): every
+    source through the one loader (_progress_evidence), read once."""
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(_MemoryZone("America/New_York")).date()
+    start = today - timedelta(days=WORK_STATE_DAYS - 1)
+    keep: dict = {}
+    items, _coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    src = keep["sources"]
+    rows = work_state.evidence_rows(progress_report._log_activities(src["logbooks"], start, today))
+    return src, rows, today, start, items
+
+
+async def _dm_schedule_status(ctx: dict, job: dict, args: dict) -> str:
+    """"Are we on schedule?": the four groups of lib/forecast.py, read only."""
+    cid = str(ctx["ident"]["company_id"])
+    project = await _bot_project_scope(cid, str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    try:
+        src, rows, today, _start, items = await _forecast_inputs(project, cid)
+    except Exception as e:
+        logger.warning(f"[schedule-status] failed: {type(e).__name__}: {e!r}")
+        return "The schedule records couldn't be read just now."
+    if not src.get("schedule"):
+        return (f"No confirmed schedule is on file for {job['label']}, so there are no planned dates to compare "
+                "against and no forecast to give.")
+    fc = schedule_forecast.forecast(src["schedule"], items, rows, today=today, project_id=str(project.get("_id")))
+    return schedule_forecast.status_text(fc, job["label"])
+
+
 # ── TARGETED CONFIRMATIONS (lib/confirmation_queue.py) ──────────────────────
 #
 # The few questions worth asking a superintendent or CP about a job: where the
 # sources disagree or a planned / booked thing has nothing on record. Rules,
 # words and the reply reader: lib/confirmation_queue.py. Here: the job's
-# evidence items (filed logs, placed photos, inspection reports, earlier
-# answers, the confirmed schedule), who may be asked, and the stored rows.
+# evidence items (the one progress loader, _progress_evidence, plus the logs'
+# own "done"s and earlier answers), who may be asked, and the stored rows.
 #
 # SHADOW. CONFIRMATIONS_MODE = off | shadow | live, default off. Shadow
 # computes nightly and stores what it WOULD ask in `confirmation_candidates`
@@ -57214,13 +57438,10 @@ async def _photo_relations_job() -> None:
 # scripts/confirmation_shadow_report.py reads the precision.
 
 from lib import confirmation_queue  # noqa: E402
-from lib import evidence as _evidence  # noqa: E402
-
 #: The window of logs, photos and reports read for a job.
 CONFIRM_LOG_DAYS = 35
 _CONFIRM_DONE = re.compile(r"\b(?:complete[d]?|done|finished)\b", re.I)
 _CONFIRM_NOT_DONE = re.compile(r"\b(?:not|in)[\s-]?(?:yet\s+)?(?:complete[d]?|done|finished)\b|\bincomplete\b", re.I)
-_IR_CLAIM = {"passed": "done", "failed": "failed", "partial": "in_progress", "scheduled": "scheduled"}
 
 
 def _confirm_day(v: Any) -> Optional[_Date]:
@@ -57235,64 +57456,25 @@ def _confirm_day(v: Any) -> Optional[_Date]:
 
 
 def _confirm_log_items(rows: list, pid: str) -> tuple:
-    """(reported items, {day: levels the filed logs name}) from
-    work_state.evidence_rows. A row says done only in its own words, never
-    from a generic trade name."""
+    """(the log rows that say DONE in their own words, as reported items;
+    {day: levels the filed logs name}) from work_state.evidence_rows. The
+    loader (lib/evidence_sources) keeps every crew row in_progress; a "done"
+    is added here only from the row's words, never from a generic trade."""
     items, logged = [], {}
     for r in rows:
         if not r.get("levels"):
             continue
         logged.setdefault(r["date"], set()).update(r["levels"])
         work = str(r.get("work") or "")
-        done = bool(_CONFIRM_DONE.search(work)) and not _CONFIRM_NOT_DONE.search(work) and not r.get("generic")
+        if not _CONFIRM_DONE.search(work) or _CONFIRM_NOT_DONE.search(work) or r.get("generic"):
+            continue
         for node in r.get("nodes") or []:
             items.append(_evidence.item(
-                "reported", "done" if done else "in_progress", source="logbooks",
+                "reported", "done", source="daily_log",
                 ref=r.get("log_id") or f"log:{r['date']}", project_id=pid, node=node, levels=r["levels"],
                 space=r.get("space"), sub=r.get("sub") or None, on=r["date"], quote=work,
                 shared=len(r["levels"]) > 1))
     return items, logged
-
-
-def _confirm_photo_items(photos: list, pid: str, start: _Date) -> list:
-    """Observed items: a photo placed on ONE level whose description shows
-    the work. Never more than observed."""
-    out = []
-    for p in photos:
-        d = _confirm_day(p.get("date"))
-        if not d or d < start or len(p.get("levels") or []) != 1:
-            continue
-        if float(p.get("quality") or 0) < work_state.MIN_PHOTO_QUALITY:
-            continue
-        for node in p.get("seen_nodes") or []:
-            out.append(_evidence.item(
-                "observed", "in_progress", source="photo_index", ref=p.get("short") or p.get("photo_key") or "",
-                project_id=pid, node=node, levels=p["levels"], space=p.get("space"), on=d,
-                quote=p.get("description")))
-    return out
-
-
-def _confirm_inspection_items(rows: list, pid: str) -> list:
-    """Attested items from inspection_reports: a result read back from the
-    words (an unresolved row has none and says nothing), on its levels. A
-    booking with no date names no day that could pass."""
-    out = []
-    for r in rows:
-        levels = [str(x) for x in r.get("levels") or []]
-        result = r.get("result")
-        if not levels or result not in _IR_CLAIM or r.get("status") not in (
-                inspection_reports.ATTESTED, inspection_reports.DOCUMENT):
-            continue
-        on = _confirm_day(r.get("inspected_on"))
-        if result == "scheduled" and not on:
-            continue
-        said = r.get("inspection_as_said") or ""
-        node = r.get("gate") or (confirmation_queue.INSPECTION_PREFIX + " ".join(str(said).lower().split()))
-        out.append(_evidence.item(
-            "attested", _IR_CLAIM[result], source=INSPECTION_REPORTS, ref=str(r.get("_id") or ""), project_id=pid,
-            node=node, levels=levels, on=on or _confirm_day(r.get("created_at")), by=r.get("reporter_name") or None,
-            quote=r.get("quote"), shared=len(levels) > 1, note=said or None))
-    return out
 
 
 def _confirm_answer_items(rows: list) -> list:
@@ -57324,20 +57506,23 @@ def _confirm_schedule(schedule: Optional[dict]) -> list:
 
 
 async def _confirmation_inputs(project: dict, company_id: str) -> tuple:
-    """(evidence items, frame) for one job, from what the work-state answer
-    already reads."""
+    """(evidence items, frame) for one job: the one progress loader
+    (_progress_evidence), the logs' own "done"s, and earlier answers. None
+    when a source could not be read: a question premised on "nothing on
+    record" would then be about our blindness, not the job."""
     pid = str(project.get("_id"))
-    src, rows, today, start = await _schedule_evidence(project, company_id, CONFIRM_LOG_DAYS)
-    items, logged = _confirm_log_items(rows, pid)
-    index = await db[PHOTO_INDEX].find({"project_id": pid, "kind": "photo"}).to_list(20000)
-    spaces, confirmed = await _photo_place_context(pid)
-    photos = work_state.photo_rows(index, {str(lg.get("_id")) for lg in src["logbooks"]},
-                                   spaces=spaces, confirmations=confirmed)
-    items += _confirm_photo_items(photos, pid, start)
-    reports = await db[INSPECTION_REPORTS].find({"project_id": pid, "company_id": str(company_id)}).to_list(5000)
-    items += _confirm_inspection_items(reports, pid)
+    today = datetime.now(timezone.utc).astimezone(_MemoryZone("America/New_York")).date()
+    start = today - timedelta(days=CONFIRM_LOG_DAYS - 1)
+    keep: dict = {}
+    items, coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    if coverage.get("unreadable"):
+        logger.warning(f"[confirm] {pid} skipped: unreadable {coverage['unreadable']}")
+        return None
+    src = keep["sources"]
+    rows = work_state.evidence_rows(progress_report._log_activities(src["logbooks"], start, today))
+    done, logged = _confirm_log_items(rows, pid)
     answers = await db.confirmation_answers.find({"project_id": pid, "company_id": str(company_id)}).to_list(5000)
-    items += _confirm_answer_items(answers)
+    items = list(items) + done + _confirm_answer_items(answers)
     frame = {"project_id": pid, "today": today, "logs_from": start, "logged_levels": logged,
              "schedule": _confirm_schedule(src.get("schedule"))}
     return items, frame
@@ -57412,10 +57597,14 @@ async def _confirmations_tick(now: Optional[datetime] = None) -> dict:
             report["skipped"]["nobody_to_ask"] = report["skipped"].get("nobody_to_ask", 0) + 1
             continue
         try:
-            items, frame = await _confirmation_inputs(p, cid)
+            got = await _confirmation_inputs(p, cid)
         except Exception as e:
             logger.warning(f"[confirm] {pid} not read: {type(e).__name__}: {e!r}")
+            got = None
+        if got is None:
+            report["skipped"]["job_not_read"] = report["skipped"].get("job_not_read", 0) + 1
             continue
+        items, frame = got
         report["projects"] += 1
         found = confirmation_queue.candidates(items, frame)
         report["candidates"] += len(found)
@@ -58951,6 +59140,8 @@ def _upcoming_city_events(dob_rows: list, dot_rows: list, today: _Date) -> list:
         if r.get("record_type") == "permit":
             if "REVOKED" in str(r.get("permit_status") or "").upper():
                 continue
+            if dob_signoffs.row_signed_off(r):
+                continue                     # signed off: its expiry is not a deadline
             num = r.get("job_number") or rid
             ev = upcoming.city_event("permit_expiration", "DOB", f"dob:{rid}",
                                      r.get("expiration_date"), f"DOB permit expires · #{num}",
@@ -63749,11 +63940,18 @@ _DM_BRAIN_EXTRA_TOOLS = [
     {"name": "schedule_lookahead", "description": (
         "What the job's CONFIRMED schedule file plans in the next 7 or 14 days, each activity's predecessors as the "
         "file links them, beside what the logs report, and activities past their planned finish with no report. "
-        "From the file's dates and logic only: no rate, forecast or estimated date."),
+        "From the file's dates and logic; it ends with the schedule status groups, where any estimate is labelled "
+        "ESTIMATE with its basis. No rate, forecast or estimated date beyond those lines."),
      "input_schema": {"type": "object", "properties": {
          "job": _JOB_PROP,
          "days": {"type": "integer", "description": "7 or 14. Default 7."}},
          "required": []}},
+    {"name": "schedule_status", "description": (
+        "'Are we on schedule?', 'when will we finish?': the job's CONFIRMED schedule file against what is on record, in "
+        "four separate groups: start / done markers at attested or stronger, the file's dates and logic (including "
+        "what is past its planned finish with no done evidence, and the later work linked to it), the logs' reported "
+        "spans, and LeveLog's estimates with their basis, only where enough completed evidence supports one."),
+     "input_schema": {"type": "object", "properties": {"job": _JOB_PROP}, "required": []}},
     {"name": "proposed_sequence", "description": (
         "A PROPOSED order of work per level, for a job with no confirmed schedule: the standard sequence over the "
         "levels the logs name. Shows it, or approves the one already shown."),
@@ -63852,6 +64050,7 @@ _DM_BRAIN_EXTRA_TOOLS = [
          "time": {"type": "string", "description": "HH:MM, 24h, if they gave one."}},
          "required": ["what", "date"]}},
 ]
+_DM_BRAIN_EXTRA_TOOLS.append(_project_status_tool(_JOB_PROP))
 
 _DM_BRAIN_TOOL_CACHE: Optional[list] = None
 
@@ -64193,7 +64392,8 @@ async def _dm_do_set_trade(ident: dict, p: dict):
 _DM_BRAIN_ONE_JOB = _DM_BRAIN_JOB_TOOLS + ("headcount", "dot_status", "send_sheet",
                                            "send_plan_file", "sheet_info",
                                            "find_photos", "send_photos", "work_status",
-                                           "schedule_lookahead", "proposed_sequence", "report_inspection", "confirm_photo_place")
+                                           "schedule_lookahead", "schedule_status", "proposed_sequence", "report_inspection", "confirm_photo_place",
+                                           "project_status")
 
 
 async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
@@ -64330,7 +64530,8 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
     if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
                                                "send_plan_file", "sheet_info",
                                                "find_photos", "send_photos", "work_status",
-                                               "schedule_lookahead", "proposed_sequence", "report_inspection", "confirm_photo_place"):
+                                               "schedule_lookahead", "schedule_status", "proposed_sequence", "report_inspection", "confirm_photo_place",
+                                               "project_status"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
             return why
@@ -64372,6 +64573,10 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
             return await _dm_work_status(ctx, job, args)
         if name == "schedule_lookahead":
             return await _dm_schedule_lookahead(ctx, job, args)
+        if name == "project_status":
+            return await _dm_project_status(ctx, job, args)
+        if name == "schedule_status":
+            return await _dm_schedule_status(ctx, job, args)
         if name == "proposed_sequence":
             return await _dm_proposed_sequence(ctx, job, args)
         if name == "report_inspection":
@@ -66743,6 +66948,19 @@ async def _handle_dob_status(project_id: str, *,
             lines.append(f"  - {desc}")
     else:
         lines.append("\nNo recent violations on file.")
+    # SIGN-OFFS (Nov 9, 11:37 PM). Asked what inspections had happened on 588,
+    # the assistant said DOB sign-offs "aren't in anything I can read": this
+    # tool printed BIN, BBL and violations only, and active_permits keeps only
+    # issued permits, so the four Letters of Completion stored in dob_logs
+    # reached no tool. Every signed-off filing is listed here, with what it
+    # covers, DOB's date and the record number, then what public data lacks.
+    filings = await db.dob_logs.find({
+        "project_id": project_id,
+        "company_id": _company_id_filter(company_id),
+        "record_type": {"$in": ["permit", "job_status"]},
+        "is_deleted": {"$ne": True},
+    }).to_list(1000)
+    lines += dob_signoffs.signoff_section(filings)
     return "\n".join(lines)
 
 
@@ -67256,7 +67474,10 @@ async def _handle_start_permit_renewal(
     for p in permits:
         stat = str(p.get("permit_status") or "").strip().lower()
         exp = _parse_iso(p.get("expiration_date"))
-        if stat in active_status and (exp is None or exp > now):
+        # A filing DOB has signed off (its job-filing twin says 'LOC Issued', or
+        # the electrical job is complete) is finished work, not an active permit.
+        if stat in active_status and (exp is None or exp > now) \
+                and not dob_signoffs.row_signed_off(p):
             active.append((p, exp))
 
     if not active:
@@ -67425,7 +67646,10 @@ async def _handle_active_permits(project_id: str, *,
     for p in permits:
         stat = str(p.get("permit_status") or "").strip().lower()
         exp = _parse_iso(p.get("expiration_date"))
-        if stat in active_status and (exp is None or exp > now):
+        # A filing DOB has signed off (its job-filing twin says 'LOC Issued', or
+        # the electrical job is complete) is finished work, not an active permit.
+        if stat in active_status and (exp is None or exp > now) \
+                and not dob_signoffs.row_signed_off(p):
             active.append((p, exp))
 
     if not active:
@@ -75110,7 +75334,13 @@ _AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "dob_status",
-            "description": "Return DOB status, permits, and recent violations for the project.",
+            "description": (
+                "Return the project's DOB record: every DOB sign-off (Letter of Completion "
+                "-- what work the filing covers, DOB's sign-off date, the record number), "
+                "recent violations, BIN/BBL, and which inspections public data does not "
+                "hold. Use for 'what inspections happened', 'what's signed off', 'did the "
+                "foundation get signed off', 'DOB status', 'violations'."
+            ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
@@ -75139,7 +75369,8 @@ _AGENT_TOOLS = [
                 "SP (sprinkler), etc. Use for 'active permits', 'what permits are open', "
                 "'show me permits', 'permit status', 'is the GC permit active', 'permits "
                 "expiring', or any question about issued / non-expired DOB job filings. Do "
-                "NOT use for violations — violations are in dob_status."
+                "NOT use for violations or for sign-offs / completed work / inspections — "
+                "those are in dob_status."
             ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
@@ -75488,7 +75719,7 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "project manager's right hand: brief, specific, and always one step ahead.\n\n"
     "CAPABILITIES (via tools):\n"
     "  • Active permits + who's expiring + renewal (active_permits, start_permit_renewal)\n"
-    "  • DOB violations + complaints + 311 + BIN (dob_status)\n"
+    "  • DOB sign-offs + violations + complaints + 311 + BIN (dob_status)\n"
     "  • Open items / punch list / materials (open_items, material_status)\n"
     "  • Crew roster + who's on site (list_workers, who_on_site)\n"
     "  • Project metadata — address/BIN/BBL (project_info)\n"
@@ -75500,7 +75731,8 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "    active_permits. Never query_plan for these.\n"
     "  • 'renew <permit>', 'start renewal', 'yes renew', 'renew the plumbing one' → "
     "    start_permit_renewal with permit_hint.\n"
-    "  • 'violation', 'DOB status', 'complaints', '311', 'BIN' → dob_status.\n"
+    "  • 'violation', 'DOB status', 'complaints', '311', 'BIN', 'sign-off', "
+    "'what inspections happened' → dob_status.\n"
     "  • 'open items', 'punch list', 'to-do', 'outstanding' → open_items.\n"
     "  • 'who's on site', 'how many workers', 'trade count' → who_on_site.\n"
     "  • 'list workers', 'all carpenters', 'roster' → list_workers.\n"

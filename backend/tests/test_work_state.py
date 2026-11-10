@@ -98,9 +98,15 @@ class TheKindOfWork(unittest.TestCase):
         self.assertEqual(W.classify("Plumbing"), (["rough_dwv", "rough_water"], True))
 
     def test_work_outside_the_sequence_is_nothing_not_a_guess(self):
-        for phrase in ("Excavation", "Stucco", "Cleaning", "Roofing"):
+        for phrase in ("Cleaning", "Outer bldg"):
             with self.subTest(phrase=phrase):
                 self.assertEqual(W.classify(phrase), ([], False))
+
+    def test_site_and_envelope_work_falls_back_to_work_nodes(self):
+        # Not graph_v1's: lib/work_nodes.py, data with no approved sequence.
+        for phrase, want in (("Excavation", "excavation_soe"), ("Stucco", "facade_envelope"), ("Roofing", "roofing")):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(W.classify(phrase), ([want], False))
 
     def test_a_carpenters_trim_is_not_mep_trim(self):
         self.assertEqual(W.classify("Door trim", "Arkon Framers"), ([], False))
@@ -152,11 +158,11 @@ class TheStateOfAPackage(unittest.TestCase):
 class Coverage(unittest.TestCase):
 
     def test_it_counts_what_can_be_used_and_lists_what_cannot(self):
-        rows = W.evidence_rows([_act("Domestic water rough"), _act("Plumbing", where="floor 3"), _act("Stucco", where="outer bldg")])
+        rows = W.evidence_rows([_act("Domestic water rough"), _act("Plumbing", where="floor 3"), _act("Cleaning", where="outer bldg")])
         c = W.coverage(rows, W.photo_rows([_pic("a"), _pic("b", where=F1_4)]))
         self.assertEqual((c["phrases"], c["name_a_level"], c["name_one_level"], c["match_sequence"], c["generic_only"]),
                          (3, 2, 1, 2, 1))
-        self.assertEqual(c["not_matched"], [("Stucco", 1)])
+        self.assertEqual(c["not_matched"], [("Cleaning", 1)])
         self.assertEqual(c["not_placed"], [("outer bldg", 1)])
         self.assertEqual((c["photos"], c["photos_one_level"]), (2, 1))
 
