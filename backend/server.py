@@ -44352,20 +44352,25 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
         # above never reached it. BIS's property profile ("Additional BINs for
         # Building") is DOB's own statement that it is the same lot; the BIS
         # watch records it (watch.bis_complaints.lot_bins, also in shadow).
-        done = {re.sub(r"\D", "", str(nyc_bin))} | set(fetched_bins or [])
-        done |= {str(r.get("_site_bin")) for r in added if isinstance(r, dict)}
-        state = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id}) or {}
-        lot = ((state.get("watch") or {}).get("bis_complaints") or {}).get("lot_bins") or []
-        for cand in [b for b in lot if re.fullmatch(r"\d{7}", str(b)) and b not in done]:
-            found = await _query_dob_apis(cand, "", answered)
-            for r in found:
-                if isinstance(r, dict):
-                    r["_site_bin"] = cand
-            added += dob_site_bins.new_records(list(records) + added, found)
-            if fetched_bins is not None:
-                fetched_bins.append(cand)
-            logger.info(f"[dob-sync] project {project_id}: BIN {cand} is on the same lot per BIS; "
-                        f"{len(found)} records")
+        # Its own guard: a failed state read or lot-BIN fetch must never throw
+        # away the site-BIN records already found above.
+        try:
+            done = {re.sub(r"\D", "", str(nyc_bin))} | set(fetched_bins or [])
+            done |= {str(r.get("_site_bin")) for r in added if isinstance(r, dict)}
+            state = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id}) or {}
+            lot = ((state.get("watch") or {}).get("bis_complaints") or {}).get("lot_bins") or []
+            for cand in [b for b in lot if re.fullmatch(r"\d{7}", str(b)) and b not in done]:
+                found = await _query_dob_apis(cand, "", answered)
+                for r in found:
+                    if isinstance(r, dict):
+                        r["_site_bin"] = cand
+                added += dob_site_bins.new_records(list(records) + added, found)
+                if fetched_bins is not None:
+                    fetched_bins.append(cand)
+                logger.info(f"[dob-sync] project {project_id}: BIN {cand} is on the same lot per BIS; "
+                            f"{len(found)} records")
+        except Exception as e:
+            logger.warning(f"[dob-sync] lot BINs skipped for project {project_id}: {type(e).__name__}")
         return list(records) + added
     except Exception as e:
         logger.warning(f"[dob-sync] site BINs skipped for project {project_id}: {type(e).__name__}")
