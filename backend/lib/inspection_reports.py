@@ -322,6 +322,21 @@ def hearsay_from(text: Any) -> Optional[str]:
     return None
 
 
+#: The inspector or the agency, named by role. A result relayed from them ("the
+#: inspector said it passed", "DOB said ok") is how a pass is normally passed on
+#: on site: it stays the sender's ATTESTED statement, noted as relayed (owner
+#: ruling, 2026-11-10). Anyone else ("Joe", "the plumber", "my foreman") is
+#: hearsay.
+_AUTHORITY = re.compile(
+    r"\b(?:inspectors?|inspector's|examiners?|dob|fdny|dep|dot|ecb|city|agency|department\s+of\s+buildings|"
+    r"buildings\s+department|fire\s+department|inspectors?\s+from\s+\w+|inspector[ae]s?|el\s+inspector)\b", re.I)
+
+
+def is_authority(who: Any) -> bool:
+    """Whether `who` names the inspector or the agency by its role."""
+    return bool(_AUTHORITY.search(str(who or "")))
+
+
 def _original_span(own: Any, span: str) -> str:
     """`span` (normalized) in their original casing, for naming who said it."""
     text = " ".join(str(own or "").replace("’", "'").split())
@@ -374,8 +389,17 @@ def validate_statement(own: Any, quote: Any, claimed: Any, levels: Optional[Sequ
         why = _other_results(own, span, out["result"], levels)
         if why:
             out.update(result=None, agree=False, reason=why)
-    out["hearsay_from"] = hearsay_from(_original_span(own, span)) if span else None
+    who = hearsay_from(_original_span(own, span)) if span else None
+    # Relayed from the inspector / the agency by its role: still attested by
+    # the sender (`relayed_from`). From anyone else: hearsay (`hearsay_from`).
+    # The result itself was read above from the same words, so "the inspector
+    # said it didn't pass" is failed and "... might pass" is unresolved.
+    out["relayed_from"] = who if who and is_authority(who) else None
+    out["hearsay_from"] = who if who and not is_authority(who) else None
     return out
+
+
+RELAYED_NOTE = "relayed from the inspector, not the inspector's own record"
 
 
 def _tokens(text: Any) -> List[str]:
@@ -685,6 +709,7 @@ def gate_read(state: Dict[Tuple[str, str], Dict[str, Any]], gate: str, level: st
             "source": row.get("source"), "levels": list(row.get("levels") or []),
             "shared_with_other_levels": len(row.get("levels") or []) > 1,
             "read_ok": row.get("read_ok"), "hearsay_from": row.get("hearsay_from"),
+            "relayed_from": row.get("relayed_from"),
             "later": later, "settled": not later}
 
 
@@ -725,6 +750,8 @@ def words(read: Dict[str, Any]) -> str:
     bits = [f"{lead}, reported by {read['who']}, not verified"]
     if read.get("hearsay_from"):
         bits.append(f"hearsay: {read['who']} reports that {read['hearsay_from']} said it")
+    if read.get("relayed_from"):
+        bits.append(f"{RELAYED_NOTE} (as said: {read['relayed_from']})")
     if read["status"] == DOCUMENT:
         bits.append(f"the document reads {read['result']}" if read.get("result") else "no result read from the document")
     if read.get("when"):
@@ -752,13 +779,16 @@ def words(read: Dict[str, Any]) -> str:
 
 
 def noted_line(name: Any, inspection: Any, level_labels: Sequence[str], result: str,
-               inspected_on: Optional[str], *, hearsay: Optional[str] = None, date_unknown: bool = False) -> str:
+               inspected_on: Optional[str], *, hearsay: Optional[str] = None, date_unknown: bool = False,
+               relayed: Optional[str] = None) -> str:
     """The one line they get back."""
     where = ", ".join(level_labels)
     when = f", {_day(inspected_on)}" if inspected_on else ""
     line = f"Noted as reported by {name}, not verified: {inspection}, {where}, {result}{when}."
     if hearsay:
         line += f" Kept as hearsay: {name} reports that {hearsay} said it."
+    if relayed:
+        line += f" Noted as {RELAYED_NOTE}."
     if date_unknown:
         line += " The inspection date is unknown: their words don't say which day."
     return line

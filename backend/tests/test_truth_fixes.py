@@ -199,6 +199,59 @@ class HedgesAndHearsay(unittest.TestCase):
         self.assertIn("Kept as hearsay: Ana reports that Joe said it", line)
 
 
+class RelayedFromTheInspector(unittest.TestCase):
+    """Owner ruling 2026-11-10: a result relayed from the inspector or the
+    agency by its role is how a pass is normally passed on: it stays the
+    sender's ATTESTED statement, noted as relayed. Anyone else is hearsay."""
+
+    def test_the_inspector_or_the_agency_by_role_is_attested(self):
+        for own, who in (("the inspector said plumbing rough passed on 3", "the inspector"),
+                         ("DOB said plumbing rough passed on 3", "DOB"),
+                         ("the examiner told me plumbing rough passed on 3", "the examiner"),
+                         ("FDNY said plumbing rough passed on 3", "FDNY"),
+                         ("DEP said plumbing rough passed on 3", "DEP"),
+                         ("the plumbing inspector said plumbing rough passed on 3", "inspector"),
+                         ("the special inspector said plumbing rough passed on 3", "inspector"),
+                         ("the city said plumbing rough passed on 3", "the city")):
+            with self.subTest(own=own):
+                v = IR.validate_statement(own, "plumbing rough passed on 3", "passed")
+                self.assertEqual((v["result"], v["hearsay_from"], v["relayed_from"]), ("passed", None, who))
+
+    def test_anyone_else_is_hearsay(self):
+        for own, who in (("Joe said plumbing rough passed on 3", "Joe"),
+                         ("the plumber said plumbing rough passed on 3", "the plumber"),
+                         ("my foreman told me plumbing rough passed on 3", "my foreman")):
+            with self.subTest(own=own):
+                v = IR.validate_statement(own, "plumbing rough passed on 3", "passed")
+                self.assertEqual((v["hearsay_from"], v["relayed_from"]), (who, None))
+
+    def test_the_relay_is_still_read_for_negation_hedge_and_question(self):
+        failed = IR.validate_statement("the inspector said plumbing rough on 3 didn't pass",
+                                       "plumbing rough on 3 didn't pass", "failed")
+        self.assertEqual((failed["result"], failed["relayed_from"]), ("failed", "the inspector"))
+        self.assertIsNone(IR.validate_statement("the inspector said plumbing rough on 3 didn't pass",
+                                                "plumbing rough on 3 didn't pass", "passed")["result"])
+        might = IR.validate_statement("the inspector said plumbing rough on 3 might pass",
+                                      "plumbing rough on 3 might pass", "passed")
+        self.assertIsNone(might["result"])
+        asked = IR.validate_statement("did the inspector say plumbing rough on 3 passed?",
+                                      "plumbing rough on 3 passed", "passed")
+        self.assertTrue(asked["question"])
+
+    def test_a_relayed_row_is_attested_and_says_so(self):
+        row = _row("passed", _at(9), None, "r", relayed_from="the inspector")
+        items, _ = ES.from_inspections([row], "p")
+        self.assertEqual(items[0]["kind"], "attested")
+        self.assertIn("relayed from the inspector, not the inspector's own record", items[0]["note"])
+        self.assertEqual(E.status(items), "done_attested")
+        self.assertEqual(len(F.items_from_inspection_reports([row], "p")), 1)
+        w = IR.words(IR.gate_read(IR.current_state([row]), IR.PLUMBING_ROUGH, F3))
+        self.assertIn("relayed from the inspector, not the inspector's own record", w)
+        line = IR.noted_line("Ana", "plumbing rough", ["Floor 3"], "passed", None, relayed="the inspector")
+        self.assertIn("relayed from the inspector, not the inspector's own record", line)
+        self.assertNotIn("hearsay", line)
+
+
 # 5 ─────────────────────────────────────────────────────────────────────────
 class SignOffPages(unittest.TestCase):
     FORM = "PLUMBING ROUGH INSPECTION\nFLOOR 3\n[{p}] PASSED\n[{f}] FAILED\nINSPECTOR J. SMITH"

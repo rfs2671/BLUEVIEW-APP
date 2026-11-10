@@ -56928,8 +56928,11 @@ async def _dm_report_inspection(ctx: dict, job: dict, args: dict) -> str:
     row.update(ir.audit(checked))
     if checked.get("hearsay_from"):
         row["hearsay_from"] = checked["hearsay_from"]      # the sender's report of what someone else said
+    if checked.get("relayed_from"):
+        row["relayed_from"] = checked["relayed_from"]      # relayed from the inspector / agency: still attested
     line = ir.noted_line(name, inspection, [work_state.level_label(lv) for lv in levels], result, inspected_on,
-                         hearsay=checked.get("hearsay_from"), date_unknown=date_unknown)
+                         hearsay=checked.get("hearsay_from"), date_unknown=date_unknown,
+                         relayed=checked.get("relayed_from"))
     tail = "" if row["gate"] else " (Kept as said: it matches no inspection step we track, so no step changed.)"
     if ctx.get("dry_run"):
         return f"(eval) Would record. {line}{tail} Answer with that one line."

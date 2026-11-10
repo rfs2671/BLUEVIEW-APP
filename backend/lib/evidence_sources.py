@@ -196,6 +196,7 @@ def from_inspections(rows: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[L
             on=on, by=who, quote=r.get("quote") or None, shared=len(levels) > 1, said_at=said,
             note=_notes(f"reported by {who}, not verified",
                         f"hearsay: {who} reports that {heard} said it" if heard else None,
+                        f"{IR.RELAYED_NOTE} (as said: {_t(r.get('relayed_from'))})" if _t(r.get("relayed_from")) else None,
                         f"as said: {r.get('inspection_as_said')}"
                         if r.get("inspection_as_said") else None,
                         "a sign-off document on file, read and not checked against anything"

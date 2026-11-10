@@ -461,6 +461,20 @@ class AStatement(_Brain):
         self.assertEqual((r["hearsay_from"], r["reporter_name"]), ("Joe", "Ada Admin"))
         self.assertIn("Kept as hearsay: Ada Admin reports that Joe said it", tool)
 
+    def test_relayed_from_the_inspector_is_attested_and_noted(self):
+        tool, _o, _l = self._say("the inspector said plumbing rough passed on floor 3",
+                                 self._good(quote="plumbing rough passed on floor 3", date="", inspector=""))
+        (r,) = self.rows()
+        self.assertEqual((r["status"], r["result"], r.get("hearsay_from"), r["relayed_from"]),
+                         (IR.ATTESTED, "passed", None, "the inspector"))
+        self.assertIn("relayed from the inspector, not the inspector's own record", tool)
+
+    def test_relayed_failure_is_a_failure(self):
+        self._say("the inspector said plumbing rough on floor 3 didn't pass",
+                  self._good(result="failed", quote="plumbing rough on floor 3 didn't pass", date="", inspector=""))
+        (r,) = self.rows()
+        self.assertEqual((r["status"], r["result"]), (IR.ATTESTED, "failed"))
+
     def test_a_correction_is_a_new_row_and_the_old_one_stays(self):
         with _Ctx(db=self.db) as c:
             self._say(self.SAID, self._good(), c=c)
