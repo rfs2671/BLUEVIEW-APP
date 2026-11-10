@@ -58817,7 +58817,15 @@ async def upload_baseline_schedule(project_id: str, file: UploadFile = File(...)
     project = await _bot_project_scope(company_id, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    name = _sanitize_upload_filename(file.filename or "schedule")
+    raw_name = file.filename or "schedule"
+    name = _sanitize_upload_filename(raw_name)
+    # The sanitizer appends ".pdf" to any name not ending in it (it was written
+    # for drawings). A schedule keeps its own extension: a CSV is known only by
+    # it, so "588.csv" became "588.csv.pdf" and every CSV upload was refused.
+    from pathlib import PurePosixPath
+    own = PurePosixPath(str(raw_name).replace("\\", "/")).suffix.lower()
+    if own in SCHEDULE_EXTS and own != ".pdf" and name.lower().endswith(own + ".pdf"):
+        name = name[:-len(".pdf")]
     if not name.lower().endswith(SCHEDULE_EXTS):
         raise HTTPException(status_code=400, detail="Upload an .xer, .xml, .xlsx, .csv or .pdf schedule")
     data = await file.read()

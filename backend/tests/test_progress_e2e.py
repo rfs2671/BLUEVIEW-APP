@@ -516,19 +516,15 @@ class TheLookahead(unittest.TestCase):
 
 class TheScheduleUploadRoute(unittest.TestCase):
 
-    def test_the_route_keeps_a_mangled_name(self):
-        """The XER above went in as "588.xer.pdf": it parsed only because XER is
-        recognised by its content."""
-        self.assertEqual(site().results["draft"]["source_name"], "588.xer.pdf")
+    def test_the_route_keeps_the_files_own_name(self):
+        """The XER above went in as "588.xer" (it used to become "588.xer.pdf")."""
+        self.assertEqual(site().results["draft"]["source_name"], "588.xer")
 
-    @unittest.expectedFailure
     def test_a_csv_schedule_can_be_uploaded(self):
-        """FOUND BY THIS FILE, NOT FIXED HERE (server.py is outside this lane):
-        upload_baseline_schedule runs the name through _sanitize_upload_filename,
-        which appends ".pdf" to any name not ending in it; schedule_import knows
-        XER / XML / XLSX / PDF by their content but a CSV only by its extension,
-        so every CSV upload through the route is refused with a 422. Remove the
-        decorator when the route keeps the file's own extension."""
+        """FOUND BY THIS FILE: upload_baseline_schedule ran the name through
+        _sanitize_upload_filename, which appends ".pdf" to any name not ending in
+        it; a CSV is known only by its extension, so every CSV upload was refused
+        with a 422. The route now keeps a schedule file's own extension."""
         from starlette.datastructures import UploadFile
         with _Ctx(db=fixture_db()):
             out = _run(server.upload_baseline_schedule(
