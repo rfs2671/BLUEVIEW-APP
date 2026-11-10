@@ -109,7 +109,7 @@ from lib import attendance  # noqa: E402
 from lib import project_report  # noqa: E402
 from lib import progress_report  # noqa: E402
 from lib import photo_search  # noqa: E402
-from lib import photo_relations, work_state  # noqa: E402
+from lib import photo_relations, progress_plan, work_state  # noqa: E402
 from lib import report_image  # noqa: E402
 from lib import progress_report_render  # noqa: E402
 from lib import report_regulatory  # noqa: E402
@@ -18590,7 +18590,7 @@ _PROJECT_OWNED_COLLECTIONS = [
     "notifications", "signature_events", "material_requests", "report_emails",
     "reports", "cs_registrations", "safety_staff_registrations",
     "document_annotations", "upload_attempts_log", "project_models",
-    "project_schedules", "sequence_graph", "risk_scores", "daily_panels",
+    "project_schedules", "proposed_sequences", "sequence_graph", "risk_scores", "daily_panels",
     "prediction_models", "prediction_validation_ledger", "eligibility_shadow",
     "permit_renewals", "renewal_alert_sent", "site_devices", "subcontractors",
     # Gate-side failure diagnostics (POST /checkin/gate-failure). Project-scoped
@@ -56517,7 +56517,7 @@ async def _work_state_answer(project: dict, company_id: str, work: str, level: s
     return {"ok": True, "answer": work_state.what_holds(
         nodes[0], token, acts, index, today=today, schedule=src.get("schedule"), flags=flags,
         log_ids={str(lg.get("_id")) for lg in logs}, stop_work=reg.get("swo_active") or [],
-        regulatory_note=note, relations=rel)}
+        regulatory_note=note, relations=rel, logs_from=start)}
 
 
 async def _dm_work_status(ctx: dict, job: dict, args: dict) -> str:
@@ -56531,6 +56531,94 @@ async def _dm_work_status(ctx: dict, job: dict, args: dict) -> str:
         logger.warning(f"[work-state] failed: {type(e).__name__}: {e!r}")
         return "The work records couldn't be read just now."
     return work_state.as_text(got["answer"]) if got["ok"] else got["why"]
+
+
+#: The schedule file's plan against the filed logs, and a PROPOSED sequence
+#: (lib/progress_plan.py). A proposed sequence is the template over this job's
+#: levels; it never goes in project_schedules.
+PROPOSED_SEQUENCES = "proposed_sequences"
+#: A proposal's levels and first dates want more than one window of logs.
+SEQUENCE_LOG_DAYS = 365
+_APPROVE_WORD = re.compile(r"\bapprove[ds]?\b", re.I)
+_APPROVE_DENIED = re.compile(r"\b(?:not|don'?t|do\s+not|never|won'?t|no)\s+(?:\w+\s+){0,2}approve", re.I)
+
+
+async def _schedule_evidence(project: dict, company_id: str, days: int) -> tuple:
+    """(report sources, evidence rows, today, first day read)."""
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(_MemoryZone("America/New_York")).date()
+    start = today - timedelta(days=days - 1)
+    src = await _report_rows(project, company_id, start, today, now)
+    rows = work_state.evidence_rows(progress_report._log_activities(src["logbooks"], start, today))
+    return src, rows, today, start
+
+
+async def _dm_schedule_lookahead(ctx: dict, job: dict, args: dict) -> str:
+    cid = str(ctx["ident"]["company_id"])
+    project = await _bot_project_scope(cid, str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    try:
+        src, rows, today, start = await _schedule_evidence(project, cid, WORK_STATE_DAYS)
+    except Exception as e:
+        logger.warning(f"[lookahead] failed: {type(e).__name__}: {e!r}")
+        return "The schedule records couldn't be read just now."
+    if not src.get("schedule"):
+        return f"No confirmed schedule is on file for {job['label']}, so there is no lookahead to give."
+    try:
+        days = int(args.get("days") or 7)
+    except (TypeError, ValueError):
+        days = 7
+    return progress_plan.lookahead_text(src["schedule"], rows, today=today, days=days, logs_from=start)
+
+
+async def _dm_proposed_sequence(ctx: dict, job: dict, args: dict) -> str:
+    """Show the PROPOSED sequence, or approve the one already shown. Approval
+    needs their own latest message to say so, whatever the model passed."""
+    ident = ctx["ident"]
+    cid, pid = str(ident["company_id"]), str(job["id"])
+    project = await _bot_project_scope(cid, pid)
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    try:
+        src, rows, _today, _start = await _schedule_evidence(project, cid, SEQUENCE_LOG_DAYS)
+    except Exception as e:
+        logger.warning(f"[proposed-sequence] failed: {type(e).__name__}: {e!r}")
+        return "The work records couldn't be read just now."
+    if src.get("schedule"):
+        return (f"{job['label']} has a confirmed schedule, so no PROPOSED sequence applies: "
+                "the file is the job's plan.")
+    uid, role = str(ident.get("user_id") or ""), ident.get("role")
+    name = (ident.get("user") or {}).get("name") or ident.get("name") or ""
+    now, key = datetime.now(timezone.utc), f"{cid}:{pid}"
+    coll, cf = db[PROPOSED_SEQUENCES], _company_id_filter(cid)
+    said = str(ctx.get("text") or "")
+    approving = bool(args.get("approve")) and bool(_APPROVE_WORD.search(said)) and not _APPROVE_DENIED.search(said)
+    stored = await coll.find_one({"_id": key, "company_id": cf})
+    if stored and stored.get("status") == "approved":
+        return progress_plan.proposed_text(stored, job["label"])
+    if approving and stored:
+        if ctx.get("dry_run"):
+            return "(eval) Would approve the PROPOSED sequence for " + job["label"] + "."
+        await coll.update_one(
+            {"_id": key, "company_id": cf, "status": "proposed"},
+            {"$set": {"status": "approved", "approved_by": uid, "approved_by_name": name, "approved_at": now, "updated_at": now},
+             "$push": {"history": progress_plan.history_entry("approved", uid, role, now)}})
+        return progress_plan.proposed_text(await coll.find_one({"_id": key, "company_id": cf}), job["label"])
+    plan = progress_plan.propose_sequence(rows)
+    if ctx.get("dry_run") or not plan["levels"]:
+        return progress_plan.proposed_text({**plan, "status": "proposed"}, job["label"])
+    if stored and stored.get("levels") != plan["levels"]:
+        await coll.update_one(
+            {"_id": key, "company_id": cf, "status": "proposed"},
+            {"$set": {"levels": plan["levels"], "graph_version": plan["graph_version"], "updated_at": now},
+             "$push": {"history": progress_plan.history_entry("rebuilt", uid, role, now, replaced=stored.get("levels"))}})
+    elif not stored:
+        await coll.update_one({"_id": key}, {"$setOnInsert": {
+            "company_id": cid, "project_id": pid, "status": "proposed", "levels": plan["levels"],
+            "graph_version": plan["graph_version"], "created_by": uid, "created_at": now, "updated_at": now,
+            "history": [progress_plan.history_entry("proposed", uid, role, now)]}}, upsert=True)
+    return progress_plan.proposed_text({**plan, "status": "proposed"}, job["label"])
 
 
 async def _photo_compare_call(raw_a: bytes, raw_b: bytes, project_id: Any) -> Optional[dict]:
@@ -62768,6 +62856,20 @@ _DM_BRAIN_EXTRA_TOOLS = [
          "work": {"type": "string", "description": "The work, in their words: 'drywall', 'electric rough', 'framing'."},
          "level": {"type": "string", "description": "One level: '3', 'floor 3', 'roof', 'cellar'."}},
          "required": ["work", "level"]}},
+    {"name": "schedule_lookahead", "description": (
+        "What the job's CONFIRMED schedule file plans in the next 7 or 14 days, beside what the logs report, and "
+        "activities past their planned finish with no report. From the file's dates only."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "days": {"type": "integer", "description": "7 or 14. Default 7."}},
+         "required": []}},
+    {"name": "proposed_sequence", "description": (
+        "A PROPOSED order of work per level, for a job with no confirmed schedule: the standard sequence over the "
+        "levels the logs name. Shows it, or approves the one already shown."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "approve": {"type": "boolean", "description": "True ONLY when their latest message says to approve it."}},
+         "required": []}},
     {"name": "find_photos", "description": (
         "Search a job's daily-log photos by what they show: 'front of the building', 'roof', "
         "'scaffold', 'Arkon framing'. Returns each match's id, date, sub and a description of the "
@@ -63175,7 +63277,8 @@ async def _dm_do_set_trade(ident: dict, p: dict):
 #: Brain tools that read one job: the job names the account they act as.
 _DM_BRAIN_ONE_JOB = _DM_BRAIN_JOB_TOOLS + ("headcount", "dot_status", "send_sheet",
                                            "send_plan_file", "sheet_info",
-                                           "find_photos", "send_photos", "work_status")
+                                           "find_photos", "send_photos", "work_status",
+                                           "schedule_lookahead", "proposed_sequence")
 
 
 async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
@@ -63297,7 +63400,8 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
     now = datetime.now(timezone.utc)
     if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
                                                "send_plan_file", "sheet_info",
-                                               "find_photos", "send_photos", "work_status"):
+                                               "find_photos", "send_photos", "work_status",
+                                               "schedule_lookahead", "proposed_sequence"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
             return why
@@ -63337,6 +63441,10 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
             return f"Found {label} but the image couldn't be sent (may still be rendering)."
         if name == "work_status":
             return await _dm_work_status(ctx, job, args)
+        if name == "schedule_lookahead":
+            return await _dm_schedule_lookahead(ctx, job, args)
+        if name == "proposed_sequence":
+            return await _dm_proposed_sequence(ctx, job, args)
         if name == "find_photos":
             return await _dm_find_photos(ctx, job, args)
         if name == "send_photos":

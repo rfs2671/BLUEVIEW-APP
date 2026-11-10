@@ -32,8 +32,25 @@ The document:
      "activities": [{"id", "wbs", "name", "level", "kind", "baseline_start",
                      "baseline_finish", "current_start", "current_finish",
                      "actual_start", "actual_finish", "percent_complete",
-                     "duration_days"}, ...],
+                     "duration_days", "predecessors"}, ...],
      "warnings": [str, ...]}
+
+`predecessors` is the file's own logic, as links INTO this activity:
+[{"id": <an activity id in this document>, "type": "FS"|"SS"|"FF"|"SF"|None,
+"lag": number|None, "lag_unit": "days"|"edays"|"percent"|None}]. "days" are
+working days, "edays" calendar days; a None type or lag means the file did not
+state one, and a number whose unit the file left out has a None unit. None of
+those is ever filled in with a default.
+
+  None   the file carries no logic at all (or is a document imported before
+         links were kept: the key is absent). UNKNOWN, never "no dependencies".
+  []     the file carries logic and lists no predecessor for this activity.
+
+A link is kept only if its id resolves to exactly one activity in this file. A
+link to an id that is missing, used by two different rows, the activity itself,
+in another project, or unreadable is left out and counted in `warnings`, and the
+activity carries `predecessors_unresolved: n`, because a short list is then not
+the whole list. A summary row with no links of its own stays None.
 
 `level` is 0 for the shallowest row in the file (a project summary row, when
 the file has one, is level 0) and counts outline depth below it. `kind` is
@@ -351,11 +368,12 @@ def _truthy(v: Any) -> Optional[bool]:
 
 
 def _raw(**kw: Any) -> Dict[str, Any]:
-    """An activity before normalisation; every field the file lacks is None."""
+    """An activity before normalisation; every field the file lacks is None.
+    `ref` is the key other rows' links name it by; `preds` the links as read."""
     base: Dict[str, Any] = {
         "id": None, "wbs": None, "name": "", "level": 0, "hint": None,
         "bs": None, "bf": None, "cs": None, "cf": None, "as_": None, "af": None,
-        "pct": None, "dur": None,
+        "pct": None, "dur": None, "ref": None, "preds": None,
     }  # fmt: skip
     base.update(kw)
     return base
@@ -364,6 +382,44 @@ def _raw(**kw: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Normalisation shared by every format
 # ---------------------------------------------------------------------------
+
+
+def _resolve_links(kept: List[Tuple[Dict[str, Any], Dict[str, Any]]], warnings: List[str]) -> None:
+    """Sets each activity's `predecessors` (see the module docstring)."""
+    if not any(raw["preds"] for raw, _rec in kept):
+        for _raw_row, rec in kept:
+            rec["predecessors"] = None
+        return
+    index: Dict[str, List[Dict[str, Any]]] = {}
+    for raw, rec in kept:
+        ref = _clean(raw["ref"])[:100]
+        if ref:
+            index.setdefault(ref, []).append(rec)
+    missed: List[str] = []
+    for raw, rec in kept:
+        out: Dict[str, Dict[str, Any]] = {}
+        lost = 0
+        links = raw["preds"] or []
+        for link in links[:MAX_LINKS_PER_ACTIVITY]:
+            ref = _clean(link.get("ref"))[:100]
+            hits = index.get(ref) or []
+            if len(hits) != 1 or hits[0] is rec:
+                lost += 1
+                missed.append(ref or "(no id)")
+                continue
+            out.setdefault(hits[0]["id"], {"id": hits[0]["id"], "type": link.get("type"),
+                                           "lag": link.get("lag"), "lag_unit": link.get("lag_unit")})
+        extra = max(0, len(links) - MAX_LINKS_PER_ACTIVITY)
+        lost += extra
+        missed.extend(["(over the limit)"] * extra)
+        rec["predecessors"] = list(out.values()) if out or lost or rec["kind"] != "summary" else None
+        if lost:
+            rec["predecessors_unresolved"] = lost
+    if missed:
+        warnings.append(
+            f"{len(missed)} predecessor links could not be matched to exactly one activity in this "
+            f"file and were left out (e.g. {', '.join(missed[:3])})."
+        )
 
 
 def _finish(
@@ -388,7 +444,8 @@ def _finish(
         shift = 0
 
     acts: List[Dict[str, Any]] = []
-    seen: Dict[str, Dict[str, Any]] = {}
+    seen: Dict[str, Tuple[Dict[str, Any], Any]] = {}
+    kept: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     synth_ids = dups = dropped = 0
     afin_low: List[str] = []
     for i, r in enumerate(raws, 1):
@@ -428,14 +485,16 @@ def _finish(
             "duration_days": r["dur"],
         }
         if rid in seen:
-            if seen[rid] == rec:
+            if seen[rid] == (rec, r["preds"]):
                 dropped += 1
                 continue
             dups += 1
         else:
-            seen[rid] = rec
+            seen[rid] = (dict(rec), r["preds"])
         acts.append(rec)
+        kept.append((r, rec))
 
+    _resolve_links(kept, warnings)
     if synth_ids:
         warnings.append(
             f"{synth_ids} rows had no id; they were numbered by their row (row<n>)."
@@ -503,6 +562,27 @@ def _xer_tables(text: str) -> Dict[str, List[Dict[str, str]]]:
     return tables
 
 
+def _xer_links(rows: List[Dict[str, str]], tasks: List[Dict[str, str]],
+               hrs: Dict[str, float]) -> Dict[str, List[Dict[str, Any]]]:
+    """{task_id: links into it} from TASKPRED. The ids there are P6's internal
+    task_id, NOT the task_code the document calls an activity. The lag is read
+    on the successor's own calendar, like its duration."""
+    mine = {r.get("task_id", ""): r for r in tasks}
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for p in rows:
+        task = mine.get(p.get("task_id", ""))
+        if task is None:
+            continue
+        lag = _num(p.get("lag_hr_cnt"))
+        out.setdefault(p.get("task_id", ""), []).append({
+            "ref": p.get("pred_task_id"),
+            "type": {"PR_FS": "FS", "PR_SS": "SS", "PR_FF": "FF", "PR_SF": "SF"}.get(_clean(p.get("pred_type"))),
+            "lag": round(lag / hrs.get(task.get("clndr_id", ""), 8.0), 4) if lag is not None else None,
+            "lag_unit": "days" if lag is not None else None,
+        })  # fmt: skip
+    return out
+
+
 def _parse_xer(name: str, data: bytes, sha: str) -> Dict[str, Any]:
     t = _xer_tables(_decode_text(data))
     tasks_all = t.get("TASK") or []
@@ -529,6 +609,7 @@ def _parse_xer(name: str, data: bytes, sha: str) -> Dict[str, Any]:
         if h and h > 0:
             hrs[c.get("clndr_id", "")] = h
 
+    links = _xer_links(t.get("TASKPRED") or [], tasks, hrs)
     data_date = _iso_dt(proj.get("last_recalc_date")) if proj else None
     if data_date is None:
         warnings.append("The file does not state a data date (PROJECT.last_recalc_date).")
@@ -569,6 +650,7 @@ def _parse_xer(name: str, data: bytes, sha: str) -> Dict[str, Any]:
             bs=bs, bf=bf, cs=cs, cf=cf,
             as_=_iso_dt(r.get("act_start_date")), af=_iso_dt(r.get("act_end_date")),
             pct=pct, dur=round(hours / h, 4) if hours is not None and hours >= 0 else None,
+            ref=r.get("task_id"), preds=links.get(r.get("task_id", "")),
         )  # fmt: skip
         wid = r.get("wbs_id", "")
         (by_wbs.setdefault(wid, []) if wid in wbs else orphans).append(rec)
@@ -660,6 +742,31 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+#: MS Project's LagFormat codes that are elapsed time and percent. Every other
+#: format is working time. LinkLag itself is tenths of a minute.
+_MSP_LAG_ELAPSED = {"4", "6", "8", "10", "12", "36", "38", "40", "42", "44"}
+_MSP_LAG_PERCENT = {"19", "20", "53", "54"}
+
+
+def _msp_link(el: ET.Element, minutes_per_day: float) -> Dict[str, Any]:
+    """One <PredecessorLink>. A cross-project link names a UID in ANOTHER file:
+    it is left to fail, not matched against this file's UIDs."""
+    x = {_local(c.tag): _clean(c.text) for c in el}
+    link: Dict[str, Any] = {
+        "ref": None if x.get("CrossProject") == "1" else x.get("PredecessorUID"),
+        "type": {"0": "FF", "1": "FS", "2": "SF", "3": "SS"}.get(x.get("Type", "")),
+        "lag": None, "lag_unit": None,
+    }  # fmt: skip
+    tenths, fmt = _num(x.get("LinkLag")), x.get("LagFormat", "")
+    if fmt in _MSP_LAG_PERCENT:
+        link["lag_unit"] = "percent"  # its scale in this field is not documented: no number is kept
+    elif tenths is not None and fmt in _MSP_LAG_ELAPSED:
+        link["lag"], link["lag_unit"] = round(tenths / 10.0 / 1440.0, 4), "edays"
+    elif tenths is not None:
+        link["lag"], link["lag_unit"] = round(tenths / 10.0 / minutes_per_day, 4), "days"
+    return link
+
+
 def _parse_msp(name: str, data: bytes, sha: str) -> Dict[str, Any]:
     root = _safe_xml_root(data)
     if _local(root.tag) != "Project" or "schemas.microsoft.com/project" not in root.tag:
@@ -697,12 +804,15 @@ def _parse_msp(name: str, data: bytes, sha: str) -> Dict[str, Any]:
             continue
         f: Dict[str, str] = {}
         base: Dict[str, Any] = {}
+        preds: List[Dict[str, Any]] = []
         for c in t:
             ln = _local(c.tag)
             if ln == "Baseline":
                 bf = {_local(x.tag): _clean(x.text) for x in c}
                 if bf.get("Number") == "0":
                     base = bf
+            elif ln == "PredecessorLink":
+                preds.append(_msp_link(c, mpd if mpd > 0 else 480.0))
             elif len(c) == 0:
                 f[ln] = _clean(c.text)
         if f.get("Null") == "1" or not f.get("Name"):
@@ -722,6 +832,7 @@ def _parse_msp(name: str, data: bytes, sha: str) -> Dict[str, Any]:
             cs=_iso_dt(f.get("Start")), cf=_iso_dt(f.get("Finish")),
             as_=_iso_dt(f.get("ActualStart")), af=_iso_dt(f.get("ActualFinish")),
             pct=pct, dur=_dur(f["Duration"]) if f.get("Duration") else None,
+            ref=f.get("UID"), preds=preds or None,
         ))  # fmt: skip
         if len(raws) > MAX_ACTIVITIES:
             break
@@ -745,6 +856,9 @@ _NOISE = {
     "predecessor", "predecessors", "successor", "successors", "resource", "resources",
     "cost", "costs", "constraint", "deadline",
 }  # fmt: skip
+_PRED_H = {"predecessors", "predecessor", "preds", "pred", "predecessor s", "predecessor id", "predecessor ids",
+           "predecessors id", "predecessor activity", "predecessor activities", "predecessor list"}  # fmt: skip
+_PRED_UID_H = {"unique id predecessors", "uid predecessors", "predecessors unique id", "predecessor uid"}
 _QUALIFIERS = {"planned", "scheduled", "schedule", "current", "forecast", "early", "plan", "date", "revised"}
 _NAME_H = {"task name", "activity name", "name", "activity", "description", "task", "title",
            "activity description", "task description", "item name", "work item"}  # fmt: skip
@@ -756,12 +870,20 @@ _DATE_FIELDS = {"baseline_start", "baseline_finish", "current_start", "current_f
                 "actual_start", "actual_finish"}  # fmt: skip
 
 
+def _norm_header(header: Any) -> str:
+    h = re.sub(r"[^a-z0-9%#\s]", " ", _clean(header).lower())
+    return re.sub(r"\s+", " ", h).strip()
+
+
 def _classify(header: Any) -> Optional[str]:
     """Which field a column header names, or None. Strict: no fuzzy guessing."""
-    h = re.sub(r"[^a-z0-9%#\s]", " ", _clean(header).lower())
-    h = re.sub(r"\s+", " ", h).strip()
+    h = _norm_header(header)
     if not h:
         return None
+    if h in _PRED_H:
+        return "predecessors"
+    if h in _PRED_UID_H:
+        return "predecessors_uid"
     w = set(h.split())
     if w & _NOISE:
         return None
@@ -799,6 +921,63 @@ def _classify(header: Any) -> Optional[str]:
     if h in _NAME_H:
         return "name"
     return None
+
+
+_LAG_WORK = {"d": 1.0, "dy": 1.0, "dys": 1.0, "day": 1.0, "days": 1.0, "w": 5.0, "wk": 5.0, "wks": 5.0, "week": 5.0,
+             "weeks": 5.0, "mo": 20.0, "mon": 20.0, "mons": 20.0, "month": 20.0, "months": 20.0,
+             "h": 0.125, "hr": 0.125, "hrs": 0.125, "hour": 0.125, "hours": 0.125,
+             "m": 1 / 480, "min": 1 / 480, "mins": 1 / 480, "minute": 1 / 480, "minutes": 1 / 480}  # fmt: skip
+_LAG_ELAPSED = {"ed": 1.0, "eday": 1.0, "edays": 1.0, "ew": 7.0, "ewk": 7.0, "eweek": 7.0, "eweeks": 7.0,
+                "emo": 30.0, "emon": 30.0, "emonth": 30.0, "emonths": 30.0,
+                "eh": 1 / 24, "ehr": 1 / 24, "ehrs": 1 / 24, "ehour": 1 / 24, "ehours": 1 / 24,
+                "em": 1 / 1440, "emin": 1 / 1440, "emins": 1 / 1440}  # fmt: skip
+#: "12FS+3d", "A100: SS", "A100 FF 2 days", "12-1w". A number is lag only
+#: after a sign or a link type: "12" is an id, not "1" with a lag of 2.
+_LINK_TOKEN = re.compile(
+    r"^(.+?)[\s:]*(?:(FS|SS|FF|SF)(?:\s*([+-]?)\s*(\d+(?:\.\d+)?)\s*([a-z%]*))?"
+    r"|([+-])\s*(\d+(?:\.\d+)?)\s*([a-z%]*))?$",
+    re.I,
+)
+MAX_LINKS_PER_ACTIVITY = 50
+
+
+def _lag_value(sign: str, number: str, unit: str) -> Tuple[Optional[float], Optional[str]]:
+    """(value, unit). A unit the file left out stays None; an unreadable unit
+    loses the lag and keeps the link."""
+    value = float(number) * (-1.0 if sign == "-" else 1.0)
+    unit = unit.lower()
+    if not unit:
+        return value, None
+    if unit == "%":
+        return value, "percent"
+    if unit in _LAG_WORK:
+        return round(value * _LAG_WORK[unit], 4), "days"
+    if unit in _LAG_ELAPSED:
+        return round(value * _LAG_ELAPSED[unit], 4), "edays"
+    return None, None
+
+
+def _table_links(cell_text: str, refs: set, dotted_wbs: bool) -> List[Dict[str, Any]]:
+    """The links one Predecessors cell states. The whole token is tried as an
+    id first, because an id may look like a link ("A-100", "AFS")."""
+    out: List[Dict[str, Any]] = []
+    for token in re.split(r"[,;]", cell_text):
+        token = token.strip()
+        if not token:
+            continue
+        link: Dict[str, Any] = {"ref": token, "type": None, "lag": None, "lag_unit": None}
+        m = None if token in refs else _LINK_TOKEN.match(token)
+        if m:
+            link["ref"] = m.group(1).strip()
+            if m.group(2):
+                link["type"] = m.group(2).upper()
+            sign, number, unit = (m.group(3), m.group(4), m.group(5)) if m.group(4) else (m.group(6), m.group(7), m.group(8))
+            if number:
+                link["lag"], link["lag_unit"] = _lag_value(sign or "+", number, unit or "")
+        if dotted_wbs and "." not in link["ref"]:
+            link["ref"] = None  # "5" beside WBS numbers like 1.2.3 is a row number, not a WBS
+        out.append(link)
+    return out
 
 
 def _map_columns(row: List[Any]) -> Dict[str, int]:
@@ -852,6 +1031,7 @@ def _table_to_raws(
     indents: Optional[List[List[float]]],
     *,
     need_both_dates: bool,
+    read_links: bool = True,
 ) -> Optional[Tuple[List[Dict[str, Any]], List[str], Optional[date], Optional[str], int]]:
     """(raws, warnings, data_date, project_name, rows_with_dates) or None (no header)."""
     best: Optional[Tuple[int, Dict[str, int]]] = None
@@ -866,6 +1046,8 @@ def _table_to_raws(
     if best is None:
         return None
     hi, cols = best
+    if not read_links:
+        cols = {k: v for k, v in cols.items() if k not in ("predecessors", "predecessors_uid")}
     warnings: List[str] = []
     header = rows[hi]
     unknown = [_clean(c) for j, c in enumerate(header) if _clean(c) and j not in cols.values()]
@@ -890,8 +1072,22 @@ def _table_to_raws(
         c = cols.get(f)
         return r[c] if c is not None and c < len(r) else None
 
+    # What the links are written in. MS Project's "Predecessors" names the ID
+    # column and "Unique ID Predecessors" the Unique ID: read against the
+    # wrong one, every number would still find a row. Plain Predecessors beside
+    # only a Unique ID column is therefore not read.
+    uid_names = {"uid", "unique id"}
+    norms = [_norm_header(c) for c in header]
+    id_col = next((j for j, h in enumerate(norms) if h in _ID_H - uid_names), None)
+    uid_col = next((j for j, h in enumerate(norms) if h in uid_names), None)
+    pred_key = "predecessors_uid" if "predecessors_uid" in cols else "predecessors"
+    ref_col = uid_col if pred_key == "predecessors_uid" else id_col
+    if pred_key == "predecessors" and ref_col is None and "id" not in cols and "wbs" in cols:
+        ref_col = cols["wbs"]  # no id column: the WBS number is the file's own identifier (below)
+
     name_hdr = _clean(header[cols["name"]]).lower()
     raws: List[Dict[str, Any]] = []
+    link_cells: List[str] = []
     indent_of: List[float] = []
     outline: List[Optional[int]] = []
     bad_dates: Dict[str, int] = {}
@@ -909,6 +1105,9 @@ def _table_to_raws(
         if nm.lower() == name_hdr:  # a header repeated on each PDF page / print block
             continue
         rec = _raw(name=nm, id=_clean(cell(r, "id")) or None, wbs=_clean(cell(r, "wbs")) or None)
+        if ref_col is not None and ref_col < len(r):
+            rec["ref"] = _clean(r[ref_col]) or None
+        link_cells.append(_clean(cell(r, pred_key)))
         for f, key in (("baseline_start", "bs"), ("baseline_finish", "bf"), ("current_start", "cs"),
                        ("current_finish", "cf"), ("actual_start", "as_"), ("actual_finish", "af")):  # fmt: skip
             v = cell(r, f)
@@ -963,6 +1162,12 @@ def _table_to_raws(
         warnings.append(f"{bad_dur} duration values could not be read and were ignored.")
     if no_name:
         warnings.append(f"{no_name} rows without an activity name were ignored.")
+
+    if pred_key in cols:
+        refs = {rec["ref"] for rec in raws if rec["ref"]}
+        dotted = ref_col is not None and ref_col == cols.get("wbs") and any("." in x for x in refs)
+        for rec, text in zip(raws, link_cells):
+            rec["preds"] = _table_links(text, refs, dotted) or None
 
     # Levels: outline column > indentation > dotted WBS depth.
     if any(o is not None for o in outline):
@@ -1122,7 +1327,8 @@ def _parse_pdf(name: str, data: bytes, sha: str) -> Dict[str, Any]:
                 continue
             if len(rows) > MAX_ROWS:
                 rows = rows[:MAX_ROWS]
-            r = _table_to_raws(rows, None, need_both_dates=True)
+            # Links are not read from a PDF: text extraction garbles a cell like "12FS+3d".
+            r = _table_to_raws(rows, None, need_both_dates=True, read_links=False)
             if r is not None and r[4] >= MIN_PDF_ROWS:
                 res = r
                 break

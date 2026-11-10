@@ -45,6 +45,10 @@ import find_reads_without_writers as sweep  # noqa: E402
 # rather than dead; the list is a ratchet, not an indictment.
 BASELINE = {
     ("checkins", "created_by"),
+    # Written: _schedule_store_draft inserts `status` through
+    # db[PROJECT_SCHEDULES], a subscript the sweep cannot see. The read is
+    # engine.load_latest_schedule keeping imported baselines out.
+    ("project_schedules", "status"),
     # THE ONE THIS EXISTS FOR. Accepted by DailyLogCreate, dumped into the
     # insert, filtered on by live_mutation / defcon / peer_cohort / the
     # violation baseline aggregator, and sent by no client that has ever
