@@ -57,6 +57,7 @@ class _Coll(AsyncFakeCollection):
         return sorted({d.get(key) for d in self.docs if matches(d, flt) and d.get(key) is not None})
 
     async def update_one(self, flt, update, upsert=False, **kw):
+        self.__dict__.setdefault("updates", []).append(copy.deepcopy(update))
         hit = [d for d in self.docs if matches(d, flt)]
         if not hit and upsert:
             self.docs.append({k: v for k, v in flt.items() if not isinstance(v, dict)})
@@ -236,7 +237,7 @@ class Outage(unittest.TestCase):
         self.assertIn("HTTP 503", w["last_error"])
         f = cw.freshness(db.source_sync_state.docs[0], now=NOW)
         self.assertFalse(f["can_say_no_new_complaints"])
-        self.assertEqual(f["sources"][0]["status"], "never")
+        self.assertEqual(f["sources"][0]["status"], "failing")
 
 
 class Off(unittest.TestCase):
@@ -566,3 +567,74 @@ class TheCardReadsDobsOwnWords(unittest.TestCase):
                          "Nov 10, 11:22 AM: NO ROOF PROTECTION, NO WINDOW PROTECTION NO DOCS. Not inspected yet.")
         ecb = next(d for d in db.dob_logs.docs if d["raw_dob_id"] == "39556260N")
         self.assertIn("ECB/OATH summons 39556260N (Class - 2), issued 2026-07-07", ecb["ai_summary"])
+
+
+class ShadowWritesNothingAnyOtherJobReads(unittest.TestCase):
+    """No scheduled job can act on shadow's output if shadow writes nothing any
+    other job reads. Both halves pinned: a census of everything a shadow pass
+    writes, and a census of every reader of what it may write."""
+
+    def test_a_shadow_pass_writes_only_its_ledger_and_its_own_watch_state(self):
+        db, emails = _seed(), []
+        _run(db, _BIS(), "shadow", emails=emails)
+        wrote = {name: c for name, c in db._c.items() if c.writes or c.__dict__.get("updates")}
+        self.assertEqual(sorted(wrote), ["complaint_watch_ledger", "source_sync_state"])
+        self.assertTrue(all(w[0] == "insert" for w in db.complaint_watch_ledger.writes))
+        keys = {k for u in db.source_sync_state.updates for op in u.values() for k in op}
+        self.assertTrue(all(k == "company_id" or k.startswith("watch.") for k in keys), keys)
+        self.assertNotIn("watch.bis_complaints.lot_bins", keys)
+        self.assertEqual(emails, [])
+
+    def test_nothing_but_the_watch_reads_what_shadow_writes(self):
+        """Every reader of complaint_watch_ledger and of source_sync_state.watch
+        in the backend. lot_bins (read by the Open Data scan) is written only
+        in live -- pinned above."""
+        import re as _re
+        backend = Path(server.__file__).parent
+        readers = {}
+        for f in [backend / "server.py", *sorted((backend / "lib").glob("*.py"))]:
+            for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+                if _re.search(r'COMPLAINT_WATCH_LEDGER\]|complaint_watch_ledger|get\("watch"\)', line) \
+                        and "insert_one" not in line and "delete_one" not in line \
+                        and not line.lstrip().startswith("#"):
+                    readers.setdefault(f.name, []).append(line.strip()[:70])
+        joined = "\n".join(f"{k}: {v}" for k, vs in readers.items() for v in vs)
+        self.assertEqual(sorted(readers), ["complaint_watch.py", "server.py"], joined)
+        # In server.py: the watch's own reads + the Open Data scan's lot_bins read.
+        srv = readers["server.py"]
+        self.assertTrue(all(("find_one" in r) or ("COMPLAINT_WATCH_LEDGER =" in r) or ("lot_bins" in r)
+                            or ("bis_ecb" in r) or ("bis_complaints" in r) for r in srv), joined)
+
+
+class EverySourceReportsItsOwnState(unittest.TestCase):
+    """546's real source_sync_state shape (production probe 2026-11-10), plus
+    the per-dataset rows: one failing dataset shows as itself."""
+
+    def test_each_source_and_dataset_has_its_own_status(self):
+        from lib import complaint_watch as cw2
+        now = NOW
+        ok = now - timedelta(minutes=10)
+        state = {"sources": {s: {"synced_at": ok} for s in (
+                    "dot_oath", "dot_permits", "dob_cofo", "dob_complaints", "dob_job_filings",
+                    "dob_permits", "dob_boiler", "dob_elevator", "dob_violations")},
+                 "datasets": {"6bgk-3dad": {"synced_at": ok}, "855j-jady": {"synced_at": ok},
+                              "3h2n-5cm9": {"synced_at": ok},
+                              "3usq-5cid": {"last_error_at": ok},
+                              "xubg-57si": {"synced_at": now - timedelta(hours=3)}},
+                 "watch": {"bis_complaints": {"last_success_at": ok, "last_attempt_at": ok, "mode": "live"},
+                           "bis_ecb": {"last_attempt_at": ok, "last_error": "BIN 3255205: HTTP 503",
+                                       "mode": "live"}}}
+        f = cw2.freshness(state, now=now)
+        by = {r["source"]: r for r in f["sources"]}
+        self.assertEqual(by["bis_complaints"]["status"], "fresh")
+        self.assertEqual((by["bis_ecb"]["status"], by["bis_ecb"]["last_error"]), ("failing", "BIN 3255205: HTTP 503"))
+        self.assertEqual(by["dob_violations"]["status"], "partial")
+        self.assertIn("3usq-5cid", by["dob_violations"]["last_error"])
+        self.assertEqual(by["dataset:3usq-5cid"]["status"], "failing")
+        self.assertEqual(by["dataset:6bgk-3dad"]["status"], "fresh")
+        self.assertEqual(by["dataset:xubg-57si"]["status"], "stale")
+        for s in ("dob_complaints", "dob_permits", "dob_job_filings", "dob_cofo", "dob_boiler",
+                  "dob_elevator", "dot_oath", "dot_permits"):
+            self.assertEqual(by[s]["status"], "fresh", s)
+        self.assertTrue(f["can_say_no_new_complaints"])
+        self.assertFalse(f["can_say_no_new_summonses"])

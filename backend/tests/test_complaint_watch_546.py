@@ -237,7 +237,7 @@ class Freshness(unittest.TestCase):
         f = cw.freshness({"watch": {"bis_complaints": {"last_attempt_at": NOW, "last_error": "BIN 3255205: HTTP 503",
                                                       "last_success_at": NOW - timedelta(hours=3)}}}, now=NOW)
         row = f["sources"][0]
-        self.assertEqual((row["status"], row["last_error"]), ("stale", "BIN 3255205: HTTP 503"))
+        self.assertEqual((row["status"], row["last_error"]), ("failing", "BIN 3255205: HTTP 503"))
         self.assertFalse(f["can_say_no_new_complaints"])
 
 

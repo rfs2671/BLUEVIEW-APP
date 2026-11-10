@@ -8,7 +8,7 @@
   "total": 2,
   "logs": [
    {
-    "id": "6af3a2056cbb4f30437c03b6",
+    "id": "6af3ad3972d9182efb4a95dd",
     "project_id": "p546",
     "company_id": "co_blueview",
     "nyc_bin": "3255205",
@@ -17,7 +17,7 @@
     "ai_summary": "DOB complaint 3A88492 (8A Construction Safety Compliance (CSC) Action) received on Nov 10, 11:25 AM: FENCE CONTRARY, HOUSEKEEPING, FIRE EXTINGUISHERS,INFO PANELSUNSAFE CONDITIONS. Not inspected yet.",
     "severity": "Action",
     "next_action": "Correct the cited conditions before the DOB inspector comes. A complaint is not a violation.",
-    "detected_at": "2026-11-10T23:00:21.754128Z",
+    "detected_at": "2026-11-10T23:48:09.771944Z",
     "permit_type": null,
     "permit_subtype": null,
     "permit_status": null,
@@ -78,7 +78,7 @@
     "is_read": false
    },
    {
-    "id": "6af3a2056cbb4f30437c03b8",
+    "id": "6af3ad3972d9182efb4a95df",
     "project_id": "p546",
     "company_id": "co_blueview",
     "nyc_bin": "3255205",
@@ -87,7 +87,7 @@
     "ai_summary": "DOB complaint 3A88489 (8A Construction Safety Compliance (CSC) Action) received on Nov 10, 11:22 AM: NO ROOF PROTECTION, NO WINDOW PROTECTION NO DOCS. Not inspected yet.",
     "severity": "Action",
     "next_action": "Correct the cited conditions before the DOB inspector comes. A complaint is not a violation.",
-    "detected_at": "2026-11-10T23:00:21.754128Z",
+    "detected_at": "2026-11-10T23:48:09.771944Z",
     "permit_type": null,
     "permit_subtype": null,
     "permit_status": null,
@@ -154,34 +154,28 @@
    {
     "source": "bis_complaints",
     "label": "DOB BIS complaints (live)",
-    "last_success_at": "2026-11-10T23:00:21.754128+00:00",
-    "last_attempt_at": "2026-11-10T23:00:21.754128+00:00",
+    "mode": "live",
+    "last_success_at": "2026-11-10T23:48:09.771944+00:00",
+    "last_attempt_at": "2026-11-10T23:48:09.771944+00:00",
+    "last_error": null,
+    "status": "fresh"
+   },
+   {
+    "source": "bis_ecb",
+    "label": "ECB/OATH summonses on DOB BIS (live)",
+    "mode": "live",
+    "last_success_at": "2026-11-10T23:48:09.771944+00:00",
+    "last_attempt_at": "2026-11-10T23:48:09.771944+00:00",
     "last_error": null,
     "status": "fresh"
    },
    {
     "source": "dob_complaints",
-    "label": "NYC Open Data complaints (daily)",
+    "label": "DOB complaints (NYC Open Data, daily)",
     "last_success_at": "2026-11-10T19:34:00+00:00",
     "last_attempt_at": null,
     "last_error": null,
     "status": "stale"
-   },
-   {
-    "source": "dob_violations",
-    "label": "DOB / ECB violations (NYC Open Data, daily)",
-    "last_success_at": null,
-    "last_attempt_at": null,
-    "last_error": null,
-    "status": "never"
-   },
-   {
-    "source": "bis_ecb",
-    "label": "ECB/OATH summonses on DOB BIS (live)",
-    "last_success_at": "2026-11-10T23:00:21.754128+00:00",
-    "last_attempt_at": "2026-11-10T23:00:21.754128+00:00",
-    "last_error": null,
-    "status": "fresh"
    }
   ],
   "can_say_no_new_summonses": true,

@@ -325,61 +325,105 @@ def lifecycle_events(rec: Mapping[str, Any], *, ecb: Iterable[Mapping[str, Any]]
 
 SOURCE_LABELS = {
     "bis_complaints": "DOB BIS complaints (live)",
-    "dob_complaints": "NYC Open Data complaints (daily)",
-    "dob_violations": "DOB / ECB violations (NYC Open Data, daily)",
     "bis_ecb": "ECB/OATH summonses on DOB BIS (live)",
+    "dob_complaints": "DOB complaints (NYC Open Data, daily)",
+    "dob_violations": "DOB / ECB violations (NYC Open Data, daily)",
+    "dob_permits": "DOB permits (NYC Open Data)",
+    "dob_job_filings": "DOB NOW job filings (NYC Open Data)",
+    "dob_cofo": "Certificates of occupancy (NYC Open Data)",
+    "dob_facade": "Facade (FISP) filings (NYC Open Data)",
+    "dob_boiler": "Boiler inspections (NYC Open Data)",
+    "dob_elevator": "Elevator devices (NYC Open Data)",
+    "dot_oath": "DOT / OATH summonses",
+    "dot_permits": "DOT street permits",
 }
 DATASET_LABELS = {
     "855j-jady": "DOB NOW Safety violations (Open Data)",
     "3h2n-5cm9": "DOB violations (Open Data)",
     "6bgk-3dad": "ECB/OATH violations (Open Data)",
     "3usq-5cid": "Stop-work orders, EO 202.6 (Open Data, ends 2020)",
+    "eabe-havv": "DOB complaints received (Open Data)",
+    "rbx6-tga4": "DOB NOW Build permits (Open Data)",
+    "dm9a-ab7w": "DOB NOW Electrical permits (Open Data)",
+    "ipu4-2q9a": "BIS permits (Open Data)",
+    "w9ak-ipjd": "DOB NOW job filings (Open Data)",
+    "pkdm-hqz6": "Certificates of occupancy (Open Data)",
+    "xubg-57si": "Facade FISP (Open Data)",
+    "52dp-yji6": "Boiler inspections (Open Data)",
+    "e5aq-a4j2": "Elevator devices (Open Data)",
 }
+# The 15-minute Open Data scan stamps synced_at each pass; an hour without one
+# means the scan, not the city, has stopped.
+SCAN_STALE = timedelta(hours=1)
+
+
+def _status(ok: Optional[datetime], err: Optional[datetime], now: datetime, stale: timedelta) -> str:
+    if err and (not ok or err > ok):
+        return "failing"
+    if not ok:
+        return "never"
+    return "stale" if now - ok > stale else "fresh"
 
 
 def freshness(state: Optional[Mapping[str, Any]], *, now: datetime,
               stale_after: timedelta = timedelta(minutes=45)) -> Dict[str, Any]:
-    sources = (state or {}).get("sources") or {}
-    watches = (state or {}).get("watch") or {}
+    """Every monitored source and every dataset under it: last success, last
+    attempt, last error, and a status of fresh / stale / failing / never --
+    each judged on its OWN state, so one failure is visible as itself and
+    never as "no records"."""
+    from lib import source_sync  # local: complaint_watch stays importable alone
+    st = state or {}
+    sources = st.get("sources") or {}
+    watches = st.get("watch") or {}
+    datasets = st.get("datasets") or {}
     rows: List[Dict[str, Any]] = []
-    for key in ("bis_complaints", "dob_complaints", "dob_violations", "bis_ecb"):
-        if key in ("bis_complaints", "bis_ecb"):
-            watch = watches.get(key) or {}
-            last_ok, last_err = _as_dt(watch.get("last_success_at")), watch.get("last_error")
-            last_try = _as_dt(watch.get("last_attempt_at"))
-        else:
-            last_ok, last_err, last_try = _as_dt((sources.get(key) or {}).get("synced_at")), None, None
-        age = (now - last_ok) if last_ok else None
-        rows.append({
-            "source": key, "label": SOURCE_LABELS[key],
-            "last_success_at": last_ok.isoformat() if last_ok else None,
-            "last_attempt_at": last_try.isoformat() if last_try else None,
-            "last_error": last_err,
-            "status": ("never" if not last_ok else "stale" if age > stale_after else "fresh"),
-        })
-    # One row per violation dataset: which answered, which failed, and when --
-    # so one dead dataset is visible as itself, not as "violations: never".
-    for d, label in DATASET_LABELS.items():
-        row = ((state or {}).get("datasets") or {}).get(d) or {}
+
+    for key in ("bis_complaints", "bis_ecb"):
+        w = watches.get(key) or {}
+        ok, at = _as_dt(w.get("last_success_at")), _as_dt(w.get("last_attempt_at"))
+        err_text = w.get("last_error")
+        st_ = ("failing" if err_text else "never" if not ok
+               else "stale" if now - ok > stale_after else "fresh")
+        rows.append({"source": key, "label": SOURCE_LABELS[key], "mode": w.get("mode") or "off",
+                     "last_success_at": ok.isoformat() if ok else None,
+                     "last_attempt_at": at.isoformat() if at else None,
+                     "last_error": err_text, "status": st_})
+
+    by_source: Dict[str, List[str]] = {}
+    for d in datasets:
+        by_source.setdefault(source_sync.DATASET_SOURCE.get(d, "other"), []).append(d)
+    for key in [k for k in source_sync.SOURCES if k in sources or k in by_source]:
+        ok = _as_dt((sources.get(key) or {}).get("synced_at"))
+        failing = sorted(d for d in by_source.get(key, [])
+                         if _status(_as_dt((datasets[d] or {}).get("synced_at")),
+                                    _as_dt((datasets[d] or {}).get("last_error_at")), now, SCAN_STALE) == "failing")
+        st_ = _status(ok, None, now, SCAN_STALE)
+        rows.append({"source": key, "label": SOURCE_LABELS.get(key, key),
+                     "last_success_at": ok.isoformat() if ok else None, "last_attempt_at": None,
+                     "last_error": (f"failing datasets: {', '.join(failing)}" if failing else None),
+                     "status": "partial" if failing and st_ == "fresh" else ("failing" if failing else st_)})
+
+    for d in sorted(datasets):
+        row = datasets[d] or {}
         ok, err = _as_dt(row.get("synced_at")), _as_dt(row.get("last_error_at"))
         if not (ok or err):
             continue
-        rows.append({"source": f"dataset:{d}", "label": label,
+        rows.append({"source": f"dataset:{d}", "label": DATASET_LABELS.get(d, d),
                      "last_success_at": ok.isoformat() if ok else None,
                      "last_attempt_at": max(x for x in (ok, err) if x).isoformat(),
                      "last_error": (f"failed {err.isoformat()}" if err and (not ok or err > ok) else None),
-                     "status": ("never" if not ok else "failing" if err and err > ok
-                                else "stale" if now - ok > timedelta(hours=1) else "fresh")})
+                     "status": _status(ok, err, now, SCAN_STALE)})
+
+    by_key = {r["source"]: r for r in rows}
     # Only a LIVE watch stores what it reads. In shadow the BIS read is real but
     # nothing reaches dob_logs, so a fresh shadow check next to an empty list
     # would be a false "none".
-    bis_mode = (watches.get("bis_complaints") or {}).get("mode")
-    ecb_mode = (watches.get("bis_ecb") or {}).get("mode")
-    live = rows[0]["status"] == "fresh" and bis_mode == "live"
-    shadow = rows[0]["status"] == "fresh" and bis_mode == "shadow"
+    bis, ecb = by_key["bis_complaints"], by_key["bis_ecb"]
+    live = bis["status"] == "fresh" and bis["mode"] == "live"
+    shadow = bis["status"] == "fresh" and bis["mode"] == "shadow"
     return {
         "sources": rows,
-        "can_say_no_new_summonses": rows[3]["status"] == "fresh" and ecb_mode == "live",
+        "can_say_no_new_summonses": ecb["status"] == "fresh" and ecb["mode"] == "live",
         "can_say_no_new_complaints": live,
         "note": ("Checked DOB BIS directly; new complaints show within minutes."
                  if live else
