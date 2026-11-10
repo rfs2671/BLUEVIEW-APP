@@ -57196,6 +57196,380 @@ async def _photo_relations_job() -> None:
         logger.error(f"[photo-relations] job failed: {type(e).__name__}: {e!r}")
 
 
+# ── TARGETED CONFIRMATIONS (lib/confirmation_queue.py) ──────────────────────
+#
+# The few questions worth asking a superintendent or CP about a job: where the
+# sources disagree or a planned / booked thing has nothing on record. Rules,
+# words and the reply reader: lib/confirmation_queue.py. Here: the job's
+# evidence items (filed logs, placed photos, inspection reports, earlier
+# answers, the confirmed schedule), who may be asked, and the stored rows.
+#
+# SHADOW. CONFIRMATIONS_MODE = off | shadow | live, default off. Shadow
+# computes nightly and stores what it WOULD ask in `confirmation_candidates`
+# (append-only; status and Correct / Wrong are appended events in
+# `confirmation_events`); it calls no send or queue function. "live" is
+# refused (read as shadow) unless CONFIRMATIONS_LIVE_ALLOWED=1, which is set
+# nowhere. An admin marks rows Correct / Wrong at
+# GET /projects/{id}/confirmations and POST .../{candidate_id}/review;
+# scripts/confirmation_shadow_report.py reads the precision.
+
+from lib import confirmation_queue  # noqa: E402
+from lib import evidence as _evidence  # noqa: E402
+
+#: The window of logs, photos and reports read for a job.
+CONFIRM_LOG_DAYS = 35
+_CONFIRM_DONE = re.compile(r"\b(?:complete[d]?|done|finished)\b", re.I)
+_CONFIRM_NOT_DONE = re.compile(r"\b(?:not|in)[\s-]?(?:yet\s+)?(?:complete[d]?|done|finished)\b|\bincomplete\b", re.I)
+_IR_CLAIM = {"passed": "done", "failed": "failed", "partial": "in_progress", "scheduled": "scheduled"}
+
+
+def _confirm_day(v: Any) -> Optional[_Date]:
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, _Date):
+        return v
+    try:
+        return _Date.fromisoformat(str(v)[:10]) if v else None
+    except ValueError:
+        return None
+
+
+def _confirm_log_items(rows: list, pid: str) -> tuple:
+    """(reported items, {day: levels the filed logs name}) from
+    work_state.evidence_rows. A row says done only in its own words, never
+    from a generic trade name."""
+    items, logged = [], {}
+    for r in rows:
+        if not r.get("levels"):
+            continue
+        logged.setdefault(r["date"], set()).update(r["levels"])
+        work = str(r.get("work") or "")
+        done = bool(_CONFIRM_DONE.search(work)) and not _CONFIRM_NOT_DONE.search(work) and not r.get("generic")
+        for node in r.get("nodes") or []:
+            items.append(_evidence.item(
+                "reported", "done" if done else "in_progress", source="logbooks",
+                ref=r.get("log_id") or f"log:{r['date']}", project_id=pid, node=node, levels=r["levels"],
+                space=r.get("space"), sub=r.get("sub") or None, on=r["date"], quote=work,
+                shared=len(r["levels"]) > 1))
+    return items, logged
+
+
+def _confirm_photo_items(photos: list, pid: str, start: _Date) -> list:
+    """Observed items: a photo placed on ONE level whose description shows
+    the work. Never more than observed."""
+    out = []
+    for p in photos:
+        d = _confirm_day(p.get("date"))
+        if not d or d < start or len(p.get("levels") or []) != 1:
+            continue
+        if float(p.get("quality") or 0) < work_state.MIN_PHOTO_QUALITY:
+            continue
+        for node in p.get("seen_nodes") or []:
+            out.append(_evidence.item(
+                "observed", "in_progress", source="photo_index", ref=p.get("short") or p.get("photo_key") or "",
+                project_id=pid, node=node, levels=p["levels"], space=p.get("space"), on=d,
+                quote=p.get("description")))
+    return out
+
+
+def _confirm_inspection_items(rows: list, pid: str) -> list:
+    """Attested items from inspection_reports: a result read back from the
+    words (an unresolved row has none and says nothing), on its levels. A
+    booking with no date names no day that could pass."""
+    out = []
+    for r in rows:
+        levels = [str(x) for x in r.get("levels") or []]
+        result = r.get("result")
+        if not levels or result not in _IR_CLAIM or r.get("status") not in (
+                inspection_reports.ATTESTED, inspection_reports.DOCUMENT):
+            continue
+        on = _confirm_day(r.get("inspected_on"))
+        if result == "scheduled" and not on:
+            continue
+        said = r.get("inspection_as_said") or ""
+        node = r.get("gate") or (confirmation_queue.INSPECTION_PREFIX + " ".join(str(said).lower().split()))
+        out.append(_evidence.item(
+            "attested", _IR_CLAIM[result], source=INSPECTION_REPORTS, ref=str(r.get("_id") or ""), project_id=pid,
+            node=node, levels=levels, on=on or _confirm_day(r.get("created_at")), by=r.get("reporter_name") or None,
+            quote=r.get("quote"), shared=len(levels) > 1, note=said or None))
+    return out
+
+
+def _confirm_answer_items(rows: list) -> list:
+    """Earlier answers: the attested items they became."""
+    out = []
+    for r in rows:
+        it = r.get("item")
+        if isinstance(it, dict) and it.get("claim") in _evidence.CLAIMS:
+            out.append({**it, "on": _confirm_day(it.get("on"))})
+    return out
+
+
+def _confirm_schedule(schedule: Optional[dict]) -> list:
+    """The CONFIRMED schedule file's activities, each with the work and the
+    levels its name states (the same reading work_state uses)."""
+    out = []
+    for a in (schedule or {}).get("activities") or []:
+        if a.get("kind") == "summary":
+            continue
+        name = str(a.get("name") or "")
+        nodes = work_state.classify(name, name)[0]
+        levels = work_state.places_in(name)["levels"]
+        if not nodes or not levels:
+            continue
+        out.append({"id": a.get("id"), "name": name, "nodes": nodes, "levels": levels,
+                    "planned_start": _confirm_day(a.get("current_start") or a.get("baseline_start")),
+                    "actual_start": a.get("actual_start")})
+    return out
+
+
+async def _confirmation_inputs(project: dict, company_id: str) -> tuple:
+    """(evidence items, frame) for one job, from what the work-state answer
+    already reads."""
+    pid = str(project.get("_id"))
+    src, rows, today, start = await _schedule_evidence(project, company_id, CONFIRM_LOG_DAYS)
+    items, logged = _confirm_log_items(rows, pid)
+    index = await db[PHOTO_INDEX].find({"project_id": pid, "kind": "photo"}).to_list(20000)
+    spaces, confirmed = await _photo_place_context(pid)
+    photos = work_state.photo_rows(index, {str(lg.get("_id")) for lg in src["logbooks"]},
+                                   spaces=spaces, confirmations=confirmed)
+    items += _confirm_photo_items(photos, pid, start)
+    reports = await db[INSPECTION_REPORTS].find({"project_id": pid, "company_id": str(company_id)}).to_list(5000)
+    items += _confirm_inspection_items(reports, pid)
+    answers = await db.confirmation_answers.find({"project_id": pid, "company_id": str(company_id)}).to_list(5000)
+    items += _confirm_answer_items(answers)
+    frame = {"project_id": pid, "today": today, "logs_from": start, "logged_levels": logged,
+             "schedule": _confirm_schedule(src.get("schedule"))}
+    return items, frame
+
+
+async def _confirmation_people(company_id: str) -> list:
+    """Who may be asked in this company: a live superintendent or CP of the
+    company, with an ACTIVE WhatsApp opt-in (their own YES) for it."""
+    try:
+        users = await db.users.find(
+            {"company_id": _company_id_filter(company_id), "is_deleted": {"$ne": True},
+             "role": {"$in": list(confirmation_queue.TARGET_ROLES)}}).to_list(500)
+        ids = [str(u.get("_id")) for u in users]
+        optins = await db[WA_OPTINS].find({"user_id": {"$in": ids}, "status": "active"}).to_list(1000) if ids else []
+    except Exception as e:
+        logger.warning(f"[confirm] people read failed: {type(e).__name__}")
+        return []
+    opted = {}
+    for o in optins:
+        if wa_security.same_company(o.get("company_id"), company_id):
+            opted.setdefault(str(o.get("user_id")), []).append(o)
+    return [{"user_id": str(u.get("_id")), "name": u.get("name") or u.get("full_name") or "",
+             "role": str(u.get("role") or "").lower(), "opted_in": str(u.get("_id")) in opted,
+             "assigned_projects": [str(p) for p in u.get("assigned_projects") or []],
+             "phones": sorted({d for o in opted.get(str(u.get("_id")), [])
+                               for d in (o.get("phone"), o.get("chat_digits")) if d}),
+             "chats": sorted({o.get("chat_id") for o in opted.get(str(u.get("_id")), []) if o.get("chat_id")})}
+            for u in users]
+
+
+async def _confirmation_said_today(people: list, since: datetime) -> dict:
+    """{user_id: [their words today]}: group and DM messages from their
+    numbers since New York midnight (a voice note's transcript included)."""
+    out: Dict[str, list] = {}
+    for p in people:
+        if not p.get("opted_in"):
+            continue
+        keys = list(p.get("phones") or []) + list(p.get("chats") or [])
+        if not keys:
+            continue
+        try:
+            msgs = await db.whatsapp_messages.find(
+                {"created_at": {"$gte": since},
+                 "$or": [{"sender": {"$in": keys}}, {"sender_jid": {"$in": keys}},
+                         {"is_dm": True, "group_id": {"$in": keys}, "sender": {"$ne": "bot"}}]}).to_list(500)
+        except Exception:
+            continue
+        out[p["user_id"]] = [m.get("body") for m in msgs] + [(m.get("voice") or {}).get("transcript") for m in msgs]
+    return out
+
+
+async def _confirmations_tick(now: Optional[datetime] = None) -> dict:
+    """Nightly. Shadow: stores what it would ask, sends and queues nothing.
+    Live (refused unless allowed): the same rows, each person's one message
+    queued for the morning (confirmation_queue.SEND_AT) through the Shabbos /
+    retry queue."""
+    now = now or datetime.now(timezone.utc)
+    m = confirmation_queue.mode()
+    report = {"mode": m, "projects": 0, "candidates": 0, "messages": 0, "rows": 0, "queued": 0, "skipped": {}}
+    if m == "off":
+        return report
+    day = wa_chase.today(now)
+    projects = await db.projects.find(await unattended_project_filter({**ACTIVE_PROJECT_FILTER})).to_list(2000)
+    cands, people, keeps, names, company_of = [], {}, {}, {}, {}
+    for p in projects:
+        pid, cid = str(p.get("_id")), str(p.get("company_id") or "")
+        if not cid:
+            continue
+        if cid not in people:
+            people[cid] = await _confirmation_people(cid)
+        if not any(confirmation_queue.eligible(x, pid) is None for x in people[cid]):
+            report["skipped"]["nobody_to_ask"] = report["skipped"].get("nobody_to_ask", 0) + 1
+            continue
+        try:
+            items, frame = await _confirmation_inputs(p, cid)
+        except Exception as e:
+            logger.warning(f"[confirm] {pid} not read: {type(e).__name__}: {e!r}")
+            continue
+        report["projects"] += 1
+        found = confirmation_queue.candidates(items, frame)
+        report["candidates"] += len(found)
+        cands += found
+        keeps[pid] = await _shabbos_applies(cid, pid)
+        names[pid] = wa_assistant.street_label(p)
+        company_of[pid] = cid
+    everyone = [x for xs in people.values() for x in xs]
+    history = await db.confirmation_candidates.find(
+        {"day": {"$gt": (day - timedelta(days=confirmation_queue.REPEAT_DAYS)).isoformat()}}).to_list(20000)
+    since = datetime.combine(day, datetime.min.time()).replace(tzinfo=_MemoryZone("America/New_York"))
+    said = await _confirmation_said_today(everyone, since.astimezone(timezone.utc))
+    plan = confirmation_queue.plan(cands, everyone, day=day, history=history, said_today=said, keeps_shabbos=keeps)
+    for s in plan["skipped"]:
+        report["skipped"][s["why"]] = report["skipped"].get(s["why"], 0) + 1
+    status = "sent" if m == "live" else "shadow"
+    for msg in plan["messages"]:
+        text = confirmation_queue.message_text(msg["name"], msg["items"], names)
+        report["messages"] += 1
+        if m == "live":
+            await _quiet_enqueue({"via": "dm", "user_id": msg["user_id"], "message": text, "kind": "confirmation",
+                                  "window": day.isoformat(), "project_id": None},
+                                 company_id=company_of.get(str(msg["items"][0]["project_id"])), project_id=None,
+                                 kind="confirmation", until=plan["send_at"], now=now)
+            report["queued"] += 1
+        for pos, c in enumerate(msg["items"], 1):
+            cand_id = confirmation_queue.candidate_id(day, msg["user_id"], c["project_id"], c["thing"])
+            if await db.confirmation_candidates.find_one({"_id": cand_id}, {"_id": 1}):
+                continue
+            await db.confirmation_candidates.insert_one({
+                "_id": cand_id, "day": day.isoformat(), "project_id": str(c["project_id"]),
+                "company_id": company_of.get(str(c["project_id"]), ""), "target_user_id": msg["user_id"],
+                "target_name": msg["name"], "trigger": c["trigger"], "thing": c["thing"], "node": c["node"],
+                "level": c["level"], "question": c["question"], "options": c["options"],
+                "evidence": c["evidence"], "score": c["score"], "position": pos, "text": text,
+                "would_send_at": plan["send_at"], "status": status, "mode": m, "created_at": now})
+            report["rows"] += 1
+    logger.info(f"[confirm] {report}")
+    return report
+
+
+async def _confirmations_job() -> None:
+    try:
+        await _confirmations_tick()
+    except Exception as e:
+        logger.error(f"[confirm] job failed: {type(e).__name__}: {e!r}")
+
+
+async def _confirmation_take_reply(ident: dict, dm_chat: str, text: Any,
+                                   now: Optional[datetime] = None) -> bool:
+    """A DM that answers today's confirmation message, read by fixed rules
+    first. True when it was read (and answered); False leaves the turn to the
+    DM brain unchanged. Off and shadow: always False (nothing was asked)."""
+    if confirmation_queue.mode() != "live":
+        return False
+    now = now or datetime.now(timezone.utc)
+    uid = str((ident or {}).get("user_id") or "")
+    if not uid or not str(text or "").strip():
+        return False
+    day = wa_chase.today(now)
+    rows = await db.confirmation_candidates.find(
+        {"target_user_id": uid, "day": day.isoformat(), "status": "sent"}).to_list(10)
+    if not rows:
+        return False
+    rows.sort(key=lambda r: int(r.get("position") or 0))
+    events = await db.confirmation_events.find({"candidate_id": {"$in": [r["_id"] for r in rows]}}).to_list(200)
+    parsed = confirmation_queue.parse_reply(text, rows)
+    if not parsed["answers"]:
+        return False
+    user = (ident or {}).get("user") or {}
+    name = str(user.get("name") or user.get("full_name") or "")
+    unresolved = []
+    for a in parsed["answers"]:
+        row = rows[a["index"] - 1]
+        if confirmation_queue.current(row, [e for e in events if e.get("candidate_id") == row["_id"]])["status"] != "sent":
+            continue
+        answer_id = str(uuid.uuid4())
+        check = confirmation_queue.inspection_check(a) if row["trigger"] in confirmation_queue.INSPECTION_TRIGGERS else None
+        item = confirmation_queue.answer_item(row, a, answer_id=answer_id, person=name, on=day, check=check)
+        if check is not None:
+            gate = row.get("node") if row.get("node") in confirmation_queue.GATES else None
+            await db[INSPECTION_REPORTS].insert_one(inspection_reports.new_row(
+                project_id=row["project_id"], company_id=row["company_id"], gate=gate,
+                inspection=confirmation_queue.node_words(row.get("node")), levels=[row["level"]], space=None,
+                result=check.get("result"), inspected_on=None, inspector=None, reporter_user_id=uid,
+                reporter_name=name, source="confirmation", quote=a["words"], message_id=answer_id, created_at=now,
+                status=inspection_reports.ATTESTED if check.get("agree") else inspection_reports.UNRESOLVED)
+                | inspection_reports.audit(check))
+            if not check.get("agree"):
+                unresolved.append(a["index"])
+        await db.confirmation_answers.insert_one({
+            "_id": answer_id, "candidate_id": row["_id"], "project_id": row["project_id"],
+            "company_id": row["company_id"], "user_id": uid, "name": name, "question": row["question"],
+            "words": a["words"], "answer": a["answer"], "reason": a.get("reason"), "percent": a.get("percent"),
+            "status": "unresolved" if item is None else "attested",
+            "item": None if item is None else {**item, "on": day.isoformat()}, "at": now})
+        await db.confirmation_events.insert_one({
+            "candidate_id": row["_id"], "project_id": row["project_id"], "company_id": row["company_id"],
+            "kind": "answered", "answer_id": answer_id, "by": uid, "at": now})
+    await send_whatsapp_message(dm_chat, confirmation_queue.ack_text(parsed["answers"], parsed["unread"], unresolved))
+    return True
+
+
+def _confirmation_view(r: dict, events: list) -> dict:
+    """One candidate for the admin: what it would ask, why, and its verdict."""
+    cur = confirmation_queue.current(r, events)
+    return {"id": r.get("_id"), "day": r.get("day"), "trigger": r.get("trigger"), "level": r.get("level"),
+            "question": r.get("question"), "options": [o.get("label") for o in r.get("options") or []],
+            "evidence": r.get("evidence") or [], "score": r.get("score"), "to": r.get("target_name") or "",
+            "text": r.get("text") or "", "status": cur["status"], "verdict": cur["verdict"],
+            "would_send_at": _iso_utc(r["would_send_at"]) if isinstance(r.get("would_send_at"), datetime) else None}
+
+
+@api_router.get("/projects/{project_id}/confirmations",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_confirmations(project_id: str, current_user=Depends(get_current_user)):
+    """Admin only: the questions targeted confirmations would ask on this job
+    (shadow: none was sent), newest first, with review precision."""
+    company_id = await _attention_admin_project(project_id, current_user)
+    q = {"project_id": str(project_id), "company_id": str(company_id)}
+    rows = await db.confirmation_candidates.find(q).sort([("created_at", -1)]).to_list(200)
+    events = await db.confirmation_events.find(q).to_list(20000)
+    by: Dict[str, list] = {}
+    for e in events:
+        by.setdefault(str(e.get("candidate_id")), []).append(e)
+    views = [_confirmation_view(r, by.get(str(r.get("_id")), [])) for r in rows]
+    return {"entries": views, "precision": confirmation_queue.precision(v["verdict"] for v in views),
+            "mode": confirmation_queue.mode(), "shadow": confirmation_queue.mode() != "live"}
+
+
+@api_router.post("/projects/{project_id}/confirmations/{candidate_id}/review",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def review_project_confirmation(project_id: str, candidate_id: str, body: dict,
+                                      current_user=Depends(get_current_user)):
+    """Admin only: Correct / Wrong on one would-ask question ({"verdict"}), or
+    {"dismiss": true}. Appended; the newest verdict counts."""
+    company_id = await _attention_admin_project(project_id, current_user)
+    body = body if isinstance(body, dict) else {}
+    verdict, dismiss = body.get("verdict"), body.get("dismiss") is True
+    if verdict not in confirmation_queue.VERDICTS and not dismiss:
+        raise HTTPException(status_code=422, detail="verdict: correct or wrong, or dismiss: true")
+    q = {"_id": str(candidate_id), "project_id": str(project_id), "company_id": str(company_id)}
+    row = await db.confirmation_candidates.find_one(q)
+    if not row:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    now = datetime.now(timezone.utc)
+    await db.confirmation_events.insert_one({
+        "candidate_id": str(candidate_id), "project_id": str(project_id), "company_id": str(company_id),
+        "kind": "dismissed" if dismiss else "review", "verdict": None if dismiss else verdict,
+        "by": actor_id(current_user), "at": now})
+    events = await db.confirmation_events.find({"candidate_id": str(candidate_id)}).to_list(500)
+    return _confirmation_view(row, events)
+
+
 # ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
 
 async def _group_photo_company(row: dict, company_id: Any, project_id: Any) -> Tuple[str, str, str]:
@@ -62389,6 +62763,9 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     new job never asks it."""
     # This turn's evidence for the answer log, before anything it starts.
     _answer_turn_begin()
+    # A reply to today's targeted confirmation (live only; never in shadow).
+    if await _confirmation_take_reply(ident, dm_chat, heard or body):
+        return
     if not brain and not person and dm_roles.is_field(ident.get("role")):
         # The old pipeline is an admin / PM path (changes, company reports,
         # the brief): a superintendent / CP is answered by the brain, with
@@ -91188,6 +91565,16 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=11),
+    )
+    # Targeted confirmations, nightly (lib/confirmation_queue.py). Off by
+    # default; SHADOW stores what it would ask and sends nothing.
+    scheduler.add_job(
+        _confirmations_job,
+        CronTrigger(hour=3, minute=40, timezone="America/New_York"),
+        id='targeted_confirmations',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.add_job(
         _photo_pipeline_job,
