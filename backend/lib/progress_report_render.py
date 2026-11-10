@@ -16,6 +16,10 @@ DESIGN RULES (they are the product's credibility, not decoration)
     generated imagery, and no before/after pairing.
   * Charts show data the engine holds, directly labelled, in one hue family
     plus a muted comparison; colour is never the only encoding.
+  * The status by floor (the larger report) is lib/project_progress.py's model,
+    the one the assistant answers from: a mark's SHAPE is the cell's strongest
+    record, an EMPTY cell is unknown (never not done), one legend line says
+    every mark, and LeveLog's estimates stay inside their own labelled box.
 
 Pure: no I/O. `images` maps a photo's key to a data URI the server fetched.
 """
@@ -25,7 +29,7 @@ from __future__ import annotations
 import hashlib
 import html
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from lib import progress_report as P
@@ -135,6 +139,22 @@ table.floors td.name { text-align: left; white-space: nowrap; padding-right: 8px
 .legend { font-size: 7.5pt; color: #5b6676; margin-top: 6px; }
 .chart { display: block; margin: 4px 0; }
 .foot { font-size: 7.5pt; color: #5b6676; margin-top: 10px; }
+.mk { vertical-align: -1px; }
+.mlegend { white-space: nowrap; font-size: 7pt; }
+.mlegend .lg { margin-right: 9px; }
+.fs ul.tight, .estbox ul.tight { font-size: 8.4pt; }
+.fs ul.tight li { margin-bottom: 2px; }
+.nw { white-space: nowrap; }
+.fn { margin-top: 2px; }
+.wb { margin: 2px 0 8px; }
+.wb h4 { margin-bottom: 2px; }
+.wbi { display: inline-block; margin: 0 16px 3px 0; font-size: 8.5pt; }
+table.lvl { margin: 3px 0 4px; }
+table.lvl td { padding: 2px 5px; font-size: 8.3pt; }
+table.lvl td.lv { white-space: nowrap; font-weight: 700; width: 12%; }
+table.lvl td.sn { font-weight: 700; width: 24%; }
+.estbox { border: 1.2px dashed #9aa5b4; border-radius: 6px; padding: 6px 10px; margin-top: 8px; background: #fafbfd; }
+.estbox h4 { color: #12263F; }
 """
 
 
@@ -487,7 +507,401 @@ def _progress(rep: Dict[str, Any], images: Optional[Dict[str, str]] = None) -> s
             "<p class='muted'>Who worked when, and what they reported, from site check-ins and filed daily logs. "
             "A bar is days on site, not measured completion.</p>"
             f"<table class='gantt'><tr><td class='who'></td><td class='bar'>{_gantt_axis(start, end, ticks)}</td><td class='n'></td></tr>"
-            f"{''.join(rows)}</table>{legend}</section>")
+            f"{''.join(rows)}</table>{legend}{_sub_status(rep)}</section>")
+
+
+# ── STATUS BY FLOOR (lib/project_progress.py: the assistant's model) ────────
+#
+# Every mark is the cell's evidence.status(), read off the SAME model the
+# assistant answers from (server._project_progress), never computed here. The
+# SHAPE says the rung (filled = a done statement, hollow or a dash = work in
+# progress, a cross = failed); an EMPTY cell is unknown: nothing on record,
+# either way. No percent is drawn; one appears only where a source states it.
+
+#: More levels or steps than this, and the matrix becomes a list per level.
+FLOOR_MAX_LEVELS = 12
+FLOOR_MAX_STEPS = 22
+
+#: (mark, legend words), strongest first.
+MARKS = (("verified", "Verified (DOB / agency)"),
+         ("confirmed", "Confirmed (signed)"),
+         ("attested", "Stated done (named person)"),
+         ("observed", "Photo: in progress"),
+         ("reported", "Reported: in progress"),
+         ("failed", "Failed"))
+UNKNOWN_NOTE = ("An empty cell is unknown: nothing is on record either way, so it is shown neither as done nor as "
+                "not done.")
+UNKNOWN_NOTE_LIST = ("Unknown means nothing is on record either way: such a step is shown neither as done nor as "
+                     "not done.")
+NO_SCHEDULE_LINE = "No confirmed schedule is on file, so no planned date is compared and nothing is estimated."
+FAIL_RED = "#B42318"
+
+#: Short column names; anything else is the model's own label.
+_SHORT = {"framing": "Framing", "rough_dwv": "DWV rough", "rough_duct": "Duct rough",
+          "rough_sprinkler": "Sprinkler rough", "rough_water": "Water rough", "rough_gas": "Gas rough",
+          "rough_electric": "Electric rough", "rough_lowvolt": "Fire alarm / LV", "gate_plumbing_rough": "Plumbing rough",
+          "gate_sprinkler_hydro": "Sprinkler hydro", "gate_electrical_rough": "Electrical rough",
+          "gate_firestopping": "Firestopping", "gate_nycecc_insulation": "Energy code", "drywall": "Drywall",
+          "ceiling_drop": "Ceilings", "prime": "Prime / paint", "finishes": "Finishes", "mep_trim": "MEP trim",
+          "zone_final": "Zone final", "gas_pressure_test": "Gas pressure test", "superstructure": "Structure",
+          "facade_envelope": "Facade", "windows": "Windows", "standpipe": "Standpipe", "demolition": "Demolition",
+          "excavation_soe": "Excavation / SOE", "foundation": "Foundation", "roofing": "Roofing",
+          "elevator": "Elevator", "site_utilities": "Site utilities"}
+_GROUPS = ("Structure", "Framing and rough-in", "Inspections", "Close-in and finish")
+#: Always on the whole-building line, on record or not.
+_BUILDING_ALWAYS = ("demolition", "excavation_soe", "foundation")
+
+
+def mark_of(status: Optional[str]) -> Optional[str]:
+    """The mark for a cell's evidence.status(); None is unknown (an empty cell)."""
+    s = str(status or "unknown")
+    if s.startswith("done_"):
+        return s[5:]
+    if s.startswith("failed_"):
+        return "failed"
+    return {"in_progress_observed": "observed", "reported": "reported"}.get(s)
+
+
+def _mark_shape(kind: Optional[str], cx: float, cy: float, r: float = 4.6) -> str:
+    if kind == "verified":
+        return f'<rect x="{cx - r:.1f}" y="{cy - r:.1f}" width="{2 * r:.1f}" height="{2 * r:.1f}" fill="{NAVY}"/>'
+    if kind == "confirmed":
+        return f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="{NAVY}"/>'
+    if kind == "attested":
+        return (f'<polygon points="{cx:.1f},{cy - r - 0.6:.1f} {cx + r + 0.6:.1f},{cy + r - 0.4:.1f} '
+                f'{cx - r - 0.6:.1f},{cy + r - 0.4:.1f}" fill="{NAVY}"/>')
+    if kind == "observed":
+        return f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r - 0.8:.1f}" fill="#fff" stroke="{NAVY}" stroke-width="1.5"/>'
+    if kind == "reported":
+        return f'<rect x="{cx - r:.1f}" y="{cy - 1.3:.1f}" width="{2 * r:.1f}" height="2.6" rx="1" fill="{MUTED}"/>'
+    if kind == "failed":
+        return (f'<path d="M{cx - r + 0.6:.1f},{cy - r + 0.6:.1f} L{cx + r - 0.6:.1f},{cy + r - 0.6:.1f} '
+                f'M{cx + r - 0.6:.1f},{cy - r + 0.6:.1f} L{cx - r + 0.6:.1f},{cy + r - 0.6:.1f}" '
+                f'stroke="{FAIL_RED}" stroke-width="2" stroke-linecap="round"/>')
+    return ""
+
+
+def mark_svg(kind: Optional[str], size: int = 11) -> str:
+    """One mark inline in a line of text; unknown is an empty box."""
+    c = size / 2
+    inner = _mark_shape(kind, c, c, r=size * 0.4) if kind else (
+        f'<rect x="0.5" y="0.5" width="{size - 1}" height="{size - 1}" fill="#f1f4f8" stroke="#c4ccd8" stroke-width="0.8"/>')
+    return (f'<svg class="mk" xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
+            f'viewBox="0 0 {size} {size}">{inner}</svg>')
+
+
+def floor_legend() -> str:
+    """The one-line legend every status visual carries (an empty cell is
+    said under the matrix, where there are empty cells)."""
+    bits = "".join(f"<span class='lg'>{mark_svg(k, 10)}&nbsp;{_e(w)}</span>" for k, w in MARKS)
+    return f"<div class='legend mlegend'>{bits}</div>"
+
+
+def _large(rep: Dict[str, Any]) -> bool:
+    return (rep["end"] - rep["start"]).days + 1 >= GANTT_MIN_DAYS
+
+
+def _model(rep: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    return rep.get("progress_model") if _large(rep) else None
+
+
+def _short(model: Dict[str, Any], node: str) -> str:
+    if node in _SHORT:
+        return _SHORT[node]
+    from lib import project_progress as PPG
+    label = PPG._step_label(model, node)
+    return label[:1].upper() + label[1:]
+
+
+def _group_of(step: Dict[str, Any]) -> int:
+    if step.get("source") == "work_nodes":
+        return 0
+    if step["gate"] or step["id"].endswith("_test"):
+        return 2
+    if step["id"] == "framing" or step["id"].startswith("rough_"):
+        return 1
+    return 3
+
+
+def floor_columns(model: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The matrix's steps: every step with a record on any level, and the
+    standard interior steps (graph_v1's, not the ones only some buildings
+    have), grouped in sequence order."""
+    has = {n for (_lv, n), c in model["cells"].items() if c["bucket"] != "unknown"}
+    seq = model["frame"]["steps"]
+    cols = [s for s in seq if s["id"] in has or (s.get("source") == "graph_v1" and not s.get("conditional"))]
+    order = {s["id"]: k for k, s in enumerate(seq)}
+    return sorted(cols, key=lambda s: (_group_of(s), order[s["id"]]))
+
+
+def _levels_top_first(model: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return list(reversed(model["frame"]["levels"]))
+
+
+def _text_w(text: str, size: float) -> float:
+    return len(text) * size * 0.6           # DejaVu Sans, the PDF's fallback face, is the widest
+
+
+def floor_matrix_svg(model: Dict[str, Any], cols: List[Dict[str, Any]], width: int = 700) -> str:
+    levels = _levels_top_first(model)
+    label_w = max(64.0, max((_text_w(lv["label"], 8.5) for lv in levels), default=0) + 10)
+    gap, row_h, group_h = 8.0, 19.0, 15.0
+    groups: List[Tuple[int, List[Dict[str, Any]]]] = []
+    for s in cols:
+        g = _group_of(s)
+        if not groups or groups[-1][0] != g:
+            groups.append((g, []))
+        groups[-1][1].append(s)
+    avail = width - label_w - gap * (len(groups) - 1) - 4
+    col_w = max(16.0, min(30.0, avail / max(1, len(cols))))
+    head_h = max(_text_w(_short(model, s["id"]), 7.5) for s in cols) + 8 if cols else 20
+    x, out_cols, heads = label_w, [], []
+    for g, members in groups:
+        name = _GROUPS[g]
+        span = max(len(members) * col_w, _text_w(name, 7) + 6)
+        pad = (span - len(members) * col_w) / 2
+        heads.append((name, x, span))
+        for k, s in enumerate(members):
+            out_cols.append((s, x + pad + k * col_w))
+        x += span + gap
+    total_w = x - gap + 2
+    top = group_h + head_h
+    height = top + row_h * len(levels) + 2
+    o = [f'<svg class="chart fm" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {total_w:.0f} {height:.0f}" '
+         f'width="{total_w:.0f}" height="{height:.0f}" font-family="Helvetica, Arial, sans-serif">']
+    for name, gx, span in heads:
+        o.append(f'<text x="{gx + span / 2:.1f}" y="9" font-size="7" font-weight="700" letter-spacing="0.4" '
+                 f'text-anchor="middle" fill="{MUTED}">{_e(name.upper())}</text>')
+        o.append(f'<line x1="{gx:.1f}" y1="12.5" x2="{gx + span:.1f}" y2="12.5" stroke="{MUTED}" stroke-width="0.8"/>')
+    for s, cx in out_cols:
+        tx, ty = cx + col_w / 2 + 2.6, top - 4
+        o.append(f'<text transform="translate({tx:.1f},{ty:.1f}) rotate(-90)" font-size="7.5" fill="{INK}">'
+                 f'{_e(_short(model, s["id"]))}</text>')
+    for r, lv in enumerate(levels):
+        y = top + r * row_h
+        o.append(f'<text x="0" y="{y + row_h / 2 + 3:.1f}" font-size="8.5" font-weight="700" fill="{INK}">'
+                 f'{_e(lv["label"])}</text>')
+        for s, cx in out_cols:
+            c = model["cells"][(lv["level"], s["id"])]
+            o.append(f'<rect x="{cx + 1:.1f}" y="{y + 1:.1f}" width="{col_w - 2:.1f}" height="{row_h - 2:.1f}" '
+                     f'fill="#f1f4f8"/>')
+            kind = mark_of(c["status"])
+            if kind:
+                o.append(_mark_shape(kind, cx + col_w / 2, y + row_h / 2))
+    o.append("</svg>")
+    return "".join(o)
+
+
+def _per_level_list(model: Dict[str, Any], cols: List[Dict[str, Any]]) -> str:
+    """The matrix as a list, for a job too tall or too varied for one page."""
+    rows = []
+    for lv in _levels_top_first(model):
+        cs = [(s, model["cells"][(lv["level"], s["id"])]) for s in cols]
+        on = [(s, c) for s, c in cs if mark_of(c["status"])]
+        got = " &nbsp;".join(f"<span class='nw'>{mark_svg(mark_of(c['status']))}&nbsp;{_e(_short(model, s['id']))}</span>"
+                             for s, c in on)
+        rest = len(cs) - len(on)
+        tail = (f"<span class='muted'>{' · ' if on else ''}{rest} {'other ' if on else ''}step{'s' if rest != 1 else ''}"
+                ": nothing on record (unknown)</span>") if rest else ""
+        rows.append(f"<tr><td class='lv'>{_e(lv['label'])}</td><td>{got}{tail}</td></tr>")
+    return f"<table class='lvl'>{''.join(rows)}</table>"
+
+
+def _day_y(d: Any) -> str:
+    return _fmt(d, "%b %-d, %Y") if isinstance(d, date) else ""
+
+
+def _building_note(c: Dict[str, Any]) -> str:
+    """What decided a whole-building cell, as printed beside its mark."""
+    from lib import project_progress as PPG
+    if c["bucket"] == "unknown":
+        return "no record"
+    d = c.get("decided_by") or {}
+    if d.get("source") == "dob_logs":
+        when = _day_y(d.get("on")) or "sign-off date not on the stored record"
+        return f"DOB sign-off, {when} (filing {d.get('ref')})"
+    if d:
+        who = PPG._who(d)
+        return f"{'done' if c['bucket'] == 'done' else 'failed'}, {d['kind']} {who}, {_day_y(d.get('on'))}".rstrip(", ")
+    words = {"in_progress_observed": "photographed in progress", "reported": "reported in progress"}
+    span = PPG._span(c)
+    return words.get(c["status"], c["status"].replace("_", " ")) + (f", {span}" if span else "")
+
+
+def _whole_building(model: Dict[str, Any]) -> str:
+    cells = [c for c in model.get("building") or () if c["node"] in _BUILDING_ALWAYS or c["bucket"] != "unknown"]
+    cells.sort(key=lambda c: (_BUILDING_ALWAYS.index(c["node"]) if c["node"] in _BUILDING_ALWAYS else 9))
+    if not cells:
+        return ""
+    bits = "".join(f"<div class='wbi'>{mark_svg(mark_of(c['status']))}&nbsp;<b>{_e(_short(model, c['node']))}</b> "
+                   f"<span class='muted'>{_e(_building_note(c))}</span></div>" for c in cells)
+    return f"<div class='wb'><h4>Whole building</h4>{bits}</div>"
+
+
+def _open_words(model: Dict[str, Any], level: str) -> str:
+    """Open on the record, from the model's bottleneck: never a cause."""
+    b = model["by_level"][level]["bottleneck"]
+    from lib import project_progress as PPG
+    bits = []
+    if b["earliest_open"]:
+        more = len(b["open_work"]) - 1
+        bits.append(f"earliest step with no done record: {PPG._step_label(model, b['earliest_open'])}"
+                    + (f" (and {more} more at the same point in the sequence)" if more else ""))
+    failed = [g["label"] for g in b["gates"] if g["bucket"] == "failed"]
+    unknown = [g for g in b["gates"] if g["bucket"] == "unknown"]
+    if failed:
+        bits.append("inspection failed on record: " + ", ".join(failed))
+    if unknown:
+        bits.append(f"{len(unknown)} inspection{'s' if len(unknown) != 1 else ''} with no record")
+    text = "; ".join(bits)
+    return text[:1].upper() + text[1:]
+
+
+def _open_on_record(model: Dict[str, Any]) -> str:
+    rows, quiet = [], []
+    for lv in _levels_top_first(model):
+        c = model["by_level"][lv["level"]]["counts"]
+        if c.get("unknown", 0) == len(model["frame"]["steps"]):
+            quiet.append(lv["label"])
+            continue
+        rows.append(f"<tr><td class='lv'>{_e(lv['label'])}</td><td>{_e(_open_words(model, lv['level']))}</td></tr>")
+    if not rows and not quiet:
+        return ""
+    q = (f"<div class='muted'>Nothing on record for: {_e(', '.join(quiet))}.</div>" if quiet else "")
+    return ("<h3>Open on the record, by level</h3><div class='muted'>By the standard sequence: the earliest step "
+            "with no done record whose earlier steps all have one, and inspections with no record or a failure. "
+            f"No cause is stated.</div><table class='lvl'>{''.join(rows)}</table>{q}")
+
+
+def _disagree(model: Dict[str, Any]) -> str:
+    cs = model.get("conflicts") or []
+    if not cs:
+        return ""
+    shown = "".join(f"<li>{_e(c['what'])} <span class='muted'>(records {_e(', '.join(c['refs']))})</span></li>"
+                    for c in cs[:6])
+    more = (f"<div class='muted'>{len(cs) - 6} more in the report's stored snapshot.</div>" if len(cs) > 6 else "")
+    return (f"<h3>Records that disagree ({len(cs)})</h3><div class='muted'>To confirm with the field; neither "
+            f"record is taken over the other.</div><ul class='tight'>{shown}</ul>{more}")
+
+
+def _outside(model: Dict[str, Any]) -> str:
+    cs = model.get("outside_frame") or []
+    if not cs:
+        return ""
+    from lib import work_state as WS
+    said = "; ".join(f"{WS.node_label(c['node'])} on {WS.level_label(c['level'])}" for c in cs[:6])
+    return f"<div class='muted'>Also on record, outside the standard steps: {_e(said)}.</div>"
+
+
+def _status_by_floor(rep: Dict[str, Any]) -> str:
+    if not _large(rep):
+        return ""
+    if rep.get("progress_unavailable"):
+        return ("<section class='pg'><h2>Status by floor</h2><p class='none'>The progress records could not be read "
+                "for this report, so no status by floor is shown. This is not a statement that nothing is on "
+                "record.</p></section>")
+    model = _model(rep)
+    if not model:
+        return ""
+    cols = floor_columns(model)
+    levels = model["frame"]["levels"]
+    note = UNKNOWN_NOTE
+    if not levels or not cols:
+        body = "<p class='none'>No level of this job is on record, so there is no status by floor.</p>"
+    elif len(levels) > FLOOR_MAX_LEVELS or len(cols) > FLOOR_MAX_STEPS:
+        body, note = _per_level_list(model, cols), UNKNOWN_NOTE_LIST
+    else:
+        body = floor_matrix_svg(model, cols)
+    asof = _fmt(model["today"], "%b %-d, %Y")
+    subs = "" if rep["subs"] else _sub_status(rep)
+    sched = "" if rep.get("forecast") else f"<p class='muted'>{_e(NO_SCHEDULE_LINE)}</p>"
+    return (f"<section class='pg fs'><h2>Status by floor</h2><p class='muted'>The strongest record for each level and "
+            f"work step, from every source on file, as of {_e(asof)}. Steps are the standard sequence laid over "
+            "each level, not this job's schedule. No percent complete is calculated.</p>"
+            f"{_whole_building(model)}{body}{floor_legend()}<div class='foot fn'>{mark_svg(None, 10)}&nbsp;{_e(note)}</div>"
+            f"{_outside(model)}{_open_on_record(model)}{_disagree(model)}{subs}{sched}</section>")
+
+
+def _levels_words(levels: List[str]) -> str:
+    """Bottom to top: "Cellar, Floors 1–3, Roof"."""
+    from lib import project_progress as PPG
+    from lib import work_state as WS
+    from lib.plans import level_suggestion as LS
+    out, run = [], []
+
+    def flush() -> None:
+        if run:
+            out.append(f"Floor {run[0]}" if len(run) == 1 else f"Floors {run[0]}–{run[-1]}")
+            run.clear()
+    for lv in sorted(levels, key=PPG.level_order):
+        n = LS.floor_number(lv)
+        if n is not None and (not run or n == run[-1] + 1):
+            run.append(n)
+            continue
+        flush()
+        if n is not None:
+            run.append(n)
+        else:
+            out.append(WS.level_label(lv))
+    flush()
+    return ", ".join(out)
+
+
+def _sub_status(rep: Dict[str, Any]) -> str:
+    """Per sub: the floors and work it has records on, and the strongest
+    record of each, from the model's subs."""
+    model = _model(rep)
+    if not model or not model.get("subs"):
+        return ""
+    outside = {(c["level"], c["node"]): c for c in model.get("outside_frame") or ()}
+    rank = {k: n for n, (k, _w) in enumerate(MARKS)}
+    rows, idle = [], []
+    subs = sorted(model["subs"].values(), key=lambda s: (s["first"] or date.max, s["sub"]))
+    for s in subs:
+        if not s["work"]:
+            idle.append(s["sub"])
+            continue
+        by_node: Dict[str, Dict[Optional[str], List[str]]] = {}
+        for w in s["work"]:
+            c = model["cells"].get((w["level"], w["node"])) or outside.get((w["level"], w["node"])) or {}
+            by_node.setdefault(w["node"], {}).setdefault(mark_of(c.get("status")), []).append(w["level"])
+        parts = []
+        for node, marks in by_node.items():
+            bits = " ".join(f"<span class='nw'>{mark_svg(k)}&nbsp;{_e(_levels_words(lv))}</span>"
+                            for k, lv in sorted(marks.items(), key=lambda kv: rank.get(kv[0], 99)))
+            parts.append(f"<span class='nw'><b>{_e(_short(model, node))}</b>:</span> {bits}")
+        rows.append(f"<tr><td class='sn'>{_e(s['sub'])}</td><td>{' &nbsp;·&nbsp; '.join(parts)}</td></tr>")
+    if not rows and not idle:
+        return ""
+    tail = (f"<div class='muted'>On site with no work step on record: {_e(', '.join(idle))}.</div>" if idle else "")
+    return ("<div class='keep'><h3>What the records show, by subcontractor</h3><div class='muted'>The floors and work "
+            "each sub has records on, with the strongest record for each (the same marks as the status by floor).</div>"
+            f"<table class='lvl subst'>{''.join(rows)}</table>{floor_legend()}{tail}</div>")
+
+
+def _forecast_section(rep: Dict[str, Any]) -> str:
+    """lib/forecast.py's four groups, when a confirmed schedule is on file;
+    LeveLog's estimates only inside their own labelled box."""
+    sec = rep.get("forecast") if _large(rep) else None
+    if not sec:
+        return ""
+    heads = {"verified": "Verified (start and done markers, attested or stronger)",
+             "file": "The schedule file (its own dates and logic: a plan, not evidence of work)",
+             "reported": "Reported in daily logs (never a start or a finish)"}
+    by = {g["key"]: g for g in sec["groups"]}
+
+    def lines(key: str, cap: int = 6) -> str:
+        got = [ln[2:] if ln.startswith("- ") else ln for ln in by[key]["lines"]]
+        more = len(got) - cap
+        got = got[:cap] + ([f"…and {more} more in the report's stored snapshot."] if more > 0 else [])
+        return "<ul class='tight'>" + "".join(f"<li>{_e(ln.strip())}</li>" for ln in got) + "</ul>"
+    parts = "".join(f"<h3>{_e(heads[k])}</h3>{lines(k)}" for k in ("verified", "file", "reported") if k in by)
+    est = (f"<div class='estbox'><h4>Estimates: computed by LeveLog, not verified</h4><div class='muted'>Each with "
+           f"its basis and the number of levels it rests on; never a schedule date.</div>{lines('estimate', 10)}</div>"
+           if "estimate" in by else "")
+    return (f"<section class='keep fs'><h2>Schedule status against the confirmed file {_tag('S')}</h2><p class='muted'>"
+            "Four kinds of statement, kept apart: verified markers, the file's own dates, what the logs reported, "
+            f"and estimates. No cause of delay is stated.</p>{parts}{est}</section>")
 
 
 def _schedule_section(rep: Dict[str, Any]) -> str:
@@ -747,7 +1161,8 @@ def render_html(reps: List[Dict[str, Any]], *, gc: str = "", title: str = "", no
                     + f"<section class='keep'><div class='two'>{_coming_block(rep) or '<div></div>'}"
                       f"<div style='display:flex;gap:8px'>{_schedule_card(rep)}{_finance_card(rep)}</div></div></section>"
                     + "<div style='page-break-after:always'></div>"
-                    + _progress(rep, images) + _schedule_section(rep) + _workforce(rep) + _photos(rep, images)
+                    + _progress(rep, images) + _status_by_floor(rep) + _schedule_section(rep) + _forecast_section(rep)
+                    + _workforce(rep) + _photos(rep, images)
                     + _regulatory(rep) + _financial(rep) + _basis(rep, report_id))
     return (f"<!doctype html><html><head><meta charset='utf-8'><title>{_e(title)}</title>"
             f"<style>{css}</style></head><body>{''.join(body)}</body></html>")

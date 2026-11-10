@@ -1475,7 +1475,49 @@ def snapshot(rep: Dict[str, Any]) -> Dict[str, Any]:
     snap = {k: clean(rep.get(k)) for k in keep}
     snap["photos"] = [{k: clean(v) for k, v in p.items() if k in ("key", "date", "sub", "trade", "where", "caption", "log_id")}
                       for p in rep.get("photos") or []]
+    snap["progress"] = progress_snapshot(rep.get("progress_model"))
+    snap["progress_unavailable"] = bool(rep.get("progress_unavailable"))
+    snap["forecast"] = clean(rep.get("forecast"))
     return snap
+
+
+def progress_snapshot(model: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The whole-building status the report printed (lib/project_progress.py's
+    model), for audit: EVERY cell's status, and for each cell with records the
+    evidence ids behind it (source, rung, claim, day; never the words anyone
+    said), the whole-building row, the subs' cells, what is open on the record
+    and the records that disagree, as printed."""
+    if not model:
+        return None
+
+    def day(v: Any) -> Any:
+        return v.isoformat() if isinstance(v, (date, datetime)) else v
+
+    def ev(c: Dict[str, Any]) -> Dict[str, Any]:
+        dec = c.get("decided_by") or {}
+        return {"status": c["status"], "bucket": c["bucket"], "item_count": c.get("item_count", 0),
+                "refs": list(c.get("refs") or [i["ref"] for i in c.get("items") or ()]),
+                "decided_by": dec.get("ref"),
+                "items": [{"ref": i["ref"], "source": i["source"], "kind": i["kind"], "claim": i["claim"],
+                           "on": day(i.get("on")), "shared": bool(i.get("shared"))} for i in c.get("items") or ()]}
+    cells = model["cells"]
+    return {
+        "today": day(model["today"]),
+        "frame": {"levels": [lv["level"] for lv in model["frame"]["levels"]],
+                  "steps": [s["id"] for s in model["frame"]["steps"]],
+                  "building_steps": [s["id"] for s in model["frame"].get("building_steps") or ()],
+                  "source": model["frame"]["source"]},
+        "cells": {f"{lv}|{n}": c["status"] for (lv, n), c in cells.items()},
+        "evidence": {f"{lv}|{n}": ev(c) for (lv, n), c in cells.items() if c["bucket"] != "unknown"},
+        "building": {c["node"]: ev(c) for c in model.get("building") or ()},
+        "outside_frame": {f"{c['level']}|{c['node']}": ev(c) for c in model.get("outside_frame") or ()},
+        "subs": {name: [{"level": w["level"], "node": w["node"], "status": w["status"]} for w in s["work"]]
+                 for name, s in (model.get("subs") or {}).items()},
+        "open_on_record": {lv: s["bottleneck"] for lv, s in (model.get("by_level") or {}).items()},
+        "conflicts": [{"type": c["type"], "level": c["level"], "node": c["node"], "refs": list(c["refs"]),
+                       "what": c["what"]} for c in model.get("conflicts") or ()],
+        "counts": dict(model.get("counts") or {}),
+    }
 
 
 def photo_review(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]],

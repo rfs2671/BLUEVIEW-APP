@@ -57326,13 +57326,18 @@ async def _progress_plan_tokens(pid: str) -> list:
     return plan_tokens
 
 
-async def _project_progress(project: dict, company_id: str, *, job: str = "", today: Optional[_Date] = None) -> dict:
+async def _project_progress(project: dict, company_id: str, *, job: str = "", today: Optional[_Date] = None,
+                            keep: Optional[dict] = None) -> dict:
+    """`keep`: a dict the caller gets back filled with what the model was built
+    from ("items", "sources", "start"), so a report adds the forecast to the
+    SAME read instead of a second one."""
     now = datetime.now(timezone.utc)
     today = today or now.astimezone(_MemoryZone("America/New_York")).date()
     # Every source, through the one loader (lib/evidence_sources.py).
     start = today - timedelta(days=PROJECT_PROGRESS_DAYS - 1)
-    keep: dict = {}
+    keep = {} if keep is None else keep
     items, _coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    keep.update(items=items, start=start)
     plan_tokens = await _progress_plan_tokens(str(project.get("_id")))
     return project_progress.build(items, today=today, project=project, plan_tokens=plan_tokens,
                                   schedule=keep["sources"].get("schedule"), job=job or str(project.get("name") or ""))
@@ -57549,6 +57554,31 @@ def _report_image(c: dict) -> Optional[str]:
         return None
 
 
+async def _report_progress(rep: dict, project: dict, company_id: str, now: datetime) -> None:
+    """The larger report's status by floor and schedule forecast, from the SAME
+    _project_progress model the assistant answers from, as of the period's end.
+    A model that cannot be read is said so on the page, never shown as nothing
+    on record; the rest of the report still goes."""
+    today = min(rep["end"], now.astimezone(_MemoryZone("America/New_York")).date())
+    keep: dict = {}
+    rep["progress_model"], rep["forecast"] = None, None
+    try:
+        rep["progress_model"] = await _project_progress(project, company_id, job=rep["job"], today=today, keep=keep)
+    except Exception as e:
+        logger.warning(f"[report] progress model not read: {type(e).__name__}: {e!r}")
+        rep["progress_unavailable"] = True
+        return
+    sched = (keep.get("sources") or {}).get("schedule")
+    if not sched:
+        return
+    try:
+        rows = work_state.evidence_rows(progress_report._log_activities(keep["sources"]["logbooks"], keep["start"], today))
+        fc = schedule_forecast.forecast(sched, keep["items"], rows, today=today, project_id=str(project.get("_id")))
+        rep["forecast"] = schedule_forecast.report_section(fc)
+    except Exception as e:                  # a schedule that cannot be read is no forecast
+        logger.warning(f"[report] forecast not built: {type(e).__name__}: {e!r}")
+
+
 async def build_project_report(company_id: str, projects: List[dict], start: _Date, end: _Date, *,
                                now: Optional[datetime] = None, by: str = "",
                                source: str = "app", key: Optional[str] = None,
@@ -57579,6 +57609,8 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
             job=wa_assistant.street_label(p), address=str(p.get("address") or ""), gc=gc,
             start=start, end=end, now=now, kind=kind, **rows)
         rep["photos"] = await _report_photos(rep, str(p.get("_id")))
+        if (end - start).days + 1 >= progress_report_render.GANTT_MIN_DAYS:
+            await _report_progress(rep, p, company_id, now)
         reps.append(rep)
     images = {}
     for rep in reps:

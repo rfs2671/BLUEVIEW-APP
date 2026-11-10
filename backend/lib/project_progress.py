@@ -288,6 +288,8 @@ def cell(items: Sequence[Dict[str, Any]], level: str, node: str, today: date, *,
     return {
         "level": level, "node": node, "status": status, "bucket": bucket(status, facts, today),
         "items": [_brief(i) for i in ordered[:MAX_ITEMS_PER_CELL]], "item_count": len(facts),
+        # Every record behind the status, by id (strongest first), for a report's audit snapshot.
+        "refs": [i["ref"] for i in ordered],
         "decided_by": _brief(dec) if dec else None,
         "first": days[0] if days else None, "last": days[-1] if days else None,
         "subs": sorted({i["sub"] for i in facts if i.get("sub")}),
