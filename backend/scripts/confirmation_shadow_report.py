@@ -48,11 +48,19 @@ def summarize(rows, events):
     per_trigger = {t: C.precision(cur[str(r["_id"])]["verdict"] for r in rows if r["trigger"] == t)
                    for t in sorted(mix)}
     statuses = Counter(c["status"] for c in cur.values())
+    # Live asked for and refused (lib/confirmation_queue.live_refused): said,
+    # never silent. The field is stored only on a refused run's rows: absent
+    # from every row is "no refusal stored", counted as none.
+    try:
+        require_fields(rows, "live_refused")
+        refused = Counter(str(r["live_refused"]) for r in rows if r.get("live_refused"))
+    except FieldNotInSample:
+        refused = Counter()
     messages = {}
     for r in sorted(rows, key=lambda r: (r["day"], str(r["target_user_id"]), int(r.get("position") or 0))):
         messages.setdefault((r["day"], str(r["target_user_id"])), r["text"])
     return {"rows": len(rows), "per_job_day": per_job_day, "mix": mix, "overall": overall,
-            "per_trigger": per_trigger, "statuses": statuses, "messages": messages}
+            "per_trigger": per_trigger, "statuses": statuses, "messages": messages, "live_refused": refused}
 
 
 def main() -> int:
@@ -79,6 +87,9 @@ def main() -> int:
         print(f"NOT COUNTED: {e}")
         return 1
     print(f"\n{s['rows']} candidates since {since} (status now: {dict(s['statuses'])})")
+    print(f"Live mode, as this code reads it: {C.live_refused({C.LIVE_ENV: '1'}) or 'not refused by the code'}")
+    for why, n in s["live_refused"].most_common():
+        print(f"  {n} row(s) stored while live was refused: {why}")
     print("\nPer job per day:")
     for (pid, day), n in sorted(s["per_job_day"].items(), key=lambda kv: (kv[0][1], kv[0][0])):
         print(f"  {day}  {pid}  {n}")

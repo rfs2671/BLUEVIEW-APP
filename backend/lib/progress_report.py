@@ -1481,12 +1481,24 @@ def snapshot(rep: Dict[str, Any]) -> Dict[str, Any]:
     return snap
 
 
+#: A report's stored snapshot is bounded: a cell keeps its strongest refs up
+#: to this many and the COUNT of all of them; the records that disagree keep
+#: this many and their count. A year of a 20-storey job's photos made a 95 MB
+#: snapshot before (review 2, finding 8): MongoDB refuses a 16 MB document.
+SNAPSHOT_REFS_PER_CELL = 10
+SNAPSHOT_MAX_CONFLICTS = 50
+#: The whole progress snapshot, as JSON, stays under this (a test holds it on a
+#: synthetic 20-storey job with a year of records).
+SNAPSHOT_MAX_BYTES = 2_000_000
+
+
 def progress_snapshot(model: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """The whole-building status the report printed (lib/project_progress.py's
     model), for audit: EVERY cell's status, and for each cell with records the
     evidence ids behind it (source, rung, claim, day; never the words anyone
-    said), the whole-building row, the subs' cells, what is open on the record
-    and the records that disagree, as printed."""
+    said; the strongest SNAPSHOT_REFS_PER_CELL ids and the count of all), the
+    whole-building row, the subs' cells, what is open on the record and the
+    records that disagree, as printed -- by role, never a person's name."""
     if not model:
         return None
 
@@ -1495,8 +1507,9 @@ def progress_snapshot(model: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
 
     def ev(c: Dict[str, Any]) -> Dict[str, Any]:
         dec = c.get("decided_by") or {}
+        refs = list(c.get("refs") or [i["ref"] for i in c.get("items") or ()])
         return {"status": c["status"], "bucket": c["bucket"], "item_count": c.get("item_count", 0),
-                "refs": list(c.get("refs") or [i["ref"] for i in c.get("items") or ()]),
+                "refs": refs[:SNAPSHOT_REFS_PER_CELL], "ref_count": len(refs),
                 "decided_by": dec.get("ref"),
                 "items": [{"ref": i["ref"], "source": i["source"], "kind": i["kind"], "claim": i["claim"],
                            "on": day(i.get("on")), "shared": bool(i.get("shared"))} for i in c.get("items") or ()]}
@@ -1514,9 +1527,14 @@ def progress_snapshot(model: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
         "subs": {name: [{"level": w["level"], "node": w["node"], "status": w["status"]} for w in s["work"]]
                  for name, s in (model.get("subs") or {}).items()},
         "open_on_record": {lv: s["bottleneck"] for lv, s in (model.get("by_level") or {}).items()},
-        "conflicts": [{"type": c["type"], "level": c["level"], "node": c["node"], "refs": list(c["refs"]),
-                       "what": c["what"]} for c in model.get("conflicts") or ()],
+        # By role: a conflict's printed words name people; the stored copy does not.
+        "conflicts": [{"type": c["type"], "level": c["level"], "node": c["node"],
+                       "refs": list(c["refs"])[:SNAPSHOT_REFS_PER_CELL],
+                       "what": c.get("what_by_role") or c["what"]}
+                      for c in (model.get("conflicts") or ())[:SNAPSHOT_MAX_CONFLICTS]],
+        "conflict_count": len(model.get("conflicts") or ()),
         "counts": dict(model.get("counts") or {}),
+        "unreadable": list(model.get("unreadable") or ()),
     }
 
 

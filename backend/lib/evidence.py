@@ -49,13 +49,16 @@ def item(kind: str, claim: str, *, source: str, ref: str, project_id: Any, node:
          on: Optional[date] = None, by: Optional[str] = None, quote: Optional[str] = None,
          shared: bool = False, stated_percent: Optional[float] = None,
          basis: Optional[str] = None, note: Optional[str] = None,
-         said_at: Optional[datetime] = None) -> Dict[str, Any]:
+         said_at: Optional[datetime] = None, candidates: Sequence[str] = ()) -> Dict[str, Any]:
     """One piece of evidence. `source` names the collection or feed, `ref` the
     record inside it (so it can be shown and audited). `shared`: the record names
     several places together ("floors 1-4") and is not about one alone.
     `basis` is required for an estimate. `said_at`: when the statement or record
     was made (a report's created_at), which orders two items of one day and
-    places an undated one: it is never shown as the date of the work."""
+    places an undated one: it is never shown as the date of the work.
+    `candidates`: the levels the record NAMED but that could not be placed
+    (the project does not have them, or its levels could not be read): the
+    item's `levels` is then [] -- place unknown, never the building's."""
     if kind not in _RANK:
         raise ValueError(f"unknown evidence kind {kind!r}")
     if claim not in CLAIMS:
@@ -65,7 +68,7 @@ def item(kind: str, claim: str, *, source: str, ref: str, project_id: Any, node:
     return {"kind": kind, "claim": claim, "source": source, "ref": str(ref), "project_id": str(project_id),
             "node": node, "levels": sorted(set(levels)), "space": space, "sub": sub, "on": on, "by": by,
             "quote": quote, "shared": bool(shared), "stated_percent": stated_percent, "basis": basis, "note": note,
-            "said_at": said_at}
+            "said_at": said_at, "candidates": sorted(set(candidates or ()))}
 
 
 def rank(kind: str) -> int:
@@ -124,18 +127,46 @@ def about(items: Iterable[Dict[str, Any]], *, node: Optional[str] = None, level:
     return out
 
 
+#: Claims that say work was going on (or present). Anything else -- a booking,
+#: "not yet", "blocked", "nobody was there", "don't know" -- says no work was seen.
+WORK_CLAIMS = ("done", "in_progress", "started", "failed", "present")
+_STRONG = ("verified", "confirmed", "attested")
+
+
 def status(items: Sequence[Dict[str, Any]]) -> str:
-    """One word for a package from its items: done_verified | done_confirmed |
-    done_attested | failed_attested | in_progress_observed | reported | unknown.
-    A failure stated after a pass wins at the same rung; nothing below 'attested'
-    can say done."""
+    """One word for a package from its items, strongest first:
+
+      done_<rung> | failed_<rung>   a done / failed at attested or stronger (a
+                                    failure stated after a pass wins at a rung)
+      in_progress_<rung>            work stated or signed in progress at
+                                    attested or stronger ("partly passed", a
+                                    pour in progress, "started")
+      in_progress_observed          a photo shows the work
+      reported                      a REPORTED item says work went on (a log
+                                    row, the schedule file's actual): only then
+      scheduled_<rung>              only a booking ("inspection booked for
+                                    the 14th"): booked is not in progress
+      not_yet_<rung> | blocked_<rung>  only a person's "not yet" / "blocked"
+      unknown                       nothing, or only "don't know" / "nobody
+                                    was there": unknown is never not done
+
+    Nothing below 'attested' can say done."""
     facts = [i for i in items if i["kind"] != "estimate"]
     if not facts:
         return "unknown"
-    for kind in ("verified", "confirmed", "attested"):
+    for kind in _STRONG:
         last = newest(i for i in facts if i["kind"] == kind and i["claim"] in ("done", "failed"))
         if last:
             return f"{last['claim']}_{kind}"
+    for kind in _STRONG:
+        if any(i["kind"] == kind and i["claim"] in WORK_CLAIMS for i in facts):
+            return f"in_progress_{kind}"
     if any(i["kind"] == "observed" for i in facts):
         return "in_progress_observed"
-    return "reported"
+    if any(i["kind"] == "reported" and i["claim"] in WORK_CLAIMS for i in facts):
+        return "reported"
+    for claim in ("scheduled", "blocked", "not_yet"):
+        pool = [i for i in facts if i["claim"] == claim]
+        if pool:
+            return f"{claim}_{min(pool, key=lambda i: rank(i['kind']))['kind']}"
+    return "unknown"

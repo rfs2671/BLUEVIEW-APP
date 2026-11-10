@@ -6,7 +6,11 @@ return `(items, coverage)`:
 
   items     a list of lib/evidence.item() dicts, unchanged in shape:
               {kind, claim, source, ref, project_id, node, levels, space, sub,
-               on, by, quote, shared, stated_percent, basis, note}
+               on, by, quote, shared, stated_percent, basis, note, said_at,
+               candidates}
+            `candidates`: levels the record named that the project's frame
+            does not hold (or every level, while the frame is unreadable):
+            `levels` is then [], place unknown, never a guessed floor.
             `node` is a graph_v1 node id, a lib/work_nodes id, an inspection
             gate id (gate_plumbing_rough ...), or None when the record names
             no kind of work (a check-in, a punch item, a superintendent's
@@ -106,6 +110,51 @@ def _filed(log: Dict[str, Any]) -> bool:
         and str(log.get("status") or "") != "withdrawn" and not log.get("is_deleted")
 
 
+# ── THE PROJECT'S FRAME (lib/location_binder): every source is bound to it ──
+#
+# `frame` is server._project_place_frame's {levels, spaces, known, excluded,
+# unreadable?}. A level the project does not have, or ANY level while the
+# frame could not be read, is not placed: the item's levels are [] and what
+# the record named rides along as `candidates` (place unknown, never the
+# building's, never a guessed floor). With no frame, or a frame that holds no
+# level at all, nothing changes: the words' own reading stands.
+
+def _frame_binds(frame: Optional[Dict[str, Any]]) -> bool:
+    return bool(frame) and bool(frame.get("levels") or frame.get("unreadable"))
+
+
+def bind_levels(levels: Sequence[str], frame: Optional[Dict[str, Any]]) -> Tuple[List[str], List[str], Optional[str]]:
+    """(levels kept, candidates, note) for levels a record states outright."""
+    levels = [lv for lv in levels or () if lv]
+    if not levels or not _frame_binds(frame):
+        return list(levels), [], None
+    if frame.get("unreadable"):
+        return [], sorted(set(levels)), "the project's levels could not be read, so no level is placed"
+    have = set(frame.get("levels") or ())
+    if all(lv in have for lv in levels):
+        return list(levels), [], None
+    out = sorted(lv for lv in set(levels) if lv not in have)
+    return [], sorted(set(levels)), ("names " + ", ".join(W.level_label(lv) for lv in out)
+                                     + ", which the project's levels do not include; not placed")
+
+
+def place_text(text: Any, frame: Optional[Dict[str, Any]]) -> Tuple[List[str], List[str], Optional[str]]:
+    """(levels, candidates, note) for a free-text location, read by
+    lib/location_binder against the frame. With no frame the words are read
+    alone, a unit's digits never taken for its floor ("3B" is not Floor 3)."""
+    from lib import location_binder as LB
+    if not _frame_binds(frame):
+        return W.places_in(LB._units(str(text or ""))[1])["levels"], [], None
+    b = LB.bind(text, [] if frame.get("unreadable") else frame.get("levels"), frame.get("spaces"))
+    if b["certainty"] != LB.NONE:
+        return list(b["levels"]), [], None
+    if not b["candidates"]:
+        return [], [], None
+    why = ("the project's levels could not be read" if frame.get("unreadable")
+           else str(b["reason"]).replace("_", " "))
+    return [], list(b["candidates"]), f"{why}; not placed"
+
+
 # ── FILED DAILY-LOG CREW ROWS: reported ────────────────────────────────────
 
 def from_daily_logs(activities: Iterable[Dict[str, Any]], project_id: Any,
@@ -137,25 +186,29 @@ def from_daily_logs(activities: Iterable[Dict[str, Any]], project_id: Any,
 
 def from_photos(index_rows: Iterable[Dict[str, Any]], project_id: Any, *, log_ids: Optional[set] = None,
                 spaces: Optional[Dict[str, Dict[str, Any]]] = None,
-                confirmations: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> Tuple[List[Item], Dict[str, Any]]:
+                confirmations: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+                frame: Optional[Dict[str, Any]] = None) -> Tuple[List[Item], Dict[str, Any]]:
     """Only the work the DESCRIPTION shows (`seen_nodes`), never the crew row's
-    words; a level only when lib/photo_place calls the place sufficient."""
-    photos = W.photo_rows(index_rows, log_ids, spaces=spaces, confirmations=confirmations)
+    words; a level only when lib/photo_place calls the place sufficient, and
+    the project's frame has it."""
+    photos = W.photo_rows(index_rows, log_ids, spaces=spaces, confirmations=confirmations, frame=frame)
     out: List[Item] = []
     placed = 0
     for p in photos:
         place = p["place"]
         sufficient = photo_place.is_sufficient(place)
         level = [place["level"]] if sufficient and place.get("level") else []
+        level, cands, unbound = bind_levels(level, frame)
         placed += bool(level)
         note = _notes("a photo observes; it never verifies", f"place: {photo_place.how(place)}" if photo_place.how(place) else None,
+                      unbound,
                       None if level or not place.get("candidates") else
                       "filed for " + ", ".join(W.level_label(c) for c in place["candidates"]) + "; none chosen")
         for node in p["seen_nodes"]:
             out.append(E.item("observed", "in_progress", source="photo_index", ref=str(p.get("short") or p.get("photo_key")),
                               project_id=project_id, node=node, levels=level, space=place.get("space") if sufficient else None,
                               sub=_t(p.get("sub")) or None, on=as_day(p.get("date")), quote=_t(p.get("description")) or None,
-                              note=note))
+                              note=note, candidates=cands))
     cov = {"photos": len(photos), "shows_known_work": sum(1 for p in photos if p["seen_nodes"]),
            "placed_on_one_level": placed, "items": len(out)}
     return out, cov
@@ -166,7 +219,8 @@ def from_photos(index_rows: Iterable[Dict[str, Any]], project_id: Any, *, log_id
 _RESULT_CLAIM = {"passed": "done", "failed": "failed", "partial": "in_progress", "scheduled": "scheduled"}
 
 
-def from_inspections(rows: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[List[Item], Dict[str, Any]]:
+def from_inspections(rows: Iterable[Dict[str, Any]], project_id: Any,
+                     frame: Optional[Dict[str, Any]] = None) -> Tuple[List[Item], Dict[str, Any]]:
     """A row counts only when its result was read back from the person's own
     words and agreed (`validated_result`, lib/inspection_reports.audit). An
     UNRESOLVED row, or one stored before the check existed, makes no claim."""
@@ -185,7 +239,7 @@ def from_inspections(rows: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[L
         if r.get("validated_result") != result:
             cov["not_validated"] += 1
             continue
-        levels = list(r.get("levels") or [])
+        levels, cands, unbound = bind_levels(list(r.get("levels") or []), frame)
         on = as_day(r.get("inspected_on"))
         who = _t(r.get("reporter_name")) or "someone"
         heard = _t(r.get("hearsay_from"))
@@ -196,8 +250,8 @@ def from_inspections(rows: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[L
             "reported" if heard else "attested", _RESULT_CLAIM[result], source="inspection_reports",
             ref=str(r.get("_id") or ""),
             project_id=project_id, node=r.get("gate") or None, levels=levels, space=r.get("space") or None,
-            on=on, by=who, quote=r.get("quote") or None, shared=len(levels) > 1, said_at=said,
-            note=_notes(f"reported by {who}, not verified",
+            on=on, by=who, quote=r.get("quote") or None, shared=len(levels) > 1, said_at=said, candidates=cands,
+            note=_notes(f"reported by {who}, not verified", unbound,
                         f"hearsay: {who} reports that {heard} said it" if heard else None,
                         f"{IR.RELAYED_NOTE} (as said: {_t(r.get('relayed_from'))})" if _t(r.get("relayed_from")) else None,
                         f"as said: {r.get('inspection_as_said')}"
@@ -306,7 +360,8 @@ def _latest(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(best.values())
 
 
-def from_dob(rows: Iterable[Dict[str, Any]], project_id: Any, *, bins: Sequence[Any] = ()) -> Tuple[List[Item], Dict[str, Any]]:
+def from_dob(rows: Iterable[Dict[str, Any]], project_id: Any, *, bins: Sequence[Any] = (),
+             frame: Optional[Dict[str, Any]] = None) -> Tuple[List[Item], Dict[str, Any]]:
     """One verified `done` per (signed-off filing, node). Another building's
     rows (report_regulatory.split_by_bin) are left out."""
     kept, excluded, _unverified, _inferred = report_regulatory.split_by_bin(list(rows), bins)
@@ -342,15 +397,16 @@ def from_dob(rows: Iterable[Dict[str, Any]], project_id: Any, *, bins: Sequence[
         if not nodes:
             unmapped.append({"filing": number, "work": ", ".join(dict.fromkeys(f["types"])) or (f["desc"] or [""])[0]})
             continue
-        levels = sorted({lv for fl in f["floors"] for lv in dob_levels(fl)})
+        levels, cands, unbound = bind_levels(sorted({lv for fl in f["floors"] for lv in dob_levels(fl)}), frame)
         floors_said = "; ".join(dict.fromkeys(f["floors"]))
         work = ", ".join(dict.fromkeys(f["types"])) or (f["desc"] or [""])[0]
         scope = (f"DOB lists the filing's work on {', '.join(W.level_label(lv) for lv in levels)}" if levels else
+                 f"DOB lists {floors_said}: {unbound}" if cands else
                  "building-wide: the filing names no level" + (f" (DOB lists: {floors_said})" if floors_said else ""))
         for node in nodes:
             out.append(E.item(
                 "verified", "done", source="dob_logs", ref=number, project_id=project_id, node=node, levels=levels,
-                on=f["date"], quote=f"{f['status']}: {work}", shared=len(levels) > 1,
+                on=f["date"], quote=f"{f['status']}: {work}", shared=len(levels) > 1, candidates=cands,
                 note=_notes(f"DOB sign-off of filing {number}; it covers the filing's scope, {scope}",
                             "work read from the filing's description" if from_desc else None,
                             None if f["date"] else "DOB's sign-off date is not on the stored record",
@@ -369,10 +425,12 @@ _PARTIAL = re.compile(r"\bpartial(?:ly)?\b|\bpart\s+of\b|\bportion\b|\bhalf\b|\b
 _SLAB = re.compile(r"\bslabs?\b|\bdecks?\b", re.I)
 
 
-def pour_claim(location: Any) -> Tuple[Optional[str], str, List[str]]:
-    """(node, claim, levels) for a pour at this location."""
+def pour_claim(location: Any, frame: Optional[Dict[str, Any]] = None) -> Tuple[Optional[str], str, List[str]]:
+    """(node, claim, levels) for a pour at this location, its levels bound to
+    the project's frame (place_text): "3B slab" is a unit's slab, never Floor 3
+    done, and a floor the building does not have places nothing."""
     loc = _t(location)
-    levels = W.places_in(loc)["levels"]
+    levels = place_text(loc, frame)[0]
     node = work_nodes.classify(loc)[0]
     kind = node[0] if node else None
     if kind == "foundation":
@@ -384,7 +442,8 @@ def pour_claim(location: Any) -> Tuple[Optional[str], str, List[str]]:
     return kind, "in_progress", levels
 
 
-def from_pours(logbooks: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[List[Item], Dict[str, Any]]:
+def from_pours(logbooks: Iterable[Dict[str, Any]], project_id: Any,
+               frame: Optional[Dict[str, Any]] = None) -> Tuple[List[Item], Dict[str, Any]]:
     """A FILED concrete-operations log (the competent person's): a structural
     slab or deck pour at a level it names is done there; anything else is in
     progress; a location that names no level gives no level."""
@@ -402,18 +461,19 @@ def from_pours(logbooks: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[Lis
         if not loc:
             cov["no_location"] += 1
             continue
-        node, claim, levels = pour_claim(loc)
+        node, claim, levels = pour_claim(loc, frame)
+        _lv, cands, unbound = place_text(loc, frame)
         cov["no_level"] += not levels
         slumps = [s for s in data.get("slump_tests") or [] if isinstance(s, dict)]
         failed = sum(1 for s in slumps if s.get("pass") is False)
         out.append(E.item(
             "confirmed", claim, source="concrete_operations", ref=str(lg.get("_id") or ""), project_id=project_id,
             node=node, levels=levels, on=as_day(lg.get("date")), by=_t(lg.get("cp_name")) or None, quote=loc,
-            shared=len(levels) > 1,
-            note=_notes("a filed concrete operations log",
+            shared=len(levels) > 1, candidates=cands,
+            note=_notes("a filed concrete operations log", unbound,
                         "a topping pour, not the structural slab" if _TOPPING.search(loc) else None,
                         "a partial pour" if _PARTIAL.search(loc) else None,
-                        None if levels else "the pour location names no level",
+                        None if levels or cands else "the pour location names no level",
                         None if node else "the pour location names no kind of work",
                         f"{failed} failed slump test(s) recorded" if failed else None)))
     cov["items"] = len(out)
@@ -422,7 +482,8 @@ def from_pours(logbooks: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[Lis
 
 # ── CLOSED PUNCH ITEMS: confirmed ──────────────────────────────────────────
 
-def from_punch(items: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[List[Item], Dict[str, Any]]:
+def from_punch(items: Iterable[Dict[str, Any]], project_id: Any,
+               frame: Optional[Dict[str, Any]] = None) -> Tuple[List[Item], Dict[str, Any]]:
     """An item an admin or PM closed ("P23 ok", lib/punch.super_verdict):
     done for THAT item, at its floor and area. Node None: one punch item is
     never the package of work."""
@@ -434,15 +495,16 @@ def from_punch(items: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[List[I
             continue
         floor = _t(it.get("floor"))
         level = W.level_asked(floor) if floor and floor != "?" else None
+        levels, cands, unbound = bind_levels([level] if level else [], frame)
         area = _t(it.get("area"))
         space = area[4:] if area.startswith("Apt ") else (area if area and area != "?" else None)
         assignee = it.get("assignee") if isinstance(it.get("assignee"), dict) else {}
         pid = _t(it.get("pid")) or str(it.get("_id") or "")
         out.append(E.item(
             "confirmed", "done", source="punch_items", ref=pid, project_id=project_id, node=None,
-            levels=[level] if level else [], space=space, sub=_t(assignee.get("company")) or None,
+            levels=levels, space=space, sub=_t(assignee.get("company")) or None, candidates=cands,
             on=as_day(it.get("closed_at")), by=str(it.get("closed_by")), quote=_t(it.get("text")) or None,
-            note=_notes(f"punch item {pid} closed: this item only, not the package of work",
+            note=_notes(f"punch item {pid} closed: this item only, not the package of work", unbound,
                         f"trade: {it.get('trade')}" if _t(it.get("trade")) and it.get("trade") != "?" else None,
                         None if level else "its floor is not on record")))
         cov["closed"] += 1
@@ -459,7 +521,8 @@ def _inspection_entries(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [sec] if isinstance(sec, dict) else []
 
 
-def from_superintendent(logbooks: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[List[Item], Dict[str, Any]]:
+def from_superintendent(logbooks: Iterable[Dict[str, Any]], project_id: Any,
+                        frame: Optional[Dict[str, Any]] = None) -> Tuple[List[Item], Dict[str, Any]]:
     """Item 11 of a filed site superintendent's log (1 RCNY 3301-04(f)): where
     he says he inspected, in his own words. Presence at a place, not progress."""
     out: List[Item] = []
@@ -478,13 +541,13 @@ def from_superintendent(logbooks: Iterable[Dict[str, Any]], project_id: Any) -> 
             loc, result = _t(e.get("location")), _t(e.get("result"))
             if not (loc or result):
                 continue
-            levels = W.places_in(loc)["levels"]
+            levels, cands, unbound = place_text(loc, frame)
             out.append(E.item(
-                "attested", "present", source="superintendent_log", ref=f"{lg.get('_id') or ''}#{n}",
+                "attested", "present", source="superintendent_log", ref=f"{lg.get('_id') or ''}#{n}", candidates=cands,
                 project_id=project_id, levels=levels, on=as_day(e.get("inspected_on")) or as_day(lg.get("date")),
                 by=who, quote=" - ".join(x for x in (loc, result) if x), shared=len(levels) > 1,
                 note=_notes("the superintendent's daily inspection: where he inspected, not that work is done",
-                            None if levels else "names no single level")))
+                            unbound, None if levels or cands else "names no single level")))
     cov["items"] = len(out)
     return out, dict(cov)
 
@@ -516,7 +579,8 @@ def from_checkins(rows: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[List
 
 # ── A CONFIRMED SCHEDULE FILE'S ACTUALS: reported, by the file ─────────────
 
-def from_schedule(schedule: Optional[Dict[str, Any]], project_id: Any) -> Tuple[List[Item], Dict[str, Any]]:
+def from_schedule(schedule: Optional[Dict[str, Any]], project_id: Any,
+                  frame: Optional[Dict[str, Any]] = None) -> Tuple[List[Item], Dict[str, Any]]:
     """Activities the confirmed file gives an actual start or finish. The
     file's planned dates are not evidence of work and make no item."""
     out: List[Item] = []
@@ -531,18 +595,18 @@ def from_schedule(schedule: Optional[Dict[str, Any]], project_id: Any) -> Tuple[
         cov["with_actuals"] += 1
         name = _t(a.get("name"))
         nodes, generic = W.classify(name, name)
-        levels = W.places_in(name)["levels"]
+        levels, cands, unbound = place_text(name, frame)
         pct = a.get("percent_complete")
         pct = float(pct) if isinstance(pct, (int, float)) and not isinstance(pct, bool) else None
         note = _notes(f"the schedule file states actual finish {fin.isoformat()}" if fin else
                       f"the schedule file states actual start {start.isoformat()}",
                       f"the schedule file states {pct:g}%" if pct is not None else None,
-                      "the activity names the trade only" if generic else None,
+                      "the activity names the trade only" if generic else None, unbound,
                       None if nodes else "the activity names no kind of work we track")
         for node in nodes or [None]:
             out.append(E.item("reported", "done" if fin else "started", source="schedule_file", ref=str(a.get("id") or name),
                               project_id=project_id, node=node, levels=levels, on=fin or start, quote=name or None,
-                              shared=len(levels) > 1, stated_percent=pct, note=note))
+                              shared=len(levels) > 1, stated_percent=pct, note=note, candidates=cands))
     cov["items"] = len(out)
     return out, dict(cov)
 
@@ -555,6 +619,23 @@ def from_schedule(schedule: Optional[Dict[str, Any]], project_id: Any) -> Tuple[
 #: closeout, an attested inspection, a schedule actual. A slab poured Jul 1 is
 #: still poured in November; leaving it out would read as "no done marker".
 DAILY_SOURCES = ("daily_log", "photo_index", "checkins", "superintendent_log")
+
+#: The name coverage["unreadable"] gives the project's level frame when
+#: server._project_place_frame could not read it.
+FRAME_UNREADABLE = "place_frame"
+
+
+def frame_state(frame: Optional[Dict[str, Any]]) -> str:
+    """How the levels were bound: "frame unreadable" (the read failed: nothing
+    placed), "known" (the project or its plans name levels), "logs only",
+    "unknown" (no level known: the words read alone), "not given"."""
+    if frame is None:
+        return "not given"
+    if frame.get("unreadable"):
+        return "frame unreadable"
+    if frame.get("known"):
+        return "known"
+    return "logs only" if frame.get("levels") else "unknown"
 
 
 def in_window(i: Item, start: Optional[date], end: Optional[date]) -> bool:
@@ -585,16 +666,20 @@ def collect(project_id: Any, *, start: Optional[date] = None, end: Optional[date
     books = list(logbooks)
     parts = (("daily_log", from_daily_logs(activities, project_id, frame)),
              ("photo_index", from_photos(photo_index, project_id, log_ids=log_ids, spaces=spaces,
-                                         confirmations=confirmations)),
-             ("inspection_reports", from_inspections(inspections, project_id)),
-             ("dob_logs", from_dob(dob_rows, project_id, bins=bins)),
-             ("concrete_operations", from_pours(books, project_id)),
-             ("punch_items", from_punch(punch_items, project_id)),
-             ("superintendent_log", from_superintendent(books, project_id)),
+                                         confirmations=confirmations, frame=frame)),
+             ("inspection_reports", from_inspections(inspections, project_id, frame)),
+             ("dob_logs", from_dob(dob_rows, project_id, bins=bins, frame=frame)),
+             ("concrete_operations", from_pours(books, project_id, frame)),
+             ("punch_items", from_punch(punch_items, project_id, frame)),
+             ("superintendent_log", from_superintendent(books, project_id, frame)),
              ("checkins", from_checkins(checkins, project_id)),
-             ("schedule_file", from_schedule(schedule, project_id)))
+             ("schedule_file", from_schedule(schedule, project_id, frame)))
     items: List[Item] = []
-    coverage: Dict[str, Any] = {"window": {"start": start, "end": end}, "unreadable": sorted(set(unreadable))}
+    gone = set(unreadable)
+    if frame and frame.get("unreadable"):
+        gone.add(FRAME_UNREADABLE)
+    coverage: Dict[str, Any] = {"window": {"start": start, "end": end}, "unreadable": sorted(gone),
+                                "frame": frame_state(frame)}
     for name, (got, cov) in parts:
         kept = [i for i in got if in_window(i, start, end)]
         cov = dict(cov)

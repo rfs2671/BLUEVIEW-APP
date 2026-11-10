@@ -75,8 +75,24 @@ FRAME_SOURCE = ("the standard sequence (graph_v1, an operator-approved template 
                 "not this job's own schedule")
 LEVEL_SOURCES = {"project_fields": "project fields", "plan_sheets": "plan sheets",
                  "evidence": "named only by the records"}
+#: A level only records name while the project's levels are not known: shown
+#: so, never as one of the building's levels.
+RECORDS_ONLY = "from records only"
 SOURCE_WORDS = {"checkins": "gate check-ins", "logbooks": "filed daily logs", "photo_index": "daily-log photos",
-                "whatsapp": "WhatsApp", "inspection_reports": "inspection reports"}
+                "whatsapp": "WhatsApp", "inspection_reports": "inspection reports",
+                "place_frame": "the project's level frame (so no record was placed on a level)"}
+#: A cell's status in words (evidence.status()).
+STATUS_WORDS = {"reported": "reported in the logs", "in_progress_observed": "photographed in progress",
+                "in_progress_attested": "stated in progress by a named person (not verified)",
+                "in_progress_confirmed": "signed in progress", "in_progress_verified": "in progress, verified",
+                "scheduled_attested": "booked, as a named person said (booked is not in progress)",
+                "scheduled_reported": "booked, as reported second-hand (booked is not in progress)",
+                "not_yet_attested": "a named person said not yet", "blocked_attested": "a named person said blocked"}
+#: Who a record is from, by role, where a name must not be kept.
+ROLE_WORDS = {"inspection_reports": "a named reporter", "confirmation_answers": "a named person",
+              "concrete_operations": "the pour log's competent person", "punch_items": "the person who closed it",
+              "superintendent_log": "the superintendent", "dob_logs": "DOB", "daily_log": "a filed log",
+              "photo_index": "a photo", "schedule_file": "the schedule file", "checkins": "the gate"}
 UNKNOWN_WORDS = "no record (unknown means nothing is on record, either way)"
 NO_PERCENT = "No percent complete is on record, so none is given."
 GUARD = ("Say what is on record and what is unknown. Unknown means nothing is on record, either way. Give no "
@@ -104,9 +120,18 @@ _LEVEL_FIELDS = (("has_sub_cellar", LS.SUB_CELLAR), ("has_cellar", LS.CELLAR),
 
 
 def job_levels(project: Optional[Dict[str, Any]] = None, plan_tokens: Iterable[str] = (),
-               items: Iterable[Dict[str, Any]] = ()) -> List[Dict[str, Any]]:
-    """[{"level", "label", "sources": [...]}] bottom to top. A `has_*` field
-    that is None is nobody said: it adds nothing (it does not assert absence)."""
+               items: Iterable[Dict[str, Any]] = (), frame: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """[{"level", "label", "sources": [...], "records_only"}] bottom to top. A
+    `has_*` field that is None is nobody said: it adds nothing (it does not
+    assert absence).
+
+    `frame` (server._project_place_frame): its levels are the building's. A
+    level a record names is NEVER added when the known levels exclude it (a
+    floor above building_stories, or one the frame itself excludes): those
+    records stay on record outside the frame (build()'s outside_frame). While
+    a level only records name, and the frame does not hold, is kept but
+    marked `records_only` ("from records only"): never shown as the
+    building's, and never a reason to invent rows the frame does not have."""
     found: Dict[str, List[str]] = {}
 
     def add(token: str, source: str) -> None:
@@ -125,12 +150,30 @@ def job_levels(project: Optional[Dict[str, Any]] = None, plan_tokens: Iterable[s
             add(token, "project_fields")
     for token in plan_tokens or ():
         add(token, "plan_sheets")
+    framed = set((frame or {}).get("levels") or ())
     for i in items or ():
         if i.get("kind") == "estimate":
             continue
         for lv in i.get("levels") or ():
-            add(lv, "evidence")
-    return [{"level": t, "label": W.level_label(t), "sources": found[t]} for t in sorted(found, key=level_order)]
+            if not level_excluded(lv, project, frame):
+                add(lv, "evidence")
+    return [{"level": t, "label": W.level_label(t), "sources": found[t],
+             "records_only": found[t] == ["evidence"] and t not in framed}
+            for t in sorted(found, key=level_order)]
+
+
+def level_excluded(token: str, project: Optional[Dict[str, Any]] = None,
+                   frame: Optional[Dict[str, Any]] = None) -> bool:
+    """A level the KNOWN levels rule out: above the stated storey count, or
+    one the frame excludes. Never a guess: an unknown frame excludes nothing."""
+    if token in ((frame or {}).get("excluded") or {}):
+        return True
+    try:
+        stories = int((project or {}).get("building_stories") or 0)
+    except (TypeError, ValueError):
+        stories = 0
+    n = LS.floor_number(token)
+    return bool(stories) and n is not None and n > stories
 
 
 # ── THE WORK: graph_v1 per level, plus site / structure steps if defined ───
@@ -228,7 +271,7 @@ def bucket(status: str, facts: Sequence[Dict[str, Any]], today: date) -> str:
         return "done"
     if status.startswith("failed_"):
         return "failed"
-    if not facts:
+    if not facts or status == "unknown":
         return "unknown"
     for i in facts:
         d = _on(i)
@@ -336,12 +379,13 @@ def build(items: Sequence[Dict[str, Any]], *, today: date, project: Optional[Dic
           plan_tokens: Iterable[str] = (), schedule: Optional[Dict[str, Any]] = None,
           design: Iterable[Dict[str, Any]] = (), flags: Optional[Dict[str, Any]] = None,
           extra_steps: Optional[Sequence[Dict[str, Any]]] = None, job: str = "",
-          unreadable: Iterable[str] = ()) -> Dict[str, Any]:
+          unreadable: Iterable[str] = (), frame: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The status of the whole building from `items` (lib/evidence.py shape).
     `unreadable`: the sources the loader could not read (its coverage): what
-    they would have said is unknown, and every answer says so."""
+    they would have said is unknown, and every answer says so. `frame`: the
+    project's levels (job_levels)."""
     items = [i for i in items if i.get("kind") in E.KINDS]
-    levels = job_levels(project, plan_tokens, items)
+    levels = job_levels(project, plan_tokens, items, frame)
     seq = steps(flags, extra_steps)
     dix = _design_index(design)
     per_level = [s for s in seq if s.get("per_level", True) is not False]
@@ -359,6 +403,10 @@ def build(items: Sequence[Dict[str, Any]], *, today: date, project: Optional[Dic
     # done once for the building. Anything else (a statement that named no
     # floor) is ON RECORD, PLACE UNKNOWN: never the building's, never a floor's.
     def building_wide(i: Dict[str, Any]) -> bool:
+        # A record whose named levels could not be placed (`candidates`) is
+        # about those levels, not the building: place unknown.
+        if i.get("candidates") and not i.get("levels"):
+            return False
         return bool(i.get("levels")) or i.get("source") == "dob_logs" or i.get("node") in whole_ids
     placeless = [i for i in items if i.get("node") and not i.get("levels") and i["kind"] != "estimate"
                  and not building_wide(i) and i["node"] not in not_progress]
@@ -369,8 +417,12 @@ def build(items: Sequence[Dict[str, Any]], *, today: date, project: Optional[Dic
         [cell(about_building, BUILDING, n, today, schedule=schedule) for n in loose]
     place_unknown = [cell(placeless, BUILDING, n, today) for n in sorted({i["node"] for i in placeless})]
     frame_ids = {s["id"] for s in seq}
-    outside = sorted({(lv, i["node"]) for i in items if i.get("node") and i["node"] not in frame_ids
-                      and i["kind"] != "estimate" for lv in i.get("levels") or ()}, key=lambda k: (level_order(k[0]), k[1]))
+    level_ids = {lv["level"] for lv in levels}
+    # Outside the frame: work the steps do not hold, or a level the known
+    # levels exclude (never added as a row of the building).
+    outside = sorted({(lv, i["node"]) for i in items if i.get("node") and i["kind"] != "estimate"
+                      for lv in i.get("levels") or ()
+                      if i["node"] not in frame_ids or lv not in level_ids}, key=lambda k: (level_order(k[0]), k[1]))
     model = {
         "job": job, "today": today,
         "frame": {"levels": levels, "steps": per_level, "cells": len(cells), "source": FRAME_SOURCE,
@@ -380,6 +432,8 @@ def build(items: Sequence[Dict[str, Any]], *, today: date, project: Optional[Dic
         "building": building,
         "place_unknown": place_unknown,
         "unreadable": sorted(set(unreadable or ())),
+        "levels_excluded": sorted({lv for i in items if i["kind"] != "estimate" for lv in i.get("levels") or ()
+                                   if lv not in level_ids}, key=level_order),
         "outside_frame": [cell(items, lv, n, today) for lv, n in outside],
         "counts": dict(Counter(c["bucket"] for c in cells.values())),
         "status_counts": dict(Counter(c["status"] for c in cells.values())),
@@ -519,7 +573,9 @@ def conflicts(items: Sequence[Dict[str, Any]], model: Dict[str, Any]) -> List[Di
                 f = max(later, key=E.order_key)
                 out.append({"type": "done_then_failed", "level": lv, "node": n, "refs": [d["ref"], f["ref"]],
                             "what": f"{label} on {where}: stated done ({d['kind']}, {_who(d)}, {_when(d)}), "
-                                    f"then stated failed ({f['kind']}, {_who(f)}, {_when(f)})."})
+                                    f"then stated failed ({f['kind']}, {_who(f)}, {_when(f)}).",
+                            "what_by_role": f"{label} on {where}: stated done ({d['kind']}, {_role(d)}, {_when(d)}), "
+                                            f"then stated failed ({f['kind']}, {_role(f)}, {_when(f)})."})
                 break
         # 2. work recorded before a prerequisite inspection has any record
         first = min((_on(i) for i in mine if _on(i)), default=None)
@@ -609,6 +665,18 @@ def _who(i: Dict[str, Any]) -> str:
     return " ".join(x for x in (f"by {i['by']}" if i.get("by") else "", f"via {src}") if x)
 
 
+def _role(i: Dict[str, Any]) -> str:
+    """_who with the person's name replaced by their role (a report's stored
+    snapshot keeps no name)."""
+    src = SOURCE_WORDS.get(str(i.get("source")), i.get("source"))
+    who = ROLE_WORDS.get(str(i.get("source")), "a named person") if i.get("by") else ""
+    return " ".join(x for x in (f"by {who}" if who else "", f"via {src}") if x)
+
+
+def status_words(status: str) -> str:
+    return STATUS_WORDS.get(status, status.replace("_", " "))
+
+
 def _span(c: Dict[str, Any]) -> str:
     if not c["first"]:
         return ""
@@ -631,7 +699,7 @@ def cell_words(c: Dict[str, Any], label: str) -> str:
         when = f" on {_day(d.get('on'))}" if _on(d) else f", {_when(d)}"
         bits = [f"{label}: {'done' if b == 'done' else 'failed'}, {st.split('_', 1)[1]} {_who(d)}{when}"]
     else:
-        how = {"reported": "reported in the logs", "in_progress_observed": "photographed in progress"}.get(st, st.replace("_", " "))
+        how = status_words(st)
         when = "the last 7 days" if b == "underway" else "earlier"
         bits = [f"{label}: {how} {_span(c)}" + (" (underway: recorded in " + when + ")" if b == "underway"
                                                  else " (not shown done)")]
@@ -708,8 +776,17 @@ def _frame_words(model: Dict[str, Any]) -> List[str]:
             if src in lv["sources"] and (src != "evidence" or lv["sources"] == ["evidence"]):
                 by_src[src].append(lv["label"])
     where = "; ".join(f"{LEVEL_SOURCES[s]}: {', '.join(v)}" for s, v in by_src.items())
-    return [f"Frame: {len(f['levels'])} level(s) x {len(f['steps'])} step(s) = {f['cells']} level-and-work cells. "
-            f"Levels from {where or 'nothing (no level is on record)'}. Steps: {f['source']}."]
+    out = [f"Frame: {len(f['levels'])} level(s) x {len(f['steps'])} step(s) = {f['cells']} level-and-work cells. "
+           f"Levels from {where or 'nothing (no level is on record)'}. Steps: {f['source']}."]
+    loose = [lv["label"] for lv in f["levels"] if lv.get("records_only")]
+    if loose:
+        out.append(f"{', '.join(loose)} {'is' if len(loose) == 1 else 'are'} {RECORDS_ONLY}: named by records, not by "
+                   "the project's fields, plans or level frame, so not known to be the building's.")
+    gone = model.get("levels_excluded") or []
+    if gone:
+        out.append("Records name " + ", ".join(W.level_label(lv) for lv in gone) + ", which the project's levels "
+                   "exclude: kept on record outside the frame, never a level of the building.")
+    return out
 
 
 def _overall_text(model: Dict[str, Any]) -> str:

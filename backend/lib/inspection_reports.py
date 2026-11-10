@@ -769,12 +769,14 @@ def words(read: Dict[str, Any]) -> str:
     if read.get("quote"):
         bits.append(f'their words: "{read["quote"]}"')
     for r in read.get("later") or ():
+        # Words withheld (progress_validation.redact_answer) are not printed as "".
+        said = f'"{r["quote"]}" ' if r.get("quote") else ""
         if r["status"] == UNRESOLVED:
-            bits.append(f'a later statement is unresolved: "{r["quote"] or ""}" ({r["who"]})')
+            bits.append(f'a later statement is unresolved: {said}({r["who"]})')
         else:
             when = f", inspection date {_day(r['when'])}" if r.get("when") else ""
             bits.append(f'a statement said later reads {_SAID_AS.get(r["result"], r["result"])}{when}: '
-                        f'"{r["quote"] or ""}" ({r["who"]})')
+                        f'{said}({r["who"]})')
     return "; ".join(bits)
 
 
