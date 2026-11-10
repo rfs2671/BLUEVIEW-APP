@@ -218,8 +218,9 @@ def _on(i: Dict[str, Any]) -> Optional[date]:
 
 def strongest_first(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Strongest rung first, newest first within a rung. Estimates never."""
-    return sorted((i for i in items if i["kind"] != "estimate"),
-                  key=lambda i: (E.rank(i["kind"]), -(_on(i).toordinal() if _on(i) else 0), str(i.get("ref"))))
+    facts = sorted((i for i in items if i["kind"] != "estimate"), key=lambda i: str(i.get("ref")))
+    facts.sort(key=E.order_key, reverse=True)
+    return sorted(facts, key=lambda i: E.rank(i["kind"]))
 
 
 def bucket(status: str, facts: Sequence[Dict[str, Any]], today: date) -> str:
@@ -242,9 +243,8 @@ def deciding_item(status: str, facts: Sequence[Dict[str, Any]]) -> Optional[Dict
     if not (status.startswith("done_") or status.startswith("failed_")):
         return None
     claim, kind = status.split("_", 1)
-    mine = [i for i in facts if i["kind"] == kind and i["claim"] in ("done", "failed")]
-    mine.sort(key=lambda i: _on(i).toordinal() if _on(i) else 0)
-    return mine[-1] if mine and mine[-1]["claim"] == claim else None
+    last = E.newest(i for i in facts if i["kind"] == kind and i["claim"] in ("done", "failed"))
+    return last if last and last["claim"] == claim else None
 
 
 def _brief(i: Dict[str, Any]) -> Dict[str, Any]:
@@ -335,8 +335,11 @@ def design_from_takeoff(lines: Iterable[Any], trade_nodes: Dict[str, str]) -> Li
 def build(items: Sequence[Dict[str, Any]], *, today: date, project: Optional[Dict[str, Any]] = None,
           plan_tokens: Iterable[str] = (), schedule: Optional[Dict[str, Any]] = None,
           design: Iterable[Dict[str, Any]] = (), flags: Optional[Dict[str, Any]] = None,
-          extra_steps: Optional[Sequence[Dict[str, Any]]] = None, job: str = "") -> Dict[str, Any]:
-    """The status of the whole building from `items` (lib/evidence.py shape)."""
+          extra_steps: Optional[Sequence[Dict[str, Any]]] = None, job: str = "",
+          unreadable: Iterable[str] = ()) -> Dict[str, Any]:
+    """The status of the whole building from `items` (lib/evidence.py shape).
+    `unreadable`: the sources the loader could not read (its coverage): what
+    they would have said is unknown, and every answer says so."""
     items = [i for i in items if i.get("kind") in E.KINDS]
     levels = job_levels(project, plan_tokens, items)
     seq = steps(flags, extra_steps)
@@ -351,10 +354,20 @@ def build(items: Sequence[Dict[str, Any]], *, today: date, project: Optional[Dic
     whole_ids = [s["id"] for s in seq if s.get("per_level", True) is False]
     not_progress = {n for n in {i.get("node") for i in items}
                     if n and _WORK_NODES is not None and hasattr(_WORK_NODES, "is_progress") and not _WORK_NODES.is_progress(n)}
-    loose = sorted({i["node"] for i in items if i.get("node") and not i.get("levels") and i["kind"] != "estimate"
-                    and i["node"] not in whole_ids and i["node"] not in not_progress})
-    building = [cell(items, BUILDING, n, today, schedule=schedule, whole=True) for n in whole_ids] + \
-        [cell(items, BUILDING, n, today, schedule=schedule) for n in loose]
+    # A record naming no level is about the building only when it IS a
+    # building-wide record (a DOB filing that names no level) or the work is
+    # done once for the building. Anything else (a statement that named no
+    # floor) is ON RECORD, PLACE UNKNOWN: never the building's, never a floor's.
+    def building_wide(i: Dict[str, Any]) -> bool:
+        return bool(i.get("levels")) or i.get("source") == "dob_logs" or i.get("node") in whole_ids
+    placeless = [i for i in items if i.get("node") and not i.get("levels") and i["kind"] != "estimate"
+                 and not building_wide(i) and i["node"] not in not_progress]
+    about_building = [i for i in items if building_wide(i)]
+    loose = sorted({i["node"] for i in about_building if i.get("node") and not i.get("levels")
+                    and i["kind"] != "estimate" and i["node"] not in whole_ids and i["node"] not in not_progress})
+    building = [cell(about_building, BUILDING, n, today, schedule=schedule, whole=True) for n in whole_ids] + \
+        [cell(about_building, BUILDING, n, today, schedule=schedule) for n in loose]
+    place_unknown = [cell(placeless, BUILDING, n, today) for n in sorted({i["node"] for i in placeless})]
     frame_ids = {s["id"] for s in seq}
     outside = sorted({(lv, i["node"]) for i in items if i.get("node") and i["node"] not in frame_ids
                       and i["kind"] != "estimate" for lv in i.get("levels") or ()}, key=lambda k: (level_order(k[0]), k[1]))
@@ -365,6 +378,8 @@ def build(items: Sequence[Dict[str, Any]], *, today: date, project: Optional[Dic
                   "work_nodes": "read" if any(s["source"] == "work_nodes" for s in seq) else _extra_steps()[1]},
         "cells": cells,
         "building": building,
+        "place_unknown": place_unknown,
+        "unreadable": sorted(set(unreadable or ())),
         "outside_frame": [cell(items, lv, n, today) for lv, n in outside],
         "counts": dict(Counter(c["bucket"] for c in cells.values())),
         "status_counts": dict(Counter(c["status"] for c in cells.values())),
@@ -494,14 +509,17 @@ def conflicts(items: Sequence[Dict[str, Any]], model: Dict[str, Any]) -> List[Di
             continue
         label, where = by_id[n]["label"], W.level_label(lv)
         # 1. done stated at attested or stronger, then a failure stated after it
-        dones = [i for i in mine if i["claim"] == "done" and i["kind"] in DONE_KINDS and _on(i)]
+        # (one order, evidence.order_key: an undated failure said after a
+        # dated pass is later than it, never hidden behind it)
+        dones = [i for i in mine if i["claim"] == "done" and i["kind"] in DONE_KINDS
+                 and (_on(i) or i.get("said_at"))]
         for d in dones:
-            later = [i for i in mine if i["claim"] == "failed" and _on(i) and _on(i) > _on(d)]
+            later = [i for i in mine if i["claim"] == "failed" and E.order_key(i) > E.order_key(d)]
             if later:
-                f = max(later, key=lambda i: _on(i))
+                f = max(later, key=E.order_key)
                 out.append({"type": "done_then_failed", "level": lv, "node": n, "refs": [d["ref"], f["ref"]],
-                            "what": f"{label} on {where}: stated done ({d['kind']}, {_who(d)}, {_day(_on(d))}), "
-                                    f"then stated failed ({f['kind']}, {_who(f)}, {_day(_on(f))})."})
+                            "what": f"{label} on {where}: stated done ({d['kind']}, {_who(d)}, {_when(d)}), "
+                                    f"then stated failed ({f['kind']}, {_who(f)}, {_when(f)})."})
                 break
         # 2. work recorded before a prerequisite inspection has any record
         first = min((_on(i) for i in mine if _on(i)), default=None)
@@ -577,6 +595,15 @@ def _day(d: Any) -> str:
     return f"{d:%b} {d.day}" if isinstance(d, date) else str(d or "")
 
 
+def _when(i: Dict[str, Any]) -> str:
+    """The record's own date, or that it states none (and when it was said).
+    Never a bare "on "."""
+    if _on(i):
+        return _day(_on(i))
+    said = i.get("said_at")
+    return "date not stated" + (f", said {_day(said.date())}" if isinstance(said, datetime) else "")
+
+
 def _who(i: Dict[str, Any]) -> str:
     src = SOURCE_WORDS.get(str(i.get("source")), i.get("source"))
     return " ".join(x for x in (f"by {i['by']}" if i.get("by") else "", f"via {src}") if x)
@@ -601,7 +628,8 @@ def cell_words(c: Dict[str, Any], label: str) -> str:
         bits = [f"{label}: {UNKNOWN_WORDS}"]
     elif b in ("done", "failed"):
         d = c["decided_by"] or {}
-        bits = [f"{label}: {'done' if b == 'done' else 'failed'}, {st.split('_', 1)[1]} {_who(d)} on {_day(d.get('on'))}"]
+        when = f" on {_day(d.get('on'))}" if _on(d) else f", {_when(d)}"
+        bits = [f"{label}: {'done' if b == 'done' else 'failed'}, {st.split('_', 1)[1]} {_who(d)}{when}"]
     else:
         how = {"reported": "reported in the logs", "in_progress_observed": "photographed in progress"}.get(st, st.replace("_", " "))
         when = "the last 7 days" if b == "underway" else "earlier"
@@ -647,9 +675,29 @@ def _bottleneck_words(model: Dict[str, Any], level: str) -> str:
     unknown = [g for g in b["gates"] if g["bucket"] == "unknown"]
     if failed:
         bits.append("inspection failed on record: " + ", ".join(failed))
-    if unknown:
+    if unknown and "inspection_reports" in (model.get("unreadable") or ()):
+        bits.append("inspection reports could not be read, so what they say is unknown")
+    elif unknown:
         bits.append(f"{len(unknown)} inspection(s) with no record")
     return "; ".join(bits)
+
+
+def unreadable_words(model: Dict[str, Any]) -> List[str]:
+    """The sources that could not be read, said in every answer: their
+    absence of records is unknown, never "nothing happened"."""
+    gone = [SOURCE_WORDS.get(s, s.replace("_", " ")) for s in model.get("unreadable") or ()]
+    if not gone:
+        return []
+    return [f"Could not be read just now: {', '.join(gone)}. What they hold is unknown, not missing; "
+            "nothing below rests on them."]
+
+
+def _place_unknown_words(model: Dict[str, Any]) -> List[str]:
+    cells = [c for c in model.get("place_unknown") or () if c["bucket"] != "unknown"]
+    if not cells:
+        return []
+    return (["On record, place unknown (the record names no floor, so it counts for no floor and is not about the "
+             "whole building):"] + [f"- {cell_words(c, _step_label(model, c['node']))}" for c in cells])
 
 
 def _frame_words(model: Dict[str, Any]) -> List[str]:
@@ -666,7 +714,7 @@ def _frame_words(model: Dict[str, Any]) -> List[str]:
 
 def _overall_text(model: Dict[str, Any]) -> str:
     head = f"{model['job'] or 'This job'}, from the record as of {_day(model['today'])}. {NO_PERCENT}"
-    out = [head] + _frame_words(model)
+    out = [head] + unreadable_words(model) + _frame_words(model)
     out.append("Cells: " + (_counts_words(model["counts"]) or "none") + ".")
     lines = []
     for lv in model["frame"]["levels"][:MAX_TEXT_LEVELS]:
@@ -688,6 +736,7 @@ def _overall_text(model: Dict[str, Any]) -> str:
     if quiet:
         out.append("Whole building, no record: " + ", ".join(_step_label(model, c["node"]) for c in quiet)
                    + f" ({UNKNOWN_WORDS}).")
+    out += _place_unknown_words(model)
     out += ["By level:"] + lines
     if model["outside_frame"]:
         out.append("Also on record, outside the frame: " + "; ".join(
@@ -704,7 +753,7 @@ def _overall_text(model: Dict[str, Any]) -> str:
 
 def _sub_text(model: Dict[str, Any], name: str) -> str:
     s = model["subs"][name]
-    out = []
+    out = list(unreadable_words(model))
     if s["work"]:
         by_node: Dict[str, List[str]] = defaultdict(list)
         for w in s["work"]:
@@ -734,7 +783,7 @@ def _sub_text(model: Dict[str, Any], name: str) -> str:
 def _level_text(model: Dict[str, Any], level: str) -> str:
     label = W.level_label(level)
     out = [f"{label} on {model['job'] or 'this job'}, from the record as of {_day(model['today'])}. {NO_PERCENT}",
-           f"Steps: {model['frame']['source']}."]
+           f"Steps: {model['frame']['source']}."] + unreadable_words(model)
     unknown = []
     for s in model["frame"]["steps"]:
         c = model["cells"][(level, s["id"])]

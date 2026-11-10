@@ -28,11 +28,11 @@ return `(items, coverage)`:
              why}}. A source in `unreadable` was not read: its absence of items
              is unknown, never "nothing happened".
 
-THE WINDOW. Day-by-day sources (crew rows, photos, check-ins, pour logs, the
+THE WINDOW. Day-by-day sources (crew rows, photos, check-ins, the
 superintendent's log) give items dated inside [start, end]. Standing records
-(DOB sign-offs, inspection reports, punch closures, schedule actuals) give
-every item up to `end`, and an undated one: a foundation signed off last month
-is still signed off.
+(pour logs, DOB sign-offs, inspection reports, punch closures, schedule
+actuals) give every item up to `end`, and an undated one: a foundation signed
+off last month is still signed off. Nothing said after `end` is read.
 
 RULES THAT ARE THE POINT (each has a test, and a mutation of each is caught):
   - A crew row naming several levels is SHARED, never about one of them.
@@ -63,6 +63,7 @@ from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from lib import attendance
+from lib import dob_signoffs as DS
 from lib import evidence as E
 from lib import inspection_reports as IR
 from lib import photo_place
@@ -187,17 +188,27 @@ def from_inspections(rows: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[L
         levels = list(r.get("levels") or [])
         on = as_day(r.get("inspected_on"))
         who = _t(r.get("reporter_name")) or "someone"
+        heard = _t(r.get("hearsay_from"))
+        said = r.get("created_at") if isinstance(r.get("created_at"), datetime) else None
+        # Hearsay ("Joe said it passed") is the sender reporting what someone
+        # else said: kept as REPORTED, attributed to the sender, never attested.
         out.append(E.item(
-            "attested", _RESULT_CLAIM[result], source="inspection_reports", ref=str(r.get("_id") or ""),
+            "reported" if heard else "attested", _RESULT_CLAIM[result], source="inspection_reports",
+            ref=str(r.get("_id") or ""),
             project_id=project_id, node=r.get("gate") or None, levels=levels, space=r.get("space") or None,
-            on=on, by=who, quote=r.get("quote") or None, shared=len(levels) > 1,
-            note=_notes(f"reported by {who}, not verified", f"as said: {r.get('inspection_as_said')}"
+            on=on, by=who, quote=r.get("quote") or None, shared=len(levels) > 1, said_at=said,
+            note=_notes(f"reported by {who}, not verified",
+                        f"hearsay: {who} reports that {heard} said it" if heard else None,
+                        f"{IR.RELAYED_NOTE} (as said: {_t(r.get('relayed_from'))})" if _t(r.get("relayed_from")) else None,
+                        f"as said: {r.get('inspection_as_said')}"
                         if r.get("inspection_as_said") else None,
                         "a sign-off document on file, read and not checked against anything"
                         if status == IR.DOCUMENT else None,
                         None if on else "inspection date not stated",
                         "names no inspection step we track" if not r.get("gate") else None)))
         cov["validated"] += 1
+        if heard:
+            cov["hearsay"] += 1
     cov["items"] = len(out)
     return out, dict(cov)
 
@@ -212,25 +223,13 @@ def from_inspections(rows: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[L
 # (PR #1008 adds it) is one too. Both the fields stored today and #1008's are
 # read; any of them may be absent.
 
-_SPLIT = re.compile(r"[^A-Z0-9]+")
-_NEGATORS = frozenset({"NOT", "NO", "NON", "UN", "NEVER", "WITHOUT"})
-_SIGNOFF_PHRASES = (("LOC", "ISSUED"), ("SIGNED", "OFF"), ("CERTIFICATE", "OF", "OPERATION", "ISSUED"),
-                    ("CO", "ISSUED"), ("JOB", "IS", "COMPLETE"))
-_STATUS_FIELDS = ("permit_status", "filing_status", "current_status", "status", "job_filing_status",
-                  "electrical_job_status", "job_status")
+# The vocabulary is lib/dob_signoffs' (one reader, not two copies).
+_STATUS_FIELDS = tuple(DS.STATUS_FIELDS) + tuple(k for k in ("job_status",) if k not in DS.STATUS_FIELDS)
 _FILING_FIELDS = ("job_number", "job_filing_number", "job__")
 
 
 def signoff_words(status: Any) -> bool:
-    toks = [t for t in _SPLIT.split(str(status or "").upper()) if t]
-    if toks == ["COMPLETE"]:
-        return True
-    for phrase in _SIGNOFF_PHRASES:
-        n = len(phrase)
-        for i in range(len(toks) - n + 1):
-            if tuple(toks[i:i + n]) == phrase and (i == 0 or toks[i - 1] not in _NEGATORS):
-                return True
-    return False
+    return DS.is_signed_off(status)
 
 
 def _signoff_status(row: Dict[str, Any]) -> Optional[str]:
@@ -314,12 +313,18 @@ def from_dob(rows: Iterable[Dict[str, Any]], project_id: Any, *, bins: Sequence[
     filings: Dict[str, Dict[str, Any]] = {}
     for r in _latest(x for x in kept if x.get("record_type") in ("permit", "job_status") and _filing(x)):
         f = filings.setdefault(_filing(r), {"rows": [], "status": None, "date": None, "types": [], "desc": [],
-                                            "floors": [], "signed": False})
+                                            "floors": [], "signed": False, "unsigned_types": []})
         f["rows"].append(r)
         said = _signoff_status(r)
-        if said or as_day(r.get("signoff_date")):
-            f["signed"] = True
-            f["status"] = f["status"] or said or "sign-off date on file"
+        if not (said or as_day(r.get("signoff_date"))):
+            # A row that is not itself signed off says nothing about what the
+            # sign-off covers: a Sprinkler permit still "Permit Issued" on a
+            # filing whose Plumbing permit is signed off is NOT signed off
+            # (lib/dob_signoffs reads only signed-off rows the same way).
+            f["unsigned_types"] += [x for x in (_t(r.get("work_type")), _t(r.get("work_types"))) if x]
+            continue
+        f["signed"] = True
+        f["status"] = f["status"] or said or "sign-off date on file"
         f["date"] = f["date"] or as_day(r.get("signoff_date"))
         f["types"] += [x for x in (_t(r.get("work_type")), _t(r.get("work_types"))) if x]
         f["desc"] += [_t(r.get("job_description"))] if _t(r.get("job_description")) else []
@@ -544,11 +549,21 @@ def from_schedule(schedule: Optional[Dict[str, Any]], project_id: Any) -> Tuple[
 
 # ── ALL OF THEM ────────────────────────────────────────────────────────────
 
-#: Sources whose items are limited to the window; the rest are standing records.
-DAILY_SOURCES = ("daily_log", "photo_index", "checkins", "concrete_operations", "superintendent_log")
+#: Sources whose items are limited to the window: reported / observed ACTIVITY
+#: (and the superintendent's presence walk). Everything else is a STANDING
+#: record read without the window: a pour log, a DOB sign-off, a punch
+#: closeout, an attested inspection, a schedule actual. A slab poured Jul 1 is
+#: still poured in November; leaving it out would read as "no done marker".
+DAILY_SOURCES = ("daily_log", "photo_index", "checkins", "superintendent_log")
 
 
 def in_window(i: Item, start: Optional[date], end: Optional[date]) -> bool:
+    """Nothing dated after `end`, and nothing SAID after it (a report for a
+    past period does not know what was said later); the window's start limits
+    only the day-by-day sources."""
+    said = i.get("said_at")
+    if end and isinstance(said, datetime) and (attendance.local_day(said) or said.date()) > end:
+        return False
     on = i["on"] if isinstance(i["on"], date) else None
     if on is None:
         return i["source"] not in DAILY_SOURCES

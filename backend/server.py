@@ -56791,7 +56791,8 @@ async def _dm_schedule_lookahead(ctx: dict, job: dict, args: dict) -> str:
     except (TypeError, ValueError):
         days = 7
     return schedule_forecast.lookahead_with_status(src["schedule"], items, rows, today=today, days=days, logs_from=start,
-                                                   project_id=str(project.get("_id")), job=job["label"])
+                                                   project_id=str(project.get("_id")), job=job["label"],
+                                                   unreadable=src.get("progress_unreadable") or ())
 
 
 async def _dm_proposed_sequence(ctx: dict, job: dict, args: dict) -> str:
@@ -56880,24 +56881,37 @@ async def _dm_report_inspection(ctx: dict, job: dict, args: dict) -> str:
         return "NOT RECORDED: the result isn't clear. Ask one short question: passed, failed, partial or scheduled?"
     if len(ir.gates_named(inspection)) > 1:
         return "NOT RECORDED: that names more than one inspection. Call report_inspection once for each."
+    said = args.get("levels")
+    levels = work_state.levels_named(", ".join(map(str, said)) if isinstance(said, list) else said)
     # THE MODEL'S RESULT IS A CLAIM (owner ruling 2026-11-09): read again from
-    # their own sentence; stored only when the words state exactly that one.
-    checked = ir.validate_statement(own, quote, result)
+    # their own sentence AND the rest of their message (a correction anywhere
+    # in it keeps it unresolved; another floor's result in its own sentence
+    # does not); stored only when the words state exactly that one.
+    checked = ir.validate_statement(own, quote, result, levels=levels)
     if checked["question"]:
         return ("NOT RECORDED: their sentence asks rather than states. Answer the question; do not say it was "
                 "noted.")
-    said = args.get("levels")
-    levels = work_state.levels_named(", ".join(map(str, said)) if isinstance(said, list) else said)
     theirs = [str(own or "")] + [str(x) for x in turn.get("recent") or []]
-    floor_ok = bool(levels) and all(any(work_state.level_said(lv, t) for t in theirs) for lv in levels)
+    # The floor must be named AS A LEVEL in the sentence the quote sits in ("3
+    # guys" is not floor 3, and floor 2's sentence is not floor 3's). Only when
+    # their message names no level at all (the one-word answer "Passed" to
+    # "passed or failed?") may their message just before it name the floor.
+    span = ir.statement_span(own, quote)
+    floor_ok = bool(levels) and all(work_state.level_said(lv, span) for lv in levels)
+    if not floor_ok and levels and not work_state.levels_said(own):
+        floor_ok = all(any(work_state.level_said(lv, t) for t in theirs[1:]) for lv in levels)
     if not checked["agree"]:
         return await _dm_inspection_unresolved(ctx, job, args, inspection, quote, levels if floor_ok else [],
                                                checked)
     if not floor_ok:
         return "NOT RECORDED: the floor isn't clear from what they said. Ask one short question: which floor?"
     now = datetime.now(timezone.utc)
-    inspected_on, problem = ir.clean_date(args.get("date"), now.astimezone(_MemoryZone("America/New_York")).date(), result)
-    if problem:
+    # The date is the model's claim too: kept only when their own words say
+    # that day; otherwise the inspection date is UNKNOWN and the reply says so.
+    inspected_on, problem = ir.clean_date(args.get("date"), now.astimezone(_MemoryZone("America/New_York")).date(),
+                                          result, words=" ".join(theirs[:1]))
+    date_unknown = problem == "not_in_their_words"
+    if problem and not date_unknown:
         return ("NOT RECORDED: date must be a real date as YYYY-MM-DD, and a result can't be for a day still to come. "
                 "Ask one short question: which day?")
     user = ident.get("user") or {}
@@ -56912,7 +56926,13 @@ async def _dm_report_inspection(ctx: dict, job: dict, args: dict) -> str:
         inspector=args.get("inspector"), reporter_user_id=ident.get("user_id"), reporter_name=name,
         source=turn.get("source") or "text", quote=quote, message_id=turn.get("message_id"), created_at=now)
     row.update(ir.audit(checked))
-    line = ir.noted_line(name, inspection, [work_state.level_label(lv) for lv in levels], result, inspected_on)
+    if checked.get("hearsay_from"):
+        row["hearsay_from"] = checked["hearsay_from"]      # the sender's report of what someone else said
+    if checked.get("relayed_from"):
+        row["relayed_from"] = checked["relayed_from"]      # relayed from the inspector / agency: still attested
+    line = ir.noted_line(name, inspection, [work_state.level_label(lv) for lv in levels], result, inspected_on,
+                         hearsay=checked.get("hearsay_from"), date_unknown=date_unknown,
+                         relayed=checked.get("relayed_from"))
     tail = "" if row["gate"] else " (Kept as said: it matches no inspection step we track, so no step changed.)"
     if ctx.get("dry_run"):
         return f"(eval) Would record. {line}{tail} Answer with that one line."
@@ -57132,7 +57152,10 @@ async def _inspection_doc_turn(ident: dict, dm_chat: str, parsed: dict, body: An
         checked["reason"] = "the page could not be read"
     row = ir.new_row(
         project_id=pid, company_id=ident["company_id"], gate=gate, inspection=inspection, levels=levels,
-        space=work_state.places_in(caption)["space"], result=checked["result"], inspected_on=read.get("date"),
+        space=work_state.places_in(caption)["space"], result=checked["result"],
+        # The model's date only when the page's own text (or the caption) says that day.
+        inspected_on=read.get("date") if ir.date_in_words(read.get("date"), f"{ocr}\n{caption}",
+                                                          now.astimezone(_MemoryZone("America/New_York")).date()) else None,
         inspector=read.get("inspector"), reporter_user_id=ident.get("user_id"), reporter_name=name, source="document",
         quote=read.get("quote") or caption or file_name, message_id=mid, created_at=now,
         status=ir.DOCUMENT if checked["agree"] else ir.UNRESOLVED,
@@ -57286,9 +57309,15 @@ async def _progress_evidence(project: dict, company_id: str, start: _Date, end: 
     spaces, confirmed = await _photo_place_context(pid)
     reports = await _read("inspection_reports", lambda: db[INSPECTION_REPORTS].find(
         {"project_id": pid, "company_id": cid}).to_list(5000)) or []
+    # A pour log is a STANDING record (a slab poured Jul 1 is still poured):
+    # read up to `end` with no lower bound. The superintendent's daily walk is
+    # day-by-day presence: the window only. (lib/evidence_sources.in_window.)
     books = await _read("logbooks", lambda: db.logbooks.find(
-        {"project_id": pid, "log_type": {"$in": list(PROGRESS_LOGBOOK_TYPES)}, "is_deleted": {"$ne": True},
-         "date": days}).to_list(5000)) or []
+        {"project_id": pid, "log_type": "concrete_operations", "is_deleted": {"$ne": True},
+         "date": {"$lte": end.isoformat()}}).to_list(5000)) or []
+    books += await _read("logbooks", lambda: db.logbooks.find(
+        {"project_id": pid, "log_type": {"$in": [t for t in PROGRESS_LOGBOOK_TYPES if t != "concrete_operations"]},
+         "is_deleted": {"$ne": True}, "date": days}).to_list(5000)) or []
     heads = [c["head"] for c in collapse_amendment_chains(books)
              if logbook_is_filed(c["head"]) and not logbook_is_withdrawn(c["head"])]
     closed = await _read("punch_items", lambda: db[punch.COLLECTION].find(
@@ -57337,11 +57366,12 @@ async def _project_progress(project: dict, company_id: str, *, job: str = "", to
     # Every source, through the one loader (lib/evidence_sources.py).
     start = today - timedelta(days=PROJECT_PROGRESS_DAYS - 1)
     keep = {} if keep is None else keep
-    items, _coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    items, coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
     keep.update(items=items, start=start)
     plan_tokens = await _progress_plan_tokens(str(project.get("_id")))
     return project_progress.build(items, today=today, project=project, plan_tokens=plan_tokens,
-                                  schedule=keep["sources"].get("schedule"), job=job or str(project.get("name") or ""))
+                                  schedule=keep["sources"].get("schedule"), job=job or str(project.get("name") or ""),
+                                  unreadable=(coverage or {}).get("unreadable") or ())
 
 
 @api_router.get("/projects/{project_id}/progress",
@@ -57397,13 +57427,17 @@ from lib import forecast as schedule_forecast  # noqa: E402
 
 async def _forecast_inputs(project: dict, company_id: str) -> tuple:
     """(report sources, log rows, today, first day read, evidence items): every
-    source through the one loader (_progress_evidence), read once."""
+    source through the one loader (_progress_evidence), read once. The window
+    limits only reported / observed activity: standing records (pours, DOB
+    sign-offs, punch closeouts, inspections, schedule actuals) are read whole,
+    so a marker older than the window still counts. The sources that could not
+    be read ride along as src["progress_unreadable"]."""
     now = datetime.now(timezone.utc)
     today = now.astimezone(_MemoryZone("America/New_York")).date()
     start = today - timedelta(days=WORK_STATE_DAYS - 1)
     keep: dict = {}
-    items, _coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
-    src = keep["sources"]
+    items, coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    src = {**keep["sources"], "progress_unreadable": list((coverage or {}).get("unreadable") or ())}
     rows = work_state.evidence_rows(progress_report._log_activities(src["logbooks"], start, today))
     return src, rows, today, start, items
 
@@ -57422,7 +57456,8 @@ async def _dm_schedule_status(ctx: dict, job: dict, args: dict) -> str:
     if not src.get("schedule"):
         return (f"No confirmed schedule is on file for {job['label']}, so there are no planned dates to compare "
                 "against and no forecast to give.")
-    fc = schedule_forecast.forecast(src["schedule"], items, rows, today=today, project_id=str(project.get("_id")))
+    fc = schedule_forecast.forecast(src["schedule"], items, rows, today=today, project_id=str(project.get("_id")),
+                                    unreadable=src.get("progress_unreadable") or ())
     return schedule_forecast.status_text(fc, job["label"])
 
 

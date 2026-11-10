@@ -41,10 +41,12 @@ approves it: approval makes it the sequence they agreed to, not a schedule file.
 from __future__ import annotations
 
 import heapq
+import re
 from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.scheduling.graph_v1 import build_graph_v1
+from lib import inspection_reports as IR
 from lib import work_state as W
 from lib.plans import level_suggestion as LS
 
@@ -68,11 +70,22 @@ def _day(d: Optional[date]) -> str:
     return f"{d:%b} {d.day}" if d else ""
 
 
+_INSPECTION_ACTIVITY = re.compile(r"\binspect(?:ion|ions|ed)?\b|\bhydro(?:static)?\b|\btests?\b|\bsign[\s-]?offs?\b",
+                                  re.I)
+
+
 def activity_place(a: Dict[str, Any]) -> Dict[str, Any]:
     """(node, level) of a schedule activity, by the same whole-word readers the
-    logs go through, on its NAME alone."""
-    nodes, generic = W.classify(a.get("name"), a.get("name"))
-    return {"nodes": nodes, "levels": W.places_in(a.get("name"))["levels"], "generic": generic}
+    logs go through, on its NAME alone. An INSPECTION activity ("Plumbing rough
+    inspection floor 3") is the inspection gate, read first through
+    inspection_reports.gate_for, not the work it inspects."""
+    name = a.get("name")
+    levels = W.places_in(name)["levels"]
+    gate = IR.gate_for(name) if _INSPECTION_ACTIVITY.search(str(name or "")) else None
+    if gate:
+        return {"nodes": [gate], "levels": levels, "generic": False}
+    nodes, generic = W.classify(name, name)
+    return {"nodes": nodes, "levels": levels, "generic": generic}
 
 
 def _activities(schedule: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
