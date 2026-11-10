@@ -179,10 +179,11 @@ def _filing_number(row: Dict[str, Any]) -> str:
 
 
 def _signoff_day(row: Dict[str, Any], kind: str) -> Optional[date]:
-    """DOB's own date for the sign-off: `signoff_date` (w9ak-ipjd), the
-    electrical `completion_date` of a completed job, or -- for a job-filing
-    row -- the date the filing reached its current (signed-off) status.
-    Never the date LeveLog saw the row."""
+    """DOB's own date for the sign-off: `signoff_date` (w9ak-ipjd) or the
+    electrical `completion_date` of a completed job. Never the date LeveLog
+    saw the row, and never a job filing's `filing_date`: that is when the job
+    was FILED (B0002-I1 filed 2025-01-03 is not signed off on 2025-01-03).
+    It is carried apart as `filing_date` and said as such."""
     d = _day(row.get("signoff_date"))
     if d:
         return d
@@ -190,8 +191,6 @@ def _signoff_day(row: Dict[str, Any], kind: str) -> Optional[date]:
         d = _day(row.get("electrical_completion_date"))
         if d:
             return d
-    if str(row.get("record_type") or "").lower() == "job_status":
-        return _day(row.get("filing_date"))
     return None
 
 
@@ -243,7 +242,10 @@ def signoffs(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         num = _filing_number(r)
         if not num:
             continue
-        e = by_num.setdefault(num, {"number": num, "kind": kind, "covers": [], "date": None})
+        e = by_num.setdefault(num, {"number": num, "kind": kind, "covers": [], "date": None, "filing_date": None})
+        fd = _day(r.get("filing_date")) if str(r.get("record_type") or "").lower() == "job_status" else None
+        if fd and (e["filing_date"] is None or fd < e["filing_date"]):
+            e["filing_date"] = fd
         rank = ("loc", "cert_operation", "co", "electrical_complete", "signed_off")
         if rank.index(kind) < rank.index(e["kind"]):
             e["kind"] = kind
@@ -259,8 +261,12 @@ def signoffs(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def signoff_line(e: Dict[str, Any]) -> str:
     covers = ", ".join(e["covers"]) or "work on this filing"
-    when = (f"on {e['date'].isoformat()}" if e["date"]
-            else "(DOB's sign-off date is not on the stored record yet)")
+    if e["date"]:
+        when = f"on {e['date'].isoformat()}"
+    elif e.get("filing_date"):
+        when = f"(status date unknown; filing date {e['filing_date'].isoformat()})"
+    else:
+        when = "(DOB's sign-off date is not on the stored record yet)"
     return f"  - {e['number']} — {covers}: {_VERB[e['kind']]} {when}"
 
 

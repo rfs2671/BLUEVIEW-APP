@@ -120,16 +120,40 @@ def levels_named(text: Any) -> List[str]:
     return sorted({x for x in each if x}) if each and all(each) else places_in(t)["levels"]
 
 
+_LEVEL_WORD = r"(?:floors?|fl|flrs?|levels?|lvls?|stor(?:y|ey|ies|eys)|pisos?|nivel(?:es)?)"
+_NUM = r"\d{1,2}(?:st|nd|rd|th)?"
+_LIST = rf"{_NUM}(?:\s*(?:,|&|and|y|-|–|to|thru|through)\s*{_NUM})*"
+#: A number followed by one of these counts something else: "3 guys".
+_NOT_A_LEVEL = (r"(?!\s*(?:guys|men|workers|people|persons|hours|hrs|days|weeks|units|apts?|apartments|inspectors|"
+                r"trucks|times|of|am|pm|o'?clock|x\b|%))")
+_AS_LEVELS = (re.compile(rf"\b{_LEVEL_WORD}\.?\s*#?\s*({_LIST})\b", re.I),
+              re.compile(rf"\b({_LIST})\s*{_LEVEL_WORD}\b", re.I),
+              re.compile(rf"\b(?:on|at)\s+({_LIST})\b{_NOT_A_LEVEL}", re.I))
+_ORDINAL_LEVEL = re.compile(rf"\b({'|'.join(_ORDINALS)})\s+{_LEVEL_WORD}\b", re.I)
+
+
+def levels_said(text: Any) -> List[str]:
+    """Every level these words name AS A LEVEL: "floor 3", "3rd fl", "on 3",
+    "third floor", "floors 2-4", "roof". A bare number is not a level ("3 guys
+    from the plumber", "588"), and nor is a date ("on the 3rd")."""
+    t = " ".join(str(text or "").split())
+    out = set(places_in(t)["levels"])
+    for rx in _AS_LEVELS:
+        for m in rx.finditer(t):
+            parts = re.split(r"\s*(?:,|&|and|y)\s*", m.group(1), flags=re.I)
+            for p in parts:
+                nums = [int(x) for x in re.findall(r"\d{1,2}", p)]
+                if len(nums) == 2 and re.search(r"-|–|to|thru|through", p, re.I):
+                    nums = list(range(min(nums), max(nums) + 1))
+                out |= {f"{LS.FLOOR_PREFIX}{n}" for n in nums if 0 < n <= LS.MAX_SUGGESTED_STORIES}
+    for m in _ORDINAL_LEVEL.finditer(t):
+        out.add(f"{LS.FLOOR_PREFIX}{_ORDINALS.index(m.group(1).lower()) + 1}")
+    return sorted(out)
+
+
 def level_said(token: str, text: Any) -> bool:
-    """Whether these words name this level, by whole word."""
-    t = str(text or "")
-    if token in places_in(t)["levels"]:
-        return True
-    if not token.startswith(LS.FLOOR_PREFIX):
-        return False
-    n = int(token[len(LS.FLOOR_PREFIX):])
-    words = rf"\b{n}(?:st|nd|rd|th)?\b" + (rf"|\b{_ORDINALS[n - 1]}\b" if 0 < n <= len(_ORDINALS) else "")
-    return bool(re.search(words, t, re.I))
+    """Whether these words name this level, as a level (levels_said)."""
+    return token in levels_said(text)
 
 
 # ── WHAT KIND OF WORK A PHRASE NAMES ───────────────────────────────────────

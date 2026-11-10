@@ -37,7 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 COLLECTION = "inspection_reports"
@@ -176,10 +176,21 @@ _GAP = r"(?:[\s,]+[\w']+){0,2}?[\s,]+"
 _HEDGED = re.compile(
     r"\b(?:should|shoulda|supposed to|hope|hoping|hopefully|expect|expected|expecting|going to|gonna|will|"
     r"would|might|maybe|probably|if|need|needs|needed|has to|have to|got to|awaiting|pending|waiting|"
-    r"deber[ií]a|espero|ojal[aá]|va a|vamos a)\b(?:\W+(?!but\b|pero\b|however\b|though\b)[\w']+){0,3}\W*$",
+    r"doubt|doubts|doubtful|whether|unless|wish|wishing|if only|"
+    r"deber[ií]a|espero|ojal[aá]|va a|vamos a|dudo|a menos que)\b"
+    r"(?:\W+(?!but\b|pero\b|however\b|though\b)[\w']+){0,3}\W*$",
     re.I)
 _NEG_BEFORE = re.compile(rf"\b{_NEG}\b|\bno\b(?!\s*,)(?:\s+[\w']+){{0,3}}\s*$", re.I)
-_UNCLEAR = ("no_show", "negated_fail", "not_yet", "negated_scheduled")
+#: "nothing passed", "nobody passed", "anything but passed": a result word
+#: whose subject denies it. Not read as either result.
+_NO_SUBJECT = r"(?:nothing|nobody|no[\s-]?one|none|anything\s+but|nada|nadie|ninguno|ninguna)"
+#: "passed with corrections", "conditionally approved": not a plain pass.
+_CONDITIONAL = (r"(?:with\s+(?:corrections?|conditions?|comments?|exceptions?|objections?|notes?|items?|"
+                r"open\s+items?)|conditionally|subject\s+to|con\s+(?:correcciones|condiciones|observaciones))")
+#: Taken back in the same message: "passed (not)", "lol jk", "just kidding".
+_RETRACTED = re.compile(r"\(\s*not\s*\)|\bnot!|\bj/?k\b|\bjust\s+(?:kidding|joking)\b|\bkidding\b|\bjoking\b"
+                        r"|\bes\s+broma\b|\bbromeando\b", re.I)
+_UNCLEAR = ("no_show", "negated_fail", "not_yet", "negated_scheduled", "no_subject", "conditional")
 
 
 def _words(text: Any) -> str:
@@ -199,6 +210,9 @@ def read_result(text: Any) -> Dict[str, Any]:
             found.append((kind, m.start()))
             return " " * len(m.group(0))
         t = re.sub(pattern, blank, t, flags=re.I)
+    take(rf"\b{_NO_SUBJECT}{_GAP}(?:{_PASS}|{_FAIL})\b", "no_subject")
+    take(rf"\b{_PASS}{_GAP}{_CONDITIONAL}\b|\b{_PASS}\s+{_CONDITIONAL}\b|\bconditional(?:ly)?{_GAP}{_PASS}\b"
+         rf"|\bconditional\s+(?:pass|approval|sign[\s-]?off)\b", "conditional")
     take(rf"\bfail(?:ed|s)?\s+to\s+(?!pass\b|get\s+(?:approved|passed)\b|be\s+approved\b){_W}", "no_show")
     take(rf"\b{_NEG}{_GAP}{_FAIL}\b|{_NO}{_FAIL}\b", "negated_fail")
     take(rf"\b(?:{_NEG}{_GAP}|{_NO}){_PASS}\b(?:[\s,]+[\w']+){{0,2}}?[\s,]+(?:yet|todav[ií]a|a[uú]n)\b"
@@ -220,6 +234,9 @@ def read_result(text: Any) -> Dict[str, Any]:
             unclear.add("negation_before_pass")
         else:
             results.add(kind)
+    if found and _RETRACTED.search(raw):
+        # Taken back: no result word in this text counts.
+        return {"results": [], "unclear": sorted(unclear | {"retracted"})}
     return {"results": sorted(results), "unclear": sorted(unclear)}
 
 
@@ -279,12 +296,85 @@ def _verdict(read: Dict[str, Any], claimed: Any, span: str, source: str) -> Dict
             "span": _clip(span) or "", "source": source}
 
 
-def validate_statement(own: Any, quote: Any, claimed: Any) -> Dict[str, Any]:
-    """The model's `claimed` result against their own sentence, plus
-    "question": that sentence asks rather than states."""
+_HEARSAY = re.compile(
+    r"(?P<who>\b[\w'.]+(?:\s+[\w'.]+)?)\s+(?:said|says|told\s+(?:me|us|him|her|them)|texted|mentioned|"
+    r"claims?|claimed|me\s+dijo|nos\s+dijo|dijo|dice|dijeron)\b"
+    r"|\b(?:i|we)\s+(?P<heard>heard)\b|\baccording\s+to\s+(?P<to>[\w'.]+(?:\s+[\w'.]+)?)", re.I)
+_DETERMINERS = {"the", "my", "our", "his", "her", "their", "a", "an", "el", "la", "mi", "nuestro"}
+_NOT_HEARSAY = {"i", "we", "yo", "nosotros"}
+
+
+def hearsay_from(text: Any) -> Optional[str]:
+    """Who the sender says said it ("Joe said it passed" -> "Joe"), or None
+    when the sentence is the sender's own statement. "I heard" is hearsay from
+    someone not named. Kept with the sender's report, never as the inspector's."""
+    for m in _HEARSAY.finditer(" ".join(str(text or "").replace("’", "'").split())):
+        if m.group("heard"):
+            return "someone not named"
+        who = (m.group("who") or m.group("to") or "").split()
+        if not who:
+            continue
+        if len(who) == 2 and who[0].lower() not in _DETERMINERS:
+            who = who[1:]                         # "and Joe said" -> "Joe"; "the inspector said" stays
+        if " ".join(who).lower() in _NOT_HEARSAY:
+            continue
+        return " ".join(who)
+    return None
+
+
+def _original_span(own: Any, span: str) -> str:
+    """`span` (normalized) in their original casing, for naming who said it."""
+    text = " ".join(str(own or "").replace("’", "'").split())
+    at = text.casefold().find(span.casefold()) if span else -1
+    return text[at:at + len(span)] if at >= 0 else span
+
+
+def _other_results(own: Any, span: str, claim: str, levels: Optional[Sequence[str]]) -> Optional[str]:
+    """Why the rest of their message keeps this report unresolved, or None.
+    Any OTHER sentence of the same message that reads a different result, or
+    a result word set aside (hedged, negated, taken back), is a correction or a
+    doubt ("Plumbing rough on 3 passed. Actually no, the inspector failed it").
+    Set aside only: a question; the same result again; a sentence about a
+    different inspection it names; and a sentence about OTHER floors it names,
+    when the floors of this report are known and named in its own sentence
+    (each floor's result in its own clause, and the call matches it)."""
+    from lib import work_state as W                 # here: work_state imports this module
+    said = _norm(own)
+    mine = set(gates_named(span))
+    for a, b in _sentences(said):
+        s = said[a:b].strip()
+        if not s or s in span or is_question(s):
+            continue
+        r = read_result(s)
+        if not (r["results"] or r["unclear"]):
+            continue
+        if r["results"] == [claim] and not r["unclear"]:
+            continue
+        theirs = set(gates_named(s))
+        if theirs and mine and not theirs & mine:
+            continue
+        named = W.levels_said(s)
+        if levels and named and not set(named) & set(levels) and all(W.level_said(lv, span) for lv in levels):
+            continue
+        what = " and ".join(_SAID_AS[w] for w in r["results"]) or ", ".join(r["unclear"])
+        return f"another sentence of the same message reads {what}: \"{_clip(s)}\""
+    return None
+
+
+def validate_statement(own: Any, quote: Any, claimed: Any, levels: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    """The model's `claimed` result against their own sentence AND the rest of
+    their message (a correction anywhere in it keeps the report unresolved),
+    plus "question": that sentence asks rather than states, and
+    "hearsay_from": who they say said it, when it was not their own statement.
+    `levels`: the level tokens the report is for, when known."""
     span = statement_span(own, quote)
     out = _verdict(read_result(span), claimed, span, "statement")
     out["question"] = bool(span) and is_question(span)
+    if out["agree"]:
+        why = _other_results(own, span, out["result"], levels)
+        if why:
+            out.update(result=None, agree=False, reason=why)
+    out["hearsay_from"] = hearsay_from(_original_span(own, span)) if span else None
     return out
 
 
@@ -324,10 +414,54 @@ def document_span(ocr_text: Any, quote: Any) -> Tuple[str, str]:
     return _norm(" ".join(lines))[:4000], "ocr"
 
 
+_BOX_ON = r"(?:\[\s*[xX✓✔✗✘]\s*\]|\(\s*[xX✓✔]\s*\)|[☒☑✅✔✓■])"
+_BOX_OFF = r"(?:\[\s*\]|\(\s*\)|[☐□○])"
+_BOX_WORD = r"(?:not\s+approved|disapproved|approved|rejected|accepted|passed|pass|failed|fail|partial)"
+_BOXED = re.compile(rf"(?P<b1>{_BOX_ON}|{_BOX_OFF})\s*(?P<w1>{_BOX_WORD})\b|\b(?P<w2>{_BOX_WORD})\s*(?P<b2>{_BOX_ON}|{_BOX_OFF})",
+                    re.I)
+
+
+def ticked_result(ocr_text: Any) -> Optional[str]:
+    """The one result whose box is ticked on a checkbox form ("[ ] PASSED
+    [X] FAILED" -> "failed"), or None when no box, or more than one result,
+    reads as ticked."""
+    ticked = set()
+    for line in str(ocr_text or "").splitlines():
+        for m in _BOXED.finditer(unmerge_ocr(line)):
+            box, word = (m.group("b1"), m.group("w1")) if m.group("b1") else (m.group("b2"), m.group("w2"))
+            if re.fullmatch(_BOX_ON, box.strip()):
+                ticked.update(read_result(word)["results"])
+    return next(iter(ticked)) if len(ticked) == 1 else None
+
+
 def validate_document(ocr_text: Any, quote: Any, claimed: Any) -> Dict[str, Any]:
-    """The vision model's reading of a sign-off against the page's OCR text."""
+    """The vision model's reading of a sign-off against the page's OCR text.
+    No OCR text: UNRESOLVED (the model's own quote cannot check the model). A
+    page whose text reads more than one result (a checkbox form printing both
+    PASSED and FAILED) is UNRESOLVED unless the ticked box is unambiguous in
+    the OCR text and is the model's result."""
+    if not str(ocr_text or "").strip():
+        span = _norm(quote)
+        out = _verdict({"results": [], "unclear": []}, claimed, span, "vision_quote" if span else "none")
+        if out["model_result"] in RESULTS:
+            out["reason"] = "the page gave no text to read the result from, and the model cannot check itself"
+        return out
     span, source = document_span(ocr_text, quote)
-    return _verdict(read_result(span), claimed, span, source)
+    out = _verdict(read_result(span), claimed, span, source)
+    page = read_result(" ".join(unmerge_ocr(ln) for ln in str(ocr_text).splitlines()))
+    if len(page["results"]) > 1:
+        ticked = ticked_result(ocr_text)
+        both = " and ".join(_SAID_AS[w] for w in page["results"])
+        if ticked is None:
+            out.update(result=None, agree=False,
+                       reason=f"the page states more than one result ({both}), and which box is ticked cannot be "
+                              "read from its text")
+        elif ticked != out["model_result"]:
+            out.update(result=None, agree=False,
+                       reason=f"the page states more than one result ({both}); the ticked box reads {_SAID_AS[ticked]}")
+        else:
+            out.update(result=ticked, agree=True, reason=None, read=[ticked])
+    return out
 
 
 def ocr_lines(boxes: Iterable[Sequence[Any]], tolerance: float = 12.0) -> str:
@@ -365,9 +499,7 @@ def audit(v: Dict[str, Any]) -> Dict[str, Any]:
                            "span": v.get("span") or "", "source": v.get("source")}}
 
 
-def clean_date(said: Any, today: date, result: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
-    """(YYYY-MM-DD or None, problem or None). No date said is not a problem. A
-    date that isn't one, or a result already known for a day still to come, is."""
+def _date_value(said: Any, today: date, result: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     s = str(said or "").strip()
     if not s:
         return None, None
@@ -378,6 +510,55 @@ def clean_date(said: Any, today: date, result: Optional[str] = None) -> Tuple[Op
     if d > today and result != "scheduled":
         return None, "in_the_future"
     return d.isoformat(), None
+
+
+_MONTH_WORDS = ("jan(?:uary)?|enero", "feb(?:ruary)?|febrero", "mar(?:ch)?|marzo", "apr(?:il)?|abril", "may|mayo",
+                "june?|junio", "july?|julio", "aug(?:ust)?|agosto", "sep(?:t(?:ember)?)?|septiembre|setiembre",
+                "oct(?:ober)?|octubre", "nov(?:ember)?|noviembre", "dec(?:ember)?|diciembre")
+_WEEKDAY_WORDS = ("mon(?:day)?|lunes", "tue(?:s(?:day)?)?|martes", "wed(?:nesday)?|mi[eé]rcoles",
+                  "thu(?:r(?:s(?:day)?)?)?|jueves", "fri(?:day)?|viernes", "sat(?:urday)?|s[aá]bado",
+                  "sun(?:day)?|domingo")
+
+
+def date_in_words(iso: Any, words: Any, today: date) -> bool:
+    """Whether their own words say this day: the date itself ("Nov 3", "11/3",
+    "2026-11-03", "the 3rd"), or "today" / "yesterday" / a weekday of the last
+    week that IS this day. A date the model supplied from nowhere is not."""
+    try:
+        d = date.fromisoformat(str(iso or "")[:10])
+    except ValueError:
+        return False
+    t = _norm(words)
+    if not t:
+        return False
+    n, m = d.day, d.month
+    day = rf"0?{n}(?:st|nd|rd|th)?"
+    month = _MONTH_WORDS[m - 1]
+    pats = [rf"\b(?:{month})\.?\s+{day}\b", rf"\b{day}\s+(?:of\s+|de\s+)?(?:{month})\b",
+            rf"(?<![\d/.-])0?{m}[/.-]0?{n}(?:[/.-](?:\d{{2}}|\d{{4}}))?(?![\d/.-])", rf"\b{d.isoformat()}\b",
+            rf"\bthe\s+{n}(?:st|nd|rd|th)\b(?!\s+(?:floor|fl|level))"]
+    if any(re.search(p, t) for p in pats):
+        return True
+    if d == today and re.search(r"\b(?:today|this\s+morning|this\s+afternoon|tonight|hoy|esta\s+ma[nñ]ana)\b", t):
+        return True
+    if d == today - timedelta(days=1) and re.search(r"\b(?:yesterday|ayer)\b", t):
+        return True
+    if 0 <= (today - d).days < 7 and re.search(rf"\b(?:{_WEEKDAY_WORDS[d.weekday()]})\b", t):
+        return True
+    return False
+
+
+def clean_date(said: Any, today: date, result: Optional[str] = None,
+               words: Any = None) -> Tuple[Optional[str], Optional[str]]:
+    """(YYYY-MM-DD or None, problem or None). No date said is not a problem. A
+    date that isn't one, or a result already known for a day still to come, is.
+    The model's date is a claim: it is kept only when `words` (their own
+    message) say that day (date_in_words); otherwise (None,
+    "not_in_their_words"): the inspection date is UNKNOWN, and is said so."""
+    d, problem = _date_value(said, today, result)
+    if d and not date_in_words(d, words, today):
+        return None, "not_in_their_words"
+    return d, problem
 
 
 # ── THE ROW ────────────────────────────────────────────────────────────────
@@ -444,39 +625,74 @@ def _status(row: Dict[str, Any]) -> str:
     return f"attested_{result}" if result in RESULTS else "unknown"
 
 
+def row_order(row: Dict[str, Any]) -> Tuple[int, int, datetime]:
+    """lib/evidence.order_key for a stored row: by the inspection date it
+    names; an undated row by the day it was said, after the dated ones of that
+    day; then by when it was said."""
+    said = _at(row)
+    try:
+        on = date.fromisoformat(str(row.get("inspected_on"))[:10]) if row.get("inspected_on") else None
+    except ValueError:
+        on = None
+    if on:
+        return (on.toordinal(), 0, said)
+    if said != datetime.min:
+        return (said.date().toordinal(), 1, said)
+    return (0, 1, said)
+
+
 def current_state(rows: Iterable[Dict[str, Any]]) -> Dict[Tuple[str, str], Dict[str, Any]]:
-    """{(gate, level): the newest statement about it}. Newest by when it was
-    said, not by the date it names. A row with no gate or no level names no
-    (gate, level) and changes nothing."""
+    """{(gate, level): the newest statement about it}. Newest by the one rule
+    (row_order: the date it names, else the day it was said; then when it was
+    said). A row with no gate or no level names no (gate, level) and changes
+    nothing. The current row carries `_later`: statements about the same gate
+    and level that are newer than it but could not replace it (UNRESOLVED), or
+    that were SAID after it and read differently: shown, never hidden."""
     out: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    numbered = sorted(enumerate(rows), key=lambda p: (_at(p[1]), p[0]))
+    numbered = sorted(enumerate(rows), key=lambda p: (row_order(p[1]), p[0]))
     for _i, row in numbered:
         if not row.get("gate") or _status(row) == "unknown":
             continue
         for level in row.get("levels") or []:
             out[(row["gate"], level)] = row
+    for key, cur in list(out.items()):
+        later = []
+        for _i, row in numbered:
+            if row is cur or row.get("gate") != key[0] or key[1] not in (row.get("levels") or []):
+                continue
+            if row.get("status") == UNRESOLVED and row_order(row) > row_order(cur):
+                later.append(row)
+            elif _status(row) != "unknown" and _at(row) > _at(cur) and row.get("result") != cur.get("result"):
+                later.append(row)
+        if later:
+            out[key] = {**cur, "_later": later}
     return out
 
 
 def gate_read(state: Dict[Tuple[str, str], Dict[str, Any]], gate: str, level: str) -> Dict[str, Any]:
     """What the reports say about one gate on one level. `verified` stays None
-    until an authoritative record exists; nothing here can set it."""
+    until an authoritative record exists; nothing here can set it. `settled`
+    is False while a later statement is unresolved or disagrees."""
     row = state.get((gate, level))
     if not row:
         return {"status": "unknown", "verified": None}
+    later = [{"status": r.get("status"), "result": r.get("result"), "quote": r.get("quote"),
+              "who": r.get("reporter_name") or "someone", "when": r.get("inspected_on"),
+              "reported_at": r.get("created_at")} for r in row.get("_later") or ()]
     return {"status": _status(row), "verified": None, "who": row.get("reporter_name") or "someone",
             "result": row.get("result"), "when": row.get("inspected_on"), "reported_at": row.get("created_at"),
             "quote": row.get("quote"), "inspector": row.get("inspector_as_said"), "space": row.get("space"),
             "source": row.get("source"), "levels": list(row.get("levels") or []),
             "shared_with_other_levels": len(row.get("levels") or []) > 1,
-            "read_ok": row.get("read_ok")}
+            "read_ok": row.get("read_ok"), "hearsay_from": row.get("hearsay_from"),
+            "later": later, "settled": not later}
 
 
 def others(rows: Iterable[Dict[str, Any]], level: str) -> List[Dict[str, Any]]:
     """Reports about this level that match no gate: newest for each inspection
     as said, so nothing someone told us disappears from the answer."""
     seen: Dict[str, Dict[str, Any]] = {}
-    numbered = sorted(enumerate(rows), key=lambda p: (_at(p[1]), p[0]))
+    numbered = sorted(enumerate(rows), key=lambda p: (row_order(p[1]), p[0]))
     for _i, row in numbered:
         if not row.get("gate") and level in (row.get("levels") or []) and _status(row) != "unknown":
             seen[_norm(row.get("inspection_as_said"))] = row
@@ -503,7 +719,12 @@ def words(read: Dict[str, Any]) -> str:
     verified."""
     if read["status"] == "unknown":
         return "UNKNOWN, neither passed nor failed"
-    bits = [f"{_LEAD[read['status']]}, reported by {read['who']}, not verified"]
+    lead = _LEAD[read["status"]]
+    if read.get("later"):
+        lead = f"NOT SETTLED: the last resolved statement reads {lead}"
+    bits = [f"{lead}, reported by {read['who']}, not verified"]
+    if read.get("hearsay_from"):
+        bits.append(f"hearsay: {read['who']} reports that {read['hearsay_from']} said it")
     if read["status"] == DOCUMENT:
         bits.append(f"the document reads {read['result']}" if read.get("result") else "no result read from the document")
     if read.get("when"):
@@ -520,15 +741,27 @@ def words(read: Dict[str, Any]) -> str:
         bits.append("reported for several floors together, not this floor alone")
     if read.get("quote"):
         bits.append(f'their words: "{read["quote"]}"')
+    for r in read.get("later") or ():
+        if r["status"] == UNRESOLVED:
+            bits.append(f'a later statement is unresolved: "{r["quote"] or ""}" ({r["who"]})')
+        else:
+            when = f", inspection date {_day(r['when'])}" if r.get("when") else ""
+            bits.append(f'a statement said later reads {_SAID_AS.get(r["result"], r["result"])}{when}: '
+                        f'"{r["quote"] or ""}" ({r["who"]})')
     return "; ".join(bits)
 
 
 def noted_line(name: Any, inspection: Any, level_labels: Sequence[str], result: str,
-               inspected_on: Optional[str]) -> str:
+               inspected_on: Optional[str], *, hearsay: Optional[str] = None, date_unknown: bool = False) -> str:
     """The one line they get back."""
     where = ", ".join(level_labels)
     when = f", {_day(inspected_on)}" if inspected_on else ""
-    return f"Noted as reported by {name}, not verified: {inspection}, {where}, {result}{when}."
+    line = f"Noted as reported by {name}, not verified: {inspection}, {where}, {result}{when}."
+    if hearsay:
+        line += f" Kept as hearsay: {name} reports that {hearsay} said it."
+    if date_unknown:
+        line += " The inspection date is unknown: their words don't say which day."
+    return line
 
 
 def document_line(name: Any, job: Any, inspection: Any, level_labels: Sequence[str], result: Optional[str],
@@ -616,5 +849,7 @@ def parse_document(said: Any, today: date) -> Optional[Dict[str, Any]]:
     result = str(v.get("result") or "").strip().lower()
     result = result if result in RESULTS else None
     return {"is_signoff": v["is_signoff"], "inspection": _field(v.get("inspection")), "levels": _field(v.get("levels")),
-            "result": result, "date": clean_date(_field(v.get("date")), today, result)[0],
+            # The page's date as the model read it: the server keeps it only
+            # when the page's own OCR text says that day (date_in_words).
+            "result": result, "date": _date_value(_field(v.get("date")), today, result)[0],
             "inspector": _field(v.get("inspector")), "quote": _field(v.get("quote"))}

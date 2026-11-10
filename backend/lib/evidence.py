@@ -30,8 +30,8 @@ Pure: no database, no network.
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from datetime import date, datetime, timezone
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 KINDS = ("verified", "confirmed", "attested", "observed", "reported", "estimate")
 _RANK = {k: i for i, k in enumerate(KINDS)}
@@ -44,11 +44,14 @@ def item(kind: str, claim: str, *, source: str, ref: str, project_id: Any, node:
          levels: Sequence[str] = (), space: Optional[str] = None, sub: Optional[str] = None,
          on: Optional[date] = None, by: Optional[str] = None, quote: Optional[str] = None,
          shared: bool = False, stated_percent: Optional[float] = None,
-         basis: Optional[str] = None, note: Optional[str] = None) -> Dict[str, Any]:
+         basis: Optional[str] = None, note: Optional[str] = None,
+         said_at: Optional[datetime] = None) -> Dict[str, Any]:
     """One piece of evidence. `source` names the collection or feed, `ref` the
     record inside it (so it can be shown and audited). `shared`: the record names
     several places together ("floors 1-4") and is not about one alone.
-    `basis` is required for an estimate."""
+    `basis` is required for an estimate. `said_at`: when the statement or record
+    was made (a report's created_at), which orders two items of one day and
+    places an undated one: it is never shown as the date of the work."""
     if kind not in _RANK:
         raise ValueError(f"unknown evidence kind {kind!r}")
     if claim not in CLAIMS:
@@ -57,7 +60,8 @@ def item(kind: str, claim: str, *, source: str, ref: str, project_id: Any, node:
         raise ValueError("an estimate needs its basis")
     return {"kind": kind, "claim": claim, "source": source, "ref": str(ref), "project_id": str(project_id),
             "node": node, "levels": sorted(set(levels)), "space": space, "sub": sub, "on": on, "by": by,
-            "quote": quote, "shared": bool(shared), "stated_percent": stated_percent, "basis": basis, "note": note}
+            "quote": quote, "shared": bool(shared), "stated_percent": stated_percent, "basis": basis, "note": note,
+            "said_at": said_at}
 
 
 def rank(kind: str) -> int:
@@ -65,12 +69,40 @@ def rank(kind: str) -> int:
     return _RANK[kind]
 
 
+def _naive(at: Any) -> Optional[datetime]:
+    if not isinstance(at, datetime):
+        return None
+    return at.astimezone(timezone.utc).replace(tzinfo=None) if at.tzinfo else at
+
+
+def order_key(i: Dict[str, Any]) -> Tuple[int, int, datetime]:
+    """THE ONE ORDER of "newest" (owner ruling): by the record's own date; an
+    undated record by the day it was said (it cannot have happened later);
+    within a day, an undated record last, then by when it was said. A record
+    with neither is oldest. So an earlier dated pass can never hide a later
+    undated failure."""
+    on = i.get("on")
+    on = on.date() if isinstance(on, datetime) else on
+    said = _naive(i.get("said_at"))
+    if isinstance(on, date):
+        return (on.toordinal(), 0, said or datetime.min)
+    if said:
+        return (said.date().toordinal(), 1, said)
+    return (0, 1, datetime.min)
+
+
+def newest(items: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    pool = list(items)
+    return max(pool, key=order_key) if pool else None
+
+
 def strongest(items: Iterable[Dict[str, Any]], *, facts_only: bool = True) -> Optional[Dict[str, Any]]:
     """The strongest item, newest first within a rung. An estimate is never a fact."""
     pool = [i for i in items if not (facts_only and i["kind"] == "estimate")]
     if not pool:
         return None
-    return sorted(pool, key=lambda i: (rank(i["kind"]), -(i["on"].toordinal() if isinstance(i["on"], date) else 0)))[0]
+    best = min(rank(i["kind"]) for i in pool)
+    return newest(i for i in pool if rank(i["kind"]) == best)
 
 
 def about(items: Iterable[Dict[str, Any]], *, node: Optional[str] = None, level: Optional[str] = None,
@@ -97,10 +129,8 @@ def status(items: Sequence[Dict[str, Any]]) -> str:
     if not facts:
         return "unknown"
     for kind in ("verified", "confirmed", "attested"):
-        mine = sorted((i for i in facts if i["kind"] == kind and i["claim"] in ("done", "failed")),
-                      key=lambda i: i["on"].toordinal() if isinstance(i["on"], date) else 0)
-        if mine:
-            last = mine[-1]
+        last = newest(i for i in facts if i["kind"] == kind and i["claim"] in ("done", "failed"))
+        if last:
             return f"{last['claim']}_{kind}"
     if any(i["kind"] == "observed" for i in facts):
         return "in_progress_observed"

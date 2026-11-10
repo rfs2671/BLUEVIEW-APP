@@ -33,7 +33,9 @@ about somewhere else and "L3" is a lintel mark, and bare numbers are nothing.
 
 A plan tag's level comes only from a sheet titled for ONE level. "TYPICAL FLOOR
 PLAN" and "SECOND THROUGH FIFTH FLOOR PLAN" say nothing about any one level, and
-4A is never assumed to be on the fourth floor just because it is called 4A.
+4A is never assumed to be on the fourth floor just because it is called 4A. A
+tag that ALSO appears on such a sheet ("STAIR 1" on the cellar plan and the
+typical plan) is on levels nobody listed, so it pins no level at all.
 
 Room type is carried but never assigns a place: every floor has a bathroom.
 
@@ -115,8 +117,12 @@ def spaces_from_plan_rows(rows: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str,
         key = tag_key(raw)
         if not _usable_tag(key):
             continue
-        slot = out.setdefault(key, {"tag": raw, "levels": [], "sheets": []})
-        slot["levels"] = sorted(set(slot["levels"]) | set(_sheet_level(r.get("sheet_title"))))
+        slot = out.setdefault(key, {"tag": raw, "levels": [], "sheets": [], "open": False})
+        one = _sheet_level(r.get("sheet_title"))
+        slot["levels"] = sorted(set(slot["levels"]) | set(one))
+        # Also on a sheet that names no ONE level ("TYPICAL FLOOR PLAN 2-6"):
+        # the tag's levels are not all known, so it can never pin one.
+        slot["open"] = slot["open"] or not one
         sheet = str(r.get("sheet_number") or "")
         if sheet and sheet not in slot["sheets"] and len(slot["sheets"]) < 8:
             slot["sheets"].append(sheet)
@@ -225,10 +231,11 @@ def infer(photo: Dict[str, Any], project_spaces: Optional[Dict[str, Dict[str, An
                          "says": f"a tag read in the photo disagrees with the log row's {row_space}"})
     for key in dict.fromkeys(([row_space] if row_space in spaces else []) + tags):
         levels = spaces[key]["levels"]
+        is_open = bool(spaces[key].get("open"))
         mentioned |= set(levels)
-        if row_levels and levels and not set(levels) & set(row_levels):
+        if row_levels and levels and not is_open and not set(levels) & set(row_levels):
             conflict = True
-        if len(levels) == 1:
+        if len(levels) == 1 and not is_open:
             pins.append(levels[0])
         evidence.append({"source": "plan_tag", "text": key, "used": key in tags or key == row_space, "levels": levels,
                          "space": key,
@@ -259,7 +266,8 @@ def infer(photo: Dict[str, Any], project_spaces: Optional[Dict[str, Dict[str, An
         conflict = True
     # A tag on several levels still has to allow the level the rest settled on.
     for key in ([row_space] if row_space in spaces else []) + tags:
-        if len(pinned) == 1 and spaces[key]["levels"] and not pinned & set(spaces[key]["levels"]):
+        if len(pinned) == 1 and spaces[key]["levels"] and not spaces[key].get("open") \
+                and not pinned & set(spaces[key]["levels"]):
             conflict = True
     if conflict:
         return _result(None, None, room, CONFLICT, mentioned, evidence)
@@ -267,6 +275,12 @@ def infer(photo: Dict[str, Any], project_spaces: Optional[Dict[str, Dict[str, An
     named = {k for k in ([row_space] if row_space else []) + tags}
     space = next(iter(named)) if len(named) == 1 else None
     level = next(iter(pinned)) if pinned else None
+    if not level and space and spaces.get(space, {}).get("open") and spaces[space]["levels"]:
+        # Named on a one-level sheet AND on a typical one: which level is not
+        # known, and placing it on the one level that was listed would be a guess.
+        evidence.append({"source": "plan_tag", "text": space, "used": False, "levels": spaces[space]["levels"],
+                         "says": f"the plan tag {spaces[space]['tag']} is also on a sheet that names no one level"})
+        return _result(None, None, room, SUGGESTED, mentioned, evidence)
     if level or space:
         return _result(level, space, room, INFERRED, [level] if level else row_levels, evidence)
     if lent and LEND_MIN_INLIERS is not None and int(lent.get("inliers") or 0) >= LEND_MIN_INLIERS \

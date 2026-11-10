@@ -120,7 +120,7 @@ def markers(items: Iterable[Item]) -> Dict[str, Optional[Dict[str, Any]]]:
     done = failed = None
     if word.startswith(("done_", "failed_")):
         rung = word.split("_", 1)[1]
-        last = sorted((i for i in strong if i["kind"] == rung and i["claim"] in ("done", "failed")), key=_on)[-1]
+        last = E.newest(i for i in strong if i["kind"] == rung and i["claim"] in ("done", "failed"))
         if last["claim"] == "done":
             done = last
         else:
@@ -416,13 +416,16 @@ def completion(schedule: Optional[Dict[str, Any]], pva: Sequence[Dict[str, Any]]
 # ── THE WHOLE ──────────────────────────────────────────────────────────────
 
 def forecast(schedule: Optional[Dict[str, Any]], items: Sequence[Item], rows: Sequence[Dict[str, Any]], *,
-             today: date, project_id: Any) -> Dict[str, Any]:
+             today: date, project_id: Any, unreadable: Iterable[str] = ()) -> Dict[str, Any]:
+    """`unreadable`: sources the loader could not read (its coverage). They are
+    named in every line of words: "no done marker" may only mean "not read"."""
     pva = plan_vs_actual(schedule, items, rows, today=today)
     down = downstream(schedule, pva, today=today, project_id=project_id)
     cyc = cycles(schedule, items, today=today, project_id=project_id)
     data_date = _iso((schedule or {}).get("data_date"))
     return {"today": today, "data_date": data_date, "file_age_days": (today - data_date).days if data_date else None,
-            "plan_vs_actual": pva, "downstream": down, "cycles": cyc, "completion": completion(schedule, pva, cyc)}
+            "plan_vs_actual": pva, "downstream": down, "cycles": cyc, "completion": completion(schedule, pva, cyc),
+            "unreadable": sorted(set(unreadable or ()))}
 
 
 def estimates(fc: Dict[str, Any]) -> List[Item]:
@@ -574,6 +577,9 @@ def report_section(fc: Dict[str, Any]) -> Dict[str, Any]:
 def status_text(fc: Dict[str, Any], job: str = "") -> str:
     sec = report_section(fc)
     out = [f"SCHEDULE STATUS{' for ' + job if job else ''}, against the confirmed schedule file, as of {_day(fc['today'])}."]
+    if fc.get("unreadable"):
+        out.append("Could not be read just now: " + ", ".join(s.replace("_", " ") for s in fc["unreadable"])
+                   + ". What they hold is unknown, so a missing start or done marker may only mean it was not read.")
     for g in sec["groups"]:
         out.append(g["label"] + ":")
         out += g["lines"]
@@ -582,13 +588,15 @@ def status_text(fc: Dict[str, Any], job: str = "") -> str:
 
 
 def lookahead_with_status(schedule: Dict[str, Any], items: Sequence[Item], rows: Sequence[Dict[str, Any]], *,
-                          today: date, days: int, logs_from: date, project_id: Any, job: str = "") -> str:
+                          today: date, days: int, logs_from: date, project_id: Any, job: str = "",
+                          unreadable: Iterable[str] = ()) -> str:
     """The lookahead (lib/progress_plan.py) with the status groups after it.
     The lookahead's closing rule forbids any forecast; when this status holds
     a labelled estimate that rule is replaced by the status's own."""
     head = PP.lookahead_text(schedule, rows, today=today, days=days, logs_from=logs_from)
     head = head.replace("\n" + PP.LOOKAHEAD_RULE, "")
-    return head + "\n\n" + status_text(forecast(schedule, items, rows, today=today, project_id=project_id), job)
+    return head + "\n\n" + status_text(forecast(schedule, items, rows, today=today, project_id=project_id,
+                                                unreadable=unreadable), job)
 
 
 # ── ITEMS FROM WHAT IS STORED TODAY ────────────────────────────────────────
@@ -597,16 +605,21 @@ def items_from_inspection_reports(rows: Iterable[Dict[str, Any]], project_id: An
     """Attested inspection statements (lib/inspection_reports.py) as evidence:
     passed -> done, failed -> failed, on the gate's node. A document whose
     result could not be read, an unresolved row, a partial pass and a booking
-    mark nothing. The date is the one they said, else the day it was said."""
+    mark nothing, and nor does hearsay ("Joe said it passed"). The date is the
+    one they said; with none, the inspection date is UNKNOWN (the day it was
+    said is carried as `said_at`, for order only, never printed as the date)."""
     out = []
     for r in rows:
         if r.get("status") != "attested" or not r.get("gate") or r.get("result") not in ("passed", "failed"):
             continue
+        if r.get("hearsay_from"):
+            continue
         levels = [str(x) for x in r.get("levels") or []]
         if not levels:
             continue
+        said = r.get("created_at") if isinstance(r.get("created_at"), datetime) else None
         out.append(E.item("attested", "done" if r["result"] == "passed" else "failed", source="inspection_reports",
                           ref=r.get("_id") or "", project_id=project_id, node=r["gate"], levels=levels,
-                          on=_iso(r.get("inspected_on")) or _iso(r.get("created_at")), by=r.get("reporter_name") or None,
-                          quote=r.get("quote"), shared=len(levels) > 1))
+                          on=_iso(r.get("inspected_on")), by=r.get("reporter_name") or None,
+                          quote=r.get("quote"), shared=len(levels) > 1, said_at=said))
     return out

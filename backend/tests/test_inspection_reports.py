@@ -100,11 +100,13 @@ class WasItReallySaid(unittest.TestCase):
 
     def test_dates(self):
         self.assertEqual(IR.clean_date("", TODAY), (None, None))
-        self.assertEqual(IR.clean_date("2026-11-08", TODAY, "passed"), ("2026-11-08", None))
-        self.assertEqual(IR.clean_date("2026-11-09", TODAY, "passed"), ("2026-11-09", None))
+        self.assertEqual(IR.clean_date("2026-11-08", TODAY, "passed", words="passed yesterday"), ("2026-11-08", None))
+        self.assertEqual(IR.clean_date("2026-11-09", TODAY, "passed", words="passed today"), ("2026-11-09", None))
+        # The model's date is a claim: not in their words, the date is unknown (owner ruling).
+        self.assertEqual(IR.clean_date("2026-11-08", TODAY, "passed"), (None, "not_in_their_words"))
         self.assertEqual(IR.clean_date("yesterday", TODAY), (None, "not_a_date"))
         self.assertEqual(IR.clean_date("2026-11-20", TODAY, "passed"), (None, "in_the_future"))
-        self.assertEqual(IR.clean_date("2026-11-20", TODAY, "scheduled"), ("2026-11-20", None))
+        self.assertEqual(IR.clean_date("2026-11-20", TODAY, "scheduled", words="booked nov 20"), ("2026-11-20", None))
 
 
 class NewestWins(unittest.TestCase):
@@ -113,10 +115,16 @@ class NewestWins(unittest.TestCase):
         s = IR.current_state([_row(at=T0 + timedelta(hours=1), result="failed"), _row(at=T0, result="passed")])
         self.assertEqual(s[(IR.PLUMBING_ROUGH, "FLOOR_3")]["result"], "failed")
 
-    def test_by_when_it_was_said_not_the_date_it_names(self):
+    def test_by_the_date_it_names_and_what_was_said_later_is_shown(self):
+        # One order of "newest" (lib/evidence.order_key, owner ruling): the
+        # inspection date first. A failure said later for an EARLIER date is
+        # not hidden: the read is not settled and says what was said.
         s = IR.current_state([_row(at=T0, result="passed", inspected_on="2026-11-07"),
                               _row(at=T0 + timedelta(hours=1), result="failed", inspected_on="2026-11-01")])
-        self.assertEqual(s[(IR.PLUMBING_ROUGH, "FLOOR_3")]["result"], "failed")
+        self.assertEqual(s[(IR.PLUMBING_ROUGH, "FLOOR_3")]["result"], "passed")
+        read = IR.gate_read(s, IR.PLUMBING_ROUGH, "FLOOR_3")
+        self.assertFalse(read["settled"])
+        self.assertIn("a statement said later reads failed, inspection date Nov 1", IR.words(read))
 
     def test_the_same_instant_the_last_written_wins(self):
         s = IR.current_state([_row(result="passed"), _row(result="failed")])
@@ -291,13 +299,17 @@ class AStatement(_Brain):
     """Through the real pipeline: message in, row and answer out."""
 
     SAID = "Plumbing rough passed on floor 3 at 588, inspector Ruiz, yesterday"
+    #: "yesterday" in New York, as the server reads it: the date must be in their words.
+    YESTERDAY = (datetime.now(timezone.utc).astimezone(server._MemoryZone("America/New_York")).date()
+                 - timedelta(days=1))
 
     def rows(self):
         return list(self.db[IR.COLLECTION].rows)
 
     def _good(self, **over):
         return dict({"job": "588", "inspection": "plumbing rough", "levels": "3", "result": "passed",
-                     "date": "2026-11-08", "inspector": "Ruiz", "quote": "plumbing rough passed on floor 3"}, **over)
+                     "date": self.YESTERDAY.isoformat(), "inspector": "Ruiz", "quote": "plumbing rough passed on floor 3"},
+                    **over)
 
     def _say(self, body, args, quoted=None, then="ok", c=None):
         """The model calls report_inspection once; returns the tool's result."""
@@ -320,12 +332,13 @@ class AStatement(_Brain):
         self.assertEqual((r["project_id"], r["company_id"], r["gate"], r["inspection_as_said"], r["levels"]),
                          (THOMAS, CO_A, IR.PLUMBING_ROUGH, "plumbing rough", ["FLOOR_3"]))
         self.assertEqual((r["result"], r["inspected_on"], r["inspector_as_said"], r["status"], r["source"]),
-                         ("passed", "2026-11-08", "Ruiz", IR.ATTESTED, "text"))
+                         ("passed", self.YESTERDAY.isoformat(), "Ruiz", IR.ATTESTED, "text"))
         self.assertEqual((r["reporter_user_id"], r["reporter_name"], r["quote"]),
                          ("u_admin", "Ada Admin", "plumbing rough passed on floor 3"))
         self.assertEqual(r["message_id"], f"false_{CHAT}_b1")
         self.assertIsInstance(r["created_at"], datetime)
-        self.assertIn("Noted as reported by Ada Admin, not verified: plumbing rough, Floor 3, passed, Nov 8.", tool)
+        self.assertIn("Noted as reported by Ada Admin, not verified: plumbing rough, Floor 3, passed, "
+                      f"{self.YESTERDAY:%b} {self.YESTERDAY.day}.", tool)
         self.assertIn("report_inspection", {t["function"]["name"] for t in llm.calls[0]["tools"]})
         self.assertEqual([r["kind"] for r in self.db[server._DM_STATE].rows], ["dm_job"])  # nothing waiting for a yes
 
@@ -410,10 +423,43 @@ class AStatement(_Brain):
         self.assertEqual(r["levels"], ["FLOOR_3", "FLOOR_4"])
 
     def test_scheduled_for_tomorrow_is_kept(self):
-        day = (datetime.now(timezone.utc).date() + timedelta(days=3)).isoformat()
-        self._say("Hydro is booked floor 3", self._good(inspection="hydro", result="scheduled", date=day,
-                                                       quote="hydro is booked floor 3", inspector=""))
+        d = datetime.now(timezone.utc).date() + timedelta(days=3)
+        day = d.isoformat()
+        self._say(f"Hydro is booked floor 3 for {d:%b} {d.day}", self._good(inspection="hydro", result="scheduled", date=day,
+                                                                          quote="hydro is booked floor 3", inspector=""))
         self.assertEqual(self.rows()[0]["inspected_on"], day)
+
+    def test_a_date_they_did_not_say_is_unknown_and_said_so(self):
+        tool, _o, _l = self._say("Plumbing rough passed on floor 3 at 588", self._good(date="2026-11-03",
+                                                                                   inspector=""))
+        (r,) = self.rows()
+        self.assertIsNone(r["inspected_on"])
+        self.assertIn("The inspection date is unknown", tool)
+
+    def test_a_count_is_not_the_floor(self):
+        tool, _o, _l = self._say("plumbing rough passed, 3 guys from the plumber were there",
+                                 self._good(quote="plumbing rough passed", date="", inspector=""))
+        self.assertIn("which floor", tool)
+        self.assertEqual(self.rows(), [])
+
+    def test_the_floor_must_be_in_the_quoted_sentence(self):
+        tool, _o, _l = self._say("Plumbing rough passed. Floor 3 is next for drywall",
+                                 self._good(quote="plumbing rough passed", date="", inspector=""))
+        self.assertIn("which floor", tool)
+        self.assertEqual(self.rows(), [])
+
+    def test_floor_2s_sentence_is_not_floor_3s(self):
+        tool, _o, _l = self._say("Plumbing rough passed on 2. Floor 3 failed.",
+                                 self._good(levels="2, 3", quote="Plumbing rough passed on 2", date="", inspector=""))
+        self.assertNotIn("Noted as reported", tool)
+        self.assertTrue(all(r["status"] == IR.UNRESOLVED for r in self.rows()))
+
+    def test_hearsay_is_kept_as_the_senders_report(self):
+        tool, _o, _l = self._say("Joe said plumbing rough passed on floor 3",
+                                 self._good(quote="plumbing rough passed on floor 3", date="", inspector=""))
+        (r,) = self.rows()
+        self.assertEqual((r["hearsay_from"], r["reporter_name"]), ("Joe", "Ada Admin"))
+        self.assertIn("Kept as hearsay: Ada Admin reports that Joe said it", tool)
 
     def test_a_correction_is_a_new_row_and_the_old_one_stays(self):
         with _Ctx(db=self.db) as c:
@@ -626,6 +672,8 @@ class _Cdn:
 
 SIGNOFF = json.dumps({"is_signoff": True, "inspection": "Plumbing rough", "levels": "Floor 3", "result": "passed",
                       "date": "2026-11-08", "inspector": "J. Ruiz", "quote": "APPROVED"})
+#: What OCR reads on that sign-off: the result and the date are printed on it.
+SIGNOFF_OCR = "PLUMBING ROUGH INSPECTION\nFLOOR 3\nRESULT: APPROVED\nDATE 11/08/2026\nINSPECTOR J. RUIZ"
 
 
 class ADocument(_Brain):
@@ -633,7 +681,8 @@ class ADocument(_Brain):
     def rows(self):
         return list(self.db[IR.COLLECTION].rows)
 
-    def send(self, c, caption, *, mtype="image", name=None, said=SIGNOFF, raw=None, http=None, mid="d1", punch=False, upload_ok=True):
+    def send(self, c, caption, *, mtype="image", name=None, said=SIGNOFF, raw=None, http=None, mid="d1", punch=False, upload_ok=True,
+             ocr=None):
         self.posted = http or _FakeHttp(said)
         self.uploads, self.punch_calls = [], []
 
@@ -661,6 +710,10 @@ class ADocument(_Brain):
                    patch.object(server, "LLM_API_KEY", None)]
         if punch:
             patches.append(patch.object(server, "_punch_dm_turn", punch_turn))
+        if ocr is not None:
+            # The page's own printed words. With none, the model's reading is
+            # never kept (it cannot check itself): tests/test_truth_fixes.py.
+            patches.append(patch.object(server, "_inspection_doc_ocr", lambda page: ocr))
         for p in patches:
             p.start()
         try:
@@ -675,7 +728,7 @@ class ADocument(_Brain):
 
     def test_a_photo_of_a_signoff(self):
         with _Ctx(db=self.db) as c:
-            out = self.send(c, "plumbing rough sign off 588", punch=True)
+            out = self.send(c, "plumbing rough sign off 588", punch=True, ocr=SIGNOFF_OCR)
         (r,) = self.rows()
         self.assertEqual((r["status"], r["gate"], r["levels"], r["result"], r["inspected_on"], r["inspector_as_said"], r["source"]),
                          (IR.DOCUMENT, IR.PLUMBING_ROUGH, ["FLOOR_3"], "passed", "2026-11-08", "J. Ruiz", "document"))
@@ -687,9 +740,21 @@ class ADocument(_Brain):
         self.assertIn("Kept the sign-off", out[0])
         self.assertIn(IR.DOCUMENT_PROMPT, json.dumps(self.posted.posts[0]["json"], ensure_ascii=False).replace('\\"', '"').replace("\\n", "\n"))
 
+    def test_a_date_not_printed_on_the_page_is_not_kept(self):
+        with _Ctx(db=self.db) as c:
+            self.send(c, "plumbing rough sign off 588", punch=True, ocr="PLUMBING ROUGH INSPECTION\nFLOOR 3\nRESULT: APPROVED")
+        (r,) = self.rows()
+        self.assertEqual((r["result"], r["inspected_on"]), ("passed", None))
+
+    def test_no_page_text_keeps_no_result(self):
+        with _Ctx(db=self.db) as c:
+            self.send(c, "plumbing rough sign off 588", punch=True, ocr="")
+        (r,) = self.rows()
+        self.assertEqual((r["status"], r["result"]), (IR.UNRESOLVED, None))
+
     def test_it_reads_on_the_gate_as_a_document(self):
         with _Ctx(db=self.db) as c:
-            self.send(c, "plumbing rough sign off 588", punch=True)
+            self.send(c, "plumbing rough sign off 588", punch=True, ocr=SIGNOFF_OCR)
             out = _run(server._dm_work_status({"ident": {"company_id": CO_A}}, {"id": THOMAS, "label": "588"}, {"work": "drywall", "level": "3"}))
         self.assertIn("sign-off document on file, reported by Ada Admin, not verified", out)
         self.assertIn("the document reads passed", out)
