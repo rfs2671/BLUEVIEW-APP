@@ -409,7 +409,8 @@ class TheContactSheet(unittest.TestCase):
         with patch.object(server, "db", _NoDb()), patch.object(server, "_r2_fetch", r2_fetch), redirect_stdout(io.StringIO()):
             rc = B.run_sheet(src, out, side=80, disputed=True)
         self.assertEqual((rc, keys), (0, ["r2/x.jpg", "r2/y.jpg"]), "--disputed: only the pair the two disagree on")
-        self.assertIn(S.sheet_id(self.ROW["pair_id"]), Path(out).read_text(encoding="utf-8"))
+        self.assertTrue(S.sheet_id(self.ROW["pair_id"]) in Path(out).read_text(encoding="utf-8"),
+                        "the disputed pair's id is on the sheet")
 
 
 class VisionNeedsBothFlags(unittest.TestCase):
