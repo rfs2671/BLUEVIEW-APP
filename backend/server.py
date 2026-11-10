@@ -56738,7 +56738,7 @@ async def _work_state_answer(project: dict, company_id: str, work: str, level: s
         nodes[0], token, acts, index, today=today, schedule=src.get("schedule"), flags=flags,
         log_ids={str(lg.get("_id")) for lg in logs}, stop_work=reg.get("swo_active") or [],
         regulatory_note=note, relations=rel, logs_from=start, inspections=reports,
-        spaces=spaces, confirmations=confirmed)}
+        spaces=spaces, confirmations=confirmed, frame=await _project_place_frame(pid))}
 
 
 async def _dm_work_status(ctx: dict, job: dict, args: dict) -> str:
@@ -57298,7 +57298,8 @@ async def _progress_evidence(project: dict, company_id: str, start: _Date, end: 
         pid, start=start, end=end, activities=progress_report._log_activities(logs, start, end),
         photo_index=index, log_ids={str(lg.get("_id")) for lg in logs}, spaces=spaces, confirmations=confirmed,
         inspections=reports, dob_rows=src["dob_rows"], bins=src.get("project_bins") or (), logbooks=heads,
-        punch_items=closed, checkins=src["checkins"], schedule=src.get("schedule"), unreadable=unreadable)
+        punch_items=closed, checkins=src["checkins"], schedule=src.get("schedule"), unreadable=unreadable,
+        frame=await _project_place_frame(pid))
 
 
 # ── PROJECT PROGRESS (lib/project_progress.py) ──────────────────────────────
