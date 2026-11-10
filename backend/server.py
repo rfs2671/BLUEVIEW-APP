@@ -57196,6 +57196,54 @@ async def _photo_relations_job() -> None:
         logger.error(f"[photo-relations] job failed: {type(e).__name__}: {e!r}")
 
 
+# ── PROGRESS EVIDENCE (lib/evidence_sources.py) ─────────────────────────────
+#
+# ONE loader for every progress source, as lib/evidence.py items. Read-time
+# only, nothing stored. Returns (items, coverage): the shape is documented at
+# the top of lib/evidence_sources.py. The filed daily logs, check-ins, DOB rows
+# and confirmed schedule come from _report_rows (amendment chains resolved, the
+# company check made there). A source that cannot be read is named in
+# coverage["unreadable"] and gives no items: unknown, never "nothing happened".
+from lib import evidence_sources  # noqa: E402
+
+PROGRESS_LOGBOOK_TYPES = ("concrete_operations", "site_superintendent_log")
+
+
+async def _progress_evidence(project: dict, company_id: str, start: _Date, end: _Date) -> tuple:
+    now = datetime.now(timezone.utc)
+    src = await _report_rows(project, company_id, start, end, now)
+    pid, cid = str(project.get("_id")), str(company_id)
+    unreadable: List[str] = []
+
+    async def _read(name: str, query):
+        try:
+            return await query()
+        except Exception as e:
+            logger.warning(f"[progress-evidence] {name} read failed: {type(e).__name__}: {e!r}")
+            unreadable.append(name)
+            return None
+
+    days = {"$gte": start.isoformat(), "$lte": end.isoformat()}
+    index = await _read("photo_index", lambda: db[PHOTO_INDEX].find(
+        {"project_id": pid, "kind": "photo", "date": days}).to_list(20000)) or []
+    spaces, confirmed = await _photo_place_context(pid)
+    reports = await _read("inspection_reports", lambda: db[INSPECTION_REPORTS].find(
+        {"project_id": pid, "company_id": cid}).to_list(5000)) or []
+    books = await _read("logbooks", lambda: db.logbooks.find(
+        {"project_id": pid, "log_type": {"$in": list(PROGRESS_LOGBOOK_TYPES)}, "is_deleted": {"$ne": True},
+         "date": days}).to_list(5000)) or []
+    heads = [c["head"] for c in collapse_amendment_chains(books)
+             if logbook_is_filed(c["head"]) and not logbook_is_withdrawn(c["head"])]
+    closed = await _read("punch_items", lambda: db[punch.COLLECTION].find(
+        {"project_id": pid, "status": "closed"}).to_list(5000)) or []
+    logs = src["logbooks"]
+    return evidence_sources.collect(
+        pid, start=start, end=end, activities=progress_report._log_activities(logs, start, end),
+        photo_index=index, log_ids={str(lg.get("_id")) for lg in logs}, spaces=spaces, confirmations=confirmed,
+        inspections=reports, dob_rows=src["dob_rows"], bins=src.get("project_bins") or (), logbooks=heads,
+        punch_items=closed, checkins=src["checkins"], schedule=src.get("schedule"), unreadable=unreadable)
+
+
 # ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
 
 async def _group_photo_company(row: dict, company_id: Any, project_id: Any) -> Tuple[str, str, str]:
