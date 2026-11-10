@@ -178,8 +178,11 @@ def _result(level: Optional[str], space: Optional[str], room: Optional[str], cer
 
 def infer(photo: Dict[str, Any], project_spaces: Optional[Dict[str, Dict[str, Any]]] = None, *,
           confirmations: Sequence[Dict[str, Any]] = (),
-          lent: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """See the module docstring. Total: a photo with nothing is `unknown`."""
+          lent: Optional[Dict[str, Any]] = None,
+          frame: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """See the module docstring. Total: a photo with nothing is `unknown`.
+    `frame`: the project's levels and tags; the log row is then read by
+    lib/location_binder (work_state.places_in), so a level the job lacks is none."""
     spaces = project_spaces or {}
     room = _room(photo)
     answers = _answers(confirmations)
@@ -195,7 +198,7 @@ def infer(photo: Dict[str, Any], project_spaces: Optional[Dict[str, Dict[str, An
 
     evidence: List[Dict[str, Any]] = []
     where = str(photo.get("where") or "")
-    row = W.places_in(where)
+    row = W.places_in(where, frame)
     row_levels = list(row["levels"])
     row_space = _row_space(row, where, spaces, evidence)
     pins: List[str] = []                # levels something names outright
@@ -210,7 +213,7 @@ def infer(photo: Dict[str, Any], project_spaces: Optional[Dict[str, Dict[str, An
         evidence.append({"source": "log_row", "text": where, "used": False, "levels": row_levels,
                          "says": f"the log row names several levels ({where})"})
     elif row_space is None:
-        work_levels = W.places_in(photo.get("work"))["levels"]
+        work_levels = W.places_in(photo.get("work"), frame)["levels"]
         if work_levels:
             mentioned |= set(work_levels)
             evidence.append({"source": "log_work", "text": str(photo.get("work") or ""), "used": False, "levels": work_levels,
@@ -239,6 +242,10 @@ def infer(photo: Dict[str, Any], project_spaces: Optional[Dict[str, Dict[str, An
     for text in _visible(photo):
         mark = _floor_mark(text)
         if not mark:
+            continue
+        if frame and frame.get("levels") and mark not in frame["levels"]:
+            evidence.append({"source": "floor_marking", "text": text, "used": False, "level": mark,
+                             "says": f"a floor marking read in the photo, \"{text}\", names a level this project does not have"})
             continue
         mentioned.add(mark)
         if row_levels:

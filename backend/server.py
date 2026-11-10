@@ -57196,6 +57196,45 @@ async def _photo_relations_job() -> None:
         logger.error(f"[photo-relations] job failed: {type(e).__name__}: {e!r}")
 
 
+# ── LOCATION BINDER (lib/location_binder.py) ────────────────────────────────
+#
+# The levels and plan tags ONE project has, from what exists: its storey count
+# and has_* flags, its indexed plan sheets (as the level suggestion reads them),
+# its plan tags (plan_records / plan_areas, as photo_place reads them), and the
+# levels at least two of its filed daily logs name. Read-only: nothing is
+# stored, so there is no second copy to drift. A failed read is an EMPTY frame,
+# and an empty frame changes nothing: work_state.places_in and photo_place.infer
+# bind only when the frame holds levels.
+from lib import location_binder  # noqa: E402
+
+PLACE_FRAME_LOGS = 5000
+
+
+async def _project_place_frame(project_id: str) -> dict:
+    """{levels, spaces, basis, known, excluded}: see location_binder.frame_from."""
+    pid = str(project_id)
+    try:
+        project = await db.projects.find_one(
+            {"_id": to_query_id(pid), "is_deleted": {"$ne": True}},
+            {"building_stories": 1, "has_sub_cellar": 1, "has_cellar": 1, "has_mezzanine": 1, "has_roof_bulkhead": 1})
+        # An IGNORED file's pages are not part of the model, as in the level suggestion.
+        ignored = [str(f["_id"]) for f in await db.project_files.find(
+            {"project_id": pid, "drawing_track": IGNORED_TRACK}, {"_id": 1}).to_list(200)]
+        pages = await db.document_page_index.find(
+            {"project_id": pid, **({"file_id": {"$nin": ignored}} if ignored else {})},
+            {"sheet_number": 1, "sheet_title": 1, "floor": 1, "floors": 1}).to_list(3000)
+        logs = await db.logbooks.find(
+            {"project_id": pid, "log_type": "daily_jobsite", "is_deleted": {"$ne": True}},
+            {"data.activities.work_locations": 1}).to_list(PLACE_FRAME_LOGS)
+        spaces, _confirmed = await _photo_place_context(pid)
+    except Exception as e:
+        logger.warning(f"[place-frame] not read: {type(e).__name__}: {e!r}")
+        return {"levels": [], "spaces": {}, "basis": {}, "known": False, "excluded": {}}
+    locations = [[a.get("work_locations") for a in ((lg.get("data") or {}).get("activities") or [])
+                  if isinstance(a, dict)] for lg in logs]
+    return location_binder.frame_from(project, pages, locations, spaces)
+
+
 # ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
 
 async def _group_photo_company(row: dict, company_id: Any, project_id: Any) -> Tuple[str, str, str]:
