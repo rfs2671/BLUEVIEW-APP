@@ -80,6 +80,7 @@ import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, chrome, border, surface, text as tokenText, withAlpha } from '../../src/styles/semanticColors';
 import { auraRim, auraShadow } from '../../src/styles/aura';
 import CardSheen from '../../src/components/CardSheen';
+import { SoftBox } from '../../src/components/SoftPanel';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
@@ -126,15 +127,16 @@ const deskStyles = StyleSheet.create({
   colRight: { flex: 1, minWidth: 240, gap: spacing.sm },
   sectionLabel: { ...typography.label, marginBottom: spacing.xs, marginTop: spacing.sm },
   tileRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
+  tileSlot: { flex: 1, minWidth: 150 },
   tile: {
-    flex: 1, minWidth: 150, borderWidth: 1, borderRadius: borderRadius.lg,
-    paddingVertical: spacing.md, paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md, paddingHorizontal: spacing.lg,
   },
   tileNumber: { fontSize: 32, fontFamily: typography.num, fontWeight: '600', letterSpacing: -0.5 },
   tileLabel: { fontSize: typography.sizes.sm, marginTop: 2 },
+  qaSlot: { marginBottom: spacing.sm },
   qaItem: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.sm, height: 44,
-    paddingHorizontal: spacing.md, borderWidth: 1, borderRadius: borderRadius.md,
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 56,
+    paddingHorizontal: spacing.lg,
   },
   qaLabel: { flex: 1, fontSize: typography.sizes.sm, fontWeight: '500' },
 });
@@ -146,10 +148,10 @@ function DeskTile({ value, label, token, loading }) {
   const isZero = !loading && (value == null || value === 0);
   const numColor = loading || isZero ? semantic.neutral : (token || semantic.neutral);
   return (
-    <View style={[deskStyles.tile, { backgroundColor: surface.card, borderColor: border.subtle }]}>
+    <SoftBox kind="card" style={deskStyles.tileSlot} contentStyle={deskStyles.tile}>
       <Text style={[deskStyles.tileNumber, { color: numColor }]}>{loading ? '—' : (value ?? 0)}</Text>
       <Text style={[deskStyles.tileLabel, { color: tokenText.secondary }]}>{label}</Text>
-    </View>
+    </SoftBox>
   );
 }
 
@@ -767,23 +769,21 @@ export default function ProjectDetailScreen() {
             {quickActions.map((action) => {
               const Icon = action.icon;
               return (
-                <Pressable
+                <SoftBox
                   key={action.title}
+                  kind="slim"
+                  style={deskStyles.qaSlot}
+                  contentStyle={deskStyles.qaItem}
                   onPress={() => router.push(action.path)}
                   accessibilityRole="link"
                   accessibilityLabel={action.title}
-                  style={({ hovered }) => [
-                    deskStyles.qaItem,
-                    { backgroundColor: surface.glass, borderColor: border.subtle },
-                    hovered && { backgroundColor: surface.glassHover, borderColor: border.medium },
-                  ]}
                 >
                   <Icon size={16} strokeWidth={1.5} color={chrome.icon} />
                   <Text style={[deskStyles.qaLabel, { color: tokenText.primary }]} numberOfLines={1}>{action.title}</Text>
                   {action.warn ? (
                     <Text style={{ fontSize: 10, fontWeight: '600', color: semantic.attention }}>No BIN</Text>
                   ) : null}
-                </Pressable>
+                </SoftBox>
               );
             })}
           </View>
@@ -935,7 +935,7 @@ export default function ProjectDetailScreen() {
 
           {/* Stats Row */}
           <View style={s.statsRow}>
-            <StatCard style={[s.statCard, { borderTopColor: colors.accent }]}>
+            <StatCard style={s.statCard}>
               {/* "—" when the check-in read failed: unknown, never a 0 that
                   claims the site is empty. */}
               <Text style={s.statValue}>{onSiteState === 'ok' ? stats.onSiteWorkers : '—'}</Text>
@@ -959,17 +959,15 @@ export default function ProjectDetailScreen() {
             {quickActions.map((action) => {
               const Icon = action.icon;
               return (
-                <Pressable
+                <SoftBox
                   key={action.title}
+                  kind="card"
+                  style={s.actionCard}
+                  contentStyle={s.actionCardContent}
                   onPress={() => router.push(action.path)}
-                  style={({ pressed }) => [
-                    s.actionCard,
-                    pressed && s.actionCardPressed,
-                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel={action.title}
                 >
-                  {({ hovered, pressed }) => (
-                  <>
-                  <CardSheen radius={borderRadius.xl} active={!!(hovered || pressed)} intro />
                   <View style={[s.actionIcon, { backgroundColor: colors.primary }]}>
                     <Icon size={20} strokeWidth={1.8} color={colors.onPrimary} />
                   </View>
@@ -980,9 +978,7 @@ export default function ProjectDetailScreen() {
                       <Text style={s.actionWarnText}>No BIN</Text>
                     </View>
                   )}
-                  </>
-                  )}
-                </Pressable>
+                </SoftBox>
               );
             })}
           </View>
@@ -1312,10 +1308,11 @@ export default function ProjectDetailScreen() {
                 </View>
                 <View style={s.workerTags}>
                   {company.workers.map((worker, idx) => (
-                    <View key={idx} style={s.workerTag}>
+                    // pressed INTO the company card, like a text field: a read-out, not a button
+                    <SoftBox key={idx} kind="slimw" style={s.workerTagSlot} contentStyle={s.workerTag}>
                       <Text style={s.workerTagName}>{worker.name || worker.worker_name}</Text>
                       <Text style={s.workerTagTrade}>{worker.trade || 'Worker'}</Text>
-                    </View>
+                    </SoftBox>
                   ))}
                 </View>
               </GlassCard>
@@ -1807,8 +1804,6 @@ function buildStyles(colors, isDark) {
   },
   statCard: {
     flex: 1,
-    borderTopWidth: 3,
-    borderTopColor: colors.glass.border,
   },
   statIcon: {
     marginBottom: spacing.sm,
@@ -1909,12 +1904,8 @@ function buildStyles(colors, isDark) {
     gap: spacing.md,
     marginBottom: spacing.xl,
   },
-  actionCard: {
-    width: '47%',
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    ...auraRim(colors),
-    ...auraShadow(colors, undefined, { translucent: true }),
+  actionCard: { width: '47%' },
+  actionCardContent: {
     padding: spacing.md,
     alignItems: 'flex-start',
     gap: spacing.md,
@@ -2076,13 +2067,14 @@ function buildStyles(colors, isDark) {
   workerTags: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.sm,
+    gap: spacing.md,
   },
+  workerTagSlot: {},
   workerTag: {
-    backgroundColor: withAlpha('#ffffff', 0.05),
-    borderRadius: borderRadius.md,
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
+    justifyContent: 'center',
+    minHeight: 56,
   },
   workerTagName: {
     fontSize: 13,
