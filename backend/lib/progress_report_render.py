@@ -592,7 +592,7 @@ def _workforce(rep: Dict[str, Any]) -> str:
     for s in rep["subs"]:
         tag = ""
         if mob["comparable"] and s["prev_days"] == 0:
-            tag = " <span class='muted'>· first period on site</span>"
+            tag = "<div class='muted' style='margin-left:13px'>first period on site</div>"
         note = f" <span class='muted'>({s['log_days']} from log)</span>" if s["log_days"] else ""
         prev_days = str(s["prev_days"]) if s["prev_days"] else "—"
         prev_avg = f"{s['prev_avg']:g}" if s["prev_days"] else "—"
