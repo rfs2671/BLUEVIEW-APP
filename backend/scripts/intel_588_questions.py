@@ -77,7 +77,8 @@ def records_index(src: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def schedule_base(src: Dict[str, Any]) -> Dict[str, Any]:
-    p = G.prepare(src["building"], src["records"], src["dob_now"], src["timeline"])
+    p = G.prepare(src["building"], src["records"], src["dob_now"], src["timeline"],
+                  audit=list(src["audit"].values()) or None)
     st, notes = G.state_from_model(src["model"], p["net"], p["provisional"])
     return {"prepared": p, "state": st, "notes": notes}
 
@@ -133,6 +134,15 @@ PERMIT_WHY = {
     "2026-12-03": " S5 carries the Nov 5 DOB rough passes; the gas final, detention certification and plumbing final are "
                   "inspected under it. 24 Seven holds a second plumbing permit (B23173802-S5, expires 2027-05-01).",
 }
+#: What a lapse COSTS beyond the stoppage the schedule models (the stoppage itself is re-run).
+PERMIT_CONSEQUENCE = {
+    "2026-11-22": "AC 28-105: no work from an unpermitted sidewalk shed; the shed protects the public sidewalk under "
+                  "the facade work (public safety); an unpermitted shed is an ECB violation and this shed already drew "
+                  "ECB 39558662P on 2026-09-02",
+    "2026-12-03": "no DOB inspection is booked under an expired permit: the gas final, the roof detention "
+                  "certification and the plumbing and sprinkler finals wait for reinstatement",
+    "2026-12-22": "AC 28-105: no work from an unpermitted supported scaffold; the EIFS is applied from it",
+}
 NOT_PUBLIC = {
     "DOB Electrical": "electrical inspections are in DOB NOW: Inspections Plus, which was not read (public README section 3)",
     "FDNY": "no public FDNY fire-alarm dataset; no fire-alarm filing exists in DOB",
@@ -162,21 +172,32 @@ def utilities(src) -> List[Dict[str, Any]]:
     ]
 
 
-def levers(src) -> List[Dict[str, Any]]:
+def _crew_words(sched: SQ.Rescheduler) -> Dict[str, Any]:
+    cid = G._eifs_crew(sched.net)
+    tab = {x["id"]: x for x in sched.assumptions}
+    a = tab.get(cid) or {}
+    return {"id": cid, "normal": (a.get("values") or {}).get("normal"), "tag": a.get("tag"), "basis": a.get("basis")}
+
+
+def levers(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
     by = {lv["id"]: lv for lv in G.LEVERS}
     ix = records_index(src)
+    roles = SQ.facade_roles(sched.net)
+    cw = _crew_words(sched)
+    n = cw["normal"]
     return [
-        dict(by["eifs_staff_and_enclose"], subject="eifs", place="ENVELOPE", activities=["eifs_sides", "eifs_front_rear"],
-             text_en="J&P has averaged 1.3 applicators a day on EIFS (Oct 27-Nov 9), and EIFS now sets the finish "
+        dict(by["eifs_staff_and_enclose"], subject="eifs", place="ENVELOPE",
+             activities=roles["side"] + roles["front_rear"] + roles["bulkhead"],
+             text_en=f"The EIFS crew is taken at {n:g} applicators a day ({cw['tag']}), and EIFS now sets the finish "
                      "date. Can J&P put 5 applicators on it from next week?",
-             text_es="J&P ha tenido en promedio 1.3 aplicadores por día en el EIFS (27 oct.-9 nov.) y el EIFS ahora "
-                     "define la fecha de terminación. ¿Puede J&P poner 5 aplicadores desde la próxima semana?",
+             text_es=f"El equipo de EIFS se toma en {n:g} aplicadores por día ({cw['tag']}) y el EIFS ahora define la "
+                     "fecha de terminación. ¿Puede J&P poner 5 aplicadores desde la próxima semana?",
              yes_en="yes, about 5", yes_es="sí, unos 5", no_en="no, same crew", no_es="no, el mismo equipo",
-             why="EIFS (side walls, then front and rear) is the normal-scenario critical path end to end; its crew is "
-                 "measured at 1.3/day over 6 days. A crew commitment is the PM's (subcontract).",
-             evidence=[_rec(ix, "R0359"), SQ.evid("588_schedule estimate", "crew_j_p_construction", "2026-11-09",
-                                                  "measured: check-ins per day over 6 days, period 2026-10-27..11-09: "
-                                                  "average 1.3, peak 2", "schedule estimate")]),
+             why=f"EIFS by elevation ({', '.join(roles['side'] + roles['front_rear'] + roles['bulkhead'])}) is the "
+                 f"normal critical path; crew {cw['id']} = {n:g}/day ({cw['tag']}: {cw['basis']}). A crew commitment is "
+                 "the PM's (subcontract).",
+             evidence=[_rec(ix, "R0359"), SQ.evid("588_schedule estimate", cw["id"], "2026-11-09",
+                                                  f"{cw['tag']}: {cw['basis']}", "schedule estimate")]),
         dict(by["inspections_prebooked"], subject="inspections", place="SITE",
              activities=["gate_dob_elec_final", "gate_fdny_fa", "gate_tco"],
              text_en="Will we book each DOB and FDNY inspection a week ahead, and is the TR1/TR8 agency on standing "
@@ -191,25 +212,35 @@ def levers(src) -> List[Dict[str, Any]]:
     ]
 
 
-def eifs_percent_branches(sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
-    a = sched.by_id["eifs_sides"]
-    tab = {x["id"]: x for x in sched.assumptions}
-    qty = float(a["scope"]["quantity"]) * float(tab[a["qty_factor"]]["values"]["normal"]) if a.get("qty_factor") \
-        else float(a["scope"]["quantity"])
-    rate = float(tab[a["rate"]]["values"]["normal"])
+def _qty_rate(sched: SQ.Rescheduler, aid: str) -> tuple:
+    """(effective SF, normal rate) for a production activity, as the generator computes them."""
+    A, _t = G._resolver(sched.assumptions)
+    a = sched.by_id[aid]
+    eff, _rem, _how = G._effort(a, G.state_entry("not_started", "no_record", "probe"), "normal", A)
+    rate = float(A(a["rate"], "normal"))
+    crew = G.crew_used(a, "normal", A) or 1.0
+    return eff * crew * rate, rate
+
+
+def side_wall_branches(sched: SQ.Rescheduler, side: List[str]) -> List[Dict[str, Any]]:
+    """Branches that touch the SIDE-WALL activities only, found by role. The
+    model has one facade node, so the answer is carried as attested on these
+    activities and never on the model node (it would mark front/rear too)."""
     out = []
     for pct, en, es in ((25, "under a quarter", "menos de una cuarta parte"), (50, "about half", "más o menos la mitad"),
                         (75, "most of it (3/4)", "la mayor parte (3/4)")):
-        md = round(pct / 100.0 * qty / rate, 1)
-        out.append(SQ.branch(f"percent_{pct}", en, es, claim="in_progress",
-                             change={"state": {"eifs_sides": SQ.stated("in_progress", f"side-wall EIFS about {pct}% done",
-                                                                       man_days=md)}},
-                             model=f"attested in_progress with stated_percent {pct} on facade_envelope; the schedule "
-                                   f"takes it as {md} man-days in place ({pct}% of {qty:.0f} SF at the normal rate "
-                                   f"{rate:g} SF/worker-day)"))
+        st, parts = {}, []
+        for aid in side:
+            qty, rate = _qty_rate(sched, aid)
+            md = round(pct / 100.0 * qty / rate, 1)
+            st[aid] = SQ.stated("in_progress", f"side-wall EIFS about {pct}% done", man_days=md)
+            parts.append(f"{aid}: {md} man-days of {qty:.0f} SF at {rate:g} SF/worker-day")
+        out.append(SQ.branch(f"percent_{pct}", en, es, claim="in_progress", change={"state": st},
+                             model=f"attested in_progress, stated {pct}%, carried on {', '.join(side)} ONLY (not the "
+                                   "model's single facade node); the schedule takes " + "; ".join(parts)))
     out.append(SQ.branch("done", "finished", "terminado", claim="done",
-                         change={"state": {"eifs_sides": SQ.stated("done", "side-wall EIFS finished")}},
-                         model="attested done on facade_envelope (side walls); not verified"))
+                         change={"state": {aid: SQ.stated("done", "side-wall EIFS finished") for aid in side}},
+                         model=f"attested done on {', '.join(side)} ONLY; front/rear untouched; not verified"))
     out.append(SQ.dont_know("J&P Construction (through the PM)"))
     return out
 
@@ -223,18 +254,23 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
     elec = rec.get("electrical_B01331892_I1EL_S1EL", {})
     plum = rec.get("plumbing_B23173802-S5_vs_B01141294-S5", {})
     no_change = lambda k, en, es, m: SQ.branch(k, en, es, model=m)  # noqa: E731
+    roles = SQ.facade_roles(sched.net)
+    side = roles["side"]
+    side_rows = {aid: sched.base["normal"]["acts"][aid] for aid in side}
+    side_when = "; ".join(f"{aid} {r['start']}..{r['finish']}, float {r['float']} wd" for aid, r in side_rows.items())
     out = [
         # EIFS: the critical path's own state, worded as an amount.
-        SQ.question("work:eifs_sides", triggers=["unknown_state"], subject="eifs", aspect="state", place="ENVELOPE",
+        SQ.question("work:eifs_side_walls", triggers=["unknown_state"], subject="eifs_side_walls", aspect="state",
+                    place="ENVELOPE",
                     text_en="How much of the EIFS on the two side walls is done: under a quarter, about half, or most "
                             "of it?",
                     text_es="¿Cuánto del EIFS de las dos paredes laterales está hecho: menos de una cuarta parte, "
                             "más o menos la mitad, o la mayor parte?",
                     answerers=["superintendent", "cp", "company:J&P Construction"], topic="progress",
-                    why="The side-wall EIFS is the first activity of the normal critical path (2026-11-10 to "
-                        "2027-03-12, float 0); how much is in place is measured only as 3.9 crew-days of check-ins.",
-                    evidence=[_rec(ix, "R0359")], branches=eifs_percent_branches(sched), activities=["eifs_sides"],
-                    gap="in_progress", cost="look", reads_as="done_unbacked", model_node="facade_envelope"),
+                    why=f"The side-wall EIFS leads the normal critical path ({side_when}); how much is in place is "
+                        "not measured by any original record.",
+                    evidence=[_rec(ix, "R0359")], branches=side_wall_branches(sched, side), activities=side,
+                    gap="in_progress", cost="look", reads_as="done_unbacked", model_node=None),
         # The scaffold the EIFS crew works from: J&G has no record.
         SQ.question("work:scaffold_sides", triggers=["unknown_state", "stale_sub"], subject="scaffold", aspect="state",
                     place="ENVELOPE",
@@ -242,7 +278,7 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
                     text_es="¿El andamio de J&G está armado en toda la altura de las dos paredes laterales para el "
                             "equipo de EIFS?",
                     answerers=["cp", "superintendent", "company:J&G"], topic="progress",
-                    why="The side-wall EIFS (critical, float 0) is applied from the supported scaffold (permit "
+                    why=f"The side-wall EIFS ({side_when}) is applied from the supported scaffold (permit "
                         "B01467559). J&G, the scaffold sub, has no original record at all.",
                     evidence=[SQ.evid("model coverage", "J&G", None, "J&G: no record of this sub at all", "model"),
                               SQ.evid("public", "B01467559-I1-SF", "2026-09-30", "Supported Scaffold: Permit Issued "
@@ -250,11 +286,11 @@ def given(src, sched: SQ.Rescheduler) -> List[Dict[str, Any]]:
                     branches=[no_change("done", "yes, full height", "sí, en toda la altura",
                                         "attested: scaffold complete on both side walls; no schedule change"),
                               SQ.branch("not_yet", "only part of it", "solo una parte", claim="not_yet",
-                                        change={"holds": {"eifs_sides": SQ.HOLDS["blocked"]["values"]}},
+                                        change={"holds": {aid: SQ.HOLDS["blocked"]["values"] for aid in side}},
                                         model="attested: scaffold incomplete; EIFS on the rest WAITS for an "
                                               "ASSUMED q_hold_blocked"),
                               SQ.dont_know("J&G (through the PM)")],
-                    activities=["eifs_sides"], gap="unknown", cost="look", reads_as="done_unbacked"),
+                    activities=side, gap="unknown", cost="look", reads_as="done_unbacked"),
         # The plumber's "trim out" / "fixtures" vs the inferred "no board anywhere".
         SQ.question("infer:board_hang", triggers=["inference_disproof", "contradiction"], subject="board_hang",
                     aspect="state", place="L1",
@@ -510,10 +546,12 @@ def build_ctx(src: Dict[str, Any]) -> Dict[str, Any]:
         last[comp] = date.fromisoformat(s["last"]) if s.get("last") else None
     ctx = {"today": TODAY, "sched": sched, "model": cs, "records": records_index(src),
            "people": [{"role": r} for r in SQ.ROLE_SLOTS], "permits": permits(src), "permit_words": PERMIT_WORDS,
-           "permit_why": PERMIT_WHY, "not_public": NOT_PUBLIC, "utilities": utilities(src), "levers": levers(src),
+           "permit_why": PERMIT_WHY, "permit_consequence": PERMIT_CONSEQUENCE, "not_public": NOT_PUBLIC,
+           "utilities": utilities(src),
            "sub_last_original": last, "answered_by_records": answered_by_records(src), "answers": [], "history": [],
            "schedule_notes": sb["notes"]}
     ctx["given"] = given(src, sched)
+    ctx["levers"] = levers(src, sched)
     return ctx
 
 
@@ -616,7 +654,9 @@ def chain(src, ctx, q: Dict[str, Any], base: Dict[str, Any]) -> Dict[str, Any]:
                       and v["status"] != S.state.get(aid, G.DEFAULT_STATE)["status"]]
         model_moved = sorted(k2 for k2 in st if st[k2]["status"] != ctx["_model_state"].get(k2, G.DEFAULT_STATE)["status"])
         direct = {aid: v for aid, v in (b["change"].get("state") or {}).items() if aid not in carried_ok}
-        change = {"state": {**{k2: st[k2] for k2 in model_moved}, **direct}}
+        named_states = set(b["change"].get("state") or {})
+        # the answer targets ITS activities: what the rebuilt model moves beyond them is reported, not applied
+        change = {"state": {**{k2: st[k2] for k2 in model_moved if k2 in named_states}, **direct}}
         for key in ("assumptions", "holds"):
             if b["change"].get(key):
                 change[key] = b["change"][key]
@@ -625,7 +665,7 @@ def chain(src, ctx, q: Dict[str, Any], base: Dict[str, Any]) -> Dict[str, Any]:
         row["schedule"] = {
             "from_the_updated_model": model_moved,
             # what the rebuilt model moved that the answer did not name: the model's granularity, not the answer
-            "moved_by_the_model_beyond_the_answer": [k2 for k2 in model_moved if k2 not in named],
+            "moved_by_the_model_beyond_the_answer_not_applied": [k2 for k2 in model_moved if k2 not in named],
             "applied_directly_because_the_model_does_not_carry_it": sorted(direct) + sorted(
                 k2 for k2 in ("assumptions", "holds") if b["change"].get(k2)),
             "tco": eff["tco"] if eff else {s: S.base[s]["tco"] for s in SQ.SCENARIOS},
@@ -680,10 +720,16 @@ def readme(doc: Dict[str, Any]) -> str:
                      f"needed by {u['needed_by']} ({u['days']} d) |")
         L.append("")
     sup = doc["suppressed"]
+    L += ["## Cap check", "", "Did anything the cap held back outrank what a person was asked? (ranked placement; "
+          "listed so it is visible)", "", "| recipient | lowest asked | highest held by the cap | holds |",
+          "| --- | --- | --- | --- |"]
+    for role, a in doc["cap_audit"].items():
+        L.append(f"| {role} | {a['lowest_asked']} | {a['highest_capped']} ({a['highest_capped_id']}) | {a['holds']} |")
+    L.append("")
     L += [f"## Suppressed ({doc['counts']['suppressed']})", "", "| id | reason | detail |", "| --- | --- | --- |"]
     for s in sup:
         L.append(f"| {s['id']} | {s['reason']} | {str(s['detail'])[:260]} |")
-    L += ["", "## Chain demonstration (top 3 questions, every branch; answers SIMULATED)", ""]
+    L += ["", "## Chain demonstration (top 3 questions and the top field question, every branch; answers SIMULATED)", ""]
     for c in doc["chain_demo"]:
         t = c["trace"]
         L += [f"### {c['question']} -> {c['recipient']} ({c['answerer']})", "",
@@ -707,14 +753,12 @@ def readme(doc: Dict[str, Any]) -> str:
                      f"{_d(r['schedule'])} | {(na or {}).get('id')} {(na or {}).get('move_wd')} | "
                      f"{r['schedule']['agrees_with_the_question_branch']} |")
         L.append("")
-    over = sorted({f"{c['question']} / {r['branch']}: {', '.join(r['schedule']['moved_by_the_model_beyond_the_answer'])}"
+    over = sorted({f"{c['question']} / {r['branch']}: {', '.join(r['schedule']['moved_by_the_model_beyond_the_answer_not_applied'])}"
                    for c in doc["chain_demo"] for r in c["branches"]
-                   if r["schedule"]["moved_by_the_model_beyond_the_answer"]})
+                   if r["schedule"]["moved_by_the_model_beyond_the_answer_not_applied"]})
     if over:
-        L += ["**Found by the chain:** the rebuilt model moved schedule activities the answer did not name (the model "
-              "has ONE facade node, and schedule_generator.state_from_model lays it over every eifs_* activity): "
-              + "; ".join(over) + ". The TCO delta still matched the branch here, but the state is wider than the "
-              "answer.", ""]
+        L += ["**Model coarser than the answer:** the rebuilt model moved schedule activities the answer did not "
+              "name; they were REPORTED and NOT applied (an answer targets its own activities): " + "; ".join(over), ""]
     L += ["## Notes", ""] + [f"- {n}" for n in doc["notes"]]
     return "\n".join(L) + "\n"
 
@@ -729,7 +773,11 @@ def run(data: Path) -> Dict[str, Any]:
     ctx["_evaluated"] = doc.pop("_asked")
     base = _items(src)
     asked = sorted((q for qs in doc["by_person"].values() for q in qs), key=lambda q: (-q["value"]["score"], q["id"]))
-    doc["chain_demo"] = [chain(src, ctx, _rebuild(ctx, q), base) for q in asked[:3]]
+    demo = list(asked[:3])
+    field = next((q for q in asked if q["recipient"] in ("superintendent", "cp")), None)
+    if field is not None and field not in demo:
+        demo.append(field)          # the top FIELD question too: the one that runs from logs and photos
+    doc["chain_demo"] = [chain(src, ctx, _rebuild(ctx, q), base) for q in demo]
     doc["notes"] = ctx["schedule_notes"] + [
         "Persons are role slots (superintendent, CP, PM, admin) on 588; opt-in and assignment were not read (no "
         "production access).",
@@ -737,10 +785,19 @@ def run(data: Path) -> Dict[str, Any]:
         "public = an agency record; schedule estimate = schedule_generator output, never a fact.",
         "A hold (q_hold_blocked, q_hold_permit_lapse) is an INDUSTRY ASSUMPTION used only by the branch that needs it.",
         "Spanish text is written per question; a family with no Spanish words of its own is flagged es_fallback.",
-        "Retained logic for an attested 'done': schedule_generator turns an open FS prerequisite into FF only for "
-        "in-progress work, so an activity an answer marks done (keeping remaining_operator_done of its scope) would "
-        "wait to START behind predecessors. site_questions.Rescheduler applies the same retained logic to what an "
-        "answer marks done; the base schedule is untouched (a generator-lane finding, not changed here).",
+        "Reported done is done (schedule_generator, this change): work recorded done on any word short of a verified "
+        "record no longer waits for its open prerequisites; each open prerequisite is a contradiction "
+        "(state_contradictions) and becomes a question about the open work, never a delay. An unverified inspection "
+        "pass stays PENDING, so a person's 'passed' moves no gate.",
+        "Facade by role: the EIFS activities are found by elevation (site_questions.facade_roles), never by id. A "
+        "side-wall answer is carried as attested on the side-wall activities only; the model's single facade node is "
+        "not updated by it (it would mark front/rear too).",
+        "Permit lapse: the not-filed branch stops the work under way that needs the permit for q_hold_permit_lapse "
+        "from the expiry, and re-runs the schedule; what the stoppage does not capture (violation, public safety) is "
+        "stated as the consequence and carried by D.",
+        "Formula change (N): moves of crew work and inspection gates starting within the next 10 working days, "
+        "summed, weight 0.5 (was: the first successor anywhere in three weeks, weight 0.25), so a question that "
+        "changes what crews do next week is not crowded out by one that moves paperwork with months of float.",
         "The PM and admin caps fill with office questions, so the subcontractor relays (through the PM) wait; the "
         "field caps fill with three-week-window state questions. Everything over the cap is listed under daily_cap "
         "with its value, for the next day.",

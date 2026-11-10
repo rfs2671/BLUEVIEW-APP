@@ -1146,9 +1146,6 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
                        "the lot-line wall above the neighbour is reached only from its roof",
                        basis="physical: 0 ft side yards (Z-003), lot ~10 in wider than the building; BC 3309 "
                              "protection of adjoining property")
-            for r in ("renew_permit_shed", "renew_permit_scaffold"):
-                n.link(r, f"eifs_{eid}", "prerequisite", "facade worked from the permitted scaffold/shed",
-                       basis="AC 28-105: the scaffold and shed stay under a valid permit while in use")
             if prev:
                 n.link(prev, f"eifs_{eid}", "resource", "one EIFS crew moves elevation to elevation")
             prev = f"eifs_{eid}"
@@ -1498,6 +1495,13 @@ def build_network(facts: Dict[str, Any], role_company: Dict[str, str], measured_
           "permit_renewal", "dur_permit_renewal", deadline="2026-11-22", basis="public permit record")
     fixed("renew_permit_scaffold", "Renew supported scaffold permit B01467559 (expires 2026-12-22)", "regulatory",
           "SITE", "permit_renewal", "dur_permit_renewal", deadline="2026-12-22", basis="public permit record")
+    # Linked HERE, after both renewals exist: linked from the facade block above
+    # (before they were created), every one of these links was silently skipped
+    # (net.skipped_links), so a lapse never touched the facade.
+    for e in eifs_ids:
+        for r in ("renew_permit_shed", "renew_permit_scaffold"):
+            n.link(r, e, "prerequisite", "facade worked from the permitted scaffold/shed",
+                   basis="AC 28-105: the scaffold and shed stay under a valid permit while in use")
     fixed("scaffold_shed_removal", "Strike scaffold and sidewalk shed", "work", "SITE", "scaffold_removal",
           "dur_scaffold_strike", c=scaffold)
     for a in eifs_ids + ["roof_coping", "facade_lighting", "gate_eifs_special"]:
@@ -1986,7 +1990,8 @@ def _schedule_once(network, state, assumptions, scn, data_date, overrides, extra
         eff, rem, how = _effort(a, st, scn, A)
         profile = A(a["weather"], scn) if a.get("weather") else None
         nb = 0
-        if a.get("mobilize") and rem > 0 and st["status"] != "in_progress":
+        # A trade whose work is reported DONE is not mobilizing for it.
+        if a.get("mobilize") and rem > 0 and st["status"] not in ("in_progress", "done"):
             nb = mob
         if a.get("delivery"):
             nb = max(nb, int(A(a["delivery"], scn)))
@@ -2000,8 +2005,19 @@ def _schedule_once(network, state, assumptions, scn, data_date, overrides, extra
                if state.get(a["id"], DEFAULT_STATE)["status"] == "in_progress"}
     pinned_ids = {x["id"] for x in acts if x["pinned"]}
     kinds = {a["id"]: a["kind"] for a in network["activities"]}
+    # REPORTED DONE IS DONE. Work whose state is done on a word short of a
+    # verified record keeps a remaining share (a reserve, see
+    # remaining_fraction), but it is not waiting for anything: an open
+    # prerequisite of done work is a CONTRADICTION (state_contradictions
+    # reports it, and it becomes a question), never a delay. So no
+    # prerequisite link binds it. A gate is the exception: a pass that is not
+    # verified is pending (remaining_fraction), so its links stay.
+    reported_done = {a["id"] for a in network["activities"] if a["kind"] != "inspection_gate"
+                     and state.get(a["id"], DEFAULT_STATE)["status"] == "done"}
     for l in list(network["links"]) + list(extra):
         if scn not in l.get("scenarios", ALL_RUNS):
+            continue
+        if l["kind"] == "prerequisite" and l["to"] in reported_done and l["from"] not in pinned_ids:
             continue
         lag = l["lag"]
         lag = int(round(float(A(lag, scn)))) if isinstance(lag, str) else int(lag)

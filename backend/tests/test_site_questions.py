@@ -61,6 +61,8 @@ ACTS = [
     _w("plumbing_rough_L1", "L1", "d_frame", "PlumbCo"),
     _w("eifs_sides", "ENVELOPE", "d_facade", "StuccoCo"),
     _w("roof_coping", "ROOF", "d_coping", "RoofCo"),
+    _w("ptac_sleeves_L1", "L1", "d_frame", "SleeveCo"),
+    _w("insulation_L1", "L1", "d_frame", "InsulCo"),
     {"id": "gate_elec_rough_L1", "name": "DOB electrical rough inspection, Floor 1", "kind": "inspection_gate",
      "zone": "L1", "family": "gate_elec_rough", "rule": "lead", "lead": "lead_elec", "authority": "DOB Electrical",
      "gate_of": ["elec_rough_L1", "lv_rough_L1"]},
@@ -85,7 +87,9 @@ LINKS = [_l("framing_close_L1", "elec_rough_L1"), _l("elec_rough_L1", "gate_elec
          _l("plumbing_rough_L1", "board_hang_L1"), _l("plumbing_rough_L1", "sprinkler_rough_L1"),
          _l("sprinkler_rough_L1", "gate_sprinkler_hydro_L1"),
          _l("gate_sprinkler_hydro_L1", "board_hang_L1"), _l("board_hang_L1", "gate_tco"),
-         _l("eifs_sides", "gate_tco"), _l("roof_coping", "gate_tco"), _l("elec_rough_L1", "elec_rough_L2", "resource")]
+         _l("eifs_sides", "gate_tco"), _l("roof_coping", "gate_tco"), _l("elec_rough_L1", "elec_rough_L2", "resource"),
+         _l("ptac_sleeves_L1", "insulation_L1"), _l("insulation_L1", "board_hang_L1"),
+         _l("renew_permit_shed", "eifs_sides")]
 
 ST = G.state_entry
 STATE = {
@@ -97,6 +101,8 @@ STATE = {
     "board_hang_L1": ST("not_started", "inferred", "no board on record"),
     "plumbing_rough_L1": ST("done", "verified_public_record", "DOB rough pass (synthetic)"),
     "eifs_sides": ST("in_progress", "reported_log", "synthetic photo"),
+    "ptac_sleeves_L1": ST("in_progress", "reported_log", "synthetic log"),
+    "insulation_L1": ST("unknown", "no_record", "no record"),
     "roof_coping": ST("unknown", "no_record", "no record"),
 }
 #: A model current_state: Floor 2 electrical is placed only by a multi-floor photo.
@@ -189,7 +195,10 @@ class SiteQuestionsSynthetic(unittest.TestCase):
         self.assertEqual(CQ.facts([item], TODAY), [], "don't know is not a fact, so never a no")
 
     def test_an_inspection_result_from_a_person_stays_attested(self):
-        q = self.full["gate:gate_elec_rough"]
+        q = SQ.evaluate(self.ctx, next(g for g in SQ._gate_questions(self.ctx) if g["id"] == "gate:gate_elec_rough"))
+        self.assertEqual({s for b in q["branches"] if b["key"] == "passed"
+                          for s in b["schedule_effect"]["tco_delta_wd"].values()}, {0},
+                         "an unverified pass stays pending in the schedule: the word alone moves nothing")
         passed = next(b for b in q["branches"] if b["key"] == "passed")
         self.assertTrue(passed["verified_when"], "says what would verify it")
         self.assertEqual({v["evidence"] for v in passed["change"]["state"].values()}, {"operator_statement"})
@@ -212,17 +221,79 @@ class SiteQuestionsSynthetic(unittest.TestCase):
         self.assertLess(done["schedule_effect"]["tco_delta_wd"]["fast"], 0,
                         "in fast the interior chain is critical: finishing it moves the TCO")
 
-    def test_an_attested_done_does_not_wait_to_start_behind_an_open_predecessor(self):
-        """The generator keeps an FS prerequisite binding on anything not in
-        progress; an answer "done" means the work is at least under way, so its
-        open predecessor bounds its finish (FF), as for started work."""
+    def test_an_attested_done_is_done_in_the_generator_itself(self):
+        """schedule_generator: reported done is done. An answer "done" over an
+        open predecessor does not wait for it (the generator, not a local
+        patch), and the open predecessor is reported as a contradiction."""
         st = dict(STATE, framing_close_L1=G.state_entry("in_progress", "reported_log", "synthetic log"))
         S = SQ.Rescheduler(_net(), st, ASSUMPTIONS, TODAY)
         done = {"state": {"elec_rough_L1": SQ.stated("done", "finished")}}
-        self.assertLess(S.effect(done, ["elec_rough_L1"])["tco_delta_wd"]["fast"], 0)
+        eff = S.effect(done, ["elec_rough_L1"])
+        self.assertLess(eff["tco_delta_wd"]["fast"], 0)
         raw = dict(st, elec_rough_L1=done["state"]["elec_rough_L1"])
-        self.assertEqual(G.schedule_scenario(_net(), raw, ASSUMPTIONS, "fast", TODAY)["tco_working_days"],
-                         S.base["fast"]["tco_wd"], "without the retained logic the answer would move nothing")
+        self.assertEqual(G.schedule_scenario(_net(), raw, ASSUMPTIONS, "fast", TODAY)["tco_working_days"] -
+                         S.base["fast"]["tco_wd"], eff["tco_delta_wd"]["fast"], "the delta is the plain generator's")
+        self.assertEqual(eff["contradictions_created"],
+                         [{"done": "elec_rough_L1", "open_prerequisite": "framing_close_L1"}])
+
+    def test_a_recorded_done_over_open_work_becomes_a_question_about_the_open_work(self):
+        st = dict(STATE, insulation_L1=G.state_entry("done", "operator_statement", "a super said done"))
+        ctx = _ctx(sched=SQ.Rescheduler(_net(), st, ASSUMPTIONS, TODAY))
+        self.assertEqual([(c["done"], c["open"]) for c in SQ.done_over_open(ctx)], [("insulation_L1", "ptac_sleeves_L1")])
+        doc = SQ.generate(ctx)
+        q = next(x for x in doc["_asked"] if x["id"] == "work:ptac_sleeves_L1")
+        self.assertIn("contradiction", q["triggers"])
+        self.assertGreaterEqual(q["value"]["terms"]["D"], 1.0)
+
+    def test_a_question_naming_an_activity_the_network_lost_is_skipped_not_a_crash(self):
+        gone = SQ.question("work:eifs_gone", triggers=["unknown_state"], subject="eifs", aspect="state",
+                           place="ENVELOPE", text_en="gone?", text_es="¿ya no?", answerers=["superintendent"],
+                           topic="progress", why="synthetic", evidence=[SQ.evid("x", "S1", TODAY, "x", "x")],
+                           branches=[SQ.branch("done", "yes", "sí",
+                                               change={"state": {"eifs_gone": SQ.stated("done", "x")}}),
+                                     SQ.dont_know()], activities=["eifs_gone"], gap="unknown", cost="look")
+        doc = SQ.generate(_ctx(given=[gone]))
+        self.assertEqual(_sup(doc, "work:eifs_gone")["reason"], "activity_missing")
+
+    def test_a_permit_lapse_stops_the_work_under_way_that_needs_it(self):
+        q = self.full["permit:2026-11-22"]
+        lapse = next(b for b in q["branches"] if b["key"] == "not_yet")
+        self.assertIn("eifs_sides", lapse["change"]["holds"], "the facade under way stops at the expiry")
+        self.assertGreater(lapse["schedule_effect"]["tco_delta_wd"]["normal"], 0,
+                           "the facade is critical in normal: a stoppage moves the finish")
+
+    def test_n_counts_only_crew_work_and_gates_moved_next_week(self):
+        q = self.full["work:elec_rough_L1"]
+        for b in q["branches"]:
+            for m in b["schedule_effect"].get("next_week_crew_moves") or []:
+                self.assertIn(self.ctx["sched"].by_id[m["id"]]["kind"], ("work", "inspection_gate"))
+                self.assertNotIn(m["id"], q["activities"])
+        nw = max(b["schedule_effect"].get("next_week_crew_move_weighted") or 0 for b in q["branches"])
+        self.assertEqual(q["value"]["terms"]["N"], round(0.5 * min(20, nw), 2))
+        for b in q["branches"]:
+            for m in b["schedule_effect"].get("next_week_crew_moves") or []:
+                self.assertAlmostEqual(m["weight"], 1 / (1 + max(0, m["min_float_wd"]) / 10), places=3)
+
+    def test_n_ignores_a_far_successor_and_values_next_week_crews(self):
+        """The first 588 run ranked "steel stairs started?" (it moves a TR1
+        paperwork close-out with months of float) above "did Floor 1 rough-in
+        finish?". N now counts only crew work and gates starting next week."""
+        far = SQ.evaluate(self.ctx, SQ.work_question(self.ctx, "eifs_sides"))
+        moved_far = [b["schedule_effect"]["next_activity"] for b in far["branches"]
+                     if (b["schedule_effect"].get("next_activity") or {}).get("move_wd")]
+        self.assertTrue(moved_far, "the facade's answer moves its far successor (the TCO gate)")
+        self.assertEqual(far["value"]["terms"]["N"], 0, "a far successor is not next week's crew plan")
+        near = self.full["work:elec_rough_L1"]
+        self.assertGreater(near["value"]["terms"]["N"], 0, "Floor 1 rough-in moves next week's inspection request")
+
+    def test_facade_activities_are_found_by_role(self):
+        net = {"activities": [{"id": "eifs_side_known", "family": "eifs"}, {"id": "eifs_side_other", "family": "eifs"},
+                              {"id": "eifs_front_rear", "family": "eifs"}, {"id": "brick_veneer", "family": "brick_veneer"},
+                              {"id": "eifs_bulkhead", "family": "eifs"}]}
+        r = SQ.facade_roles(net)
+        self.assertEqual(r["side"], ["eifs_side_known", "eifs_side_other"])
+        self.assertEqual((r["front_rear"], r["bulkhead"], r["brick"]), (["eifs_front_rear"], ["eifs_bulkhead"],
+                                                                          ["brick_veneer"]))
 
     def test_a_permit_lapse_is_an_assumed_hold_and_labelled(self):
         q = self.full["permit:2026-11-22"]
@@ -284,13 +355,39 @@ class SiteQuestionsSynthetic(unittest.TestCase):
         self.assertIsNotNone(_find(doc, "work:elec_rough_L1"))
 
     def test_redundant_same_subject_aspect_place(self):
-        dup = SQ.question("dup:elec_L1", triggers=["contradiction"], subject="elec_rough", aspect="state", place="L1",
-                          text_en="again?", text_es="¿otra vez?", answerers=["superintendent"], topic="progress",
-                          why="synthetic", evidence=[SQ.evid("x", "S1", TODAY, "x", "x")],
-                          branches=[SQ.branch("done", "yes", "sí"), SQ.dont_know()], activities=["elec_rough_L1"],
-                          gap="unknown", cost="look")
-        doc = SQ.generate(_ctx(given=[dup]))
-        self.assertEqual(_sup(doc, "dup:elec_L1")["reason"], "redundant")
+        def q(qid, w):
+            return SQ.question(qid, triggers=["contradiction"], subject="coping", aspect="binding", place="ROOF",
+                               text_en="again?", text_es="¿otra vez?", answerers=["superintendent"], topic="progress",
+                               why="synthetic", evidence=[SQ.evid("x", "S1", TODAY, "x", "x")],
+                               branches=[SQ.branch("done", "yes", "sí"), SQ.dont_know()], activities=["roof_coping"],
+                               gap="unknown", cost="look", decision_weight=w)
+        doc = SQ.generate(_ctx(given=[q("dupA", 1.0), q("dupB", 2.0)]))
+        self.assertEqual(_sup(doc, "dupA")["reason"], "redundant")
+        self.assertNotEqual((_sup(doc, "dupB") or {}).get("reason"), "redundant")
+
+    def test_a_worded_state_question_covers_the_generated_ones_for_its_activities(self):
+        worded = SQ.question("worded:elec_L1", triggers=["unknown_state"], subject="elec_rough_worded", aspect="state",
+                             place="L1", text_en="worded?", text_es="¿redactada?", answerers=["superintendent"],
+                             topic="progress", why="synthetic", evidence=[SQ.evid("x", "S1", TODAY, "x", "x")],
+                             branches=[SQ.branch("done", "yes", "sí", change={"state": {
+                                 "elec_rough_L1": SQ.stated("done", "x")}}), SQ.dont_know()],
+                             activities=["elec_rough_L1"], gap="in_progress", cost="look")
+        doc = SQ.generate(_ctx(given=[worded]))
+        s = _sup(doc, "work:elec_rough_L1")
+        self.assertEqual((s["reason"], s["detail"]), ("redundant", "covered by the worded question worded:elec_L1"))
+
+    def test_one_floor_per_trade_a_day(self):
+        def q(fl, w):
+            return SQ.question(f"work:trade_{fl}", triggers=["unknown_state"], subject="trade", aspect="state", place=fl,
+                               text_en=f"{fl}?", text_es=f"¿{fl}?", answerers=["pm"], topic="progress",
+                               why="synthetic", evidence=[SQ.evid("x", "S1", TODAY, "x", "x")],
+                               branches=[SQ.branch("done", "yes", "sí"), SQ.dont_know()], activities=["roof_coping"],
+                               gap="unknown", cost="look", decision_weight=w)
+        doc = SQ.generate(_ctx(given=[q("L1", 2.0), q("L2", 1.0)]))
+        s = _sup(doc, "work:trade_L2")
+        self.assertEqual(s["reason"], "redundant")
+        self.assertTrue(s["detail"].startswith("one floor per trade a day: work:trade_L1"), s["detail"])
+        self.assertIsNotNone(_find(doc, "work:trade_L1"))
 
     def test_an_answer_that_changes_no_decision_is_not_asked(self):
         self.assertEqual(_sup(self.doc, "work:roof_coping")["reason"], "no_decision")

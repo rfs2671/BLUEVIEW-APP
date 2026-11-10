@@ -231,6 +231,8 @@ class NothingBeforeItsPrerequisites(unittest.TestCase):
                     continue
                 lag = l["lag"] if isinstance(l["lag"], int) else 0
                 started = rows[l["to"]]["state"]["status"] == "in_progress"
+                if rows[l["to"]]["state"]["status"] == "done" and rows[l["from"]]["state"]["status"] != "done"                         and rows[l["to"]]["kind"] != "inspection_gate":
+                    continue     # reported done is done: an open prerequisite is a contradiction, not a delay
                 if l["type"] == "FS" and not started:
                     self.assertGreaterEqual(q["es"], p["ef"] + lag, f"{s}: {l['from']} -> {l['to']}")
                 elif l["type"] in ("FS", "FF"):
@@ -525,6 +527,38 @@ class ReviewOneFixes(unittest.TestCase):
         st = self.doc["stress_test"]
         self.assertGreaterEqual(st["tco_working_days"], self.doc["completion"]["conservative"]["tco_working_days"])
         self.assertTrue(all(G.monotone(x) for x in self.doc["assumptions"]))
+
+    def test_reported_done_is_done_its_open_prerequisite_is_a_contradiction_not_a_delay(self):
+        """A stated "done" keeps a remaining share where the run says so (the
+        stress run: remaining_operator_done 0.2). That remainder used to wait
+        to START behind every open prerequisite; reported done is done: the
+        open prerequisite is reported as a contradiction, never a delay."""
+        st = {a["id"]: a["state"] for a in self.doc["network"]["activities"]}
+        # ptac_sleeves_L1 -> insulation_L1 is an FS prerequisite between two crews' work
+        self.assertTrue(any(l["from"] == "ptac_sleeves_L1" and l["to"] == "insulation_L1" and l["type"] == "FS"
+                            and l["kind"] == "prerequisite" for l in self.doc["network"]["links"]))
+        st["ptac_sleeves_L1"] = G.state_entry("in_progress", "reported_log", "SYNTHETIC")
+        st["insulation_L1"] = G.state_entry("done", "operator_statement", "SYNTHETIC: a super said done")
+        net = {"activities": self.doc["network"]["activities"], "links": self.doc["network"]["links"]}
+        r = G.schedule_scenario(net, st, self.doc["assumptions"], G.STRESS, DATA_DATE)["activities"]
+        self.assertGreater(r["insulation_L1"]["remaining_share"], 0, "the stress run keeps a remainder")
+        self.assertLess(r["insulation_L1"]["es"], r["ptac_sleeves_L1"]["ef"],
+                        "reported-done insulation does not wait for the open sleeves")
+        doc = _gen(state=st)
+        found = [c for c in doc["state_contradictions"] if c["id"] == "insulation_L1"
+                 and c["kind"] == "done_with_open_prerequisite" and c["open"] == "ptac_sleeves_L1"]
+        self.assertTrue(found, "the open prerequisite is reported as a contradiction")
+
+    def test_the_facade_waits_on_valid_shed_and_scaffold_permits(self):
+        """Linked before the renewals existed, these links were skipped silently."""
+        eifs = [a for a in self.acts if a.startswith("eifs_")]
+        self.assertTrue(eifs)
+        for e in eifs:
+            for r in ("renew_permit_shed", "renew_permit_scaffold"):
+                self.assertTrue(any(l["from"] == r and l["to"] == e and l["kind"] == "prerequisite"
+                                    for l in self.links), f"{r} -> {e}")
+        skipped = {(x["from"], x["to"]) for x in self.doc["network"].get("skipped_links") or []}
+        self.assertFalse(any(a.startswith("renew_permit_") for a, _b in skipped), skipped)
 
     def test_no_negative_float_and_a_done_activity_with_open_prerequisite_is_reported(self):
         st = {a["id"]: a["state"] for a in self.doc["network"]["activities"]}
