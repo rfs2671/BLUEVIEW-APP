@@ -351,7 +351,10 @@ async def persist_schedule(db, schedule: Schedule) -> None:
 
 
 async def load_latest_schedule(db, project_id: str) -> Optional[dict]:
-    cur = db.project_schedules.find({"project_id": project_id})
+    # Generated rows are the only ones with no `status`. An imported baseline
+    # (draft / confirmed / superseded) shares this collection and is not this
+    # engine's to return: the file a person confirmed is not "the latest run".
+    cur = db.project_schedules.find({"project_id": project_id, "status": {"$exists": False}})
     rows = await cur.sort("generated_at", -1).to_list(1)
     if not rows:
         return None

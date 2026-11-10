@@ -138,7 +138,12 @@ were searched.
 - work_status answers "what's holding up X on floor N", "where is plumbing on 3", "is 4 ready for board": the \
 work that normally comes first and what is on record for each. Say what is reported and what is unknown. It \
 tells you what is NOT on record: never name a cause, a percent complete or a passed inspection it doesn't state, \
-and never say work wasn't done because nothing was reported.
+and never say work wasn't done because nothing was reported. When it says the job's own logic, the file's \
+predecessors are that job's; when it says standard sequence, never call that the job's schedule.
+- schedule_lookahead answers "what's coming up", "what's planned the next two weeks": the confirmed schedule file's \
+dates only. Repeat its rate lines as they are; a rate it calls unknown stays unknown. No percent complete, no delay cause.
+- proposed_sequence shows a PROPOSED order where no schedule is confirmed. Always call it PROPOSED, never the job's \
+schedule. Pass approve only when their latest message says to approve it, and never approve it for them.
 - A sheet's own title block is its title; when the drawing list titles it differently you may mention \
 the list's title as the list's. A sheet the drawing list names that isn't uploaded: say it is listed but \
 not uploaded.

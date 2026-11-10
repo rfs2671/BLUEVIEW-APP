@@ -24,10 +24,13 @@ NO PERCENT is ever computed: nothing in the system holds a measured scope and a
 verified installed quantity. A percent is shown only when a confirmed schedule
 file states one, and it is labelled as the file's.
 
-THE SEQUENCE is graph_v1, the operator-approved template in
-app/scheduling/graph_v1.py. It says what normally comes first, and a system the
-building may not have is marked conditional, not dropped. It is never reported as this job's own logic, and a
-prerequisite with no record is never called the cause of a delay.
+THE SEQUENCE is the job's OWN logic when a confirmed schedule file carries
+predecessors for this activity, and the answer says so. Otherwise it is
+graph_v1, the operator-approved template in app/scheduling/graph_v1.py: the
+"standard sequence", what normally comes first. A system the building may not
+have is marked conditional, not dropped. The template is never reported as this
+job's own logic, and a prerequisite with no record is never called the cause of
+a delay. A file with no predecessors is UNKNOWN logic, never "no dependencies".
 
 WORK MATCHING IS BY WHOLE WORDS, per phrase. The progress report's substring
 match read "Blocking" as masonry and "Vapour barrier" as concrete.
@@ -203,19 +206,41 @@ def _schedule_rows(schedule: Optional[Dict[str, Any]], node: str, level: str) ->
         if a.get("kind") == "summary":
             continue
         name = str(a.get("name") or "")
-        if node in classify(name)[0] and level in places_in(name)["levels"]:
+        # The name is its own crew column: "Plumbing Trim" is MEP trim, not rough.
+        if node in classify(name, name)[0] and level in places_in(name)["levels"]:
             out.append(a)
     return out
 
 
-def _schedule_facts(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def planned_finish(a: Dict[str, Any]) -> Optional[str]:
+    """The file's planned finish: current, else baseline (schedule_plan's rule)."""
+    return a.get("current_finish") or a.get("baseline_finish")
+
+
+def past_planned_no_report(a: Dict[str, Any], reported: bool, today: date, logs_from: Optional[date]) -> bool:
+    """The planned finish has gone by, the file has no actual finish, and no log
+    in the window read names the work. A stated fact, never a cause. With no
+    window known, or a date before it, nothing can be said."""
+    if reported or a.get("actual_finish") or not logs_from:
+        return False
+    try:
+        due = date.fromisoformat(str(planned_finish(a))[:10])
+    except ValueError:
+        return False
+    return logs_from <= due < today
+
+
+def _schedule_facts(rows: List[Dict[str, Any]], today: Optional[date] = None, reported: bool = True,
+                    logs_from: Optional[date] = None) -> List[Dict[str, Any]]:
     keep = ("id", "name", "baseline_start", "baseline_finish", "current_start", "current_finish",
             "actual_start", "actual_finish", "percent_complete")
-    return [{k: a.get(k) for k in keep} for a in rows[:3]]
+    return [{**{k: a.get(k) for k in keep}, "planned_finish": planned_finish(a),
+             "past_planned_no_report": bool(today) and past_planned_no_report(a, reported, today, logs_from)}
+            for a in rows[:3]]
 
 
 def package_state(node: str, level: str, rows: Sequence[Dict[str, Any]], photos: Sequence[Dict[str, Any]],
-                  schedule: Optional[Dict[str, Any]], today: date) -> Dict[str, Any]:
+                  schedule: Optional[Dict[str, Any]], today: date, logs_from: Optional[date] = None) -> Dict[str, Any]:
     """What the records hold about `node` on `level`. status: reported_recent |
     reported_earlier | unknown. "reported_earlier" is not "complete"."""
     mine = [r for r in rows if node in r["nodes"] and level in r["levels"]]
@@ -239,7 +264,7 @@ def package_state(node: str, level: str, rows: Sequence[Dict[str, Any]], photos:
                     "only_this_level": p["levels"] == [level]} for p in pics[:MAX_PHOTOS]],
         "observed": any(node in p["seen_nodes"] for p in pics),
         "verified": None, "percent": None,
-        "schedule": _schedule_facts(_schedule_rows(schedule, node, level)),
+        "schedule": _schedule_facts(_schedule_rows(schedule, node, level), today, bool(days), logs_from),
     }
 
 
@@ -290,10 +315,46 @@ def _prerequisites(target: str, nodes: Dict[str, Any], before: Dict[str, List[Tu
     return order
 
 
+def _link_states(p: Dict[str, Any], level: str, rows: Sequence[Dict[str, Any]], photos: Sequence[Dict[str, Any]],
+                 schedule: Optional[Dict[str, Any]], today: date, logs_from: Optional[date]) -> List[Dict[str, Any]]:
+    """What the logs say about one predecessor: on the asked level if its name
+    covers it, else on the one level it names. No level named: no log match."""
+    nodes, _generic = classify(p.get("name"), p.get("name"))
+    levels = places_in(p.get("name"))["levels"]
+    at = level if level in levels else (levels[0] if len(levels) == 1 else None)
+    return [package_state(n, at, rows, photos, schedule, today, logs_from) for n in nodes] if at else []
+
+
+def job_logic(target: str, level: str, rows: Sequence[Dict[str, Any]], photos: Sequence[Dict[str, Any]],
+              schedule: Optional[Dict[str, Any]], today: date, logs_from: Optional[date] = None) -> Dict[str, Any]:
+    """{"source": "job"|"standard", "reason": ..., "activities": [...]}. "job"
+    only for an activity whose predecessors the confirmed file states."""
+    if not schedule:
+        return {"source": "standard", "reason": "no_schedule", "activities": []}
+    mine = _schedule_rows(schedule, target, level)
+    if not mine:
+        return {"source": "standard", "reason": "no_activity", "activities": []}
+    read = [a for a in mine if isinstance(a.get("predecessors"), list)]
+    if not read:
+        return {"source": "standard", "reason": "no_logic_in_file", "activities": []}
+    by_id = {str(a.get("id")): a for a in schedule.get("activities") or []}
+    out = []
+    for a in read[:3]:
+        links = []
+        for link in a["predecessors"]:
+            p = by_id.get(str(link.get("id"))) or {}
+            links.append({**link, "name": p.get("name") or str(link.get("id")), "facts": _schedule_facts([p])[0] if p else None,
+                          "states": _link_states(p, level, rows, photos, schedule, today, logs_from)})
+        out.append({"id": a.get("id"), "name": a.get("name"), "predecessors": links,
+                    "unresolved": int(a.get("predecessors_unresolved") or 0)})
+    return {"source": "job", "reason": "file_states_logic", "activities": out}
+
+
 def what_holds(target: str, level: str, activities: Iterable[Dict[str, Any]], index_rows: Iterable[Dict[str, Any]],
                *, today: date, schedule: Optional[Dict[str, Any]] = None, flags: Optional[Dict[str, Any]] = None,
                log_ids: Optional[set] = None, stop_work: Optional[List[Dict[str, Any]]] = None,
-               regulatory_note: str = "", relations: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+               regulatory_note: str = "", relations: Optional[List[Dict[str, Any]]] = None,
+               logs_from: Optional[date] = None) -> Dict[str, Any]:
     """The evidence for one question. It names what is open on the record and
     what is unknown; it never names a cause."""
     rows = evidence_rows(activities)
@@ -308,8 +369,9 @@ def what_holds(target: str, level: str, activities: Iterable[Dict[str, Any]], in
             s = package_state(n, level, rows, photos, schedule, today)
             s["requires_unconfirmed"] = [r for r in nodes[n].requires if (flags or {}).get(r) is None]
             work.append(s)
-    return {"target": package_state(target, level, rows, photos, schedule, today), "level": level, "today": today,
+    return {"target": package_state(target, level, rows, photos, schedule, today, logs_from), "level": level, "today": today,
             "known_activity": target in nodes, "work": work, "gates": gates,
+            "sequence": job_logic(target, level, rows, photos, schedule, today, logs_from),
             "insulation": package_state("insulation", level, rows, photos, schedule, today),
             "has_schedule": bool(schedule), "stop_work": stop_work or [], "regulatory_note": regulatory_note,
             "relations": relations or [],
@@ -339,12 +401,55 @@ def state_words(s: Dict[str, Any], today: date) -> str:
     return "; ".join(bits)
 
 
+def _fact_dates(a: Dict[str, Any]) -> str:
+    dates = [f"{k.replace('_', ' ')} {a[k]}" for k in ("baseline_finish", "current_finish", "actual_finish") if a.get(k)]
+    pct = f"; the file states {a['percent_complete']}%" if a.get("percent_complete") is not None else ""
+    return (", ".join(dates) or "no dates") + pct
+
+
 def _schedule_words(s: Dict[str, Any]) -> List[str]:
     out = []
     for a in s["schedule"]:
-        dates = [f"{k.replace('_', ' ')} {a[k]}" for k in ("baseline_finish", "current_finish", "actual_finish") if a.get(k)]
-        pct = f"; the file states {a['percent_complete']}%" if a.get("percent_complete") is not None else ""
-        out.append(f"Schedule file, {a.get('name')}: " + (", ".join(dates) or "no dates") + pct)
+        past = (f" | past planned finish {a['planned_finish']} with no report on this level in the logs read"
+                if a.get("past_planned_no_report") else "")
+        out.append(f"Schedule file, {a.get('name')}: " + _fact_dates(a) + past)
+    return out
+
+
+_STANDARD_NOTES = {
+    "no_activity": "The confirmed schedule has no activity for this work on this level, so what follows is the standard "
+                   "sequence, not this job's own logic.",
+    "no_logic_in_file": "The confirmed schedule does not carry predecessor logic for this activity. That is unknown, not "
+                        "'no dependencies'. What follows is the standard sequence, not this job's own logic.",
+}
+_LAG_UNITS = {"days": "working days", "edays": "calendar days", "percent": "%"}
+
+
+def _link_words(p: Dict[str, Any]) -> str:
+    bits = [p.get("type") or "type not stated"]
+    if p.get("lag") is not None or p.get("lag_unit") == "percent":
+        amount = "percent, amount not read" if p.get("lag") is None else f"{p['lag']:g}"
+        unit = _LAG_UNITS.get(str(p.get("lag_unit")), "") if p.get("lag") is not None else ""
+        bits.append(f"lag {amount} {unit}".strip())
+    return ", ".join(bits)
+
+
+def _job_logic_words(seq: Dict[str, Any], today: date) -> List[str]:
+    out: List[str] = []
+    for a in seq["activities"]:
+        n = len(a["predecessors"])
+        out.append(f"This job's own schedule lists no predecessor for {a['name']}." if not n and not a["unresolved"]
+                   else f"This job's own logic, from its confirmed schedule file: {a['name']} has {n} predecessor(s):")
+        for p in a["predecessors"][:8]:
+            bits = ["; ".join(state_words(st, today) + f" ({level_label(st['level'])})" for st in p["states"])
+                    or "no matching log work or no level in its name"]
+            if p["facts"]:
+                bits.insert(0, _fact_dates(p["facts"]))
+            out.append(f"- {p['name']} ({_link_words(p)}): " + " | ".join(bits))
+        if n > 8:
+            out.append(f"...and {n - 8} more.")
+        if a["unresolved"]:
+            out.append(f"{a['unresolved']} link(s) in the file could not be matched to an activity and are left out, so this list may be short.")
     return out
 
 
@@ -359,12 +464,17 @@ def as_text(ans: Dict[str, Any]) -> str:
         out.append(f"Stop-work records: {ans['regulatory_note']}")
     else:
         out.append("No open stop-work or vacate order on the DOB records.")
+    seq = ans["sequence"]
+    if seq["source"] == "job":
+        out += _job_logic_words(seq, today)
+    elif seq["reason"] in _STANDARD_NOTES:
+        out.append(_STANDARD_NOTES[seq["reason"]])
     if ans["gates"]:
         out.append("Inspections that normally come before it (standard sequence, not this job's own schedule). "
                    "Levelog holds no inspection results, so each is UNKNOWN, neither passed nor failed:")
         out += [f"- {g['label']}" + (" (if the building has this system)" if g["requires_unconfirmed"] else "") for g in ans["gates"]]
-    if ans["work"]:
-        out.append("Work that normally comes first:")
+    if ans["work"] and seq["source"] != "job":
+        out.append("Work that normally comes first (standard sequence, not this job's own schedule):")
         for s in ans["work"]:
             out.append(f"- {node_label(s['node'])}: {state_words(s, today)}"
                        + (" (if the building has this system)" if s["requires_unconfirmed"] else "")
@@ -373,7 +483,8 @@ def as_text(ans: Dict[str, Any]) -> str:
         out.append(f"Related, insulation: {state_words(ans['insulation'], today)}.")
     if not ans["has_schedule"]:
         out.append("No confirmed schedule is on file, so no planned date, delay or downstream impact can be stated.")
-    shown = {p["id"]: p for s in [t] + ans["work"] for p in s["photos"]}
+    listed = [st for a in seq["activities"] for link in a["predecessors"] for st in link["states"]] if seq["source"] == "job" else ans["work"]
+    shown = {p["id"]: p for s in [t] + listed for p in s["photos"]}
     if shown:
         out.append("Photos (ids for send_photos):")
         out += [f"- {p['id']} {p['date']} {p.get('sub') or ''}: {p['shows']}"
