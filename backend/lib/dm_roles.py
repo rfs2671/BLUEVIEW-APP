@@ -44,6 +44,7 @@ FIELD_TOOLS = frozenset({
     "work_status", "find_photos", "send_photos", "daily_log", "open_items", "punch_status",
     "headcount", "who_on_site", "site_headcount", "sub_attendance", "material_status",
     "project_info", "upcoming_events",
+    "project_status",
     # inspections and evidence (the floor of a photo they were just sent)
     "report_inspection", "confirm_photo_place",
     # the schedule (proposed_sequence: viewing only, approve is refused below)

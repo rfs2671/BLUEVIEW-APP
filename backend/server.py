@@ -57196,6 +57196,139 @@ async def _photo_relations_job() -> None:
         logger.error(f"[photo-relations] job failed: {type(e).__name__}: {e!r}")
 
 
+# ── PROJECT PROGRESS (lib/project_progress.py) ──────────────────────────────
+#
+# One status of the whole building from evidence items (lib/evidence.py), read
+# at request time: nothing is stored. GET /api/projects/{project_id}/progress
+# and the assistant's project_status tool read the same build.
+from lib import evidence as _evidence, project_progress  # noqa: E402
+from lib.plans.level_suggestion import suggest_levels as _suggest_levels  # noqa: E402
+
+#: How far back the whole-building status reads (the report loader's window).
+PROJECT_PROGRESS_DAYS = 365
+#: An inspection report's stated result, as an evidence claim. "partial" is not done.
+_PROGRESS_IR_CLAIM = {"passed": "done", "failed": "failed", "partial": "in_progress", "scheduled": "scheduled"}
+
+
+def _progress_day(v: Any) -> Optional[_Date]:
+    if isinstance(v, datetime):
+        return attendance.local_day(v)
+    if isinstance(v, _Date):
+        return v
+    try:
+        return _Date.fromisoformat(str(v)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+async def _progress_items_from_work_state(project: dict, company_id: str, today: _Date, now: datetime) -> dict:
+    """STAND-IN LOADER: REPLACE WITH `_progress_evidence` (the evidence-sources
+    lane) when it lands; lib/project_progress.py does not depend on this.
+
+    What work_state already reads, as evidence items: filed daily-log crew rows
+    (reported), the photo index (observed: only the work a photo is DESCRIBED
+    as showing), inspections people reported (attested; never verified) and
+    gate check-ins (present). {"items", "plan_tokens", "schedule"}."""
+    pid, cid = str(project.get("_id")), str(company_id)
+    start = today - timedelta(days=PROJECT_PROGRESS_DAYS - 1)
+    src = await _report_rows(project, cid, start, today, now)
+    logs = src["logbooks"]
+    items: list = []
+    for r in work_state.evidence_rows(progress_report._log_activities(logs, start, today)):
+        for node in r["nodes"]:
+            items.append(_evidence.item(
+                "reported", "in_progress", source="logbooks", ref=r["log_id"] or str(r["date"]), project_id=pid,
+                node=node, levels=r["levels"], space=r["space"], sub=r["sub"] or None, on=r["date"], quote=r["work"],
+                shared=len(r["levels"]) > 1, note="names the trade only" if r["generic"] else None))
+    index = await db[PHOTO_INDEX].find({"project_id": pid, "kind": "photo"}).to_list(20000)
+    spaces, confirmed = await _photo_place_context(pid)
+    for p in work_state.photo_rows(index, {str(lg.get("_id")) for lg in logs}, spaces=spaces, confirmations=confirmed):
+        on = _progress_day(p.get("date"))
+        if not on or float(p.get("quality") or 0) < work_state.MIN_PHOTO_QUALITY:
+            continue
+        for node in p["seen_nodes"]:
+            items.append(_evidence.item(
+                "observed", "in_progress", source="photo_index", ref=str(p.get("short") or p.get("photo_key")),
+                project_id=pid, node=node, levels=p["levels"], space=p.get("space"), sub=p.get("sub") or None,
+                on=on, quote=p.get("description"), shared=len(p["levels"]) > 1))
+    for r in await db[INSPECTION_REPORTS].find({"project_id": pid, "company_id": cid}).to_list(5000):
+        claim = _PROGRESS_IR_CLAIM.get(str(r.get("result")))
+        if not r.get("gate") or not claim or r.get("status") not in (inspection_reports.ATTESTED, inspection_reports.DOCUMENT):
+            continue
+        items.append(_evidence.item(
+            "attested", claim, source="inspection_reports", ref=str(r.get("_id")), project_id=pid, node=r["gate"],
+            levels=list(r.get("levels") or []), space=r.get("space"), on=_progress_day(r.get("inspected_on"))
+            or _progress_day(r.get("created_at")), by=r.get("reporter_name") or None, quote=r.get("quote"),
+            shared=len(r.get("levels") or []) > 1, note=r.get("status")))
+    for c in src["checkins"]:
+        sub = " ".join(str(c.get("worker_company") or c.get("company") or c.get("company_name") or "").split())
+        on = attendance.local_day(c.get("check_in_time"))
+        if sub and on and start <= on <= today:
+            items.append(_evidence.item("reported", "present", source="checkins", ref=str(c.get("_id")),
+                                        project_id=pid, sub=sub, on=on))
+    try:
+        rows = await db.document_page_index.find({"project_id": pid}, {"sheet_number": 1, "sheet_title": 1,
+                                                                       "floor": 1, "floors": 1}).to_list(3000)
+        plan_tokens = [lv["token"] for lv in _suggest_levels(rows)["levels"]]
+    except Exception as e:
+        # The project fields and the records still name levels; the answer says where each came from.
+        logger.warning(f"[progress] plan levels not read: {type(e).__name__}: {e!r}")
+        plan_tokens = []
+    return {"items": items, "plan_tokens": plan_tokens, "schedule": src.get("schedule")}
+
+
+async def _project_progress(project: dict, company_id: str, *, job: str = "", today: Optional[_Date] = None) -> dict:
+    now = datetime.now(timezone.utc)
+    today = today or now.astimezone(_MemoryZone("America/New_York")).date()
+    got = await _progress_items_from_work_state(project, company_id, today, now)
+    return project_progress.build(got["items"], today=today, project=project, plan_tokens=got["plan_tokens"],
+                                  schedule=got["schedule"], job=job or str(project.get("name") or ""))
+
+
+@api_router.get("/projects/{project_id}/progress",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_progress(project_id: str, current_user=Depends(get_current_user)):
+    """The whole building's status from the records. Read-only; counts of
+    level-and-work cells, never a percent complete."""
+    cid = str(get_user_company_id(current_user) or "")
+    project = await _bot_project_scope(cid, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        model = await _project_progress(project, cid)
+    except ReportSourceUnavailable:
+        raise HTTPException(status_code=503, detail="The progress records could not be read, so no status is shown.")
+    out = project_progress.to_json(model)
+    out["project_id"] = str(project_id)
+    return out
+
+
+def _project_status_tool(job_prop: dict) -> dict:
+    """The brain's tool spec; registered beside the brain's other tools."""
+    return {"name": "project_status", "description": (
+        "The status of a whole job from the records: overall ('how is 588 doing'), one sub ('where is Arkon at') "
+        "or one floor ('how is floor 3'). Counts of level-and-work cells by status (done needs a person's statement "
+        "or stronger), what is open on the record per level, and records that disagree. Never a percent complete."),
+        "input_schema": {"type": "object", "properties": {
+            "job": job_prop,
+            "scope": {"type": "string", "enum": ["overall", "sub", "floor"]},
+            "name": {"type": "string", "description": "The sub's name (scope sub) or the floor (scope floor), as they said it."}},
+            "required": ["scope"]}}
+
+
+async def _dm_project_status(ctx: dict, job: dict, args: dict) -> str:
+    cid = str(ctx["ident"]["company_id"])
+    project = await _bot_project_scope(cid, str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    try:
+        model = await _project_progress(project, cid, job=str(job.get("label") or ""))
+    except Exception as e:
+        logger.warning(f"[progress] failed: {type(e).__name__}: {e!r}")
+        return "The progress records couldn't be read just now."
+    return project_progress.as_text(model, str(args.get("scope") or "overall"), args.get("name"))
+
+
 # ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
 
 async def _group_photo_company(row: dict, company_id: Any, project_id: Any) -> Tuple[str, str, str]:
@@ -63475,6 +63608,7 @@ _DM_BRAIN_EXTRA_TOOLS = [
          "time": {"type": "string", "description": "HH:MM, 24h, if they gave one."}},
          "required": ["what", "date"]}},
 ]
+_DM_BRAIN_EXTRA_TOOLS.append(_project_status_tool(_JOB_PROP))
 
 _DM_BRAIN_TOOL_CACHE: Optional[list] = None
 
@@ -63816,7 +63950,8 @@ async def _dm_do_set_trade(ident: dict, p: dict):
 _DM_BRAIN_ONE_JOB = _DM_BRAIN_JOB_TOOLS + ("headcount", "dot_status", "send_sheet",
                                            "send_plan_file", "sheet_info",
                                            "find_photos", "send_photos", "work_status",
-                                           "schedule_lookahead", "proposed_sequence", "report_inspection", "confirm_photo_place")
+                                           "schedule_lookahead", "proposed_sequence", "report_inspection", "confirm_photo_place",
+                                           "project_status")
 
 
 async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
@@ -63953,7 +64088,8 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
     if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
                                                "send_plan_file", "sheet_info",
                                                "find_photos", "send_photos", "work_status",
-                                               "schedule_lookahead", "proposed_sequence", "report_inspection", "confirm_photo_place"):
+                                               "schedule_lookahead", "proposed_sequence", "report_inspection", "confirm_photo_place",
+                                               "project_status"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
             return why
@@ -63995,6 +64131,8 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
             return await _dm_work_status(ctx, job, args)
         if name == "schedule_lookahead":
             return await _dm_schedule_lookahead(ctx, job, args)
+        if name == "project_status":
+            return await _dm_project_status(ctx, job, args)
         if name == "proposed_sequence":
             return await _dm_proposed_sequence(ctx, job, args)
         if name == "report_inspection":
