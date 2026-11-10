@@ -56738,7 +56738,7 @@ async def _work_state_answer(project: dict, company_id: str, work: str, level: s
         nodes[0], token, acts, index, today=today, schedule=src.get("schedule"), flags=flags,
         log_ids={str(lg.get("_id")) for lg in logs}, stop_work=reg.get("swo_active") or [],
         regulatory_note=note, relations=rel, logs_from=start, inspections=reports,
-        spaces=spaces, confirmations=confirmed)}
+        spaces=spaces, confirmations=confirmed, frame=await _project_place_frame(pid))}
 
 
 async def _dm_work_status(ctx: dict, job: dict, args: dict) -> str:
@@ -57298,7 +57298,8 @@ async def _progress_evidence(project: dict, company_id: str, start: _Date, end: 
         pid, start=start, end=end, activities=progress_report._log_activities(logs, start, end),
         photo_index=index, log_ids={str(lg.get("_id")) for lg in logs}, spaces=spaces, confirmations=confirmed,
         inspections=reports, dob_rows=src["dob_rows"], bins=src.get("project_bins") or (), logbooks=heads,
-        punch_items=closed, checkins=src["checkins"], schedule=src.get("schedule"), unreadable=unreadable)
+        punch_items=closed, checkins=src["checkins"], schedule=src.get("schedule"), unreadable=unreadable,
+        frame=await _project_place_frame(pid))
 
 
 # ── PROJECT PROGRESS (lib/project_progress.py) ──────────────────────────────
@@ -57326,13 +57327,18 @@ async def _progress_plan_tokens(pid: str) -> list:
     return plan_tokens
 
 
-async def _project_progress(project: dict, company_id: str, *, job: str = "", today: Optional[_Date] = None) -> dict:
+async def _project_progress(project: dict, company_id: str, *, job: str = "", today: Optional[_Date] = None,
+                            keep: Optional[dict] = None) -> dict:
+    """`keep`: a dict the caller gets back filled with what the model was built
+    from ("items", "sources", "start"), so a report adds the forecast to the
+    SAME read instead of a second one."""
     now = datetime.now(timezone.utc)
     today = today or now.astimezone(_MemoryZone("America/New_York")).date()
     # Every source, through the one loader (lib/evidence_sources.py).
     start = today - timedelta(days=PROJECT_PROGRESS_DAYS - 1)
-    keep: dict = {}
+    keep = {} if keep is None else keep
     items, _coverage = await _progress_evidence(project, company_id, start, today, keep=keep)
+    keep.update(items=items, start=start)
     plan_tokens = await _progress_plan_tokens(str(project.get("_id")))
     return project_progress.build(items, today=today, project=project, plan_tokens=plan_tokens,
                                   schedule=keep["sources"].get("schedule"), job=job or str(project.get("name") or ""))
@@ -57487,7 +57493,7 @@ def _confirm_answer_items(rows: list) -> list:
     return out
 
 
-def _confirm_schedule(schedule: Optional[dict]) -> list:
+def _confirm_schedule(schedule: Optional[dict], place: Optional[dict] = None) -> list:
     """The CONFIRMED schedule file's activities, each with the work and the
     levels its name states (the same reading work_state uses)."""
     out = []
@@ -57496,7 +57502,7 @@ def _confirm_schedule(schedule: Optional[dict]) -> list:
             continue
         name = str(a.get("name") or "")
         nodes = work_state.classify(name, name)[0]
-        levels = work_state.places_in(name)["levels"]
+        levels = work_state.places_in(name, place)["levels"]
         if not nodes or not levels:
             continue
         out.append({"id": a.get("id"), "name": name, "nodes": nodes, "levels": levels,
@@ -57519,12 +57525,14 @@ async def _confirmation_inputs(project: dict, company_id: str) -> tuple:
         logger.warning(f"[confirm] {pid} skipped: unreadable {coverage['unreadable']}")
         return None
     src = keep["sources"]
-    rows = work_state.evidence_rows(progress_report._log_activities(src["logbooks"], start, today))
+    # The same place frame the loader reads levels with (lib/location_binder).
+    place = await _project_place_frame(pid)
+    rows = work_state.evidence_rows(progress_report._log_activities(src["logbooks"], start, today), place)
     done, logged = _confirm_log_items(rows, pid)
     answers = await db.confirmation_answers.find({"project_id": pid, "company_id": str(company_id)}).to_list(5000)
     items = list(items) + done + _confirm_answer_items(answers)
     frame = {"project_id": pid, "today": today, "logs_from": start, "logged_levels": logged,
-             "schedule": _confirm_schedule(src.get("schedule"))}
+             "schedule": _confirm_schedule(src.get("schedule"), place)}
     return items, frame
 
 
@@ -57759,6 +57767,45 @@ async def review_project_confirmation(project_id: str, candidate_id: str, body: 
     return _confirmation_view(row, events)
 
 
+# ── LOCATION BINDER (lib/location_binder.py) ────────────────────────────────
+#
+# The levels and plan tags ONE project has, from what exists: its storey count
+# and has_* flags, its indexed plan sheets (as the level suggestion reads them),
+# its plan tags (plan_records / plan_areas, as photo_place reads them), and the
+# levels at least two of its filed daily logs name. Read-only: nothing is
+# stored, so there is no second copy to drift. A failed read is an EMPTY frame,
+# and an empty frame changes nothing: work_state.places_in and photo_place.infer
+# bind only when the frame holds levels.
+from lib import location_binder  # noqa: E402
+
+PLACE_FRAME_LOGS = 5000
+
+
+async def _project_place_frame(project_id: str) -> dict:
+    """{levels, spaces, basis, known, excluded}: see location_binder.frame_from."""
+    pid = str(project_id)
+    try:
+        project = await db.projects.find_one(
+            {"_id": to_query_id(pid), "is_deleted": {"$ne": True}},
+            {"building_stories": 1, "has_sub_cellar": 1, "has_cellar": 1, "has_mezzanine": 1, "has_roof_bulkhead": 1})
+        # An IGNORED file's pages are not part of the model, as in the level suggestion.
+        ignored = [str(f["_id"]) for f in await db.project_files.find(
+            {"project_id": pid, "drawing_track": IGNORED_TRACK}, {"_id": 1}).to_list(200)]
+        pages = await db.document_page_index.find(
+            {"project_id": pid, **({"file_id": {"$nin": ignored}} if ignored else {})},
+            {"sheet_number": 1, "sheet_title": 1, "floor": 1, "floors": 1}).to_list(3000)
+        logs = await db.logbooks.find(
+            {"project_id": pid, "log_type": "daily_jobsite", "is_deleted": {"$ne": True}},
+            {"data.activities.work_locations": 1}).to_list(PLACE_FRAME_LOGS)
+        spaces, _confirmed = await _photo_place_context(pid)
+    except Exception as e:
+        logger.warning(f"[place-frame] not read: {type(e).__name__}: {e!r}")
+        return {"levels": [], "spaces": {}, "basis": {}, "known": False, "excluded": {}}
+    locations = [[a.get("work_locations") for a in ((lg.get("data") or {}).get("activities") or [])
+                  if isinstance(a, dict)] for lg in logs]
+    return location_binder.frame_from(project, pages, locations, spaces)
+
+
 # ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
 
 async def _group_photo_company(row: dict, company_id: Any, project_id: Any) -> Tuple[str, str, str]:
@@ -57888,6 +57935,31 @@ def _report_image(c: dict) -> Optional[str]:
         return None
 
 
+async def _report_progress(rep: dict, project: dict, company_id: str, now: datetime) -> None:
+    """The larger report's status by floor and schedule forecast, from the SAME
+    _project_progress model the assistant answers from, as of the period's end.
+    A model that cannot be read is said so on the page, never shown as nothing
+    on record; the rest of the report still goes."""
+    today = min(rep["end"], now.astimezone(_MemoryZone("America/New_York")).date())
+    keep: dict = {}
+    rep["progress_model"], rep["forecast"] = None, None
+    try:
+        rep["progress_model"] = await _project_progress(project, company_id, job=rep["job"], today=today, keep=keep)
+    except Exception as e:
+        logger.warning(f"[report] progress model not read: {type(e).__name__}: {e!r}")
+        rep["progress_unavailable"] = True
+        return
+    sched = (keep.get("sources") or {}).get("schedule")
+    if not sched:
+        return
+    try:
+        rows = work_state.evidence_rows(progress_report._log_activities(keep["sources"]["logbooks"], keep["start"], today))
+        fc = schedule_forecast.forecast(sched, keep["items"], rows, today=today, project_id=str(project.get("_id")))
+        rep["forecast"] = schedule_forecast.report_section(fc)
+    except Exception as e:                  # a schedule that cannot be read is no forecast
+        logger.warning(f"[report] forecast not built: {type(e).__name__}: {e!r}")
+
+
 async def build_project_report(company_id: str, projects: List[dict], start: _Date, end: _Date, *,
                                now: Optional[datetime] = None, by: str = "",
                                source: str = "app", key: Optional[str] = None,
@@ -57918,6 +57990,8 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
             job=wa_assistant.street_label(p), address=str(p.get("address") or ""), gc=gc,
             start=start, end=end, now=now, kind=kind, **rows)
         rep["photos"] = await _report_photos(rep, str(p.get("_id")))
+        if (end - start).days + 1 >= progress_report_render.GANTT_MIN_DAYS:
+            await _report_progress(rep, p, company_id, now)
         reps.append(rep)
     images = {}
     for rep in reps:

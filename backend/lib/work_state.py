@@ -74,9 +74,14 @@ def level_label(token: str) -> str:
     return LS.LABELS.get(token, token.replace("_", " ").title())
 
 
-def places_in(text: Any) -> Dict[str, Any]:
+def places_in(text: Any, frame: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """{"levels": [tokens], "space": "3B" | None} named by free text. An unknown
-    place is [] and None: it is never guessed."""
+    place is [] and None: it is never guessed. `frame`: the project's levels and
+    plan tags (server _project_place_frame); when it holds levels the words are
+    bound to them by lib/location_binder, and a level the job lacks is none."""
+    if frame and frame.get("levels"):
+        from lib import location_binder   # here: the binder reads this module
+        return location_binder.place(text, frame)
     t = str(text or "")
     levels = [f"{LS.FLOOR_PREFIX}{n}" for n in P.floors_in(t)]
     rest = _SUB_CELLAR_WORDS.sub(" ", t)
@@ -176,16 +181,16 @@ def classify(phrase: Any, crew: Any = "") -> Tuple[List[str], bool]:
     return work_nodes.classify(t)
 
 
-def evidence_rows(activities: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def evidence_rows(activities: Iterable[Dict[str, Any]], frame: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """One row per PHRASE of each filed crew row (progress_report._log_activities):
     the kind of work, and where. A phrase naming its own level ("Roof MEP") is
     at that level, not on the crew row's floors."""
     out = []
     for a in activities:
-        row_place = places_in(a.get("where"))
+        row_place = places_in(a.get("where"), frame)
         for phrase in P.work_phrases(a.get("work")):
-            own = places_in(phrase)
-            place = own if own["levels"] else (row_place if row_place["levels"] else places_in(a.get("work")))
+            own = places_in(phrase, frame)
+            place = own if own["levels"] else (row_place if row_place["levels"] else places_in(a.get("work"), frame))
             nodes, generic = classify(phrase, f"{a.get('trade') or ''} {a.get('company') or ''}")
             out.append({"date": a["date"], "sub": a.get("company") or "", "work": phrase, "nodes": nodes,
                         "generic": generic, "levels": place["levels"], "space": place["space"],
@@ -196,12 +201,13 @@ def evidence_rows(activities: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def photo_rows(index_rows: Iterable[Dict[str, Any]], log_ids: Optional[set] = None,
                *, spaces: Optional[Dict[str, Dict[str, Any]]] = None,
-               confirmations: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> List[Dict[str, Any]]:
+               confirmations: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+               frame: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """The photo index, placed by lib/photo_place.infer: a photo's `levels` is
     the inferred level when the evidence is sufficient and otherwise only what
     it is shared between. `log_ids`: the effective filed logs (an amended log's
     superseded original is left out). `spaces`, `confirmations` (by photo_key):
-    the job's plan tags and what people have answered."""
+    the job's plan tags and what people have answered. `frame`: see places_in."""
     # Here, not at the top: photo_place reads this module's places_in.
     from lib import photo_place
     answers = confirmations or {}
@@ -209,7 +215,7 @@ def photo_rows(index_rows: Iterable[Dict[str, Any]], log_ids: Optional[set] = No
     for r in index_rows:
         if log_ids is not None and str(r.get("log_id")) not in log_ids:
             continue
-        place = photo_place.infer(r, spaces, confirmations=answers.get(str(r.get("photo_key"))) or ())
+        place = photo_place.infer(r, spaces, confirmations=answers.get(str(r.get("photo_key"))) or (), frame=frame)
         crew = str(r.get("sub") or "")
         nodes: List[str] = []
         for phrase in P.work_phrases(r.get("work")):
@@ -397,11 +403,12 @@ def what_holds(target: str, level: str, activities: Iterable[Dict[str, Any]], in
                logs_from: Optional[date] = None,
                inspections: Optional[List[Dict[str, Any]]] = None,
                spaces: Optional[Dict[str, Dict[str, Any]]] = None,
-               confirmations: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
+               confirmations: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+               frame: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The evidence for one question. It names what is open on the record and
     what is unknown; it never names a cause."""
-    rows = evidence_rows(activities)
-    photos = photo_rows(index_rows, log_ids, spaces=spaces, confirmations=confirmations)
+    rows = evidence_rows(activities, frame)
+    photos = photo_rows(index_rows, log_ids, spaces=spaces, confirmations=confirmations, frame=frame)
     nodes, before = _graph(flags)
     work, gates = [], []
     reports = IR.current_state(inspections or [])

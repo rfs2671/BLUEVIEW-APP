@@ -107,11 +107,14 @@ def _filed(log: Dict[str, Any]) -> bool:
 
 # ── FILED DAILY-LOG CREW ROWS: reported ────────────────────────────────────
 
-def from_daily_logs(activities: Iterable[Dict[str, Any]], project_id: Any) -> Tuple[List[Item], Dict[str, Any]]:
+def from_daily_logs(activities: Iterable[Dict[str, Any]], project_id: Any,
+                    frame: Optional[Dict[str, Any]] = None) -> Tuple[List[Item], Dict[str, Any]]:
     """One item per kind of work per phrase of each filed crew row
     (progress_report._log_activities). Claim in_progress: a crew working on
     something is not the something finished."""
-    rows = W.evidence_rows(activities)
+    # `frame`: the project's levels and plan tags (location_binder): a level
+    # the job does not have, or words that name none clearly, are not placed.
+    rows = W.evidence_rows(activities, frame)
     out: List[Item] = []
     for r in rows:
         shared = len(r["levels"]) > 1
@@ -561,10 +564,11 @@ def collect(project_id: Any, *, start: Optional[date] = None, end: Optional[date
             inspections: Iterable[Dict[str, Any]] = (), dob_rows: Iterable[Dict[str, Any]] = (),
             bins: Sequence[Any] = (), logbooks: Iterable[Dict[str, Any]] = (),
             punch_items: Iterable[Dict[str, Any]] = (), checkins: Iterable[Dict[str, Any]] = (),
-            schedule: Optional[Dict[str, Any]] = None, unreadable: Sequence[str] = ()) -> Tuple[List[Item], Dict[str, Any]]:
+            schedule: Optional[Dict[str, Any]] = None, unreadable: Sequence[str] = (),
+            frame: Optional[Dict[str, Any]] = None) -> Tuple[List[Item], Dict[str, Any]]:
     """(items, coverage): see the module docstring."""
     books = list(logbooks)
-    parts = (("daily_log", from_daily_logs(activities, project_id)),
+    parts = (("daily_log", from_daily_logs(activities, project_id, frame)),
              ("photo_index", from_photos(photo_index, project_id, log_ids=log_ids, spaces=spaces,
                                          confirmations=confirmations)),
              ("inspection_reports", from_inspections(inspections, project_id)),
