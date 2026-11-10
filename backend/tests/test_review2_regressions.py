@@ -421,7 +421,7 @@ class OneOrderForTheQuestions(unittest.TestCase):
         self.assertEqual([c["trigger"] for c in C.candidates(items, self.FRAME)], [])
         self.assertEqual(E.status(items), "done_attested")
 
-    def test_an_undated_re_pass_said_after_the_failure_settles_it(self):
+    def test_an_undated_repass_said_after_the_failure_settles_it(self):
         items = [_it("attested", "done", on=date(2026, 11, 2), ref="p1"),
                  _it("attested", "failed", on=date(2026, 11, 4), ref="f"),
                  _it("attested", "done", on=None, said=datetime(2026, 11, 7, 9), ref="p2")]
