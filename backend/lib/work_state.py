@@ -41,6 +41,7 @@ from datetime import date
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.scheduling.graph_v1 import build_graph_v1
+from lib import inspection_reports as IR
 from lib import progress_report as P
 from lib import punch
 from lib.plans import level_suggestion as LS
@@ -98,6 +99,33 @@ def level_asked(text: Any) -> Optional[str]:
         return f"{LS.FLOOR_PREFIX}{int(m.group(1))}"
     levels = places_in(t)["levels"]
     return levels[0] if len(levels) == 1 else None
+
+
+_ORDINALS = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
+             "eleventh", "twelfth")
+
+
+def levels_named(text: Any) -> List[str]:
+    """Every level a person listed ("3 and 5", "floors 1-4", "roof"). [] when it
+    can't be read or is a choice ("3 or 4"): never guessed."""
+    t = " ".join(str(text or "").split())
+    if not t or re.search(r"\bor\b", t, re.I):
+        return []
+    parts = [p for p in re.split(r"\s*(?:,|&|/|\band\b)\s*", t, flags=re.I) if p]
+    each = [level_asked(p) for p in parts]
+    return sorted({x for x in each if x}) if each and all(each) else places_in(t)["levels"]
+
+
+def level_said(token: str, text: Any) -> bool:
+    """Whether these words name this level, by whole word."""
+    t = str(text or "")
+    if token in places_in(t)["levels"]:
+        return True
+    if not token.startswith(LS.FLOOR_PREFIX):
+        return False
+    n = int(token[len(LS.FLOOR_PREFIX):])
+    words = rf"\b{n}(?:st|nd|rd|th)?\b" + (rf"|\b{_ORDINALS[n - 1]}\b" if 0 < n <= len(_ORDINALS) else "")
+    return bool(re.search(words, t, re.I))
 
 
 # ── WHAT KIND OF WORK A PHRASE NAMES ───────────────────────────────────────
@@ -293,17 +321,20 @@ def _prerequisites(target: str, nodes: Dict[str, Any], before: Dict[str, List[Tu
 def what_holds(target: str, level: str, activities: Iterable[Dict[str, Any]], index_rows: Iterable[Dict[str, Any]],
                *, today: date, schedule: Optional[Dict[str, Any]] = None, flags: Optional[Dict[str, Any]] = None,
                log_ids: Optional[set] = None, stop_work: Optional[List[Dict[str, Any]]] = None,
-               regulatory_note: str = "", relations: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+               regulatory_note: str = "", relations: Optional[List[Dict[str, Any]]] = None,
+               inspections: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """The evidence for one question. It names what is open on the record and
     what is unknown; it never names a cause."""
     rows = evidence_rows(activities)
     photos = photo_rows(index_rows, log_ids)
     nodes, before = _graph(flags)
     work, gates = [], []
+    reports = IR.current_state(inspections or [])
     for n in _prerequisites(target, nodes, before):
         if _is_gate(nodes[n]):
             gates.append({"id": n, "label": _GATE_WORDS.get(nodes[n].inspection_type, nodes[n].inspection_type.replace("_", " ")),
-                          "status": "unknown", "requires_unconfirmed": [r for r in nodes[n].requires if (flags or {}).get(r) is None]})
+                          **IR.gate_read(reports, n, level),
+                          "requires_unconfirmed": [r for r in nodes[n].requires if (flags or {}).get(r) is None]})
         else:
             s = package_state(n, level, rows, photos, schedule, today)
             s["requires_unconfirmed"] = [r for r in nodes[n].requires if (flags or {}).get(r) is None]
@@ -312,7 +343,7 @@ def what_holds(target: str, level: str, activities: Iterable[Dict[str, Any]], in
             "known_activity": target in nodes, "work": work, "gates": gates,
             "insulation": package_state("insulation", level, rows, photos, schedule, today),
             "has_schedule": bool(schedule), "stop_work": stop_work or [], "regulatory_note": regulatory_note,
-            "relations": relations or [],
+            "relations": relations or [], "other_inspections": IR.others(inspections or [], level),
             "counts": {"log_rows": len(rows), "on_this_level": sum(1 for r in rows if level in r["levels"]),
                        "without_a_level": sum(1 for r in rows if not r["levels"])}}
 
@@ -361,8 +392,11 @@ def as_text(ans: Dict[str, Any]) -> str:
         out.append("No open stop-work or vacate order on the DOB records.")
     if ans["gates"]:
         out.append("Inspections that normally come before it (standard sequence, not this job's own schedule). "
-                   "Levelog holds no inspection results, so each is UNKNOWN, neither passed nor failed:")
-        out += [f"- {g['label']}" + (" (if the building has this system)" if g["requires_unconfirmed"] else "") for g in ans["gates"]]
+                   "Levelog holds no official inspection results: each line is what a person reported, or UNKNOWN:")
+        out += [f"- {g['label']}" + (" (if the building has this system)" if g["requires_unconfirmed"] else "") + f": {IR.words(g)}"
+                for g in ans["gates"]]
+    for o in ans.get("other_inspections") or []:
+        out.append(f"Also reported on this level, matching no step above, {o['inspection']}: {IR.words(o)}")
     if ans["work"]:
         out.append("Work that normally comes first:")
         for s in ans["work"]:
@@ -383,6 +417,7 @@ def as_text(ans: Dict[str, Any]) -> str:
     c = ans["counts"]
     out.append(f"Records read: {c['log_rows']} log entries, {c['on_this_level']} naming this level, "
                f"{c['without_a_level']} naming no level at all.")
-    out.append("Say what is on record and what is unknown. Do not name a cause, a percent, or a passed inspection: "
-               "none of those are on record. A photo proves no inspection.")
+    out.append("Say what is on record and what is unknown. Do not name a cause or a percent: neither is on record. "
+               "Never state an inspection as passed or failed in your own voice: say who reported it and that it is "
+               "not verified. A photo proves no inspection.")
     return "\n".join(out)

@@ -147,6 +147,13 @@ VISION_PHOTO_INDEX = "photo_index_describe"
 # unless PHOTO_RELATIONS_ENABLED=1.
 VISION_PHOTO_COMPARE = "photo_relation_compare"
 
+# ── A SIGN-OFF SENT IN A DM ──────────────────────────────────────────
+#
+# One call per document or photo whose caption names an inspection or sign-off
+# (lib/inspection_reports.py), read once and stored. Inbound WhatsApp drives it,
+# so it stops at INSPECTION_DOC_DAILY_CAP per project per day.
+VISION_INSPECTION_DOC = "inspection_doc_read"
+
 VISION_ENDPOINTS = frozenset({
     VISION_UPLOAD_OSHA,
     VISION_PARSE_CARD,
@@ -159,6 +166,7 @@ VISION_ENDPOINTS = frozenset({
     VISION_GROUP_PHOTO,
     VISION_PHOTO_INDEX,
     VISION_PHOTO_COMPARE,
+    VISION_INSPECTION_DOC,
 })
 
 COLLECTION = "vision_calls"
