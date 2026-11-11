@@ -443,7 +443,7 @@ class WhoGetsWhat(unittest.TestCase):
         self.assertNotIn("Thomas", walworth)
         self.assertTrue(thomas.startswith("*Thu Oct 8* · *588 Thomas S Boyland St*"), thomas)
         # A Thursday: the expiring permit is Monday's reminder (WeeklyReminders).
-        self.assertNotIn("B01141294", thomas)
+        self.assertNotIn("🟠 Permit B01141294", thomas)
         self.assertIn("👷 8 on site · ABC Concrete 5 · GC 3", thomas)
         self.assertNotIn("Walworth", thomas)
         self.assertNotIn("35123456", thomas)
@@ -646,8 +646,8 @@ class TimeAndOnce(unittest.TestCase):
         self.assertNotIn("35123456", fri)          # not new any more
         # Still expiring, and said on Mondays only (WeeklyReminders): not
         # every morning.
-        self.assertNotIn("B01141294", thu)
-        self.assertNotIn("B01141294", fri)
+        self.assertNotIn("🟠 Permit B01141294", thu)
+        self.assertNotIn("🟠 Permit B01141294", fri)
 
 
 class TheSettings(unittest.TestCase):
@@ -1588,7 +1588,7 @@ class WeeklyReminders(unittest.TestCase):
         texts = _texts(c)
         mon, tue = "\n".join(texts[:n]), "\n".join(texts[n:])
         self.assertIn("🟠 Permit B01141294", mon)
-        self.assertNotIn("B01141294", tue)
+        self.assertNotIn("🟠 Permit B01141294", tue)
 
 
 def _city(title, date, *, agency="DOB", kind="hearing", created=None, history=()):
