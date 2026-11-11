@@ -89,6 +89,8 @@ def _rtype(r: Dict[str, Any]) -> str:
 
 
 def _is_swo(r: Dict[str, Any]) -> bool:
+    if wa_alerts.is_summons(r):
+        return False            # an ECB/OATH summons, whatever an old scan typed it
     sub = _t(r.get("violation_subtype")).upper()
     return _rtype(r) == "swo" or sub.startswith(("SWO", "VACATE"))
 
@@ -98,6 +100,8 @@ def _kind_label(r: Dict[str, Any]) -> str:
         return "Vacate Order"
     if _is_swo(r):
         return "Stop Work Order"
+    if wa_alerts.is_summons(r):
+        return KIND_LABELS["violation"]     # never "Stop Work Order" off an old 'swo' type
     return KIND_LABELS.get(_rtype(r), _rtype(r).replace("_", " ").capitalize() or "Record")
 
 

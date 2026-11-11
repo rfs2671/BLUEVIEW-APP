@@ -261,3 +261,24 @@ Found while testing the screen and in the full suite:
 - **bd4355d1:** both 311 assistant tests fail.
 
 **Needs an operator ruling:** the two production `swo` rows (39550534Y, 39543624M) keep their type, because the refresh preserves `record_type`. Correcting them is a production write: `record_type` `swo` → `violation` on those two `dob_logs` rows.
+
+## Final independent review (892e350d)
+
+The reviewer found **no way for off or shadow mode to write records, send email, post to WhatsApp, or change state another job reads.** It found nine live-mode defects. Seven are fixed here, each with a test that fails on 892e350d (`tests/test_bis_watch_review4.py`, plus the summary count on a real database):
+
+| # | Defect | Fix |
+|---|---|---|
+| D1 | Rows the watch inserted counted closed items as open: no `resolution_state` on summonses, and BIS's "RESOLVED" where `/dob-summary` looks for "closed". After one live pass, the summary would have shown 20 open summonses for 546 and 10 open complaints. | Rows are stored in Open Data's own words. On a real database the summary counts **2 open complaints and 2 open violations**. |
+| D2 | A stop-work order lifted in full was never alerted once BIS saw the lift first. | The watch's update path applies `update_lifts_order` and emails the lift once. |
+| D3 | A complaint's text ("work contrary to stop work order") counted as an order in force, so DOB's later A3 was never alerted. The text also made the complaint "critical". | A complaint is under an order only by DOB's disposition. |
+| D4 | H3, H4 and V3 (violations for disobeying an SWO) read as new orders. A4 read as a lift. L2 and Y2 were missing. A vacate order was emailed as a stop-work order. | Sets follow DOB's own code labels. Vacate is its own event. Padlock and emergency declarations are urgent, but not stop-work orders. |
+| D5 | The two production rows an older scan typed `swo` still read as stop-work orders. | A row from a summons dataset is a summons everywhere it is read. A 3usq-5cid row is still an order. |
+| D6 | A watch-stored summons dropped out of `/dob-summary` on Open Data's first refresh (treated as a seed transition). | Rows carry a status history in Open Data's vocabulary, so the refresh sees no change. |
+| D7 | A summons shadow judged new, which Open Data then stored silently, was never alerted. | Live's first pass sends what is owed from shadow, once, unless another path already sent it. |
+| D9 | "Open DOB complaints (5)" was printed for any count over 5. | The real count is printed. |
+| — | A malformed BIS issue date aborted the pass. | It is decided as undated. |
+
+**Left as found, with reasons:**
+- **D8.** A recovering dataset's history posts rather than baselines; the 2-day age rule still refuses it downstream, and no wrong post was observed.
+- **Two emails for one served violation.** A brand-new complaint closed on arrival with A8 is emailed once as the complaint and once as the summons it produced. This is low severity.
+- **The two legacy `swo` rows keep `record_type` `swo` in the database.** Every reader now treats them as summonses. Correcting the stored type is a production write that needs a ruling.

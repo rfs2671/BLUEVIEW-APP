@@ -88,10 +88,12 @@ _SUMMONS_DATASETS = ("6bgk-3dad", "bis-ecb")
 
 def is_summons(rec: Dict[str, Any]) -> bool:
     """An ECB/OATH summons: a penalty notice, never itself a stop-work or
-    vacate order, even when its text cites one ("work contrary to SWO"). A row
-    explicitly typed 'swo' is left to that type."""
+    vacate order, even when its text cites one ("work contrary to SWO") -- and
+    even when an older scan stored it typed 'swo' (two production rows,
+    39550534Y and 39543624M). A row from the stop-work dataset (it carries a
+    stop_work_order_number) is an order."""
     r = rec or {}
-    if str(r.get("record_type") or "").lower() == "swo":
+    if r.get("stop_work_order_number"):
         return False
     return (bool(r.get("ecb_violation_number"))
             or str(r.get("dataset") or r.get("_dataset") or "") in _SUMMONS_DATASETS
@@ -101,13 +103,18 @@ def is_summons(rec: Dict[str, Any]) -> bool:
 def is_critical(it: Dict[str, Any]) -> bool:
     """A Stop Work Order or a Vacate order: what may still post on Shabbos
     when the company says so. A rescinded order is not."""
+    rec = it.get("rec") or {}
+    if it.get("kind") in ("swo", "violation") and is_summons(rec):
+        return False
     if it.get("kind") in ("swo", "order"):
         return True
     if it.get("kind") not in ("violation", "complaint"):
         return False
-    rec = it.get("rec") or {}
-    if is_summons(rec):
-        return False
+    if it.get("kind") == "complaint":
+        # Only DOB's disposition puts a complaint under an order; its text
+        # ("work contrary to stop work order") is an allegation.
+        from lib.complaint_watch import ORDER_DISPOSITIONS
+        return str(rec.get("disposition_code") or "").strip().upper() in ORDER_DISPOSITIONS
     sub = str(rec.get("violation_subtype") or "").upper()
     if sub.startswith(("SWO", "VACATE")):
         return True

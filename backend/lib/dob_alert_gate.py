@@ -121,11 +121,20 @@ def order_in_force(row: Dict[str, Any]) -> Optional[str]:
     or a vacate order that is in force; None otherwise. A rescinded or lifted
     order, or a violation FOR disobeying one, is not a new order."""
     r = row or {}
+    if wa_alerts.is_summons(r):
+        return None             # a summons citing an order is not the order
     if str(r.get("record_type") or "").lower() == "swo":
         status = str(r.get("current_status") or r.get("status") or "")
         return None if (_ORDER_ENDED.search(status) or wa_alerts.is_closed(r)) else "swo"
-    if wa_alerts.is_summons(r):
-        return None             # a summons citing an order is not the order
+    if str(r.get("record_type") or "").lower() == "complaint":
+        # A complaint is under an order only when DOB DISPOSED it with one.
+        # Its text -- BIS's free text, or Open Data's category label (86 =
+        # "Work Contrary to Stop Work Order") -- is what someone alleged.
+        from lib.complaint_watch import ORDER_DISPOSITIONS, VACATE_DISPOSITIONS
+        code = str(r.get("disposition_code") or "").strip().upper()
+        if code not in ORDER_DISPOSITIONS:
+            return None
+        return "vacate" if code in VACATE_DISPOSITIONS else "swo"
     text = _order_text(r)
     if not _ORDER_TEXT.search(text) or _ORDER_ENDED.search(text):
         return None
@@ -159,6 +168,8 @@ def update_lifts_order(before: Optional[Dict[str, Any]], after: Dict[str, Any]) 
     r = after or {}
     if str(r.get("record_type") or "").lower() == "swo":
         text = str(r.get("current_status") or r.get("status") or "")
+    elif str(r.get("record_type") or "").lower() == "complaint":
+        text = _disposition_label(r)        # L2 "Stop Work Order Fully Rescinded"
     else:
         text = _order_text(r)
     if not _LIFTED.search(text) or _PARTIAL.search(text):

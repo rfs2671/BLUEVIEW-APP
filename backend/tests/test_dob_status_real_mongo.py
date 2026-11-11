@@ -234,6 +234,18 @@ class ShadowThenLiveOnARealDatabase(_RealMongo):
         emails = self._pass("live", NOW + timedelta(hours=5), client=_ClosedBeforeLive())
         self.assertEqual(emails, [("3A88492", "new")])
 
+    def test_the_compliance_summary_counts_what_is_open_after_live(self):
+        """/projects/dob-summary is a $sort/$group/$match aggregation: only a real
+        database runs it. After a live pass stores both BINs' history, the
+        count is the two open complaints and the two open July summonses --
+        not the 18 resolved summonses and 8 resolved complaints also stored."""
+        self._pass("live", NOW)
+        user = {"id": "u1", "_id": "u1", "company_id": "co_blueview", "role": "admin"}
+        with patch.object(server, "db", self.db):
+            res = self.run_(server.get_projects_dob_summary(project_id="p546", current_user=user))
+        got = res["by_project"].get("p546") or res.get("totals")
+        self.assertEqual((got["open_complaints"], got["open_violations"]), (2, 2), got)
+
     def test_live_with_no_shadow_first_emails_only_the_two_new_complaints(self):
         emails = self._pass("live", NOW)
         self.assertEqual(sorted(emails), [("3A88489", "new"), ("3A88492", "new")])

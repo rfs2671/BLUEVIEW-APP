@@ -58,9 +58,19 @@ SAFETY_TERMS = (
 SAFETY_CATEGORIES = {"8A", "01", "02", "10", "14", "16", "28", "30", "40", "41", "43",
                      "62", "64", "67", "68", "69", "81", "82", "89", "8B", "8C", "8D"}
 
-ORDER_DISPOSITIONS = {"A3", "H5", "L1", "K4", "K6", "Y1", "Y3", "P3", "RH", "RI", "H3", "H4", "V3"}
-VIOLATION_DISPOSITIONS = {"A8", "B1", "B2", "R5", "A6", "RK", "K5", "ND"}
-RESCIND_DISPOSITIONS = {"L3", "L4", "A4", "H6"}
+# Per DOB's own labels (dob_complaint_codes.DOB_DISPOSITION_CODES):
+#   ORDER      an order DOB ISSUED: stop-work (A3 full, L1 partial, H5, K4, K6)
+#              or vacate (Y1 full, Y3 partial).
+#   EMERGENCY  padlock / emergency declaration: urgent, but not a stop-work order.
+#   VIOLATION  a violation or summons SERVED -- including H3 / H4 / V3, served
+#              FOR disobeying a stop-work order: not a new order.
+#   RESCIND    an order lifted: L2 / Y2 in full, L3 / Y4 in part.
+ORDER_DISPOSITIONS = {"A3", "H5", "L1", "K4", "K6", "Y1", "Y3"}
+VACATE_DISPOSITIONS = {"Y1", "Y3"}
+EMERGENCY_DISPOSITIONS = {"P3", "RH", "RI"}
+VIOLATION_DISPOSITIONS = {"A1", "A2", "A4", "A5", "A6", "A8", "A9", "B1", "B2", "R5", "RK", "K5", "ND",
+                          "H3", "H4", "V3"}
+RESCIND_DISPOSITIONS = {"L2", "L3", "Y2", "Y4"}
 
 
 def bins_for_project(project: Mapping[str, Any], *, lot_bins: Iterable[str] = (),
@@ -120,6 +130,8 @@ def disposition_class(code: Optional[str]) -> Optional[str]:
         return None
     if c in ORDER_DISPOSITIONS:
         return "order"
+    if c in EMERGENCY_DISPOSITIONS:
+        return "emergency"
     if c in VIOLATION_DISPOSITIONS:
         return "violation"
     if c in RESCIND_DISPOSITIONS:
@@ -183,10 +195,13 @@ def alert_decision(rec: Mapping[str, Any], *, project_bins: Set[str], first_sync
     seen = _as_dt(first_seen_at) or now
     sa = safety_assessment(rec)
     dclass = disposition_class(rec.get("disposition_code"))
+    order_event = ("vacate_order" if str(rec.get("disposition_code") or "").strip().upper()
+                   in VACATE_DISPOSITIONS else "stop_work_order")
     if not is_open(rec):
-        if dclass in ("order", "violation"):
-            out.update(alert=True, event=("stop_work_order" if dclass == "order" else "violation_served"),
-                       priority=("critical" if dclass == "order" else "high"),
+        if dclass in ("order", "violation", "emergency"):
+            out.update(alert=True, event={"order": order_event, "violation": "violation_served"}.get(
+                           dclass, "new_complaint"),
+                       priority=("high" if dclass == "violation" else "critical"),
                        reason=f"closed on arrival but DOB disposed it {rec.get('disposition_code')}")
             if first_sync and not (rcv and now - rcv <= FIRST_SYNC_RECENT):
                 out.update(alert=False, reason="baseline: history on the first sync of this BIN")
@@ -198,8 +213,10 @@ def alert_decision(rec: Mapping[str, Any], *, project_bins: Set[str], first_sync
         return out
     out["alert"] = True
     if dclass == "order":
-        out["event"] = "stop_work_order"
+        out["event"] = order_event
     out["priority"] = {"order": "critical", "safety": "high"}.get(sa["tier"], "normal")
+    if dclass == "emergency":
+        out["priority"] = "critical"
     out["late"] = bool(rcv and seen - rcv > LATE_AFTER)
     out["reason"] = "; ".join(sa["reasons"]) or "open DOB complaint"
     return out
@@ -226,8 +243,11 @@ def summons_decision(row: Mapping[str, Any], *, bin_: str, project_bins: Set[str
         return out
     issued = None
     if row.get("issue_date"):
-        y, m, d = (int(x) for x in str(row["issue_date"])[:10].split("-"))
-        issued = datetime(y, m, d, tzinfo=ET)
+        try:
+            y, m, d = (int(x) for x in str(row["issue_date"])[:10].split("-"))
+            issued = datetime(y, m, d, tzinfo=ET)
+        except ValueError:
+            issued = None          # undated: history on a first sync, never a crash
     age = (now - issued) if issued else None
     if first_sync and not (age is not None and age <= FIRST_SYNC_RECENT):
         out["reason"] = "baseline: open summons older than 48h on the first sync of this BIN"
@@ -456,6 +476,7 @@ def render_alert(rec: Mapping[str, Any], decision: Mapping[str, Any], *, project
     link = f"https://a810-bisweb.nyc.gov/bisweb/OverviewForComplaintServlet?complaintno={cn}&requestid=0"
     if lang == "es":
         head = ("ORDEN DE PARAR TRABAJO" if decision.get("event") == "stop_work_order" else
+                "ORDEN DE DESALOJO" if decision.get("event") == "vacate_order" else
                 {"critical": "Queja urgente del DOB", "high": "Queja de seguridad del DOB",
                  "normal": "Nueva queja del DOB"}[decision.get("priority", "normal")])
         lines = [f"*{head} — {project_name}*",
@@ -466,6 +487,7 @@ def render_alert(rec: Mapping[str, Any], decision: Mapping[str, Any], *, project
                  link]
     else:
         head = ("STOP-WORK ORDER" if decision.get("event") == "stop_work_order" else
+                "VACATE ORDER" if decision.get("event") == "vacate_order" else
                 {"critical": "Urgent DOB complaint", "high": "DOB safety complaint",
                  "normal": "New DOB complaint"}[decision.get("priority", "normal")])
         lines = [f"*{head} — {project_name}*",
