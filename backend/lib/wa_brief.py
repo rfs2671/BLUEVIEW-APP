@@ -10,10 +10,20 @@ record without the value a line needs is left out, never filled in.
 
   🔴  new violation / complaint / stop-work order since the last brief
   🔴  new DOT summons since the last brief
-  🟠  an OATH hearing still to come on a DOT summons (its hearing_date)
+  🟠  an OATH hearing still to come on a DOT summons (its hearing_date) -
+      Mondays only
   🟡  a DOB status change: permit issued / expired / revoked, stop-work order
       rescinded, or any change DOB marks as needing action
-  🟠  DOB or DOT permit expiring within 14 days, or expired in the last 30
+  🟠  DOB or DOT permit expiring within 14 days, or expired in the last 30 -
+      Mondays only
+
+STANDING REMINDERS ARE WEEKLY (Roy, 2026-11-10: "I don't want WhatsApp to
+send every morning the ECB violations, court dates etc. if nothing new; once
+a week is more than enough"). A hearing, a permit's expiry and the open
+violations are listed on Mondays (New York). Any other morning says only
+what is new since the last brief: a new violation, summons or stop-work
+order, a status change, and a court date the city added or moved
+(brief_events).
   (inspections: no stored scheduled date exists, so there is no 🔴 line for
    them — none is guessed)
 
@@ -220,9 +230,14 @@ def _expiry_item(r: Dict[str, Any], num_field: str, source: str, today: date,
 def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
               now_utc: datetime,
               dot_rows: Iterable[Dict[str, Any]] = (),
-              synced: Optional[Dict[str, datetime]] = None) -> List[Dict[str, Any]]:
+              synced: Optional[Dict[str, datetime]] = None,
+              weekly: Optional[bool] = None) -> List[Dict[str, Any]]:
     """The items one job has today: [{rank, order, text}]. Pure. `dot_rows`
     are the job's dot_logs rows (DOT summonses and permits).
+
+    `weekly`: whether today's brief carries the standing reminders (an OATH
+    hearing to come, a permit expiring or expired); None: on Mondays
+    (is_review_day). Every other line is new since `since`, any day.
 
     `synced` is {source: first_synced_at} (lib/source_sync.first_synced).
     When given, a source not in it gives no item at all, and nothing its
@@ -230,6 +245,8 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
     today = wa_gc.today_et(now_utc)
     if since.tzinfo is None:
         since = since.replace(tzinfo=timezone.utc)
+    if weekly is None:
+        weekly = is_review_day(now_utc)
 
     def _cutoff(rt: str) -> Optional[datetime]:
         """`since`, moved up to the source's first sync; None: skip the row."""
@@ -269,7 +286,7 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                     continue
 
         # 🟠 permit expiring / expired (not for a revoked permit)
-        if rt == "permit" and _text(latest.get("permit_status")).upper() != "REVOKED":
+        if weekly and rt == "permit" and _text(latest.get("permit_status")).upper() != "REVOKED":
             item = _expiry_item(latest, "job_number", "DOB", today,
                                 work=_text(latest.get("work_type")))
             if item:
@@ -321,11 +338,11 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                     "record": record_key("dot", r.get("raw_id") or num),
                     "text": f"🔴 New DOT summons {num}, issued {_md(issued)}"
                             + (f", {status}" if status else "") + ". DOT."})
-        elif rt == "dot_permit" and dot_sync.permit_is_active(r.get("status")):
+        elif weekly and rt == "dot_permit" and dot_sync.permit_is_active(r.get("status")):
             item = _expiry_item(r, "number", "DOT", today, label="DOT permit")
             if item:
                 items.append(item)
-        if rt == "dot_violation":
+        if weekly and rt == "dot_violation":
             # An OATH hearing still to come, from the record's hearing_date.
             hearing = wa_gc.parse_dob_date(r.get("hearing_date"))
             num = _text(r.get("number"))
@@ -697,6 +714,50 @@ def _event_day(e: Dict[str, Any]) -> Optional[date]:
         return date.fromisoformat(str(e.get("date"))[:10])
     except ValueError:
         return None
+
+
+def _changed_since(e: Dict[str, Any], since: datetime) -> bool:
+    """The event was created, moved or reopened after `since` (its history,
+    as _upcoming_view gives it: ISO strings or datetimes)."""
+    for h in e.get("history") or []:
+        at = h.get("at")
+        if isinstance(at, str):
+            try:
+                at = datetime.fromisoformat(at)
+            except ValueError:
+                continue
+        if not isinstance(at, datetime):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        if at > since:
+            return True
+    return False
+
+
+def brief_events(events: Iterable[Dict[str, Any]], since: datetime,
+                 weekly: bool) -> List[Dict[str, Any]]:
+    """The Upcoming events the brief lists. Chat events and reminders: all.
+    A city record's date (an ECB / OATH hearing):
+      * a permit's expiry never - it is the 🟠 permit line (job_items);
+      * on the weekly brief, every hearing this week, but not DOT's OATH
+        hearings - those are the 🟠 hearing lines;
+      * any other morning, only one the city added, moved or reopened since
+        the last brief: a court date already said is not said again daily."""
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    out = []
+    for e in events:
+        if e.get("source") != "city":
+            out.append(e)
+        elif e.get("kind") == "permit_expiration":
+            continue
+        elif weekly:
+            if e.get("agency") != "OATH":
+                out.append(e)
+        elif _changed_since(e, since):
+            out.append(e)
+    return out
 
 
 def event_sections(events: Iterable[Dict[str, Any]], today: date

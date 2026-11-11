@@ -55115,7 +55115,7 @@ async def _brief_for_accounts(users: List[dict], now: datetime, every_job: bool 
         # Upcoming events: today's under each job's Today, the rest of the week
         # under its Later this week; a reminder of their own (no job) at the end.
         try:
-            events = await _upcoming_brief_events(user, company_id, role, now)
+            events = await _upcoming_brief_events(user, company_id, role, now, since)
         except Exception as e:
             logger.warning(f"[wa-brief] upcoming failed: {type(e).__name__}")
             events = []
@@ -58097,17 +58097,19 @@ async def _upcoming_for(user: dict, company_id: str, role: str, start: _Date, en
 
 
 async def _upcoming_brief_events(user: dict, company_id: str, role: str,
-                                 now: datetime) -> List[dict]:
-    """The brief's events, today through a week out. DOT OATH hearings and
-    permit expirations are already the brief's DOB / DOT lines
-    (lib/wa_brief.py); they are not said twice."""
+                                 now: datetime, since: Optional[datetime] = None) -> List[dict]:
+    """The brief's events, today through a week out (wa_brief.brief_events):
+    a court date from a city record on Mondays, or when the city added or
+    moved it since the last brief (`since`; default a day ago). DOT OATH
+    hearings and permit expirations on Mondays are already the brief's DOB /
+    DOT lines; they are not said twice."""
     if _upcoming_disabled():
         return []
     today = _upcoming_today(now)
     rows = await _upcoming_for(user, company_id, role, today,
                                today + timedelta(days=upcoming.BRIEF_DAYS))
-    return [r for r in rows if not (r["source"] == "city" and (
-        r["kind"] == "permit_expiration" or r["agency"] == "OATH"))]
+    return wa_brief.brief_events(rows, since or now - timedelta(days=1),
+                                 wa_brief.is_review_day(now))
 
 
 # ── The day-before DM, and a reminder on its day ──

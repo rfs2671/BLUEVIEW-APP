@@ -187,8 +187,10 @@ class Headcount(unittest.TestCase):
 
 class TheItems(unittest.TestCase):
 
-    def _items(self, rows, since=YESTERDAY - timedelta(hours=1), now=THU_7):
-        return [i["text"] for i in wa_brief.job_items(rows, since, now)]
+    def _items(self, rows, since=YESTERDAY - timedelta(hours=1), now=THU_7, weekly=True):
+        # weekly: the standing reminders (permit expiry, OATH hearings) are
+        # Monday's (WeeklyReminders); these tests read their lines.
+        return [i["text"] for i in wa_brief.job_items(rows, since, now, weekly=weekly)]
 
     def test_new_violation_with_exact_values(self):
         self.assertEqual(self._items([_violation(THOMAS, "35123456")]),
@@ -264,7 +266,7 @@ class TheMessage(unittest.TestCase):
         jobs = [
             {"label": "588 Thomas S Boyland St",
              "items": wa_brief.job_items([_permit(THOMAS, "B01141294", "2026-10-14")],
-                                         YESTERDAY, THU_7),
+                                         YESTERDAY, THU_7, weekly=True),
              "headcount": "👷 8 on site · ABC Concrete 5 · GC 3"},
             {"label": "8 Walworth St",
              "items": wa_brief.job_items([_violation(WALWORTH, "35123456")],
@@ -366,7 +368,7 @@ class TheMessage(unittest.TestCase):
         rows = [_permit(THOMAS, f"B{i}", f"2026-10-{10 + i}") for i in range(9)]
         msgs = _compose(THU_7, [{
             "label": "588 Thomas S Boyland St",
-            "items": wa_brief.job_items(rows, YESTERDAY, THU_7),
+            "items": wa_brief.job_items(rows, YESTERDAY, THU_7, weekly=True),
             "headcount": "No check-ins yet."}])
         self.assertEqual(len(msgs), 1)
         text = msgs[0]
@@ -380,9 +382,9 @@ class TheMessage(unittest.TestCase):
         thomas = [_permit(THOMAS, f"B{i}", f"2026-10-{10 + i}") for i in range(9)]
         walworth = [_permit(WALWORTH, f"W{i}", f"2026-10-{10 + i}") for i in range(3)]
         msgs = _compose(THU_7, [
-            {"label": "588 Thomas S Boyland St", "items": wa_brief.job_items(thomas, YESTERDAY, THU_7),
+            {"label": "588 Thomas S Boyland St", "items": wa_brief.job_items(thomas, YESTERDAY, THU_7, weekly=True),
              "headcount": "No check-ins yet.", "uses_checkins": False},
-            {"label": "8 Walworth St", "items": wa_brief.job_items(walworth, YESTERDAY, THU_7),
+            {"label": "8 Walworth St", "items": wa_brief.job_items(walworth, YESTERDAY, THU_7, weekly=True),
              "headcount": "No check-ins yet.", "uses_checkins": False}])
         self.assertEqual(len(msgs), 2)
         self.assertEqual((msgs[0].count("🟠"), msgs[1].count("🟠")), (7, 3))
@@ -425,8 +427,8 @@ class WhoGetsWhat(unittest.TestCase):
         self.assertIn("🔴 New violation 35123456, issued Oct 7, open. DOB.", walworth)
         self.assertNotIn("Thomas", walworth)
         self.assertTrue(thomas.startswith("*Thu Oct 8* · *588 Thomas S Boyland St*"), thomas)
-        self.assertIn("🟠 Permit B01141294 (General Construction) expires Oct 14 (6 days). DOB.",
-                      thomas)
+        # A Thursday: the expiring permit is Monday's reminder (WeeklyReminders).
+        self.assertNotIn("B01141294", thomas)
         self.assertIn("👷 8 on site · ABC Concrete 5 · GC 3", thomas)
         self.assertNotIn("Walworth", thomas)
         self.assertNotIn("35123456", thomas)
@@ -492,10 +494,10 @@ NOTHING = "*Thu Oct 8*\nNo action needed today."
 
 class UsesCheckIns(unittest.TestCase):
 
-    def _brief(self, db):
+    def _brief(self, db, now=THU_7):
         _optin(db, "u_pm", PM_PHONE)
         with _Ctx(db) as c:
-            _tick(c, THU_7)
+            _tick(c, now)
         return _sends(c)[0]["message"] if _sends(c) else None
 
     def test_no_setup_and_nothing_to_do_is_left_out(self):
@@ -529,7 +531,7 @@ class UsesCheckIns(unittest.TestCase):
     def test_items_without_setup_have_no_headcount_line(self):
         db = _db()
         db.dob_logs.rows.append(_permit(THOMAS, "B01141294", "2026-10-14"))
-        text = self._brief(db)
+        text = self._brief(db, now=MON_8)          # the permit line is Monday's
         self.assertIn("🟠 Permit B01141294", text)
         self.assertNotIn("check-ins", text.lower())
         self.assertNotIn("on site", text)
@@ -624,7 +626,10 @@ class TimeAndOnce(unittest.TestCase):
         thu, fri = "\n".join(texts[:n]), "\n".join(texts[n:])
         self.assertIn("35123456", thu)
         self.assertNotIn("35123456", fri)          # not new any more
-        self.assertIn("B01141294", fri)            # still expiring
+        # Still expiring, and said on Mondays only (WeeklyReminders): not
+        # every morning.
+        self.assertNotIn("B01141294", thu)
+        self.assertNotIn("B01141294", fri)
 
 
 class TheSettings(unittest.TestCase):
@@ -1532,3 +1537,77 @@ class MondayBrief(unittest.TestCase):
         brief = "\n".join(_texts(c))
         self.assertNotIn("📋 *Open violations*", brief)
         self.assertIn("No action needed today.", brief)
+
+
+class WeeklyReminders(unittest.TestCase):
+    """Roy, 2026-11-10: "I don't want WhatsApp to send every morning the ECB
+    violations, court dates etc. if nothing new; once a week is more than
+    enough." A permit's expiry and an OATH hearing are standing reminders:
+    Mondays only. What is new still goes out the next morning."""
+
+    PERMIT = staticmethod(lambda: _permit(THOMAS, "B01141294", "2026-10-14"))
+
+    def test_standing_reminders_only_on_monday(self):
+        for now, weekly in ((THU_7, False), (TUE_8, False), (MON_8, True)):
+            texts = [i["text"] for i in wa_brief.job_items([self.PERMIT()], now - timedelta(days=1), now)]
+            self.assertEqual(any("B01141294" in t for t in texts), weekly, (now, texts))
+
+    def test_new_is_said_any_day(self):
+        texts = [i["text"] for i in wa_brief.job_items(
+            [_violation(WALWORTH, "35123456"), self.PERMIT()],
+            YESTERDAY - timedelta(hours=1), THU_7)]
+        self.assertEqual(texts, ["🔴 New violation 35123456, issued Oct 7, open. DOB."])
+
+    def test_the_brief_from_monday_to_tuesday(self):
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        with _Ctx(db) as c:
+            _tick(c, MON_8)
+            n = len(_sends(c))
+            _tick(c, TUE_8)
+        texts = _texts(c)
+        mon, tue = "\n".join(texts[:n]), "\n".join(texts[n:])
+        self.assertIn("🟠 Permit B01141294", mon)
+        self.assertNotIn("B01141294", tue)
+
+
+def _city(title, date, *, agency="DOB", kind="hearing", created=None, history=()):
+    hist = [{"action": "created", "at": (created or THU_7 - timedelta(days=5)).isoformat()}]
+    return {"source": "city", "kind": kind, "agency": agency, "title": title,
+            "date": date, "time": None, "history": hist + list(history)}
+
+
+class CourtDatesInTheWeek(unittest.TestCase):
+    """The Upcoming events the brief lists (wa_brief.brief_events): a city
+    record's court date on Mondays, or when the city added or moved it since
+    the last brief - never the same date every morning."""
+
+    SINCE = THU_7 - timedelta(days=1)
+
+    def _titles(self, events, weekly):
+        return [e["title"] for e in wa_brief.brief_events(events, self.SINCE, weekly)]
+
+    def test_a_known_ecb_hearing_is_mondays(self):
+        ev = [_city("ECB hearing · violation 35123456", "2026-10-13")]
+        self.assertEqual(self._titles(ev, weekly=False), [])
+        self.assertEqual(self._titles(ev, weekly=True), ["ECB hearing · violation 35123456"])
+
+    def test_a_new_or_moved_hearing_is_said_the_next_morning(self):
+        new = _city("ECB hearing · violation 1", "2026-10-13", created=THU_7 - timedelta(hours=3))
+        moved = _city("OATH hearing · DOT ticket #9", "2026-10-14", agency="OATH",
+                      history=[{"action": "rescheduled", "at": (THU_7 - timedelta(hours=2)).isoformat(),
+                                "from": "2026-10-20", "to": "2026-10-14", "by": "city"}])
+        old = _city("ECB hearing · violation 2", "2026-10-12")
+        self.assertEqual(self._titles([new, moved, old], weekly=False),
+                         ["ECB hearing · violation 1", "OATH hearing · DOT ticket #9"])
+
+    def test_what_monday_already_says_is_not_said_twice(self):
+        oath = _city("OATH hearing · DOT ticket #9", "2026-10-14", agency="OATH")
+        permit = _city("Permit expires", "2026-10-14", kind="permit_expiration")
+        self.assertEqual(self._titles([oath, permit], weekly=True), [])
+        self.assertEqual(self._titles([permit], weekly=False), [])
+
+    def test_chat_events_and_reminders_every_day(self):
+        chat = {"source": "chat", "kind": "inspection", "title": "Con Ed meter set",
+                "date": "2026-10-09", "history": []}
+        self.assertEqual(self._titles([chat], weekly=False), ["Con Ed meter set"])

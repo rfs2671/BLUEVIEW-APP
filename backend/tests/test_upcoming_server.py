@@ -561,14 +561,23 @@ class OutToPeople(unittest.TestCase):
         self.db.users.rows.append(self.admin)
 
     def test_brief_section_this_week_without_what_the_brief_already_says(self):
+        # The city records were read at T0 and the last brief went out after:
+        # their court dates are not new (wa_brief.brief_events).
         events, _ = _with(self.db, lambda: _run(server._upcoming_brief_events(
-            self.admin, CO_A, "admin", T0)))
+            self.admin, CO_A, "admin", T0, since=T0)))
         self.assertEqual([(e["date"], e["title"]) for e in events],
                          [("2026-10-09", "Con Ed meter set")])
         today, later = server.wa_brief.event_sections(events, T0.date())
         self.assertEqual((today, later), ([], ["• Fri 9am Con Ed meter set"]))
         # The DOB ECB hearing on Oct 22 is past the week; DOT's OATH hearing
-        # and the permit expirations are the brief's own lines already.
+        # and the permit expirations are the brief's own lines on Mondays.
+        # A court date the city added since the last brief is said the next
+        # morning, once.
+        events, _ = _with(self.db, lambda: _run(server._upcoming_brief_events(
+            self.admin, CO_A, "admin", T0, since=T0 - timedelta(days=1))))
+        self.assertEqual([(e["date"], e["title"]) for e in events],
+                         [("2026-10-09", "Con Ed meter set"),
+                          ("2026-10-13", "OATH hearing · DOT ticket #0123")])
 
     def test_day_before_dm_from_5pm_once(self):
         pm = next(u for u in self.db.users.rows if u["_id"] == "u_pm")
