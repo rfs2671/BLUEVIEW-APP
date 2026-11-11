@@ -60,6 +60,7 @@ export default function LogbookPhotosScreen() {
   const logbookId = String(params.logbookId || params.logId || '');
   const toast = useToast();
   const t = useT('logbookPhotos');
+  const tUp = useT('multiUpload');
   const s = React.useMemo(() => StyleSheet.create(buildStepperStyles()), []);
 
   const [log, setLog] = useState(null);
@@ -138,8 +139,11 @@ export default function LogbookPhotosScreen() {
    * SECOND object and the record would carry two tiles of one photograph. This
    * is the client's entire share of the idempotency contract.
    */
-  const addPhotoToRow = async (activityId, rawUri, label) => {
-    if (!logId || !activityId || !rawUri || busyRow) return;
+  // 'added' | 'queued' | 'failed' | 'skipped'. `quiet` holds back the
+  // per-photo success / queued toast so a batch says it once (pick, below);
+  // a failure still names its own photograph.
+  const addPhotoToRow = async (activityId, rawUri, label, { quiet = false, inBatch = false } = {}) => {
+    if (!logId || !activityId || !rawUri || (busyRow && !inBatch)) return 'skipped';
     setBusyRow(activityId);
     const photoId = newPhotoId();
     try {
@@ -158,7 +162,7 @@ export default function LogbookPhotosScreen() {
         // cannot prove it owns, because the OS will evict a cache path and the
         // queue would then hold a promise it cannot keep.
         toast.error(t('notSavedTitle'), t('notSavedBody'));
-        return;
+        return 'failed';
       }
       try {
         const res = await appendPhotoToFiledLog({
@@ -168,7 +172,8 @@ export default function LogbookPhotosScreen() {
           ...prev,
           [activityId]: [...(prev[activityId] || []), { ...res.photo, uri }],
         }));
-        toast.success(t('addedTitle'), t('addedBody'));
+        if (!quiet) toast.success(t('addedTitle'), t('addedBody'));
+        return 'added';
       } catch (e) {
         if (shouldQueueError(e)) {
           // HELD, NOT FILED. The sentence is about the DEVICE, and it is a
@@ -178,8 +183,8 @@ export default function LogbookPhotosScreen() {
             logbookId: logId, activityId, photoId, uri, logType, label,
           });
           await refreshLocal();
-          toast.warning(t('queuedTitle'), t('queuedBody'));
-          return;
+          if (!quiet) toast.warning(t('queuedTitle'), t('queuedBody'));
+          return 'queued';
         }
         // A 4xx NAMES THIS PHOTOGRAPH. A legacy row is told the truth: nothing
         // the client can send reaches it until an administrator runs the
@@ -189,6 +194,7 @@ export default function LogbookPhotosScreen() {
           t('failedTitle'),
           e?.code === 'ACTIVITY_HAS_NO_IDENTITY' ? t('legacyRow') : t('failedBody'),
         );
+        return 'failed';
       }
     } finally {
       setBusyRow(null);
@@ -208,14 +214,32 @@ export default function LogbookPhotosScreen() {
         toast.warning(t('permissionTitle'), t('permissionBody'));
         return;
       }
+      // The library takes SEVERAL at once (operator, 2026-11-11); the camera is
+      // one shot. Added one after another, so each is compressed, kept on the
+      // device and filed (or queued) exactly as a single photo is.
       const result = useCamera
         ? await ImagePicker.launchCameraAsync({ quality: 0.6, base64: false })
         : await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.6, base64: false,
+          allowsMultipleSelection: true,
         });
       if (!result || result.canceled) return;
-      const asset = (result.assets || [])[0];
-      if (asset) await addPhotoToRow(activityId, asset.uri, label);
+      const assets = (result.assets || []).filter((a) => a && a.uri);
+      if (assets.length <= 1) {
+        if (assets[0]) await addPhotoToRow(activityId, assets[0].uri, label);
+        return;
+      }
+      const outcomes = [];
+      for (const a of assets) {
+        // eslint-disable-next-line no-await-in-loop
+        outcomes.push(await addPhotoToRow(activityId, a.uri, label, { quiet: true, inBatch: true }));
+      }
+      const added = outcomes.filter((o) => o === 'added').length;
+      const queued = outcomes.filter((o) => o === 'queued').length;
+      if (added) {
+        toast.success(tUp('photosAddedTitle'), tUp('photosAddedBody').replace('{n}', String(added)));
+      }
+      if (queued) toast.warning(t('queuedTitle'), t('queuedBody'));
     } catch (_e) {
       toast.error(t('failedTitle'), t('failedBody'));
     }
