@@ -51,6 +51,7 @@ import { GlassCard, StatCard, IconPod } from '../../../src/components/GlassCard'
 import GlassButton from '../../../src/components/GlassButton';
 import GlassInput from '../../../src/components/GlassInput';
 import SyncIconButton from '../../../src/components/SyncIconButton';
+import { SoftBox, SoftPebble } from '../../../src/components/SoftPanel';
 import { GlassSkeleton } from '../../../src/components/GlassSkeleton';
 import OfflineNotice from '../../../src/components/OfflineNotice';
 import { useToast } from '../../../src/components/Toast';
@@ -1031,20 +1032,16 @@ export default function ProjectFilesScreen() {
               {!loading && (
                 <View style={s.titleActions}>
                   {isAdmin && (
-                    <Pressable
+                    <SoftPebble
                       onPress={handleUploadFile}
                       disabled={uploading}
                       accessibilityRole="button"
                       accessibilityLabel="Upload PDF"
-                      style={({ pressed }) => [
-                        s.iconAction, s.iconActionPrimary,
-                        pressed && { opacity: 0.7 }, uploading && { opacity: 0.5 },
-                      ]}
                     >
                       {uploading
                         ? <ActivityIndicator size="small" color={colors.primary} />
-                        : <Upload size={18} strokeWidth={1.6} color={colors.primary} />}
-                    </Pressable>
+                        : <Upload size={19} strokeWidth={1.7} color={colors.primary} />}
+                    </SoftPebble>
                   )}
                   {isAdmin && (project?.dropbox_folder_path ? (
                     <SyncIconButton
@@ -1054,23 +1051,21 @@ export default function ProjectFilesScreen() {
                       accessibilityLabel="Sync Dropbox"
                     />
                   ) : (
-                    <Pressable
+                    <SoftPebble
                       onPress={openFolderPicker}
                       accessibilityRole="button"
                       accessibilityLabel="Link a Dropbox folder"
-                      style={({ pressed }) => [s.iconAction, pressed && { opacity: 0.7 }]}
                     >
-                      <Folder size={18} strokeWidth={1.6} color={colors.text.secondary} />
-                    </Pressable>
+                      <Folder size={19} strokeWidth={1.7} color={colors.text.primary} />
+                    </SoftPebble>
                   ))}
-                  <Pressable
+                  <SoftPebble
                     onPress={() => setShowSettings(true)}
                     accessibilityRole="button"
                     accessibilityLabel="Folder and site device settings"
-                    style={({ pressed }) => [s.iconAction, pressed && { opacity: 0.7 }]}
                   >
-                    <MoreHorizontal size={18} strokeWidth={1.6} color={colors.text.secondary} />
-                  </Pressable>
+                    <MoreHorizontal size={19} strokeWidth={1.7} color={colors.text.primary} />
+                  </SoftPebble>
                 </View>
               )}
             </View>
@@ -1155,23 +1150,15 @@ export default function ProjectFilesScreen() {
                 contentContainerStyle={s.filterContainer}
               >
                 {filterOptions.map((option) => (
-                  <Pressable
+                  // soft pills; the chosen filter stays dented
+                  <GlassButton
                     key={option.key}
+                    title={option.label}
+                    selected={filterType === option.key}
                     onPress={() => setFilterType(option.key)}
-                    style={[
-                      s.filterTab,
-                      filterType === option.key && s.filterTabActive,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        s.filterTabText,
-                        filterType === option.key && s.filterTabTextActive,
-                      ]}
-                    >
-                      {option.label}
-                    </Text>
-                  </Pressable>
+                    style={s.filterPill}
+                    textStyle={s.filterPillText}
+                  />
                 ))}
               </ScrollView>
 
@@ -1182,22 +1169,22 @@ export default function ProjectFilesScreen() {
                   Dropbox and bumps its cache_version, and it would then promise
                   something untrue at the exact moment it matters. */}
               {readiness.state === READY_UNCHECKED ? (
-                <View style={s.readyStrip}>
+                <SoftBox kind="slimw" style={s.readyStripSlot} contentStyle={s.readyStrip}>
                   <Text style={s.readyTextMuted}>
                     {readiness.neverSynced
                       ? 'Not checked yet — sync this project to see which plans are saved on this device.'
                       : 'Not checked yet — the last sync did not finish, so what is saved here cannot be confirmed.'}
                   </Text>
-                </View>
+                </SoftBox>
               ) : readiness.state === READY_ALL ? (
-                <View style={s.readyStrip}>
+                <SoftBox kind="slimw" style={s.readyStripSlot} contentStyle={s.readyStrip}>
                   <Check size={16} strokeWidth={2} color={semantic.verified} />
                   <Text style={s.readyTextOk}>
                     All {readiness.savable} plan{readiness.savable === 1 ? '' : 's'} saved on this device
                   </Text>
-                </View>
+                </SoftBox>
               ) : (
-                <View style={s.readyStrip}>
+                <SoftBox kind="slimw" style={s.readyStripSlot} contentStyle={s.readyStrip}>
                   <View style={{ flex: 1 }}>
                     <Text style={s.readyText}>
                       {readiness.state === READY_NONE
@@ -1205,23 +1192,15 @@ export default function ProjectFilesScreen() {
                         : `${readiness.saved} of ${readiness.savable} saved · ${megabytes(readiness.bytesRemaining)} MB to go`}
                     </Text>
                   </View>
-                  <Pressable
+                  <GlassButton
+                    title={savingAll
+                      ? `Saving ${saveProgress.done} of ${saveProgress.total}...`
+                      : 'Save for offline'}
                     onPress={handleSaveAll}
                     disabled={savingAll || offline}
-                    accessibilityRole="button"
-                    style={({ pressed }) => [
-                      s.saveAllBtn,
-                      pressed && { opacity: 0.7 },
-                      (savingAll || offline) && { opacity: 0.5 },
-                    ]}
-                  >
-                    <Text style={s.saveAllText}>
-                      {savingAll
-                        ? `Saving ${saveProgress.done} of ${saveProgress.total}...`
-                        : 'Save for offline'}
-                    </Text>
-                  </Pressable>
-                </View>
+                    textStyle={s.saveAllText}
+                  />
+                </SoftBox>
               )}
 
               {/* OUT OF THE DENOMINATOR, WITH THE REASON. These files failed
@@ -1264,12 +1243,11 @@ export default function ProjectFilesScreen() {
                     const FileIcon = typeInfo.icon;
 
                     return (
-                      <Pressable
+                      <SoftBox
                         key={file.path || index}
-                        style={({ pressed }) => [
-                          s.fileItem,
-                          pressed && s.fileItemPressed,
-                        ]}
+                        kind="card"
+                        style={s.fileItemSlot}
+                        contentStyle={s.fileItem}
                         onPress={() => handleViewFile(file)}
                         onLongPress={isAdmin ? () => handleDeleteFile(file) : undefined}
                         delayLongPress={500}
@@ -1378,7 +1356,7 @@ export default function ProjectFilesScreen() {
                             )}
                           </Pressable>
                         </View>
-                      </Pressable>
+                      </SoftBox>
                     );
                   })}
                   </View>
@@ -2085,10 +2063,15 @@ function buildStyles(colors, isDark) {
   filterScroll: {
     marginBottom: spacing.md,
   },
+  // room above and below so the soft pills' shadows are not clipped by the scroller
   filterContainer: {
-    gap: spacing.sm,
+    gap: spacing.lg,
     paddingRight: spacing.lg,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xs,
   },
+  filterPill: { minWidth: 92 },
+  filterPillText: { fontSize: 14 },
   filterTab: {
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
@@ -2118,12 +2101,10 @@ function buildStyles(colors, isDark) {
   // ── Offline readiness strip ────────────────────────────────────────────
   // Sits directly above the list it describes. Full touch target on the
   // action: this is a gloved thumb, outdoors, deciding whether to go down.
+  readyStripSlot: { marginBottom: spacing.lg },
   readyStrip: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-    paddingVertical: spacing.sm, paddingHorizontal: spacing.md,
-    marginBottom: spacing.sm, borderRadius: 12,
-    backgroundColor: withAlpha('#ffffff', 0.05),
-    borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
+    paddingVertical: spacing.sm, paddingHorizontal: spacing.lg,
     minHeight: 56,
   },
   readyText: { flex: 1, fontSize: 13, fontWeight: '600', color: colors.text.secondary },
@@ -2135,7 +2116,7 @@ function buildStyles(colors, isDark) {
     borderWidth: 1, borderColor: withAlpha(colors.primary, 0.3),
     backgroundColor: withAlpha(colors.primary, 0.15),
   },
-  saveAllText: { fontSize: 13, fontWeight: '700', color: colors.primary },
+  saveAllText: { fontSize: 14, fontWeight: '600' },
   readyUnsavable: {
     fontSize: 12, color: colors.text.muted, lineHeight: 17,
     marginBottom: spacing.sm,
@@ -2143,17 +2124,13 @@ function buildStyles(colors, isDark) {
   filesList: {
     gap: spacing.sm,
   },
+  fileItemSlot: { marginBottom: spacing.lg },
   fileItem: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: spacing.md,
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
     padding: spacing.md,
-    transition: 'all 0.2s ease',
   },
   fileItemPressed: {
     backgroundColor: withAlpha('#ffffff', 0.12),
