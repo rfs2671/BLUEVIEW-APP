@@ -2050,6 +2050,16 @@ export default {
   // ── Download button (Plans & Files) and the web viewer's open-in-browser ──
   // Keys named by fileDownloadPlan.signedUrlErrorKey and fileDownload.js's
   // error codes are looked up by those names; keep them in step.
+  multiUpload: {
+    uploadingTitle: 'Uploading',
+    uploadingMany: 'Uploading {n} files...',
+    uploadedTitle: 'Uploaded',
+    uploadedAll: '{n} files uploaded',
+    someFailedTitle: 'Some files did not upload',
+    someFailedBody: '{ok} of {n} uploaded. Not uploaded: {names}',
+    photosAddedTitle: 'Photos added',
+    photosAddedBody: '{n} photos added',
+  },
   fileDownload: {
     downloading: 'Downloading',
     progress: '{pct}% of {total} MB',

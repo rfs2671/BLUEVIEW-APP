@@ -82,6 +82,16 @@ export default {
   },
 
   // ── Botón Descargar (Planos y archivos) y abrir en el navegador (web) ─────
+  multiUpload: {
+    uploadingTitle: 'Subiendo',
+    uploadingMany: 'Subiendo {n} archivos...',
+    uploadedTitle: 'Subido',
+    uploadedAll: '{n} archivos subidos',
+    someFailedTitle: 'Algunos archivos no se subieron',
+    someFailedBody: '{ok} de {n} subidos. No se subieron: {names}',
+    photosAddedTitle: 'Fotos agregadas',
+    photosAddedBody: '{n} fotos agregadas',
+  },
   fileDownload: {
     downloading: 'Descargando',
     progress: '{pct}% de {total} MB',

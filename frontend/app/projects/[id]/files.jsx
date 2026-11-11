@@ -15,7 +15,8 @@ import {
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { readSiteReadiness, SITE_READY_STALE } from '../../../src/utils/siteDeviceReadiness';
+import { readSiteReadiness, readinessForFilesScreen } from '../../../src/utils/siteDeviceReadiness';
+import { uploadEach, errorDetail, batchSummary } from '../../../src/utils/multiUpload';
 import SiteReadinessNotice from '../../../src/components/SiteReadinessNotice';
 import { noteProjectOpened } from '../../../src/utils/adminPlanPrefetch';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -245,6 +246,7 @@ export default function ProjectFilesScreen() {
   // The one native download in flight: { name, written, expected, cancel }.
   const [download, setDownload] = useState(null);
   const tDl = useT('fileDownload');
+  const tUp = useT('multiUpload');
   // 'ok' | 'offline' | 'error'. This screen used to swallow the failure with
   // `.catch(() => [])`, which rendered a silent blank plan list.
   const [fetchState, setFetchState] = useState('ok');
@@ -692,67 +694,79 @@ export default function ProjectFilesScreen() {
     }
   };
 
+  // One picked PDF as the upload's form body. On web, expo-document-picker
+  // exposes the native File via `file.file` -- prefer that over
+  // `fetch(file.uri).blob()`, which adds a hop and fails silently if the blob
+  // URL was revoked.
+  const formDataFor = async (file) => {
+    const name = file.name || 'file.pdf';
+    const formData = new FormData();
+    if (Platform.OS === 'web') {
+      let blob = file.file;  // native File instance if available
+      if (!blob) {
+        if (!file.uri) {
+          throw new Error('Web upload: no file.file or file.uri provided by picker');
+        }
+        try {
+          const resp = await fetch(file.uri);
+          if (!resp.ok) throw new Error(`fetch(${file.uri}) returned ${resp.status}`);
+          blob = await resp.blob();
+        } catch (fetchErr) {
+          throw new Error(`Could not read picked file: ${fetchErr.message || fetchErr}`);
+        }
+      }
+      if (!blob || (blob.size === 0)) {
+        throw new Error('Picked file is empty (0 bytes)');
+      }
+      formData.append('file', blob, name);
+    } else {
+      formData.append('file', { uri: file.uri, name, type: 'application/pdf' });
+    }
+    return formData;
+  };
+
   const handleUploadFile = async () => {
-    let pickedName = 'file';
     try {
+      // SEVERAL AT ONCE (operator, 2026-11-11). Uploaded one after another;
+      // one that fails does not stop the rest (src/utils/multiUpload).
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
         copyToCacheDirectory: true,
+        multiple: true,
       });
       if (result.canceled) return;
-      const file = result.assets?.[0];
-      if (!file) {
+      const files = (result.assets || []).filter(Boolean);
+      if (!files.length) {
         toast.error('Upload Error', 'No file was selected');
         return;
       }
-      pickedName = file.name || 'file.pdf';
-
       setUploading(true);
-      toast.info('Uploading', `Uploading ${pickedName}...`);
-
-      // Build FormData. On web, expo-document-picker exposes the native File
-      // via `file.file` — prefer that over `fetch(file.uri).blob()` which adds
-      // an extra hop (and fails silently if the blob URL was revoked).
-      const formData = new FormData();
-      if (Platform.OS === 'web') {
-        let blob = file.file;  // native File instance if available
-        if (!blob) {
-          if (!file.uri) {
-            throw new Error('Web upload: no file.file or file.uri provided by picker');
-          }
-          try {
-            const resp = await fetch(file.uri);
-            if (!resp.ok) throw new Error(`fetch(${file.uri}) returned ${resp.status}`);
-            blob = await resp.blob();
-          } catch (fetchErr) {
-            throw new Error(`Could not read picked file: ${fetchErr.message || fetchErr}`);
-          }
-        }
-        if (!blob || (blob.size === 0)) {
-          throw new Error('Picked file is empty (0 bytes)');
-        }
-        formData.append('file', blob, pickedName);
+      if (files.length === 1) {
+        toast.info('Uploading', `Uploading ${files[0].name || 'file.pdf'}...`);
       } else {
-        formData.append('file', {
-          uri: file.uri,
-          name: pickedName,
-          type: 'application/pdf',
-        });
+        toast.info(tUp('uploadingTitle'), tUp('uploadingMany').replace('{n}', String(files.length)));
       }
-
-      await dropboxAPI.uploadFile(projectId, formData);
-      toast.success('Uploaded', `${pickedName} uploaded successfully`);
-      fetchFiles(); // refresh the file list
+      const res = await uploadEach(files, async (file) => {
+        await dropboxAPI.uploadFile(projectId, await formDataFor(file));
+      });
+      if (files.length === 1) {
+        if (res.failed.length) {
+          const error = res.failed[0].error;
+          console.error('Upload failed:', error);
+          toast.error('Upload Error', errorDetail(error, 'Could not upload file'));
+        } else {
+          toast.success('Uploaded', `${files[0].name || 'file.pdf'} uploaded successfully`);
+        }
+      } else {
+        res.failed.forEach((f) => console.error('Upload failed:', f.item?.name, f.error));
+        const sum = batchSummary(tUp, res, (f) => f?.name);
+        toast[sum.kind](sum.title, sum.body);
+      }
+      if (res.ok.length) fetchFiles(); // refresh the file list
     } catch (error) {
       // Surface the real reason so the user sees more than "Could not upload file".
       console.error('Upload failed:', error);
-      const detail =
-        error?.response?.data?.detail ||
-        error?.response?.statusText ||
-        error?.message ||
-        (typeof error === 'string' ? error : null) ||
-        'Could not upload file';
-      toast.error('Upload Error', detail);
+      toast.error('Upload Error', errorDetail(error, 'Could not upload file'));
     } finally {
       setUploading(false);
     }
@@ -1134,13 +1148,12 @@ export default function ProjectFilesScreen() {
                   for the user to do about it. Show it only when the server could
                   not be reached. The other states (never ready, no space,
                   still saving) are unaffected. */}
-              <SiteReadinessNotice
-                readiness={
-                  held.readiness && held.readiness.state === SITE_READY_STALE && fetchState === 'ok'
-                    ? null
-                    : held.readiness
-                }
-              />
+              {/* Only what the small "saved on this device" line below cannot
+                  say: full and stopped, or out of date with no server reply.
+                  A phone never set up to hold this project offline is not a
+                  tablet that failed (src/utils/siteDeviceReadiness
+                  .readinessForFilesScreen). */}
+              <SiteReadinessNotice readiness={readinessForFilesScreen(held.readiness, fetchState)} />
 
               {/* Filter Tabs */}
               <ScrollView

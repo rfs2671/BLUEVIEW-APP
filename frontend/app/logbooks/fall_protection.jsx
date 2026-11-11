@@ -314,20 +314,27 @@ export default function FallProtectionLog() {
         toast.warning(t('photoPermTitle'), t('photoPermBody'));
         return;
       }
+      // The library takes SEVERAL at once (operator, 2026-11-11); the camera is
+      // one shot.
       const result = fromCamera
         ? await ImagePicker.launchCameraAsync({ quality: 0.6, base64: false })
         : await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.6, base64: false,
+          allowsMultipleSelection: true,
         });
       if (result.canceled || !result.assets?.length) return;
-      const photoId = `ph_${mintId()}`;
       // Under the cap BEFORE it is stored, so the draft never holds a raw
-      // sensor JPEG and the upload never has one to refuse.
-      const uri = await compressUnderCap(result.assets[0].uri).catch(
-        () => result.assets[0].uri,
-      );
+      // sensor JPEG and the upload never has one to refuse. One after another:
+      // a dozen full-size images compressed at once is how a phone runs out of
+      // memory.
+      const added = [];
+      for (const asset of result.assets.filter((a) => a && a.uri)) {
+        // eslint-disable-next-line no-await-in-loop
+        const uri = await compressUnderCap(asset.uri).catch(() => asset.uri);
+        added.push({ id: `ph_${mintId()}`, uri, upload_pending: true });
+      }
       setRows((prev) => prev.map((r, i) => (i === index
-        ? { ...r, photos: [...(r.photos || []), { id: photoId, uri, upload_pending: true }] }
+        ? { ...r, photos: [...(r.photos || []), ...added] }
         : r)));
     } catch (e) {
       toast.error(t('photoFailedTitle'), t('photoFailedBody'));

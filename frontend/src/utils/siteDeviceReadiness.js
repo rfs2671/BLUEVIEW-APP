@@ -411,6 +411,34 @@ export function describeReadiness(readiness) {
   return null;
 }
 
+/**
+ * WHAT THE OFFICE FILES SCREEN (app/projects/[id]/files.jsx) SHOWS.
+ *
+ * The notices above are written for the GATE TABLET, where an incomplete set
+ * is an alarm: someone is about to hand that device to an inspector. The
+ * office Files screen runs on every phone and browser, and most of them were
+ * never set up to hold the project offline. On such a device NEVER is simply
+ * "nothing downloaded here", and it drew a full red "This tablet is not ready
+ * to use offline" card -- on a phone, over a project with no files at all
+ * (operator, 2026-11-11: "No tablet connected anyway? Such big warning is
+ * too much").
+ *
+ * That screen already says, in its own small status line under the filter
+ * tabs, how many of this project's plans are saved on THIS device and how
+ * much is left (readinessOf in app/projects/[id]/files.jsx). So it shows only
+ * what that line cannot: the device is full and has STOPPED saving, or a
+ * complete set is out of date while the server could not be reached. NEVER
+ * and "still saving" are left to the line. The gate-tablet screens
+ * (app/site/*) are unchanged and still show every state.
+ */
+export function readinessForFilesScreen(readiness, fetchState) {
+  const r = readiness || null;
+  if (!r) return null;
+  if (r.state === SITE_READY_NO_SPACE) return r;
+  if (r.state === SITE_READY_STALE && fetchState !== 'ok') return r;
+  return null;
+}
+
 export default {
   SITE_READY_UNKNOWN,
   SITE_READY_NEVER,

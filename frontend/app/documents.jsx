@@ -50,6 +50,8 @@ import { useTheme } from '../src/context/ThemeContext';
 // PDFViewer auto-resolves: .native.jsx on native, .jsx (web fallback) on web
 import PDFViewer from '../src/components/PDFViewer';
 import HeaderBrand from '../src/components/HeaderBrand';
+import { useT } from '../src/i18n';
+import { uploadEach, batchSummary } from '../src/utils/multiUpload';
 
 const extOf = (fileName) => String(fileName || '').split('.').pop()?.toLowerCase() || '';
 // PDFs are the only type with an offline story — everything else opens via
@@ -102,6 +104,7 @@ export default function DocumentsScreen() {
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
+  const tUp = useT('multiUpload');
 
   const isCp = user?.role === 'cp';
 
@@ -360,30 +363,47 @@ export default function DocumentsScreen() {
       return;
     }
     try {
+      // SEVERAL AT ONCE (operator, 2026-11-11), one after another; one that
+      // fails does not stop the rest (src/utils/multiUpload).
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
         copyToCacheDirectory: true,
+        multiple: true,
       });
       if (result.canceled) return;
-      const file = result.assets?.[0];
-      if (!file) return;
+      const files = (result.assets || []).filter(Boolean);
+      if (!files.length) return;
 
       setUploading(true);
-      toast.info('Uploading', `Uploading ${file.name}...`);
-
-      const formData = new FormData();
-      if (Platform.OS === 'web') {
-        const response = await fetch(file.uri);
-        const blob = await response.blob();
-        formData.append('file', blob, file.name);
+      if (files.length === 1) {
+        toast.info('Uploading', `Uploading ${files[0].name}...`);
       } else {
-        formData.append('file', { uri: file.uri, name: file.name, type: 'application/pdf' });
+        toast.info(tUp('uploadingTitle'), tUp('uploadingMany').replace('{n}', String(files.length)));
       }
-
       const pid = selectedProject._id || selectedProject.id;
-      await dropboxAPI.uploadFile(pid, formData);
-      toast.success('Uploaded', `${file.name} uploaded`);
-      handleRefresh();
+      const res = await uploadEach(files, async (file) => {
+        const formData = new FormData();
+        if (Platform.OS === 'web') {
+          const blob = file.file || await (await fetch(file.uri)).blob();
+          formData.append('file', blob, file.name);
+        } else {
+          formData.append('file', { uri: file.uri, name: file.name, type: 'application/pdf' });
+        }
+        await dropboxAPI.uploadFile(pid, formData);
+      });
+      if (files.length === 1) {
+        if (res.failed.length) {
+          console.error('Upload failed:', res.failed[0].error);
+          toast.error('Upload Error', res.failed[0].error?.response?.data?.detail || 'Could not upload file');
+        } else {
+          toast.success('Uploaded', `${files[0].name} uploaded`);
+        }
+      } else {
+        res.failed.forEach((f) => console.error('Upload failed:', f.item?.name, f.error));
+        const sum = batchSummary(tUp, res, (f) => f?.name);
+        toast[sum.kind](sum.title, sum.body);
+      }
+      if (res.ok.length) handleRefresh();
     } catch (error) {
       console.error('Upload failed:', error);
       toast.error('Upload Error', error.response?.data?.detail || 'Could not upload file');
