@@ -735,27 +735,43 @@ def _changed_since(e: Dict[str, Any], since: datetime) -> bool:
     return False
 
 
+#: How far ahead the brief's events go (upcoming.BRIEF_DAYS): its week.
+WEEK_DAYS = 7
+
+
 def brief_events(events: Iterable[Dict[str, Any]], since: datetime,
-                 weekly: bool) -> List[Dict[str, Any]]:
-    """The Upcoming events the brief lists. Chat events and reminders: all.
-    A city record's date (an ECB / OATH hearing):
+                 weekly: bool, today: Optional[date] = None) -> List[Dict[str, Any]]:
+    """The Upcoming events the brief lists. Chat events and reminders: this
+    week's. A city record's date (an ECB / OATH hearing):
       * a permit's expiry never - it is the 🟠 permit line (job_items);
       * on the weekly brief, every hearing this week, but not DOT's OATH
         hearings - those are the 🟠 hearing lines;
       * any other morning, only one the city added, moved or reopened since
-        the last brief: a court date already said is not said again daily."""
+        the last brief, HOWEVER FAR OFF (Codex, #1020: a hearing moved to
+        three weeks out is news today, not next Monday): a court date
+        already said is not said again daily.
+    `today`: the brief's day; given, events past its week are left out but
+    for that last case (the caller reads further ahead for it)."""
     if since.tzinfo is None:
         since = since.replace(tzinfo=timezone.utc)
+    last = today + timedelta(days=WEEK_DAYS) if today else None
+
+    def _in_week(e):
+        d = _event_day(e)
+        return last is None or (d is not None and d <= last)
+
     out = []
     for e in events:
         if e.get("source") != "city":
-            out.append(e)
+            if _in_week(e):
+                out.append(e)
         elif e.get("kind") == "permit_expiration":
             continue
-        elif weekly:
-            if e.get("agency") != "OATH":
-                out.append(e)
+        elif weekly and e.get("agency") == "OATH":
+            continue                    # Monday's 🟠 hearing lines say every one
         elif _changed_since(e, since):
+            out.append(e)               # new or moved: once, whatever its date
+        elif weekly and _in_week(e):
             out.append(e)
     return out
 
@@ -775,7 +791,10 @@ def event_sections(events: Iterable[Dict[str, Any]], today: date
         if d == today:
             now_.append(" ".join(x for x in ("•", t, title) if x))
         elif len(later) < MAX_LATER:
-            later.append(" ".join(x for x in ("•", d.strftime("%a"), t, title) if x))
+            # A day name for this week; past it (a court date the city just
+            # moved, brief_events), the date too: "Tue Dec 1".
+            day = d.strftime("%a") if (d - today).days < 7 else f"{d:%a %b} {d.day}"
+            later.append(" ".join(x for x in ("•", day, t, title) if x))
         else:
             extra += 1
     return now_, later + ([f"• +{extra} more in the Levelog app"] if extra > 0 else [])

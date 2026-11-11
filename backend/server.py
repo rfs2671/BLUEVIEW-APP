@@ -58106,10 +58106,16 @@ async def _upcoming_brief_events(user: dict, company_id: str, role: str,
     if _upcoming_disabled():
         return []
     today = _upcoming_today(now)
+    # Read past the week: a court date the city moved far ahead since the
+    # last brief is still said the next morning (wa_brief.brief_events).
     rows = await _upcoming_for(user, company_id, role, today,
-                               today + timedelta(days=upcoming.BRIEF_DAYS))
+                               today + timedelta(days=_BRIEF_CITY_AHEAD_DAYS))
     return wa_brief.brief_events(rows, since or now - timedelta(days=1),
-                                 wa_brief.is_review_day(now))
+                                 wa_brief.is_review_day(now), today=today)
+
+
+#: How far ahead the brief looks for a court date the city added or moved.
+_BRIEF_CITY_AHEAD_DAYS = 366
 
 
 # ── The day-before DM, and a reminder on its day ──

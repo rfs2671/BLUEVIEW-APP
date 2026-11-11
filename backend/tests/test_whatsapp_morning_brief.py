@@ -1607,6 +1607,27 @@ class CourtDatesInTheWeek(unittest.TestCase):
         self.assertEqual(self._titles([oath, permit], weekly=True), [])
         self.assertEqual(self._titles([permit], weekly=False), [])
 
+    def test_a_date_moved_far_ahead_is_said_the_next_morning(self):
+        """Codex, #1020: a hearing the city moves three weeks out is news
+        today, not next Monday - past the week, with its date."""
+        today = THU_7.date()
+        far = _city("ECB hearing · violation 7", "2026-10-29",
+                    history=[{"action": "rescheduled", "at": (THU_7 - timedelta(hours=2)).isoformat(),
+                              "from": "2026-10-12", "to": "2026-10-29", "by": "city"}])
+        known_far = _city("ECB hearing · violation 8", "2026-10-29")
+        chat_far = {"source": "chat", "kind": "inspection", "title": "Far inspection",
+                    "date": "2026-10-29", "history": []}
+        for weekly in (False, True):
+            got = wa_brief.brief_events([far, known_far, chat_far], self.SINCE, weekly, today=today)
+            self.assertEqual([e["title"] for e in got], ["ECB hearing · violation 7"], weekly)
+        _, later = wa_brief.event_sections([far], today)
+        self.assertEqual(later, ["• Thu Oct 29 ECB hearing · violation 7"])
+
+    def test_monday_says_an_oath_hearing_once(self):
+        moved = _city("OATH hearing · DOT ticket #9", "2026-10-30", agency="OATH",
+                      history=[{"action": "rescheduled", "at": (THU_7 - timedelta(hours=2)).isoformat()}])
+        self.assertEqual(self._titles([moved], weekly=True), [])     # the 🟠 line says it
+
     def test_chat_events_and_reminders_every_day(self):
         chat = {"source": "chat", "kind": "inspection", "title": "Con Ed meter set",
                 "date": "2026-10-09", "history": []}

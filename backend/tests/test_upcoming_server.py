@@ -572,12 +572,13 @@ class OutToPeople(unittest.TestCase):
         # The DOB ECB hearing on Oct 22 is past the week; DOT's OATH hearing
         # and the permit expirations are the brief's own lines on Mondays.
         # A court date the city added since the last brief is said the next
-        # morning, once.
+        # morning, once - however far off (the ECB hearing on Oct 22 too).
         events, _ = _with(self.db, lambda: _run(server._upcoming_brief_events(
             self.admin, CO_A, "admin", T0, since=T0 - timedelta(days=1))))
         self.assertEqual([(e["date"], e["title"]) for e in events],
                          [("2026-10-09", "Con Ed meter set"),
-                          ("2026-10-13", "OATH hearing · DOT ticket #0123")])
+                          ("2026-10-13", "OATH hearing · DOT ticket #0123"),
+                          ("2026-10-22", "ECB hearing · DOB violation #35099999")])
 
     def test_day_before_dm_from_5pm_once(self):
         pm = next(u for u in self.db.users.rows if u["_id"] == "u_pm")
