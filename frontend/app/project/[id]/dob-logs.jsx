@@ -508,8 +508,7 @@ export default function DOBLogsScreen() {
     const isBisLegacy = jobClean && /^\d+$/.test(jobClean);
 
     return (
-      <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
+      <GlassCard key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)} style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
@@ -606,7 +605,6 @@ export default function DOBLogsScreen() {
             </View>
           )}
         </GlassCard>
-      </Pressable>
     );
   };
 
@@ -639,8 +637,7 @@ export default function DOBLogsScreen() {
     const displayDate = log.violation_date;
 
     return (
-      <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={[s.logCard, isSWO && s.swoCard]} contentStyle={s.logCardContent}>
+      <GlassCard key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)} style={[s.logCard, isSWO && s.swoCard]} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
@@ -725,7 +722,6 @@ export default function DOBLogsScreen() {
             </View>
           )}
         </GlassCard>
-      </Pressable>
     );
   };
 
@@ -749,8 +745,7 @@ export default function DOBLogsScreen() {
     const hasLinkedViolation = !!log.linked_violation_id;
 
     return (
-      <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
+      <GlassCard key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)} style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: riskColor }]} />
@@ -858,7 +853,6 @@ export default function DOBLogsScreen() {
             </View>
           )}
         </GlassCard>
-      </Pressable>
     );
   };
 
@@ -872,8 +866,7 @@ export default function DOBLogsScreen() {
       : { color: semantic.verified, label: 'Passed', bg: withAlpha(semantic.verified, 0.1) };
 
     return (
-      <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
+      <GlassCard key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)} style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: resultConfig.color }]} />
@@ -908,7 +901,6 @@ export default function DOBLogsScreen() {
             </View>
           )}
         </GlassCard>
-      </Pressable>
     );
   };
 
@@ -919,8 +911,7 @@ export default function DOBLogsScreen() {
     const typeColor = colors.primary;
 
     return (
-      <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
+      <GlassCard key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)} style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
@@ -951,7 +942,6 @@ export default function DOBLogsScreen() {
             </View>
           )}
         </GlassCard>
-      </Pressable>
     );
   };
 
@@ -1046,8 +1036,11 @@ export default function DOBLogsScreen() {
                 Each shows "{open} of {total}" (open subset of the deduped total)
                 so the count matches the list once you drill in. ── */}
           <View style={s.navRow}>
-            <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}>
-              <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]}>
+            <GlassCard
+              onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}
+              selected={activeTab === 'permit'}
+              style={[s.navCardWrap, s.navCard]}
+            >
                 {/* Permit warnings are two small marks on this tile instead of a banner of their own: a yellow warning with the
                     number expiring (within 30 days), and a red one with the number already expired. Tap the tile to see them. */}
                 {(expiringPermits.length > 0 || expiredCount > 0) && (
@@ -1076,30 +1069,35 @@ export default function DOBLogsScreen() {
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'permit' && s.navCountActive]}>{ofText(permitsExpiring, activePermits)}</Text>
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'permit' && s.navLabelActive]}>Expiring / Active Permits</Text>
               </GlassCard>
-            </Pressable>
-            <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'violation' ? 'all' : 'violation'); setExpandedLogId(null); }}>
-              <GlassCard style={[s.navCard, activeTab === 'violation' && s.navCardActive]}>
+            <GlassCard
+              onPress={() => { setActiveTab(activeTab === 'violation' ? 'all' : 'violation'); setExpandedLogId(null); }}
+              selected={activeTab === 'violation'}
+              style={[s.navCardWrap, s.navCard]}
+            >
                 <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? chrome.brand : (openViolations > 0 ? semantic.critical : colors.text.muted)} />
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, openViolations > 0 && { color: semantic.criticalText }, activeTab === 'violation' && s.navCountActive]}>{ofText(openViolations, totalViolations)}</Text>
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'violation' && s.navLabelActive]}>Open Violations</Text>
               </GlassCard>
-            </Pressable>
-            <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'complaint' ? 'all' : 'complaint'); setExpandedLogId(null); }}>
-              <GlassCard style={[s.navCard, activeTab === 'complaint' && s.navCardActive]}>
+            <GlassCard
+              onPress={() => { setActiveTab(activeTab === 'complaint' ? 'all' : 'complaint'); setExpandedLogId(null); }}
+              selected={activeTab === 'complaint'}
+              style={[s.navCardWrap, s.navCard]}
+            >
                 <MessageSquare size={22} strokeWidth={1.5} color={activeTab === 'complaint' ? chrome.brand : (openComplaints > 0 ? semantic.attention : colors.text.muted)} />
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, openComplaints > 0 && { color: semantic.attention }, activeTab === 'complaint' && s.navCountActive]}>{ofText(openComplaints, totalComplaints)}</Text>
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Open Complaints</Text>
               </GlassCard>
-            </Pressable>
             {/* DOT Phase 1 B: DOT street permits — setup, needs confirmation,
                 permits (src/components/DotCompliancePanel.jsx). */}
-            <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'dot' ? 'all' : 'dot'); setExpandedLogId(null); }}>
-              <GlassCard style={[s.navCard, activeTab === 'dot' && s.navCardActive]}>
+            <GlassCard
+              onPress={() => { setActiveTab(activeTab === 'dot' ? 'all' : 'dot'); setExpandedLogId(null); }}
+              selected={activeTab === 'dot'}
+              style={[s.navCardWrap, s.navCard]}
+            >
                 <MapPin size={22} strokeWidth={1.5} color={activeTab === 'dot' ? chrome.brand : colors.text.muted} />
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'dot' && s.navCountActive]}>DOT</Text>
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'dot' && s.navLabelActive]}>{tDot('tabLabel')}</Text>
               </GlassCard>
-            </Pressable>
           </View>
 
           {/* Disclosure: permits with no expiry date are excluded from the
@@ -1321,7 +1319,7 @@ function buildStyles(colors, isDark) {
     navCardWrap: { flexGrow: 1, flexBasis: 150, minWidth: 150 },
     // The same top room on all four tiles (the Permits tile carries warning marks in that corner) and `flex: 1` so a tile
     // stretches to the height of the one beside it: the pairs always match.
-    navCard: { flex: 1, alignItems: 'center', paddingTop: spacing.xl, paddingBottom: spacing.md, paddingHorizontal: spacing.xs, gap: 4 },
+    navCard: { alignItems: 'center', paddingTop: spacing.xl, paddingBottom: spacing.md, paddingHorizontal: spacing.xs, gap: 4 },
     navCardActive: { borderColor: semantic.verifiedBorder, backgroundColor: semantic.verifiedBg },
     navCount: { fontSize: 20, fontWeight: '700', color: colors.text.primary },
     navCountActive: { color: chrome.brand },

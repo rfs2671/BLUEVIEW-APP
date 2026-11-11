@@ -335,9 +335,10 @@ export default function ProjectReportsScreen() {
             photos, site activity, DOB/DOT, open items, what's next — the same report sent in WhatsApp.
           </Text>
 
-          <Pressable onPress={() => router.push(`/projects/${projectId}/schedule`)}
-            accessibilityRole="link" accessibilityLabel={ts('linkTitle')}>
-            <GlassCard style={styles.card}>
+          <GlassCard onPress={() => router.push(`/projects/${projectId}/schedule`)}
+  accessibilityRole="link"
+  accessibilityLabel={ts('linkTitle')}
+  style={styles.card}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                 <Calendar size={18} color={text.color} />
                 <View style={{ flex: 1, minWidth: 0 }}>
@@ -346,7 +347,6 @@ export default function ProjectReportsScreen() {
                 </View>
               </View>
             </GlassCard>
-          </Pressable>
 
           <GlassCard style={styles.card}>
             <Text style={[styles.section, text]}>Generate now</Text>
