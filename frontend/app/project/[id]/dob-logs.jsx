@@ -509,7 +509,7 @@ export default function DOBLogsScreen() {
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard}>
+        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
@@ -640,7 +640,7 @@ export default function DOBLogsScreen() {
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={[s.logCard, isSWO && s.swoCard]}>
+        <GlassCard style={[s.logCard, isSWO && s.swoCard]} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
@@ -750,7 +750,7 @@ export default function DOBLogsScreen() {
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard}>
+        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: riskColor }]} />
@@ -873,7 +873,7 @@ export default function DOBLogsScreen() {
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard}>
+        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: resultConfig.color }]} />
@@ -920,7 +920,7 @@ export default function DOBLogsScreen() {
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard}>
+        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
@@ -1004,7 +1004,7 @@ export default function DOBLogsScreen() {
           data={loading ? [] : filteredLogs}
           keyExtractor={(item) => String(item.id)}
           renderItem={({ item }) => renderLogCard(item)}
-          ItemSeparatorComponent={() => <View style={{ height: spacing.md }} />}
+          ItemSeparatorComponent={() => <View style={{ height: spacing.xl }} />}
           ListHeaderComponent={
             <>
           {/* Title. The refresh control lives up here as a quiet icon-button:
@@ -1368,7 +1368,11 @@ function buildStyles(colors, isDark) {
     totalText: { fontSize: 12, color: colors.text.muted, textAlign: 'center', marginBottom: spacing.lg },
 
     logsList: { gap: spacing.md },
-    logCard: { gap: spacing.sm },
+    // `gap` on the card's own style never reached the rows inside it (the style lands on the wrapper, which holds one
+    // child), which is why the badges, the title and the status lines were jammed together. The spacing lives on the
+    // content layer.
+    logCard: {},
+    logCardContent: { padding: spacing.lg, gap: spacing.md },
     swoCard: { borderColor: semantic.criticalBorder, borderWidth: 1 },
     // Header wraps on narrow viewports so date chips drop below
     // badges instead of pushing them off-screen.
