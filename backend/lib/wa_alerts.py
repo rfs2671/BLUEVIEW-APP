@@ -83,6 +83,21 @@ RED, ORANGE, GREEN = "🔴", "🟠", "🟢"
 _CRITICAL_TEXT = re.compile(r"\bvacate\b|\bstop[- ]work order\b", re.IGNORECASE)
 
 
+_SUMMONS_DATASETS = ("6bgk-3dad", "bis-ecb")
+
+
+def is_summons(rec: Dict[str, Any]) -> bool:
+    """An ECB/OATH summons: a penalty notice, never itself a stop-work or
+    vacate order, even when its text cites one ("work contrary to SWO"). A row
+    explicitly typed 'swo' is left to that type."""
+    r = rec or {}
+    if str(r.get("record_type") or "").lower() == "swo":
+        return False
+    return (bool(r.get("ecb_violation_number"))
+            or str(r.get("dataset") or r.get("_dataset") or "") in _SUMMONS_DATASETS
+            or str(r.get("violation_subtype") or "").upper() == "ECB")
+
+
 def is_critical(it: Dict[str, Any]) -> bool:
     """A Stop Work Order or a Vacate order: what may still post on Shabbos
     when the company says so. A rescinded order is not."""
@@ -91,6 +106,8 @@ def is_critical(it: Dict[str, Any]) -> bool:
     if it.get("kind") not in ("violation", "complaint"):
         return False
     rec = it.get("rec") or {}
+    if is_summons(rec):
+        return False
     sub = str(rec.get("violation_subtype") or "").upper()
     if sub.startswith(("SWO", "VACATE")):
         return True

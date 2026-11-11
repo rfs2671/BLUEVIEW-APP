@@ -105,7 +105,7 @@ def is_311(rec: Mapping[str, Any]) -> bool:
     """A 311 service request stored as a complaint (lib/wa_alerts reads it the
     same way). Not a DOB complaint; never reconciled by DOB complaint number."""
     return (str(rec.get("source") or "").lower() == "311"
-            or str(rec.get("complaint_source") or "").lower() == "311"
+            or str(rec.get("complaint_source") or "").lower().startswith("311")   # "311 Complaint" too
             or str(rec.get("raw_dob_id") or "").startswith("311:"))
 
 
@@ -455,8 +455,9 @@ def render_alert(rec: Mapping[str, Any], decision: Mapping[str, Any], *, project
     insp = rec.get("last_inspection_date") or rec.get("inspection_date")
     link = f"https://a810-bisweb.nyc.gov/bisweb/OverviewForComplaintServlet?complaintno={cn}&requestid=0"
     if lang == "es":
-        head = {"critical": "ORDEN DE PARAR TRABAJO", "high": "Queja de seguridad del DOB",
-                "normal": "Nueva queja del DOB"}[decision.get("priority", "normal")]
+        head = ("ORDEN DE PARAR TRABAJO" if decision.get("event") == "stop_work_order" else
+                {"critical": "Queja urgente del DOB", "high": "Queja de seguridad del DOB",
+                 "normal": "Nueva queja del DOB"}[decision.get("priority", "normal")])
         lines = [f"*{head} — {project_name}*",
                  f"Queja {cn}, recibida por el DOB {when}." + (" (Llegó tarde.)" if decision.get("late") else ""),
                  f"Dice: {desc}." if desc else "",
@@ -464,8 +465,9 @@ def render_alert(rec: Mapping[str, Any], decision: Mapping[str, Any], *, project
                   if not insp else f"Inspeccionada {insp}."),
                  link]
     else:
-        head = {"critical": "STOP-WORK ORDER", "high": "DOB safety complaint",
-                "normal": "New DOB complaint"}[decision.get("priority", "normal")]
+        head = ("STOP-WORK ORDER" if decision.get("event") == "stop_work_order" else
+                {"critical": "Urgent DOB complaint", "high": "DOB safety complaint",
+                 "normal": "New DOB complaint"}[decision.get("priority", "normal")])
         lines = [f"*{head} — {project_name}*",
                  f"Complaint {cn}, received by DOB {when}." + (" (Arrived late.)" if decision.get("late") else ""),
                  f"It says: {desc}." if desc else "",

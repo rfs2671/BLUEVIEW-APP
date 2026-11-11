@@ -42255,7 +42255,15 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
                                 rec.get("status", ""),
                             ]
                             combined = " ".join(str(f or "").lower() for f in swo_fields)
-                            if "stop work" in combined or "swo" in combined or "partial stop" in combined:
+                            # An ECB/OATH summons (6bgk-3dad, keyed on its ECB
+                            # number) is a penalty notice, never itself an order,
+                            # even when its text cites one ("work contrary to
+                            # SWO"). Both production rows this retyped were such
+                            # summonses; the BIS watch stores the same summons as
+                            # a violation, and the two paths must agree.
+                            if rec.get("ecb_violation_number"):
+                                pass
+                            elif "stop work" in combined or "swo" in combined or "partial stop" in combined:
                                 rec["_record_type"] = "swo"
                         all_records.append(rec)
                 else:
@@ -43555,6 +43563,12 @@ def _classify_violation_subtype(rec: dict) -> str:
     ecb_num = rec.get("ecb_violation_number") or ""
 
     combined = f"{vtype} {desc}"
+
+    if ecb_num and record_type != "swo":
+        # An ECB/OATH summons is a summons, not the order its text may cite
+        # (lib/wa_alerts.is_summons): report_regulatory and wa_alerts read a
+        # SWO_* subtype as a stop-work order.
+        return "ECB"
 
     # Stop-work detection keyed on DOB's REAL phrasing, not just the literal
     # "FULL STOP WORK". A borough-commissioner order reads "…ORDERED ALL WORK
@@ -45476,6 +45490,22 @@ _BIS_KEEP = ("status", "received_at", "received_date", "priority", "assigned_to"
 _BIS_EMAIL_EVENT = {"new_complaint": "new", "stop_work_order": "swo", "violation_served": "new"}
 
 
+def _first_synced_field(mode: str) -> str:
+    """Each mode keeps its OWN first-sync baseline. Shadow marking a BIN synced
+    made live's first pass treat every open complaint and active summons it had
+    not stored as new -- including years-old ones on the rear BIN, which the
+    Open Data scan never read -- and email them all the hour live went on."""
+    return "bins_first_synced" if mode == "live" else f"{mode}_bins_first_synced"
+
+
+async def _shadow_judged_new(pid: str, field: str, number: str) -> bool:
+    """Shadow recorded `would_alert` for this item: it was genuinely new when
+    shadow first saw it (past shadow's own first-sync baseline), and nobody was
+    told. Live tells them now, marked late, if it is still worth an alert."""
+    return bool(await db[COMPLAINT_WATCH_LEDGER].find_one(
+        {"project_id": pid, field: number, "mode": "shadow", "status": "would_alert"}))
+
+
 def _cw_prefix(mode: str) -> str:
     """Ledger keys per mode. A decision shadow recorded must never stop LIVE
     from storing and alerting the same item when the watch is switched on --
@@ -45553,7 +45583,7 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
         return summary
     state = await db[SOURCE_SYNC_STATE].find_one({"_id": pid}) or {}
     watch = (state.get("watch") or {}).get("bis_complaints") or {}
-    first_done = set(watch.get("bins_first_synced") or [])
+    first_done = set(watch.get(_first_synced_field(mode)) or [])
 
     # The lot's other BINs. A failed or wrong page is an ERROR (the source is
     # not "fresh") and the BINs saved by the last good read stand in for it,
@@ -45617,6 +45647,9 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
                     "bis_disposition": row.get("disposition_code") or None}):
                 continue                      # this state was already decided (shadow stores no row)
             rec = dict(row, bin=b)
+            fs = first_sync
+            if fs and mode == "live" and await _shadow_judged_new(pid, "complaint_number", cn):
+                fs = False
             try:
                 d = await client.get(bis_complaints.detail_url(cn), headers=_BIS_UA, timeout=30.0)
                 det = bis_complaints.parse_complaint_detail(d.text) if d.status_code == 200 else {}
@@ -45625,7 +45658,7 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
             if det.get("found"):
                 rec.update({k: v for k, v in det.items() if v not in (None, [], "") and k != "found"})
             decision = complaint_watch.alert_decision(
-                rec, project_bins=pbins, first_sync=first_sync, already_alerted=False, now=now,
+                rec, project_bins=pbins, first_sync=fs, already_alerted=False, now=now,
                 first_seen_at=(ex or {}).get("detected_at"))
             if ex is not None and decision["event"] == "new_complaint" and decision["alert"]:
                 decision.update(alert=False, reason="already stored: status change only")
@@ -45652,7 +45685,7 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
             if mode != "live" or decision["reason"].startswith("wrong property"):
                 continue
             if ex is None:
-                doc = _bis_row_to_dob_log(rec, project, own_bin, decision, first_sync, now)
+                doc = _bis_row_to_dob_log(rec, project, own_bin, decision, fs, now)
                 try:
                     await db.dob_logs.insert_one(doc)
                 except Exception as e:
@@ -45696,7 +45729,7 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
                     project, doc, "bis", event=_BIS_EMAIL_EVENT.get(decision["event"], "new"))
     await _bis_ecb_pass(project, client, pbins, mode=mode, now=now, summary=summary,
                         first_done=set(((state.get("watch") or {}).get("bis_ecb") or {})
-                                       .get("bins_first_synced") or []))
+                                       .get(_first_synced_field(mode)) or []))
     if lot_bins:
         summary["lot_bins"] = list(lot_bins)
     upd: Dict[str, Any] = {"company_id": cid, "watch.bis_complaints.last_attempt_at": now,
@@ -45710,7 +45743,7 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
         upd["watch.bis_complaints.lot_bins"] = sorted(set(lot_bins))
     await db[SOURCE_SYNC_STATE].update_one(
         {"_id": pid},
-        {"$set": upd, "$addToSet": {"watch.bis_complaints.bins_first_synced": {"$each": ok_bins}}},
+        {"$set": upd, "$addToSet": {f"watch.bis_complaints.{_first_synced_field(mode)}": {"$each": ok_bins}}},
         upsert=True)
     return summary
 
@@ -45756,8 +45789,11 @@ async def _bis_ecb_pass(project: dict, client, pbins: set, *, mode: str, now: da
             seen = await db[COMPLAINT_WATCH_LEDGER].find_one({"_id": key})
             if seen:
                 continue
+            fs = first_sync
+            if fs and mode == "live" and await _shadow_judged_new(pid, "violation_number", num):
+                fs = False
             d = complaint_watch.summons_decision(
-                row, bin_=b, project_bins=pbins, first_sync=first_sync,
+                row, bin_=b, project_bins=pbins, first_sync=fs,
                 already_alerted=bool(await db.system_config.find_one(
                     {"key": {"$regex": f"^{re.escape(_dob_alert_key(pid, num))}(:|$)"}})),
                 now=now)
@@ -45791,7 +45827,7 @@ async def _bis_ecb_pass(project: dict, client, pbins: set, *, mode: str, now: da
                 "signal_kind": "violation_ecb", "dataset": "bis-ecb",
                 "dob_link": bis_violations.ecb_detail_url(num),
                 "site_bin": b if b != own_bin else None,
-                "bin_first_pass": bool(first_sync and not d["alert"]),
+                "bin_first_pass": bool(fs and not d["alert"]),
                 "bis_first_seen_at": now, "detected_at": now, "created_at": now, "updated_at": now,
                 "is_deleted": False,
             }
@@ -45813,7 +45849,7 @@ async def _bis_ecb_pass(project: dict, client, pbins: set, *, mode: str, now: da
         upd["watch.bis_ecb.last_success_at"] = now
     summary["ecb_errors"] = errors        # its own state: never fails the complaint watch
     await db[SOURCE_SYNC_STATE].update_one(
-        {"_id": pid}, {"$set": upd, "$addToSet": {"watch.bis_ecb.bins_first_synced": {"$each": ok_bins}}},
+        {"_id": pid}, {"$set": upd, "$addToSet": {f"watch.bis_ecb.{_first_synced_field(mode)}": {"$each": ok_bins}}},
         upsert=True)
 
 
@@ -66046,9 +66082,16 @@ async def _handle_dob_status(project_id: str, *,
         "company_id": _company_id_filter(company_id),
         "record_type": "complaint",
         "is_deleted": {"$ne": True},
-    }).sort("detected_at", -1).to_list(2000)
+        # 311 service requests are stored as complaints too: 169 of the 237
+        # complaint rows in production on 2026-11-10, up to 73 on one project,
+        # every one with complaint_source "311" (the erm2-nwe9 Open Data path
+        # writes "311 Complaint"). They are excluded HERE, by the database, so
+        # no number of them can push a DOB complaint out of what is read, and
+        # nothing is cut at a row count (tests/test_dob_status_real_mongo.py).
+        "complaint_source": {"$nin": ["311", "311 Complaint"]},
+    }).sort([("detected_at", -1), ("_id", -1)]).to_list(None)
     # dob_logs keeps a row per status change: judge each complaint by its
-    # NEWEST row, and skip 311 service requests (stored as complaints too).
+    # NEWEST row (re-sorted here too, so the rule never depends on the cursor).
     complaints.sort(key=lambda c: source_sync.as_utc(c.get("detected_at"))
                     or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     latest: Dict[str, dict] = {}

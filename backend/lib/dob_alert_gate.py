@@ -124,6 +124,8 @@ def order_in_force(row: Dict[str, Any]) -> Optional[str]:
     if str(r.get("record_type") or "").lower() == "swo":
         status = str(r.get("current_status") or r.get("status") or "")
         return None if (_ORDER_ENDED.search(status) or wa_alerts.is_closed(r)) else "swo"
+    if wa_alerts.is_summons(r):
+        return None             # a summons citing an order is not the order
     text = _order_text(r)
     if not _ORDER_TEXT.search(text) or _ORDER_ENDED.search(text):
         return None
