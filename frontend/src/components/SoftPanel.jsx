@@ -18,14 +18,29 @@ import { SOFT_PLATEAU } from './softPlateau';
 // to the run. It is never stretched: a thin strip stretched a long way drew wrongly on Android (blank, then bands
 // and hairlines), while corners, which are never stretched, always drew right.
 export const TILE = 256;
+// Every picture is cut BLEED larger than the box it fills (real neighbouring pixels in the extra band) and clipped to
+// the box. A picture fades slightly at its own edge when drawn on a fractional pixel, which is every phone whose density
+// is not a whole number; with the bleed the fade falls outside the clip and neighbouring pieces meet without a hairline.
+export const BLEED = 2;
+export function BleedImage({ src, width, height, style }) {
+  return (
+    <View style={[{ width, height, overflow: 'hidden' }, style]}>
+      <Image
+        source={src}
+        style={{ position: 'absolute', left: -BLEED, top: -BLEED, width: width + 2 * BLEED, height: height + 2 * BLEED }}
+        fadeDuration={0}
+      />
+    </View>
+  );
+}
 export function TileRow({ src, height, count = 3 }) {
   const tiles = [];
-  for (let i = 0; i < count; i += 1) tiles.push(<Image key={i} source={src} style={{ width: TILE, height }} fadeDuration={0} />);
+  for (let i = 0; i < count; i += 1) tiles.push(<BleedImage key={i} src={src} width={TILE} height={height} />);
   return <View style={{ flex: 1, height, overflow: 'hidden', flexDirection: 'row' }}>{tiles}</View>;
 }
 function TileCol({ src, width, count = 3 }) {
   const tiles = [];
-  for (let i = 0; i < count; i += 1) tiles.push(<Image key={i} source={src} style={{ width, height: TILE }} fadeDuration={0} />);
+  for (let i = 0; i < count; i += 1) tiles.push(<BleedImage key={i} src={src} width={width} height={TILE} />);
   return <View style={{ width, overflow: 'hidden' }}>{tiles}</View>;
 }
 export function useTileCount() {
@@ -174,9 +189,9 @@ function NineTiles({ set, c, plateau }) {
       }}
     >
       <View style={{ height: c, flexDirection: 'row' }}>
-        <Image source={set.tl} style={fixed} fadeDuration={0} />
+        <BleedImage src={set.tl} width={c} height={c} />
         <TileRow src={set.tc} height={c} count={nH} />
-        <Image source={set.tr} style={fixed} fadeDuration={0} />
+        <BleedImage src={set.tr} width={c} height={c} />
       </View>
       <View style={{ flex: 1, flexDirection: 'row' }}>
         <TileCol src={set.ml} width={c} count={nV} />
@@ -184,9 +199,9 @@ function NineTiles({ set, c, plateau }) {
         <TileCol src={set.mr} width={c} count={nV} />
       </View>
       <View style={{ height: c, flexDirection: 'row' }}>
-        <Image source={set.bl} style={fixed} fadeDuration={0} />
+        <BleedImage src={set.bl} width={c} height={c} />
         <TileRow src={set.bc} height={c} count={nH} />
-        <Image source={set.br} style={fixed} fadeDuration={0} />
+        <BleedImage src={set.br} width={c} height={c} />
       </View>
     </View>
   );
@@ -251,9 +266,9 @@ function PillTiles({ set, d }) {
   const n = w ? Math.max(1, Math.ceil((w - 2 * d.capW) / TILE)) : 1;
   return (
     <View style={[StyleSheet.absoluteFill, { flexDirection: 'row' }]} onLayout={(e) => setW((cur) => (Math.ceil(cur / 64) === Math.ceil(e.nativeEvent.layout.width / 64) ? cur : e.nativeEvent.layout.width))}>
-      <Image source={set.L} style={{ width: d.capW, height: d.imgH }} fadeDuration={0} />
+      <BleedImage src={set.L} width={d.capW} height={d.imgH} />
       <TileRow src={set.M} height={d.imgH} count={n} />
-      <Image source={set.R} style={{ width: d.capW, height: d.imgH }} fadeDuration={0} />
+      <BleedImage src={set.R} width={d.capW} height={d.imgH} />
     </View>
   );
 }

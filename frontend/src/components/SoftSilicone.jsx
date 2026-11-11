@@ -3,7 +3,7 @@ import { View, Text, TextInput, Pressable, Image, StyleSheet, ActivityIndicator,
 import { Eye, EyeOff } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { SOFT, SOFT_DIMS, SOFT_FULL } from './softAssets';
-import { TileRow, useTileCount } from './SoftPanel';
+import { TileRow, BleedImage, useTileCount } from './SoftPanel';
 
 /**
  * Soft-silicone controls for the login and register screens: a field that is a
@@ -61,9 +61,9 @@ export function Surface({ kind, isDark }) {
       pointerEvents="none"
       style={{ position: 'absolute', left: -d.margin, right: -d.margin, top: -d.margin, height: d.imgH, flexDirection: 'row' }}
     >
-      <Image source={set.L} style={{ width: d.capW, height: d.imgH }} />
+      <BleedImage src={set.L} width={d.capW} height={d.imgH} />
       <TileRow src={set.M} height={d.imgH} count={tiles} />
-      <Image source={set.R} style={{ width: d.capW, height: d.imgH }} />
+      <BleedImage src={set.R} width={d.capW} height={d.imgH} />
     </View>
   );
 }
