@@ -15,6 +15,7 @@ import { useTheme } from '../context/ThemeContext';
 import ThemeSwitch from './ThemeSwitch';
 import { PillSurface, PebbleSurface, usePressAnim, pressShift } from './SoftPanel';
 import { useAuth } from '../context/AuthContext';
+import { useReaderOpen } from '../utils/readerStore';
 import { brandLabel } from '../utils/brandLabel';
 import { spacing, borderRadius, typography } from '../styles/theme';
 
@@ -56,6 +57,8 @@ const RAIL_WIDTH = 240;
 const RAIL_COLLAPSED = 72;
 const RAIL_PAD = 12;
 const RAIL_CLOSE_DELAY_MS = 80;
+// While a document is open the rail hides ALL the way (width 0) and pops out when the cursor touches the left edge.
+const READER_EDGE = 6;
 
 /**
  * Routes that must render WITHOUT the shell even on desktop.
@@ -224,6 +227,16 @@ export default function DesktopShell({ children }) {
   const { colors, isDark } = useTheme();
   const { user } = useAuth();
   const open = useSharedValue(0);
+  const rest = useSharedValue(RAIL_COLLAPSED); // the width the rail rests at: 72, or 0 while a document is open
+  const reader = useReaderOpen();
+  const readerRef = useRef(false);
+  readerRef.current = reader;
+  useEffect(() => {
+    rest.value = withTiming(reader ? 0 : RAIL_COLLAPSED, { duration: 220, easing: Easing.out(Easing.cubic) });
+    // a document just opened: step out of the way unless the cursor is already at the edge
+    if (reader && expandedRef.current) closeRail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reader]);
   const [isOpen, setIsOpen] = useState(false);
   const closeTimer = useRef(null);
 
@@ -260,7 +273,7 @@ export default function DesktopShell({ children }) {
     if (Platform.OS !== 'web' || typeof document === 'undefined') return undefined;
     const onMove = (e) => {
       if (bareRef.current) return;
-      const edge = expandedRef.current ? RAIL_WIDTH + 2 : RAIL_COLLAPSED;
+      const edge = expandedRef.current ? RAIL_WIDTH + 2 : (readerRef.current ? READER_EDGE : RAIL_COLLAPSED);
       if (e.clientX <= edge) openRail(); else closeRail();
     };
     const onLeaveWindow = (e) => { if (!e.relatedTarget) closeRail(); };
@@ -275,9 +288,11 @@ export default function DesktopShell({ children }) {
   }, []);
 
   const railStyle = useAnimatedStyle(() => ({
-    width: RAIL_COLLAPSED + (RAIL_WIDTH - RAIL_COLLAPSED) * open.value,
+    width: rest.value + (RAIL_WIDTH - rest.value) * open.value,
+    // the rail cannot be narrower than its own padding, so a hidden rail also slides left by that much
+    left: -(RAIL_PAD * 2) * (1 - rest.value / RAIL_COLLAPSED) * (1 - open.value),
     shadowOpacity: 0.28 * open.value,
-  }), [open]);
+  }), [open, rest]);
   const footStyle = useAnimatedStyle(() => ({
     opacity: Math.max(0, (open.value - 0.5) / 0.5),
   }), [open]);
