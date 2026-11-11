@@ -66,16 +66,28 @@ SAFETY_CATEGORIES = {"8A", "01", "02", "10", "14", "16", "28", "30", "40", "41",
 #              FOR disobeying a stop-work order: not a new order.
 #   RESCIND    an order lifted: L2 / Y2 in full, L3 / Y4 in part.
 #   V3 ("Stop Work Order Violation Served for Non-Compliant After Hours Work")
-#              stays an ORDER: DOB's action for it reads "Stop all work". The
-#              conservative reading until the operator rules otherwise.
-ORDER_DISPOSITIONS = {"A3", "H5", "L1", "K4", "K6", "V3", "Y1", "Y3"}
+#              is a VIOLATION SERVED, as DOB labels it -- not a confirmed order
+#              (operator ruling 2026-11-11: wording never makes an order).
+ORDER_DISPOSITIONS = {"A3", "H5", "L1", "K4", "K6", "Y1", "Y3"}
 VACATE_DISPOSITIONS = {"Y1", "Y3", "Y4"}
 # A PARTIAL rescind leaves the rest of the order in force (L3: SWO partially
 # rescinded; Y4: vacate partially rescinded), so a later full lift is a lift.
 PARTIAL_RESCIND_DISPOSITIONS = {"L3", "Y4"}
 EMERGENCY_DISPOSITIONS = {"P3", "RH", "RI"}
 VIOLATION_DISPOSITIONS = {"A1", "A2", "A4", "A5", "A6", "A8", "A9", "B1", "B2", "R5", "RK", "K5", "ND",
-                          "H3", "H4"}
+                          "H3", "H4", "V3"}
+
+
+def disposition_words(rec: Mapping[str, Any]) -> Optional[str]:
+    """DOB's own words for the complaint's disposition: 'V3 - STOP WORK ORDER
+    VIOLATION SERVED ...' as BIS printed it, else DOB's code table. None when
+    DOB has not disposed the complaint."""
+    code = str(rec.get("disposition_code") or "").strip().upper()
+    if not code:
+        return None
+    words = str(rec.get("disposition_desc") or rec.get("disposition_label") or "").strip() \
+        or get_disposition_label(code)
+    return f"{code} - {words}" if words and words != code else code
 RESCIND_DISPOSITIONS = {"L2", "L3", "Y2", "Y4"}
 
 
@@ -280,6 +292,8 @@ def card_summary(rec: Mapping[str, Any]) -> str:
     desc = str(rec.get("description") or "").strip().rstrip(".")
     insp = rec.get("last_inspection_date") or rec.get("inspection_date")
     state = (f"Inspected {insp}." if insp else "Not inspected yet.")
+    disp = disposition_words(rec)
+    state += f" DOB disposition: {disp}." if disp else ""
     return (f"DOB complaint {cn} ({cat} {get_category_label(cat)}) received{when}: {desc}. {state}").replace("  ", " ")
 
 
@@ -488,6 +502,7 @@ def render_alert(rec: Mapping[str, Any], decision: Mapping[str, Any], *, project
         lines = [f"*{head} — {project_name}*",
                  f"Queja {cn}, recibida por el DOB {when}." + (" (Llegó tarde.)" if decision.get("late") else ""),
                  f"Dice: {desc}." if desc else "",
+                 f"Disposición del DOB (BIS): {disposition_words(rec)}." if disposition_words(rec) else "",
                  ("Todavía sin inspección. Una queja no es una violación: corrija esto antes de que llegue el inspector."
                   if not insp else f"Inspeccionada {insp}."),
                  link]
@@ -499,6 +514,7 @@ def render_alert(rec: Mapping[str, Any], decision: Mapping[str, Any], *, project
         lines = [f"*{head} — {project_name}*",
                  f"Complaint {cn}, received by DOB {when}." + (" (Arrived late.)" if decision.get("late") else ""),
                  f"It says: {desc}." if desc else "",
+                 f"DOB disposition (BIS): {disposition_words(rec)}." if disposition_words(rec) else "",
                  ("Not inspected yet. A complaint is not a violation: fix this before the inspector comes."
                   if not insp else f"Inspected {insp}."),
                  link]

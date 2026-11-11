@@ -324,16 +324,25 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
         self.assertEqual([x[1] for x in _hist(r)], ["first_seen", "legacy_first_refresh", "sync"])
         s.alert.assert_not_awaited()
 
-        # ...an update that ISSUES a Stop Work Order emails, once.
+        # AMENDED 2026-11-11 (operator ruling: an order is ISSUED, not worded).
+        # A violation whose words now name a stop-work order is still a
+        # violation -- an SWO comes from the stop-work dataset or a complaint's
+        # order disposition (tests/test_an_order_is_issued_not_worded.py).
         s.sync(_project(), [_viol_rec(category="V*-DOB VIOLATION - PENALTY",
                                       description="Full Stop Work Order")])
+        s.alert.assert_not_awaited()
+
+        # ...an update that ISSUES an order still emails, once (vacate wording
+        # is outside that ruling and unchanged).
+        s.sync(_project(), [_viol_rec(category="V*-DOB VIOLATION - PENALTY",
+                                      description="Full Vacate Order")])
         s.alert.assert_awaited_once()
         sent_project, sent_log = s.alert.await_args.args
         self.assertEqual(sent_project["_id"], "p1")
         self.assertEqual(sent_log["raw_dob_id"], "555")
         self.assertEqual(sent_log["current_status"], "V*-DOB VIOLATION - PENALTY")
         self.assertEqual(s.alert.await_args.kwargs["source"], "dob")
-        self.assertEqual(s.alert.await_args.kwargs["event"], "swo")
+        self.assertEqual(s.alert.await_args.kwargs["event"], "vacate")
 
     def test_legacy_unchanged_status_only_gains_history(self):
         s = _Sync()
@@ -361,7 +370,11 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
         AMENDED 2026-10-22 (operator ruling, lib/dob_alert_gate): a plain
         status change (ACTIVE -> HEARING) no longer emails at all, so the
         change driven here is one that ISSUES a Stop Work Order -- the update
-        exception. The plain change is asserted silent separately below."""
+        exception. The plain change is asserted silent separately below.
+
+        AMENDED 2026-11-11 (operator ruling: an order is ISSUED, not worded): a
+        violation's words never make it a stop-work order, so the order this
+        update issues is a vacate order (vacate wording is outside the ruling)."""
         for scan_done, expect in ((False, 0), (True, 1)):
             with self.subTest(initial_scan_done=scan_done):
                 s = _Sync()
@@ -370,7 +383,7 @@ class TestLegacyFirstRefreshIsSilent(unittest.TestCase):
                 with patch.object(server, "db", s.db), \
                         patch.object(server, "_query_dob_apis", AsyncMock(
                             return_value=[_viol_rec(category="V*-DOB VIOLATION - HEARING",
-                                                    description="Full Stop Work Order")])), \
+                                                    description="Full Vacate Order")])), \
                         patch.object(server, "_initial_scan_done", AsyncMock(return_value=scan_done)), \
                         patch.object(server, "_dob_alert_recently_sent", AsyncMock(return_value=False)), \
                         patch.object(server, "_mark_dob_alert_sent", AsyncMock()), \

@@ -80,7 +80,9 @@ DIGEST_KIND = "dot_digest"
 
 RED, ORANGE, GREEN = "🔴", "🟠", "🟢"
 
-_CRITICAL_TEXT = re.compile(r"\bvacate\b|\bstop[- ]work order\b", re.IGNORECASE)
+# Wording that marks a violation critical: vacate only. A violation's words
+# naming a stop-work order never make it one (operator ruling 2026-11-11).
+_CRITICAL_TEXT = re.compile(r"\bvacate\b", re.IGNORECASE)
 
 
 _SUMMONS_DATASETS = ("6bgk-3dad", "bis-ecb")

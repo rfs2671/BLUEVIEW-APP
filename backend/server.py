@@ -42239,32 +42239,15 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
                             )
                         except Exception:
                             rec["_dataset"] = None
-                        if ep["record_type"] == "violation":
-                            # Check ALL text fields for stop work indicators across all 3 violation datasets
-                            swo_fields = [
-                                rec.get("violation_type", ""),
-                                rec.get("violation_type_code", ""),
-                                rec.get("description", ""),
-                                rec.get("violation_description", ""),
-                                rec.get("infraction_codes", ""),
-                                rec.get("penalty_description", ""),
-                                rec.get("section_of_law", ""),
-                                rec.get("severity", ""),
-                                rec.get("violation_category", ""),
-                                rec.get("certification_status", ""),
-                                rec.get("status", ""),
-                            ]
-                            combined = " ".join(str(f or "").lower() for f in swo_fields)
-                            # An ECB/OATH summons (6bgk-3dad, keyed on its ECB
-                            # number) is a penalty notice, never itself an order,
-                            # even when its text cites one ("work contrary to
-                            # SWO"). Both production rows this retyped were such
-                            # summonses; the BIS watch stores the same summons as
-                            # a violation, and the two paths must agree.
-                            if rec.get("ecb_violation_number"):
-                                pass
-                            elif "stop work" in combined or "swo" in combined or "partial stop" in combined:
-                                rec["_record_type"] = "swo"
+                        # A violation is never retyped as a stop-work order from
+                        # its WORDING (operator ruling 2026-11-11). This retyped
+                        # every production 'swo' row that was not from the
+                        # stop-work dataset: two ECB summonses (39550534Y,
+                        # 39543624M) citing an SWO. A violation that references
+                        # or alleges stop-work conditions stays a violation, in
+                        # DOB's own classification; an order comes from the
+                        # stop-work dataset (3usq-5cid) or a complaint DOB
+                        # disposed with an order code (lib/complaint_watch).
                         all_records.append(rec)
                 else:
                     logger.warning(f"DOB API {ep['url']} returned {status_code}")
@@ -43570,14 +43553,12 @@ def _classify_violation_subtype(rec: dict) -> str:
         # SWO_* subtype as a stop-work order.
         return "ECB"
 
-    # Stop-work detection keyed on DOB's REAL phrasing, not just the literal
-    # "FULL STOP WORK". A borough-commissioner order reads "…ORDERED ALL WORK
-    # STOPPED…", which the old check missed → it fell through to COMM_ORDER and
-    # ranked below open violations. record_type=='swo' still forces stop-work.
-    stop_work = record_type == "swo" or any(p in combined for p in (
-        "STOP WORK", "WORK STOPPED", "WORK SHALL NOT RESUME",
-        "CEASE ALL WORK", "WORK SHALL STOP",
-    ))
+    # A stop-work subtype only for a stop-work ORDER record (3usq-5cid). A
+    # violation whose words reference one -- "BOROUGH COMMISSIONER HAS ORDERED
+    # ALL WORK STOPPED" (2820774, a "V-DOB VIOLATION - ACTIVE") -- keeps DOB's
+    # own classification below (COMM_ORDER there); wording never makes an
+    # order (operator ruling 2026-11-11).
+    stop_work = record_type == "swo"
     if stop_work:
         return "SWO_PARTIAL" if "PARTIAL" in combined else "SWO_FULL"
     if "FULL VACATE" in combined:
@@ -45563,6 +45544,9 @@ def _bis_row_to_dob_log(rec: dict, project: dict, project_bin: str, decision: di
         "complaint_source": "DOB Complaint",
         "category_label": get_category_label(rec.get("category") or ""),
         "disposition_code": rec.get("disposition_code"),
+        # DOB's exact disposition words, as BIS printed them, and where from.
+        "disposition_label": complaint_watch.disposition_words(rec),
+        "disposition_source": "DOB BIS" if rec.get("disposition_code") else None,
         "severity": "Action" if sa["tier"] in ("order", "safety") else "Monitor",
         "signal_kind": "complaint_dob",
         "dataset": "bis",
@@ -45741,6 +45725,9 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
                 top["complaint_status"] = top["current_status"]      # what /dob-summary counts
                 if rec.get("disposition_date"):
                     top["disposition_date"] = rec.get("disposition_date")
+                if rec.get("disposition_code"):
+                    top["disposition_label"] = complaint_watch.disposition_words(rec)
+                    top["disposition_source"] = "DOB BIS"
                 after = {**ex, **top, "id": str(ex["_id"])}
                 changed = _bis_status_key(ex.get("current_status")) != top["current_status"]
                 hist, _legacy = status_hist.refreshed_history(ex, top["current_status"], now,

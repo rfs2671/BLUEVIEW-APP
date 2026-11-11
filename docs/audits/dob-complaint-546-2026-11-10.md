@@ -290,3 +290,19 @@ The reviewer found **no way for off or shadow mode to write records, send email,
 - **V3.** DOB's action for it reads "Stop all work", so it stays an order. **This needs an operator ruling.**
 - **Partial rescinds.** A partial rescind (L3, Y4) leaves the order in force, so the later full lift alerts.
 - **Old summonses in the morning brief.** The brief no longer calls a summons an older scan typed `swo` a "Stop-work order".
+
+## Operator ruling 2026-11-11: an order is issued, not worded
+
+An officially issued stop-work order is distinct from a violation that references or alleges stop-work conditions. **Wording never makes an order.**
+
+**What counts as an order:**
+- a record of the stop-work dataset (3usq-5cid);
+- a complaint DOB **disposed** with an order code: A3 full, L1 partial, H5, K4, K6, and vacate Y1/Y3.
+
+**What changed:**
+- **V3** ("Stop Work Order Violation Served for Non-Compliant After Hours Work") is a violation served, as DOB labels it. It is alerted at high priority, never headed "STOP-WORK ORDER". This reverses the earlier conservative choice.
+- **Open Data ingestion** no longer retypes a violation as `swo` from its words. Measured in production, that rule had typed 3 rows as stop-work orders, and none came from the stop-work dataset:
+  - ECB summonses 39550534Y and 39543624M;
+  - DOB violation 2820774, a "V-DOB VIOLATION - ACTIVE" whose text reads "BOROUGH COMMISSIONER HAS ORDERED ALL WORK STOPPED". It was given subtype SWO_FULL. It is now COMM_ORDER, still open and on the open-violations list, with DOB's words intact. Its stored subtype is recomputed on the next Open Data refresh.
+- **The order gate and the Shabbos-critical rule** no longer read stop-work wording on a violation. Vacate wording is unchanged.
+- **DOB's exact disposition words and their source** are kept on BIS rows (`disposition_label`, `disposition_source: "DOB BIS"`). They also appear in the complaint alert (EN/ES) and on the Compliance card: "DOB disposition (BIS): V3 - STOP WORK ORDER VIOLATION SERVED FOR NON-COMPLIANT AFTER HOURS WORK."

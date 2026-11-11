@@ -136,10 +136,13 @@ def order_in_force(row: Dict[str, Any]) -> Optional[str]:
         if code not in ORDER_DISPOSITIONS and code not in PARTIAL_RESCIND_DISPOSITIONS:
             return None
         return "vacate" if code in VACATE_DISPOSITIONS else "swo"
+    # Any other record (a DOB violation): its WORDS never make a stop-work
+    # order (operator ruling 2026-11-11) -- an order comes from the stop-work
+    # dataset or a complaint's disposition, above. Vacate wording is unchanged.
     text = _order_text(r)
-    if not _ORDER_TEXT.search(text) or _ORDER_ENDED.search(text):
+    if not _VACATE.search(text) or _ORDER_ENDED.search(text):
         return None
-    return "vacate" if _VACATE.search(text) else "swo"
+    return "vacate"
 
 
 def update_issues_order(before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> Optional[str]:

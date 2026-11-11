@@ -115,7 +115,7 @@ class D4DispositionsReadAsDobLabelsThem(unittest.TestCase):
                                  project_bins={"3255205"}, first_sync=False, already_alerted=False, now=NOW)
 
     def test_violations_for_disobeying_an_swo_are_violations(self):
-        for code in ("H3", "H4", "A4", "A1", "A5", "A9"):
+        for code in ("H3", "H4", "V3", "A4", "A1", "A5", "A9"):
             with self.subTest(code=code):
                 d = self._d(code)
                 self.assertEqual((d["alert"], d["event"], d["priority"]), (True, "violation_served", "high"))
@@ -253,9 +253,10 @@ class FinalReviewOfTheFixes(unittest.TestCase):
         _run(db, client, "live", now=NOW + timedelta(days=3, minutes=10), emails=again)
         self.assertEqual([e for e in again if e[0] == "3A88489"], [])
 
-    def test_v3_is_an_order_until_ruled_otherwise(self):
-        self.assertEqual(dob_alert_gate.order_in_force({"record_type": "complaint", "disposition_code": "V3"}),
-                         "swo")
+    def test_v3_is_a_violation_served_per_the_operator_ruling(self):
+        # Ruled 2026-11-11: wording never makes an order; V3 is what DOB labels
+        # it (tests/test_an_order_is_issued_not_worded.py has the full case).
+        self.assertIsNone(dob_alert_gate.order_in_force({"record_type": "complaint", "disposition_code": "V3"}))
 
     def test_a_partial_rescind_leaves_the_order_so_the_full_lift_alerts(self):
         a3 = {"record_type": "complaint", "disposition_code": "A3", "complaint_status": "ACTIVE"}
