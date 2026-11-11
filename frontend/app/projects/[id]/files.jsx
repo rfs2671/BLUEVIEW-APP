@@ -2153,11 +2153,15 @@ function buildStyles(colors, isDark) {
   // row without are the same height and the list does not jump as they load.
   // White ground because a plan sheet is white and a transparent JPEG edge
   // against a dark surface reads as a rendering fault.
+  // A plan's first page is white paper, so on the light page it needs an edge: a firm outline in the opposite tone to
+  // the theme (dark on light, light on dark) so the sheet reads as an object, not a hole.
   fileThumb: {
     width: 56,
     height: 56,
     borderRadius: borderRadius.lg,
     backgroundColor: '#ffffff',
+    borderWidth: 1.5,
+    borderColor: isDark ? withAlpha('#ECEDE9', 0.65) : withAlpha('#1C2B38', 0.65),
   },
   fileTypeLabel: {
     fontSize: 9,
