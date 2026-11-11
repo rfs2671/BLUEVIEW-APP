@@ -215,6 +215,39 @@ class DobsWordsSurviveTheOpenDataRefresh(unittest.TestCase):
         self.assertEqual(row["disposition_code"], "A3")
         self.assertIn("swo", events)
 
+    def test_a_repaired_row_is_not_alerted_again_by_open_data(self):
+        # BIS saw (and alerted) A3; a lapse let an old refresh revert the row.
+        bis_a3 = {"status": "ACTIVE", "disposition_code": "A3", "disposition_date": "2026-11-09",
+                  "disposition_desc": "FULL STOP WORK ORDER SERVED"}
+        old = self.BIS
+        try:
+            self.BIS = bis_a3
+            row, events = self._sync("live", 10, top={"complaint_status": "ACTIVE", "current_status": "ACTIVE",
+                                                      "disposition_code": None})
+        finally:
+            self.BIS = old
+        self.assertEqual(row["disposition_code"], "A3")
+        self.assertNotIn("swo", events)
+
+    def test_a_second_order_on_the_same_complaint_is_processed_and_alerted(self):
+        """A3 -> L2 -> A3. The (CLOSED, A3) state was decided once, long ago;
+        the row now holds L2. The watch must bring the row up to date and the
+        order rule must alert the new order -- not skip it as 'decided'."""
+        from tests.test_bis_complaint_watch_flow import _run, _seed
+        from tests.test_bis_watch_review4 import _ListEdit
+        db, emails = _seed(), []
+        row = next(d for d in db.dob_logs.docs if d["raw_dob_id"] == "3A70077")
+        row.update(disposition_code="L2", bis={"status": "RESOLVED", "disposition_code": "L2"})
+        db.complaint_watch_ledger.docs.append({"_id": "cw:p546:3A70077:stop_work_order", "project_id": "p546",
+                                               "complaint_number": "3A70077", "mode": "live",
+                                               "bis_status": "CLOSED", "bis_disposition": "A3"})
+        client = _ListEdit("3A70077", "<td class=\"content\" align=\"center\" bgcolor='red'>L1</td>",
+                           "<td class=\"content\" align=\"center\" bgcolor='red'>A3</td>",
+                           detail=("L1 - PARTIAL STOP WORK ORDER", "A3 - FULL STOP WORK ORDER SERVED"))
+        _run(db, client, "live", emails=emails)
+        self.assertEqual(row["disposition_code"], "A3")
+        self.assertIn(("3A70077", "bis", "swo"), emails)
+
     def test_the_live_watch_stamps_what_it_listed_and_shadow_does_not(self):
         from datetime import timedelta as _td
         from tests.test_bis_complaint_watch_flow import _BIS, _run, _seed

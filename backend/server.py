@@ -44728,8 +44728,9 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # ── NON-PERMIT, ALREADY KNOWN: refresh in place ──
                 if existing.get("is_deleted") is True:
                     continue   # a deleted row stays deleted (old insert-once rule)
-                if bis_owns_complaints and record_type == "complaint" \
-                        and not complaint_watch.is_311(existing) and _bis_saw_recently(existing, now):
+                bis_owned = (bis_owns_complaints and record_type == "complaint"
+                             and not complaint_watch.is_311(existing) and _bis_saw_recently(existing, now))
+                if bis_owned:
                     # BIS listed THIS complaint within the hour; Open Data's
                     # extract is from midnight. Its state and words are what
                     # BIS printed (the row's `bis` record, which no Open Data
@@ -44760,7 +44761,10 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # serves an A3 "Full Stop Work Order" as a new DISPOSITION on a
                 # complaint whose status stays ACTIVE. The 24h throttle and the
                 # before/after comparison keep it to one email.
-                if not legacy:
+                # A row BIS owns (above) is alerted by the BIS watch, which saw
+                # the state first: this refresh only re-writes it, never
+                # alerts it again (a repaired row would otherwise look new).
+                if not legacy and not bis_owned:
                     after = {**existing, **dob_log, **(update or {}),
                              "id": str(existing["_id"])}
                     before = existing
@@ -45689,8 +45693,16 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
         ok_bins.append(b)
         first_sync = b not in first_done
         if mode == "live":
-            listed = [cn for cn in (r["complaint_number"] for r in read.rows)
-                      if (stored.get(cn) or {}).get("bis") and not stored[cn].get("is_deleted")]
+            # Stamped only where the row's `bis` record already says what BIS
+            # just listed: a row whose BIS state is behind (its update is about
+            # to run below, or failed last pass) must never be marked current,
+            # or the Open Data refresh would keep the stale state over a newer one.
+            def _bis_matches(r):
+                exb = (stored.get(r["complaint_number"]) or {}).get("bis") or {}
+                return (bool(exb) and not stored[r["complaint_number"]].get("is_deleted")
+                        and _bis_status_key(exb.get("status")) == _bis_status_key(r.get("status"))
+                        and (exb.get("disposition_code") or None) == (r.get("disposition_code") or None))
+            listed = [r["complaint_number"] for r in read.rows if _bis_matches(r)]
             if listed:
                 try:
                     await db.dob_logs.update_many(
@@ -45731,11 +45743,16 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
             if ex is not None and ex_status == _bis_status_key(row.get("status")) \
                     and ex_disp == (row.get("disposition_code") or None):
                 continue                      # nothing new on this complaint
-            if await db[COMPLAINT_WATCH_LEDGER].find_one({
+            if ex is None and await db[COMPLAINT_WATCH_LEDGER].find_one({
                     "project_id": pid, "complaint_number": cn, "mode": mode,
                     "bis_status": _bis_status_key(row.get("status")),
                     "bis_disposition": row.get("disposition_code") or None}):
-                continue                      # this state was already decided (shadow stores no row)
+                # This state was already decided and no row holds it (shadow
+                # stores none). A STORED row whose BIS state differs is always
+                # brought up to date below -- a state can come back (A3 -> L2
+                # -> A3, a second order) or last pass's write can have failed;
+                # the order rule and the email throttle keep it to one alert.
+                continue
             rec = dict(row, bin=b)
             fs = first_sync
             if fs and mode == "live" and await _shadow_judged_new(pid, "complaint_number", cn):

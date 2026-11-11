@@ -324,3 +324,9 @@ An officially issued stop-work order is distinct from a violation that reference
   - A complaint BIS had not listed (an older page, another BIN) could have a real Open Data change suppressed, along with its stop-work alert.
 
   Ownership is now per complaint. BIS owns the fields only while the live watch read the project within the hour **and** listed that complaint within the hour (`bis_last_seen_at`, stamped once per BIN per live pass). The values come from the row's `bis` record, which no Open Data pass writes, so an overwritten row is repaired. Severity and advice follow BIS's state.
+- **Re-check of cd202be1.** Two defects, both fixed with tests that fail on cd202be1:
+  - **Second orders were skipped.** The seen-stamp could freshen a row whose BIS record was behind, and the "already decided" ledger check could skip a state that came back. For example, a second order (A3 → L2 → A3) was never processed or alerted. Now:
+    - only rows whose BIS record matches what BIS just listed are stamped;
+    - the ledger skip applies only where no row exists (shadow);
+    - a stored row whose BIS state differs is always brought up to date.
+  - **Repaired rows were alerted twice.** A row repaired after a lapse looked like a new order to the Open Data refresh. A row BIS owns is alerted by the BIS watch only.
