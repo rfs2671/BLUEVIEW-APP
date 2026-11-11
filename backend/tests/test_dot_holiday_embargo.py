@@ -67,6 +67,22 @@ NO_WAIVER_PERMIT = {**REAL_PERMIT, "permitnumber": NO_WAIVER_NUM}
 NO_WAIVER_STIPS = [{**r, "permitnumber": NO_WAIVER_NUM}
                    for r in REAL_STIPS if r["stipulationid"] != "410"]
 STIP_DATASET = "gsgx-6efw"
+# DOT's embargo lists as they answered for the recorded segments on 2026-11-11
+# (4te8-9n3p blocks, jr6f-nsuv intersections). West Broadway, Prince St to
+# W Houston St -- the recorded permit's block -- IS a listed block.
+EMBARGO_LISTS = json.loads((Path(__file__).resolve().parent / "fixtures" / "dot_embargo"
+                            / "embargo_lists_2026-11-11.json").read_text(encoding="utf-8"))
+
+
+def _embargo_answer(dataset, params):
+    """The recorded rows for a recorded request; [] for any other segment
+    (DOT's list does not name it)."""
+    for k, case in EMBARGO_LISTS.items():
+        if k.startswith("_"):
+            continue
+        if case["params"].get(dataset, {}).get("$where") == params.get("$where"):
+            return copy.deepcopy(case["rows"][dataset])
+    return []
 # Operator copy (2026-10-22), written out here rather than read from the code.
 ACTION_EN = "No street work Nov 15 - Jan 2 unless DOT grants one."
 ACTION_ES = ("No se permite trabajo en la calle del 15 de nov al 2 de ene salvo que "
@@ -152,6 +168,8 @@ def _fetch(permits, stips):
             m = re.search(r"permitnumber = '([^']+)'", params.get("$where", ""))
             got = stips.get(m.group(1)) if m else None
             return None if got is None else copy.deepcopy(got)
+        if dataset in ("4te8-9n3p", "jr6f-nsuv"):
+            return _embargo_answer(dataset, params)
         return []
     fetch.calls = calls
     return fetch
@@ -187,9 +205,11 @@ class _Env:
 
 
 def _row(start, end, status="ISSUED & PRINTED", waiver=False, **kw):
+    # On an embargoed street (DOT's list was read and names it) unless a test
+    # says otherwise: the street rule has its own tests below.
     r = {"record_type": "dot_permit", "number": "P1", "status": status,
          "work_start": start, "expiration_date": end, "issue_date": "2026-10-01T10:00:00.000",
-         "detected_at": datetime(2026, 10, 2, tzinfo=UTC)}
+         "detected_at": datetime(2026, 10, 2, tzinfo=UTC), "holiday_embargo_street": True}
     if waiver is not None:
         r["holiday_waiver"] = waiver
     r.update(kw)
@@ -240,6 +260,8 @@ class TheOverlapEdges(unittest.TestCase):
 
     def test_the_real_permit_is_exposed(self):
         log = dot_sync.to_log("dot_permit", REAL_PERMIT)
+        # West Broadway, Prince St - W Houston St: a block on DOT's list.
+        log["holiday_embargo_street"] = True
         self.assertTrue(E.exposed(log, self.s))                   # Nov 3 - Nov 30
 
     def test_only_active_permits(self):
@@ -485,7 +507,8 @@ class TheAlertJob(unittest.TestCase):
         env = _Env(is_test=is_test)
         env.db.dot_logs.docs.append({**dot_sync.to_log("dot_permit", NO_WAIVER_PERMIT),
                                      "project_id": "p1", "company_id": "c1",
-                                     "holiday_waiver": False, "detected_at": OCT22})
+                                     "holiday_waiver": False, "holiday_embargo_street": True,
+                                     "detected_at": OCT22})
         srcs = ["dob_violations"] + (["dot_permits"] if dot_synced else [])
         env.db.source_sync_state.docs.append(
             {"_id": "p1", "company_id": "c1",
@@ -560,7 +583,7 @@ GC_NOV12 = datetime(2026, 11, 12, 16, 0, tzinfo=UTC)    # 11 AM ET, Thursday
 def _gc_permit(waiver=False, **kw):
     row = {**dot_sync.to_log("dot_permit", NO_WAIVER_PERMIT),
            "_id": "d_x01", "project_id": "proj_a", "company_id": CO_A,
-           "detected_at": OCT22}
+           "detected_at": OCT22, "holiday_embargo_street": True}
     if waiver is not None:
         row["holiday_waiver"] = waiver
     row.update(kw)
