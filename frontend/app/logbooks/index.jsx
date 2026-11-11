@@ -1209,10 +1209,10 @@ export default function LogBooksScreen() {
               so this is how a CP reaches the approve / send-home decision
               from their own login. */}
           {flagged.count > 0 && (
-            <Pressable onPress={() => router.push(
+            <GlassCard onPress={() => router.push(
               flagged.projectId ? `/logbooks/review?projectId=${flagged.projectId}` : '/logbooks/review'
-            )}>
-              <GlassCard style={styles.notifCard}>
+            )}
+  style={styles.notifCard}>
                 <View style={styles.notifHeader}>
                   <ShieldAlert size={16} strokeWidth={1.5} color={semantic.attention} />
                   <Text style={styles.notifTitle}>Check-In Review</Text>
@@ -1221,7 +1221,6 @@ export default function LogBooksScreen() {
                   {flagged.count} check-in{flagged.count > 1 ? 's' : ''} to review — {flaggedReasonSummary(flagged)}
                 </Text>
               </GlassCard>
-            </Pressable>
           )}
 
           {/* Log book cards */}

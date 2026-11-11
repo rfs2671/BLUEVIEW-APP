@@ -206,6 +206,17 @@ function splitTint(inner, colors) {
 
 export const GlassCard = (props) => (props.variant === 'modal' ? <LegacyGlassCard {...props} /> : <SoftGlassCard {...props} />);
 
+// Props a screen puts on a pressable card that belong to the pressable itself, not the card's look.
+const PASS_THROUGH = [
+  'accessibilityRole', 'accessibilityLabel', 'accessibilityHint', 'accessibilityState', 'accessible',
+  'testID', 'hitSlop', 'onLongPress', 'delayLongPress', 'disabled', 'nativeID',
+];
+function passThrough(props) {
+  const out = {};
+  PASS_THROUGH.forEach((k) => { if (props[k] !== undefined) out[k] = props[k]; });
+  return out;
+}
+
 const SoftGlassCard = (props) => {
   const { children, style, contentStyle, onPress, hoverEffect = true, selected } = props;
   const { colors: themeColors } = useTheme();
@@ -218,15 +229,19 @@ const SoftGlassCard = (props) => {
     ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false), onPressIn: () => setPressed(true), onPressOut: () => setPressed(false) }
     : { onMouseEnter: () => hoverEffect && setIsHovered(true), onMouseLeave: () => hoverEffect && setIsHovered(false) };
   const d = SOFT_PANEL_DIMS.card;
-  const anim = usePressAnim(pressed, selected);
+  // A card that cannot be pressed or chosen (a record in a list) is just ONE picture: no pressed or dented copies,
+  // no animation values to drive.
+  const interactive = !!onPress || selected !== undefined;
+  const anim = usePressAnim(pressed, selected, true);
   return (
     <CardWrapper
+      {...(onPress ? passThrough(props) : null)}
       {...cardProps}
       style={[outer, isHovered && !pressed && hoverEffect && { transform: [{ translateY: -2 }] }]}
     >
       <View style={[{ position: 'relative', minHeight: d.min }, rest]}>
-        <PanelSurface kind="card" anim={anim} />
-        <Animated.View style={[softStyles.cardContent, inside, contentStyle, tint, { borderRadius: d.radius }, pressShift(anim)]}>{children}</Animated.View>
+        <PanelSurface kind="card" anim={interactive ? anim : undefined} />
+        <Animated.View style={[softStyles.cardContent, inside, contentStyle, tint, { borderRadius: d.radius }, interactive ? pressShift(anim) : null]}>{children}</Animated.View>
       </View>
     </CardWrapper>
   );
@@ -249,12 +264,13 @@ export const StatCard = ({ children, style, onPress, selected }) => {
   const { outer, inner } = splitCardStyle(style);
   const { rest, tint, inside } = splitTint(inner, themeColors);
   const d = SOFT_PANEL_DIMS.card;
-  const anim = usePressAnim(pressed, selected);
+  const interactive = !!onPress || selected !== undefined;
+  const anim = usePressAnim(pressed, selected, true);
   return (
     <CardWrapper {...cardProps} style={[outer, isHovered && !pressed && { transform: [{ translateY: -3 }] }]}>
       <View style={[{ position: 'relative', minHeight: d.min }, rest]}>
-        <PanelSurface kind="card" anim={anim} />
-        <Animated.View style={[{ overflow: 'hidden', position: 'relative', borderRadius: d.radius }, tint, pressShift(anim)]}>
+        <PanelSurface kind="card" anim={interactive ? anim : undefined} />
+        <Animated.View style={[{ overflow: 'hidden', position: 'relative', borderRadius: d.radius }, tint, interactive ? pressShift(anim) : null]}>
           <View style={[softStyles.statPadded, inside]}>{children}</View>
         </Animated.View>
       </View>
@@ -304,7 +320,7 @@ export const GlassListItem = ({
   );
 
   const d = SOFT_PANEL_DIMS.card;
-  const anim = usePressAnim(pressedState, selected);
+  const anim = usePressAnim(pressedState, selected, true);
   const { rest: restStyle, tint: tintStyle, inside: insideStyle } = splitTint(StyleSheet.flatten(style) || {}, colors);
   return (
     <Pressable
