@@ -1003,9 +1003,8 @@ export default function DOBLogsScreen() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchLogs} tintColor={colors.text.muted} />}
           data={loading ? [] : filteredLogs}
           keyExtractor={(item) => String(item.id)}
-          initialNumToRender={6}
-          maxToRenderPerBatch={6}
-          windowSize={7}
+          initialNumToRender={10}
+          windowSize={11}
           renderItem={({ item }) => renderLogCard(item)}
           ItemSeparatorComponent={() => <View style={{ height: spacing.xl }} />}
           ListHeaderComponent={
@@ -1412,7 +1411,8 @@ function buildStyles(colors, isDark) {
       fontSize: 14,
       color: colors.text.primary,
       lineHeight: 20,
-      flex: 1,
+      // NOT `flex: 1`: in a card whose lines are spaced with `gap` that collapsed the text to zero height, leaving the
+      // gap and an empty card.
       flexShrink: 1,
     },
     expirationBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: borderRadius.lg },
