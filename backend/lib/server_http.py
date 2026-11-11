@@ -72,6 +72,21 @@ AKAMAI_BLOCKED_HOSTS: Set[str] = {
     "a810-efiling.nyc.gov",
 }
 
+# THE ONE NARROW EXCEPTION: the BIS complaint/summons watch
+# (server.bis_complaint_watch_tick, BIS_COMPLAINT_WATCH_MODE, off by default).
+# BIS answered the production container directly (HTTP 200 in 0.2s,
+# 2026-11-10); the Akamai wall is DOB NOW. Only a client built with
+# allow_bis_watch=True may GET only these four read-only BIS pages. Every
+# other caller -- permit_renewal's license lookup included -- is still refused
+# a810-bisweb and keeps routing through the worker.
+BIS_WATCH_HOST = "a810-bisweb.nyc.gov"
+BIS_WATCH_PATHS = frozenset({
+    "/bisweb/ComplaintsByAddressServlet",
+    "/bisweb/OverviewForComplaintServlet",
+    "/bisweb/PropertyProfileOverviewServlet",
+    "/bisweb/ECBQueryByLocationServlet",
+})
+
 # Socrata data hosts where we auto-attach X-App-Token to stay under
 # anonymous rate limits.
 SOCRATA_HOSTS: Set[str] = {
@@ -142,12 +157,16 @@ def _socrata_app_token() -> Optional[str]:
     return cleaned
 
 
-def _check_host_or_raise(url: str) -> str:
+def _check_host_or_raise(url: str, *, method: str = "GET", allow_bis_watch: bool = False) -> str:
     """Returns the lowercased hostname; raises EgressViolation if it's
     on the blocklist. Centralized so the same logic gates both the
     initial request and every redirect hop.
     """
-    host = (urlparse(url).hostname or "").lower()
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if (allow_bis_watch and host == BIS_WATCH_HOST and str(method).upper() == "GET"
+            and parsed.path in BIS_WATCH_PATHS):
+        return host
     if host in AKAMAI_BLOCKED_HOSTS:
         raise EgressViolation(
             f"Server-side request to Akamai-protected host {host!r} is "
@@ -219,6 +238,7 @@ class ServerHttpClient:
         # We do NOT propagate follow_redirects to the inner client;
         # it always runs with auto-redirect off so we control the chain.
         self._caller_default_follow = kwargs.pop("follow_redirects", False)
+        self._allow_bis_watch = bool(kwargs.pop("allow_bis_watch", False))
         kwargs["follow_redirects"] = False
         self._inner: httpx.AsyncClient = httpx.AsyncClient(*args, **kwargs)
 
@@ -240,7 +260,7 @@ class ServerHttpClient:
         follow_redirects: Optional[bool] = None,
         **kwargs: Any,
     ) -> httpx.Response:
-        host = _check_host_or_raise(url)
+        host = _check_host_or_raise(url, method=method, allow_bis_watch=self._allow_bis_watch)
         _maybe_inject_socrata_token(host, kwargs)
 
         do_follow = (
@@ -277,7 +297,7 @@ class ServerHttpClient:
                 return resp
             # Resolve relative redirects against the current URL.
             next_url = str(httpx.URL(current_url).join(location))
-            _check_host_or_raise(next_url)
+            _check_host_or_raise(next_url, method="GET", allow_bis_watch=self._allow_bis_watch)
             current_url = next_url
             # 303 forces GET; 307/308 preserve method; 301/302 are
             # commonly downgraded to GET in browsers — match httpx

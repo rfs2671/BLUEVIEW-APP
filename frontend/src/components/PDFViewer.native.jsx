@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, Modal, Pressable, ActivityIndicator, Linking, TextInput, ScrollView, Dimensions, Platform, Share } from 'react-native';
+import { SoftPebble } from './SoftPanel';
 import { X, Download, FileText, ExternalLink, MapPin, Send, Trash2, CheckCircle, Users, Search, ChevronUp, ChevronDown } from 'lucide-react-native';
 import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
 
@@ -489,34 +490,38 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
       <View style={[styles.container, { backgroundColor: '#131E27' }]}>
         {/* Top Bar */}
         <View style={styles.topBar}>
-          <Pressable onPress={onClose} style={styles.iconBtn}>
-            <X size={22} strokeWidth={1.5} color="#fff" />
-          </Pressable>
+          <SoftPebble tone="raild" onPress={onClose} accessibilityRole="button" accessibilityLabel="Close">
+            <X size={22} strokeWidth={1.6} color="#fff" />
+          </SoftPebble>
           <Text numberOfLines={1} style={styles.fileName}>{file?.name || 'Document'}</Text>
           <View style={{ flex: 1 }} />
           {(docReady || tiled) && (
-            <Pressable
+            <SoftPebble
+              tone="raild"
+              selected={searchOpen}
               onPress={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
               accessibilityRole="button"
               accessibilityLabel="Search this document"
-              style={[styles.iconBtn, searchOpen && { backgroundColor: '#E3C27A' }]}
             >
-              <Search size={20} strokeWidth={1.5} color={searchOpen ? '#141A1F' : '#fff'} />
-            </Pressable>
+              <Search size={20} strokeWidth={1.6} color={searchOpen ? '#E3C27A' : '#fff'} />
+            </SoftPebble>
           )}
-          <Pressable
+          <SoftPebble
+            tone="raild"
+            selected={pinModeActive}
             onPress={() => { setPinModeActive(!pinModeActive); setSelectedAnnotation(null); setShowNoteSheet(false); }}
-            style={[styles.iconBtn, pinModeActive && { backgroundColor: '#E3C27A' }]}
+            accessibilityRole="button"
+            accessibilityLabel="Drop a pin"
           >
-            <MapPin size={20} strokeWidth={1.5} color={pinModeActive ? '#141A1F' : '#fff'} />
-          </Pressable>
+            <MapPin size={20} strokeWidth={1.6} color={pinModeActive ? '#E3C27A' : '#fff'} />
+          </SoftPebble>
           {/* A cached `file://` can't be handed to another app (Android throws
               FileUriExposedException), and there's nothing to open externally
               offline anyway. */}
           {url && !isLocalPdf && (
-            <Pressable onPress={() => Linking.openURL(url)} style={styles.iconBtn}>
-              <ExternalLink size={20} strokeWidth={1.5} color="#fff" />
-            </Pressable>
+            <SoftPebble tone="raild" onPress={() => Linking.openURL(url)} accessibilityRole="button" accessibilityLabel="Open in another app">
+              <ExternalLink size={20} strokeWidth={1.6} color="#fff" />
+            </SoftPebble>
           )}
           {/* PROBE ONLY. Renders for nobody but a user the flag names, and its
               single job is to get the run off the device without adb. */}

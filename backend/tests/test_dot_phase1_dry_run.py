@@ -97,6 +97,7 @@ def seeded_source():
                "company_id": "c1", "work_start": "2026-10-20T00:00:00.000",
                "expiration_date": "2026-11-30T23:59:59.000", "work_end": "2026-11-30T23:59:59.000",
                "holiday_waiver": False, "match": {"how": "address", "state": "confirmed"},
+               "holiday_embargo_street": True,     # SYNTHETIC: on DOT's embargo list
                "detected_at": long_ago, "renewed_by": None}
     expiring = {**dot_sync.to_log("dot_permit", PERMITS["B022026215B31"]), "_id": "d2", "project_id": "p1",
                 "company_id": "c1", "work_start": "2026-10-01T00:00:00.000",
@@ -148,6 +149,11 @@ def fixture_fetch():
                                 hearing_date=_iso(date(2026, 11, 5)), hearing_status="NEW ISSUANCE",
                                 balance_due="750", paid_amount="0", compliance_status="Penalty Due")]
             return []
+        if dataset == "4te8-9n3p":
+            # SYNTHETIC: DOT's embargo block list naming the recorded permit's block.
+            rec = PERMITS["B022026215B30"]
+            return [{"boroughcod": "B", "onstreetna": rec.get("onstreetname"),
+                     "fromstreet": rec.get("fromstreetname"), "tostreetna": rec.get("tostreetname")}]
         if dataset == "gsgx-6efw":
             m = re.search(r"permitnumber = '([^']+)'", where)
             num = m.group(1) if m else ""

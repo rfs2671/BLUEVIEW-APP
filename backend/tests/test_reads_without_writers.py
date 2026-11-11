@@ -60,6 +60,14 @@ BASELINE = {
     # is retired.
     ("card_fraud_flags", "acknowledged_at"),
     ("daily_panels", "project_id"),
+    # complaint_source: written by three row BUILDERS whose dicts are returned
+    # and inserted later (_build_311_doc "311", _extract_complaint_fields
+    # "DOB Complaint" / "311 Complaint", _bis_row_to_dob_log "DOB Complaint"),
+    # so the sweep sees no writer. Production 2026-11-10: 169 rows "311", 68
+    # "DOB Complaint", none missing. The assistant filters on it so the
+    # database, not a row limit, drops 311 rows. NOT LEFT AT A NOTE:
+    # test_bis_watch_review3.TheComplaintSourceWriters calls all three builders.
+    ("dob_logs", "complaint_source"),
     ("dob_logs", "complaint_date"),
     ("dob_logs", "expiration_date"),
     # dob_logs.job_number: written by _extract_permit_fields, which RETURNS a

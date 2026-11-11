@@ -1343,31 +1343,33 @@ export default function ProjectFilesScreen() {
                           )}
                         </View>
 
-                        {/* Actions */}
+                        {/* Actions: the same soft round buttons as everywhere else */}
                         <View style={s.fileActions}>
-                          <Pressable
+                          <SoftPebble
                             onPress={(e) => {
-                              e.stopPropagation();
+                              if (e && e.stopPropagation) e.stopPropagation();
                               handleViewFile(file);
                             }}
-                            style={s.fileActionBtn}
-                          >
-                            <Eye size={18} strokeWidth={1.5} color={colors.text.muted} />
-                          </Pressable>
-                          <Pressable
-                            onPress={(e) => {
-                              e.stopPropagation();
-                              handleDownloadFile(file);
-                            }}
                             accessibilityRole="button"
-                            accessibilityLabel={Platform.OS === 'ios' ? tDl('saveLabel') : tDl('downloadLabel')}
-                            style={Platform.OS === 'ios' ? [s.fileActionBtn, s.fileActionBtnLabeled] : s.fileActionBtn}
+                            accessibilityLabel="View"
                           >
-                            <Download size={18} strokeWidth={1.5} color={colors.text.muted} />
+                            <Eye size={19} strokeWidth={1.6} color={colors.text.primary} />
+                          </SoftPebble>
+                          <View style={s.fileActionCol}>
+                            <SoftPebble
+                              onPress={(e) => {
+                                if (e && e.stopPropagation) e.stopPropagation();
+                                handleDownloadFile(file);
+                              }}
+                              accessibilityRole="button"
+                              accessibilityLabel={Platform.OS === 'ios' ? tDl('saveLabel') : tDl('downloadLabel')}
+                            >
+                              <Download size={19} strokeWidth={1.6} color={colors.text.primary} />
+                            </SoftPebble>
                             {Platform.OS === 'ios' && (
                               <Text style={s.fileActionLabel}>{tDl('saveLabel')}</Text>
                             )}
-                          </Pressable>
+                          </View>
                         </View>
                       </SoftBox>
                     );
@@ -2206,8 +2208,10 @@ function buildStyles(colors, isDark) {
   },
   fileActions: {
     flexDirection: 'row',
-    gap: spacing.xs,
+    alignItems: 'flex-start',
+    gap: spacing.md,
   },
+  fileActionCol: { alignItems: 'center', gap: 2 },
   fileActionBtn: {
     width: 36,
     height: 36,
