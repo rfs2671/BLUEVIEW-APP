@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, TextInput, ScrollView } from 'react-native';
+import { registerReader } from '../utils/readerStore';
+import { SoftPebble } from './SoftPanel';
 import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users, Search, Share2 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { dropboxAPI, annotationsAPI, usersAPI, projectsAPI } from '../utils/api';
@@ -354,35 +356,44 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
     }
   };
 
+  // tell the desktop shell a document is open, so its sidebar can step out of the way
+  useEffect(() => (visible ? registerReader() : undefined), [visible]);
+
   if (!visible) return null;
 
   return (
     <View style={styles.overlay}>
       {/* Top Bar */}
       <View style={styles.topBar}>
-        <Pressable onPress={onClose} style={styles.closeBtn}>
-          <X size={22} strokeWidth={1.5} color="#fff" />
-        </Pressable>
+        <SoftPebble tone="raild" onPress={onClose} accessibilityRole="button" accessibilityLabel="Close">
+          <X size={22} strokeWidth={1.6} color="#fff" />
+        </SoftPebble>
         <Text numberOfLines={1} style={styles.fileName}>{file?.name || 'Document'}</Text>
         <View style={{ flex: 1 }} />
-        <Pressable
+        <SoftPebble
+          tone="raild"
+          selected={pinModeActive}
           onPress={() => { setPinModeActive(!pinModeActive); setSelectedAnnotation(null); setShowNotePanel(false); }}
-          style={[styles.closeBtn, pinModeActive && { backgroundColor: '#E3C27A' }]}
+          accessibilityRole="button"
+          accessibilityLabel="Drop a pin"
         >
-          <MapPin size={20} strokeWidth={1.5} color={pinModeActive ? '#141A1F' : '#fff'} />
-        </Pressable>
+          <MapPin size={20} strokeWidth={1.6} color={pinModeActive ? '#E3C27A' : '#fff'} />
+        </SoftPebble>
         {tiled && (
-          <Pressable
-            onPress={() => setSearchOpen((v) => !v)} accessibilityRole="button" accessibilityLabel="Search this drawing"
-            style={[styles.closeBtn, searchOpen && { backgroundColor: '#E3C27A' }]}
+          <SoftPebble
+            tone="raild"
+            selected={searchOpen}
+            onPress={() => setSearchOpen((v) => !v)}
+            accessibilityRole="button"
+            accessibilityLabel="Search this drawing"
           >
-            <Search size={20} strokeWidth={1.5} color={searchOpen ? '#141A1F' : '#fff'} />
-          </Pressable>
+            <Search size={20} strokeWidth={1.6} color={searchOpen ? '#E3C27A' : '#fff'} />
+          </SoftPebble>
         )}
         {(url || tiled) && (
-          <Pressable onPress={openInBrowser} style={styles.closeBtn}>
-            <Download size={20} strokeWidth={1.5} color="#fff" />
-          </Pressable>
+          <SoftPebble tone="raild" onPress={openInBrowser} accessibilityRole="button" accessibilityLabel="Open or download">
+            <Download size={20} strokeWidth={1.6} color="#fff" />
+          </SoftPebble>
         )}
       </View>
 
