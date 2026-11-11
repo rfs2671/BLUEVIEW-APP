@@ -44757,13 +44757,24 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 if not legacy:
                     after = {**existing, **dob_log, **(update or {}),
                              "id": str(existing["_id"])}
-                    order = dob_alert_gate.update_issues_order(existing, after)
+                    before = existing
+                    # bis_first_seen_at, not `dataset`: the first refresh
+                    # overwrites `dataset`, and the false order came on the second.
+                    if existing.get("bis_first_seen_at") or existing.get("dataset") in ("bis", "bis-ecb"):
+                        # First stored by the BIS watch (different record_type
+                        # rules and free text). Compare like with like: only a
+                        # change of status or disposition can issue an order.
+                        before = {**existing, **{k: dob_log[k] for k in (
+                            "record_type", "_record_type", "description", "violation_type",
+                            "violation_description", "complaint_type", "category_label",
+                            "violation_category", "disposition_comments") if k in dob_log}}
+                    order = dob_alert_gate.update_issues_order(before, after)
                     if order:
                         await _stamp_order_issued(existing["_id"], order, now)
                         await _send_critical_dob_alert_throttled(
                             project, after, source="dob", event=order)
                     # ...or lifted one in full: the second update exception.
-                    lifted = dob_alert_gate.update_lifts_order(existing, after)
+                    lifted = dob_alert_gate.update_lifts_order(before, after)
                     if lifted:
                         await _stamp_order_lifted(existing["_id"], lifted, now)
                         await _send_critical_dob_alert_throttled(
@@ -45465,6 +45476,13 @@ _BIS_KEEP = ("status", "received_at", "received_date", "priority", "assigned_to"
 _BIS_EMAIL_EVENT = {"new_complaint": "new", "stop_work_order": "swo", "violation_served": "new"}
 
 
+def _cw_prefix(mode: str) -> str:
+    """Ledger keys per mode. A decision shadow recorded must never stop LIVE
+    from storing and alerting the same item when the watch is switched on --
+    the last day's items are exactly what the watch is for."""
+    return "cw" if mode == "live" else f"cw-{mode}"
+
+
 def _bis_status_key(v) -> str:
     """BIS says RESOLVED where Open Data says CLOSED; both are the same state."""
     s = str(v or "").strip().upper()
@@ -45594,7 +45612,7 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
                     and ex_disp == (row.get("disposition_code") or None):
                 continue                      # nothing new on this complaint
             if await db[COMPLAINT_WATCH_LEDGER].find_one({
-                    "project_id": pid, "complaint_number": cn,
+                    "project_id": pid, "complaint_number": cn, "mode": mode,
                     "bis_status": _bis_status_key(row.get("status")),
                     "bis_disposition": row.get("disposition_code") or None}):
                 continue                      # this state was already decided (shadow stores no row)
@@ -45611,7 +45629,7 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
                 first_seen_at=(ex or {}).get("detected_at"))
             if ex is not None and decision["event"] == "new_complaint" and decision["alert"]:
                 decision.update(alert=False, reason="already stored: status change only")
-            key = f"cw:{pid}:{cn}:{decision['event']}"
+            key = f"{_cw_prefix(mode)}:{pid}:{cn}:{decision['event']}"
             if decision["alert"] and (
                     await db.system_config.find_one(
                         {"key": {"$regex": f"^{re.escape(_dob_alert_key(pid, cn))}(:|$)"}})
@@ -45734,7 +45752,7 @@ async def _bis_ecb_pass(project: dict, client, pbins: set, *, mode: str, now: da
             num = row["ecb_number"]
             if num in stored:
                 continue
-            key = f"cw:{pid}:ecb:{num}:new"
+            key = f"{_cw_prefix(mode)}:{pid}:ecb:{num}:new"
             seen = await db[COMPLAINT_WATCH_LEDGER].find_one({"_id": key})
             if seen:
                 continue
@@ -45759,7 +45777,7 @@ async def _bis_ecb_pass(project: dict, client, pbins: set, *, mode: str, now: da
                 continue
             doc = {
                 "project_id": pid, "company_id": cid, "nyc_bin": b, "record_type": "violation",
-                "raw_dob_id": num, "ecb_violation_number": num,
+                "raw_dob_id": num, "ecb_violation_number": num, "violation_number": num,
                 "violation_date": (row.get("issue_date") or "").replace("-", ""),
                 "violation_type": row.get("violation_type"), "severity": "Action" if row.get("active") else "Good",
                 "current_status": "ACTIVE" if row.get("active") else (row.get("certification_status") or "RESOLVED"),
@@ -56364,9 +56382,12 @@ def _report_sync(project: dict, state: Optional[dict]) -> dict:
     rolling = source_sync.as_utc(project.get("last_dob_sync_at"))
     per_source = [at(n) for n in dob_names]
     dob = rolling or (min(a for a in per_source if a) if any(per_source) else None)
+    # A source now opens when ANY of its datasets answers; "complete" still
+    # means none of them is failing (lib/source_sync.dataset_failing).
+    failing = {source_sync.DATASET_SOURCE.get(d) for d in source_sync.dataset_failing(state)}
     dot_at = [a for a in (at(source_sync.DOT_OATH), at(source_sync.DOT_PERMITS)) if a]
     return {"tracking": bool(project.get("track_dob_status")), "dob": dob,
-            "dob_complete": all(per_source) if srcs else True,
+            "dob_complete": (all(per_source) and not (failing & set(dob_names))) if srcs else True,
             "dot": min(dot_at) if dot_at else None}
 
 
@@ -66025,9 +66046,17 @@ async def _handle_dob_status(project_id: str, *,
         "company_id": _company_id_filter(company_id),
         "record_type": "complaint",
         "is_deleted": {"$ne": True},
-    }).sort("detected_at", -1).to_list(80)
-    open_c = [c for c in complaints
-              if not complaint_watch.is_311(c) and complaint_watch.is_open(c)][:5]
+    }).sort("detected_at", -1).to_list(2000)
+    # dob_logs keeps a row per status change: judge each complaint by its
+    # NEWEST row, and skip 311 service requests (stored as complaints too).
+    complaints.sort(key=lambda c: source_sync.as_utc(c.get("detected_at"))
+                    or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    latest: Dict[str, dict] = {}
+    for c in complaints:
+        if complaint_watch.is_311(c):
+            continue
+        latest.setdefault(str(c.get("raw_dob_id") or c.get("_id")), c)
+    open_c = [c for c in latest.values() if complaint_watch.is_open(c)][:5]
     if open_c:
         lines.append(f"\nOpen DOB complaints ({len(open_c)}):")
         for c in open_c:
