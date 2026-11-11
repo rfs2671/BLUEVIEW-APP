@@ -1003,6 +1003,9 @@ export default function DOBLogsScreen() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchLogs} tintColor={colors.text.muted} />}
           data={loading ? [] : filteredLogs}
           keyExtractor={(item) => String(item.id)}
+          initialNumToRender={6}
+          maxToRenderPerBatch={6}
+          windowSize={7}
           renderItem={({ item }) => renderLogCard(item)}
           ItemSeparatorComponent={() => <View style={{ height: spacing.xl }} />}
           ListHeaderComponent={
