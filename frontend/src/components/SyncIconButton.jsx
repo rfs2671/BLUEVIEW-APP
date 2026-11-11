@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, View, Text, StyleSheet } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import Animated, {
@@ -16,6 +16,7 @@ import Animated, {
 import { RefreshCw, Check } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { semantic, withAlpha } from '../styles/semanticColors';
+import { PebbleSurface, usePressAnim } from './SoftPanel';
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
@@ -35,12 +36,15 @@ export default function SyncIconButton({
   status = 'idle',
   onPress,
   disabled = false,
-  size = 40,
+  size = 44, // 44 draws the soft round pebble like the other header buttons; any other size keeps the plain circle
   badge = 0,
   accessibilityLabel = 'Sync',
   style,
 }) {
   const { colors } = useTheme();
+  const soft = size === 44;
+  const [down, setDown] = useState(false);
+  const pressAnim = usePressAnim(down);
 
   const R = size / 2 - 2;
   const C = 2 * Math.PI * R;
@@ -120,8 +124,7 @@ export default function SyncIconButton({
   const iconColor =
     status === 'success' ? semantic.verified
       : status === 'error' ? semantic.critical
-        : status === 'syncing' ? colors.text.primary
-          : colors.text.secondary;
+        : colors.text.primary; // white in the dark theme, like the back arrow and the gear
 
   const label = status === 'success' ? 'Synced' : status === 'syncing' ? 'Syncing' : status === 'error' ? 'Sync failed' : accessibilityLabel;
 
@@ -129,6 +132,8 @@ export default function SyncIconButton({
     <Animated.View style={shakeStyle}>
       <Pressable
         onPress={onPress}
+        onPressIn={() => setDown(true)}
+        onPressOut={() => setDown(false)}
         disabled={disabled || status === 'syncing'}
         accessibilityRole="button"
         accessibilityLabel={label}
@@ -136,18 +141,21 @@ export default function SyncIconButton({
         accessibilityState={{ busy: status === 'syncing', disabled }}
         style={({ pressed }) => [
           styles.btn,
-          {
-            width: size,
-            height: size,
-            borderRadius: size / 2,
-            backgroundColor: colors.glass.background,
-            borderColor: colors.glass.border,
-          },
-          pressed && { opacity: 0.7 },
+          soft
+            ? { width: size, height: size, borderRadius: size / 2, borderWidth: 0 }
+            : {
+              width: size,
+              height: size,
+              borderRadius: size / 2,
+              backgroundColor: colors.glass.background,
+              borderColor: colors.glass.border,
+            },
+          !soft && pressed && { opacity: 0.7 },
           disabled && status !== 'syncing' && { opacity: 0.45 },
           style,
         ]}
       >
+        {soft ? <PebbleSurface anim={pressAnim} /> : null}
         <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { borderRadius: size / 2, borderWidth: 1.5, borderColor: semantic.verified }, rippleStyle]} />
         <Animated.View pointerEvents="none" style={[styles.ring, { width: size, height: size }, ringBox]}>
           <Svg width={size} height={size}>
@@ -165,7 +173,7 @@ export default function SyncIconButton({
           </Svg>
         </Animated.View>
         <Animated.View style={[styles.icon, arrowStyle]}>
-          <RefreshCw size={size * 0.45} strokeWidth={1.7} color={iconColor} />
+          <RefreshCw size={size * 0.45} strokeWidth={1.8} color={iconColor} />
         </Animated.View>
         <Animated.View style={[styles.icon, checkStyle]}>
           <Check size={size * 0.5} strokeWidth={2.4} color={semantic.verified} />

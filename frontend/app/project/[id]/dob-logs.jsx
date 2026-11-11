@@ -21,6 +21,7 @@ import {
   CheckCircle,
   RefreshCw,
   Settings,
+  SlidersHorizontal,
   ChevronDown,
   ChevronUp,
   X,
@@ -987,7 +988,8 @@ export default function DOBLogsScreen() {
             <HeaderBrand style={brandRoom} />
           </View>
           <View style={[s.headerRight, cornerInset]}>
-            {isAdmin && <GlassButton variant="icon" icon={<Settings size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={openConfigModal} />}
+            {/* NOT a gear: the corner of every screen already holds the app's Settings gear, and two gears side by side read as a mistake. */}
+            {isAdmin && <GlassButton variant="icon" icon={<SlidersHorizontal size={20} strokeWidth={1.6} color={colors.text.primary} />} onPress={openConfigModal} />}
           </View>
         </View>
 
@@ -1019,7 +1021,7 @@ export default function DOBLogsScreen() {
                   status={syncStatus}
                   onPress={handleSync}
                   disabled={syncing}
-                  size={34}
+                  size={44}
                   accessibilityLabel={syncing ? 'Syncing with NYC DOB' : 'Sync now'}
                 />
               </View>
@@ -1194,7 +1196,7 @@ export default function DOBLogsScreen() {
                   {isAdmin ? (
                     <GlassButton
                       title="Open DOB Config"
-                      icon={<Settings size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                      icon={<SlidersHorizontal size={16} strokeWidth={1.6} color={colors.text.primary} />}
                       onPress={openConfigModal}
                       style={{ marginTop: spacing.sm }}
                     />
