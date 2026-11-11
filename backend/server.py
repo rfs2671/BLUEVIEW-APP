@@ -46014,7 +46014,10 @@ async def bis_complaint_watch_tick():
     async with ServerHttpClient(follow_redirects=True, allow_bis_watch=True) as client:
         for p in projects:
             try:
-                s = await run_bis_complaint_watch_for_project(p, client, mode=mode)
+                # No BIS session carried from one search to the next
+                # (lib/bis_complaints.StatelessBisClient).
+                s = await run_bis_complaint_watch_for_project(
+                    p, bis_complaints.StatelessBisClient(client), mode=mode)
                 logger.info(f"[bis-watch] {mode} project={s['project_id']} bins={s['bins']} "
                             f"decisions={len(s['decisions'])} errors={s['errors']}")
             except Exception as e:
