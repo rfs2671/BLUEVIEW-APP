@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -35,6 +35,7 @@ import {
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
+import SyncIconButton from '../../../src/components/SyncIconButton';
 import { useCornerInset, useBrandRoom } from '../../../src/components/CornerInset';
 import GlassInput from '../../../src/components/GlassInput';
 import FloatingNav from '../../../src/components/FloatingNav';
@@ -108,6 +109,8 @@ export default function DOBLogsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('idle'); // idle | syncing | success | error: drives the sync button's animation
+  const syncTimer = useRef(null);
   const [projectName, setProjectName] = useState('');
   const [nycBin, setNycBin] = useState('');
   const [trackDobStatus, setTrackDobStatus] = useState(false);
@@ -185,15 +188,30 @@ export default function DOBLogsScreen() {
     setRefreshing(false);
   };
 
+  // The button spins while the sync runs and turns into a green check when it is done (the same control and motion as
+  // the dashboard's sync button), then settles back. A success needs no message; a sync that found new records says
+  // so, and failures still get a toast because they have to say what went wrong.
+  const settleSync = (next) => {
+    setSyncStatus(next);
+    if (syncTimer.current) clearTimeout(syncTimer.current);
+    syncTimer.current = setTimeout(() => setSyncStatus('idle'), 2200);
+  };
+  useEffect(() => () => { if (syncTimer.current) clearTimeout(syncTimer.current); }, []);
+
   const handleSync = async () => {
+    if (syncing) return;
     setSyncing(true);
+    setSyncStatus('syncing');
+    if (syncTimer.current) clearTimeout(syncTimer.current);
     try {
       const result = await dobAPI.syncNow(projectId);
-      toast.success('Sync Complete', result.new_records > 0 ? `${result.new_records} new record(s) found.` : 'No new records found.');
       await fetchLogs();
+      settleSync('success');
+      if (result && result.new_records > 0) toast.success('Sync Complete', `${result.new_records} new record(s) found.`);
     } catch (error) {
       // Sync pulls from NYC DOB via our backend — impossible offline, and a
       // failed sync must not be mistaken for "no new records found".
+      settleSync('error');
       if (isOfflineError(error)) {
         toast.error('Offline', 'Syncing needs a connection. No DOB data was checked.');
         return;
@@ -995,17 +1013,16 @@ export default function DOBLogsScreen() {
           <View style={s.titleSection}>
             <View style={s.titleTopRow}>
               <Text style={s.titleLabel}>{tc('title')}</Text>
-              <Pressable
-                onPress={handleSync}
-                disabled={syncing}
-                hitSlop={10}
-                accessibilityRole="button"
-                accessibilityLabel={syncing ? 'Syncing with NYC DOB' : 'Sync now'}
-                style={({ hovered }) => [s.syncChip, hovered && s.syncChipHover, syncing && s.syncChipDisabled]}
-              >
-                <RefreshCw size={13} strokeWidth={1.5} color={semantic.neutral} />
-                <Text style={s.syncChipText}>{syncing ? 'Syncing…' : 'Synced automatically'}</Text>
-              </Pressable>
+              <View style={s.syncRow}>
+                <Text style={s.syncChipText}>{syncStatus === 'syncing' ? 'Syncing…' : syncStatus === 'success' ? 'Up to date' : syncStatus === 'error' ? 'Sync failed' : 'Synced automatically'}</Text>
+                <SyncIconButton
+                  status={syncStatus}
+                  onPress={handleSync}
+                  disabled={syncing}
+                  size={34}
+                  accessibilityLabel={syncing ? 'Syncing with NYC DOB' : 'Sync now'}
+                />
+              </View>
             </View>
             <Text style={s.titleText}>{projectName}</Text>
             {isValidBin(nycBin) ? (
@@ -1358,6 +1375,7 @@ function buildStyles(colors, isDark) {
 
     // Full-width sync button
     titleTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm, marginBottom: spacing.sm },
+    syncRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
     syncChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4, paddingHorizontal: spacing.sm, borderRadius: borderRadius.sm, borderWidth: 1, borderColor: border.subtle },
     syncChipText: { color: text.secondary, fontSize: 11, fontWeight: '500' },
     syncChipHover: { borderColor: border.medium, backgroundColor: surface.glassHover },
