@@ -467,7 +467,8 @@ class TheLeaseRunsAJobOnce(unittest.TestCase):
         # links (dot_nov_links, Phase 1 A, #855) -> 45; + the held-question
         # sweep (whatsapp_dm_held_sweep, 24-hour hold, #963) -> 46.
         # + the photo search index (photo_index) -> 47.
-        self.assertEqual(body.count("scheduler.add_job("), 47)
+        # + photo comparisons (photo_relations) -> 48.
+        self.assertEqual(body.count("scheduler.add_job("), 48)
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -109,6 +109,7 @@ from lib import attendance  # noqa: E402
 from lib import project_report  # noqa: E402
 from lib import progress_report  # noqa: E402
 from lib import photo_search  # noqa: E402
+from lib import photo_relations, work_state  # noqa: E402
 from lib import report_image  # noqa: E402
 from lib import progress_report_render  # noqa: E402
 from lib import report_regulatory  # noqa: E402
@@ -3889,6 +3890,7 @@ from lib.vision_meter import (  # noqa: E402
     VISION_PUNCH_PHOTO,
     VISION_REPORT_PHOTO,
     VISION_PHOTO_INDEX,
+    VISION_PHOTO_COMPARE,
     VISION_GROUP_PHOTO,
 )
 from lib import plan_extract  # noqa: E402
@@ -56601,6 +56603,145 @@ async def _dm_send_photos(ctx: dict, job: dict, args: dict) -> str:
     return " ".join(parts)
 
 
+# ── WHAT THE RECORDS SAY ABOUT A PIECE OF WORK (lib/work_state.py) ──────────
+#
+# Read-time only: the same sources the progress report loads, so there is no
+# stored state to drift from the filed logs.
+WORK_STATE_DAYS = 90
+#: Stored comparisons of two photos of one place (lib/photo_relations.py).
+PHOTO_RELATIONS = "photo_relations"
+PHOTO_RELATIONS_BUDGET = 10       # pairs asked per tick, across every job
+PHOTO_RELATIONS_TICK_MINUTES = 60
+
+
+async def _work_state_answer(project: dict, company_id: str, work: str, level: str,
+                             *, today: Optional[_Date] = None) -> dict:
+    """{"ok": False, "why": ...} or {"ok": True, "answer": work_state.what_holds(...)}."""
+    nodes, _generic = work_state.classify(work)
+    token = work_state.level_asked(level)
+    if not nodes:
+        return {"ok": False, "why": f"I can't match \"{work}\" to a kind of work in the sequence yet."}
+    if not token:
+        return {"ok": False, "why": "Name one level: a floor number, roof, or cellar."}
+    now = datetime.now(timezone.utc)
+    today = today or now.astimezone(_MemoryZone("America/New_York")).date()
+    start = today - timedelta(days=WORK_STATE_DAYS - 1)
+    src = await _report_rows(project, company_id, start, today, now)
+    logs = src["logbooks"]
+    acts = progress_report._log_activities(logs, start, today)
+    pid = str(project.get("_id"))
+    index = await db[PHOTO_INDEX].find({"project_id": pid, "kind": "photo"}).to_list(20000)
+    # No system is pruned from the sequence: project_models defaults has_sprinkler
+    # and friends to False, so False there does not mean the building lacks it.
+    flags: Dict[str, Any] = {}
+    reg = report_regulatory.build(src["dob_rows"], src["dot_rows"], start, today, today=today, sync=src.get("sync"),
+                                  now=now, project_bins=src.get("project_bins") or ())
+    cov = reg.get("coverage") or {}
+    note = "" if cov.get("state") in ("verified", "partial") else (cov.get("note") or "DOB records could not be checked.")
+    rel = await db[PHOTO_RELATIONS].find({"project_id": pid, "level": token, "same_area": "yes",
+                                          "confidence": {"$gte": 0.7}}).to_list(50)
+    rel = sorted(rel, key=lambda r: str(r.get("second")), reverse=True)
+    return {"ok": True, "answer": work_state.what_holds(
+        nodes[0], token, acts, index, today=today, schedule=src.get("schedule"), flags=flags,
+        log_ids={str(lg.get("_id")) for lg in logs}, stop_work=reg.get("swo_active") or [],
+        regulatory_note=note, relations=rel)}
+
+
+async def _dm_work_status(ctx: dict, job: dict, args: dict) -> str:
+    project = await _bot_project_scope(ctx["ident"]["company_id"], str(job["id"]))
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    try:
+        got = await _work_state_answer(project, str(ctx["ident"]["company_id"]),
+                                       str(args.get("work") or ""), str(args.get("level") or ""))
+    except Exception as e:
+        logger.warning(f"[work-state] failed: {type(e).__name__}: {e!r}")
+        return "The work records couldn't be read just now."
+    return work_state.as_text(got["answer"]) if got["ok"] else got["why"]
+
+
+async def _photo_compare_call(raw_a: bytes, raw_b: bytes, project_id: Any) -> Optional[dict]:
+    """One vision call over two photos, or None."""
+    if not QWEN_API_KEY or not raw_a or not raw_b:
+        return None
+    a, _e1 = await asyncio.to_thread(_vision_jpeg, raw_a)
+    b, _e2 = await asyncio.to_thread(_vision_jpeg, raw_b)
+    if not a or not b:
+        return None
+    await record_vision_call(db, endpoint=VISION_PHOTO_COMPARE, project_id=str(project_id) if project_id else None)
+    content = [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(x).decode()}}
+               for x in (a, b)] + [{"type": "text", "text": photo_relations.COMPARE_PROMPT}]
+    try:
+        async with ServerHttpClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
+                json={"model": QWEN_MODEL, "max_tokens": 300, "temperature": 0,
+                      "messages": [{"role": "user", "content": content}]})
+            if resp.status_code >= 400:
+                logger.warning(f"[photo-relations] vision HTTP {resp.status_code}")
+                return None
+            said = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"[photo-relations] vision failed: {type(e).__name__}: {e!r}")
+        return None
+    return photo_relations.parse_compare(said)
+
+
+async def _photo_log_bytes(row: dict) -> Optional[bytes]:
+    """A photo's bytes, re-read from its log: only while the log is filed."""
+    lg = await db.logbooks.find_one({"_id": to_query_id(str(row.get("log_id")))})
+    if not lg or lg.get("is_deleted") or not logbook_is_filed(lg) or logbook_is_withdrawn(lg):
+        return None
+    photo = next((p for p in progress_report.log_photos(lg) if p["key"] == row.get("photo_key")), None)
+    if not photo:
+        return None
+    return await asyncio.to_thread(_report_photo_bytes, {"photo": photo["photo"], "key": photo["key"]})
+
+
+async def _photo_relations_tick(now: Optional[datetime] = None, budget: int = PHOTO_RELATIONS_BUDGET) -> dict:
+    """OFF unless PHOTO_RELATIONS_ENABLED=1: how well the model tells one place
+    from another has not been measured on real photos. Never raises."""
+    report = {"pairs": 0, "failed": 0}
+    if not QWEN_API_KEY or os.environ.get("PHOTO_RELATIONS_ENABLED") != "1":
+        return report
+    now = now or datetime.now(timezone.utc)
+    try:
+        rows = await db[PHOTO_INDEX].find({"kind": "photo"}).sort("date", -1).to_list(5000)
+        done = [str(d["_id"]) for d in await db[PHOTO_RELATIONS].find({}, {"_id": 1}).to_list(200000)]
+        by_project: Dict[str, list] = {}
+        for p in work_state.photo_rows(rows):
+            by_project.setdefault(str(p.get("project_id")), []).append(p)
+        for pid, photos in by_project.items():
+            left = budget - report["pairs"] - report["failed"]
+            if left <= 0:
+                break
+            for pair in photo_relations.pick_pairs(photos, done, left):
+                a, b = pair["first"], pair["second"]
+                raw_a, raw_b = await _photo_log_bytes(a), await _photo_log_bytes(b)
+                v = await _photo_compare_call(raw_a, raw_b, pid) if raw_a and raw_b else None
+                if v is None:
+                    report["failed"] += 1
+                    continue
+                await db[PHOTO_RELATIONS].insert_one({
+                    "_id": pair["pair_id"], **v, "project_id": pid, "company_id": str(a.get("company_id") or ""),
+                    "level": a["levels"][0], "first": str(a.get("short")), "second": str(b.get("short")),
+                    "first_date": a.get("date"), "second_date": b.get("date"),
+                    "prompt_version": photo_relations.PROMPT_VERSION, "model": QWEN_MODEL, "at": now})
+                report["pairs"] += 1
+    except Exception as e:
+        logger.error(f"[photo-relations] tick failed: {type(e).__name__}: {e!r}")
+    logger.info(f"[photo-relations] {report}")
+    return report
+
+
+async def _photo_relations_job() -> None:
+    try:
+        await _photo_relations_tick()
+    except Exception as e:
+        logger.error(f"[photo-relations] job failed: {type(e).__name__}: {e!r}")
+
+
 # ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
 
 async def _group_photo_company(row: dict, company_id: Any, project_id: Any) -> Tuple[str, str, str]:
@@ -62754,6 +62895,16 @@ _DM_BRAIN_EXTRA_TOOLS = [
          "pages": {"type": "string", "description": "PDF page numbers of the file, e.g. '3-5' or '2, 7'."},
          "whole_file": {"type": "boolean", "description": "The whole file the sheet is in."}},
          "required": []}},
+    {"name": "work_status", "description": (
+        "What the records say about a kind of work on one level of a job, and what normally has to come before it: "
+        "'what's holding up drywall on floor 3', 'where is plumbing rough on 4'. Returns the work reported by the "
+        "daily logs, the inspections that normally come first, schedule dates if a schedule is confirmed, stop-work "
+        "orders and photos."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "work": {"type": "string", "description": "The work, in their words: 'drywall', 'electric rough', 'framing'."},
+         "level": {"type": "string", "description": "One level: '3', 'floor 3', 'roof', 'cellar'."}},
+         "required": ["work", "level"]}},
     {"name": "find_photos", "description": (
         "Search a job's daily-log photos by what they show: 'front of the building', 'roof', "
         "'scaffold', 'Arkon framing'. Returns each match's id, date, sub and a description of the "
@@ -63161,7 +63312,7 @@ async def _dm_do_set_trade(ident: dict, p: dict):
 #: Brain tools that read one job: the job names the account they act as.
 _DM_BRAIN_ONE_JOB = _DM_BRAIN_JOB_TOOLS + ("headcount", "dot_status", "send_sheet",
                                            "send_plan_file", "sheet_info",
-                                           "find_photos", "send_photos")
+                                           "find_photos", "send_photos", "work_status")
 
 
 async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
@@ -63283,7 +63434,7 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
     now = datetime.now(timezone.utc)
     if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet",
                                                "send_plan_file", "sheet_info",
-                                               "find_photos", "send_photos"):
+                                               "find_photos", "send_photos", "work_status"):
         job, why = _dm_brain_find_job(ctx, args.pop("job", None))
         if not job:
             return why
@@ -63321,6 +63472,8 @@ async def _dm_brain_exec_one(ctx: dict, name: str, args: dict) -> str:
                 where = plan_sources.sheet_source_text(label, src, page.get("page_number"))
                 return f"Sent the image of {label} {title} to them." + (f" {where}" if where else "")
             return f"Found {label} but the image couldn't be sent (may still be rendering)."
+        if name == "work_status":
+            return await _dm_work_status(ctx, job, args)
         if name == "find_photos":
             return await _dm_find_photos(ctx, job, args)
         if name == "send_photos":
@@ -66814,6 +66967,9 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db[PHOTO_INDEX], keys=[("project_id", 1), ("kind", 1), ("date", -1)],
         name="photo_index_by_project")
+    await _ensure_index_resilient(
+        db[PHOTO_RELATIONS], keys=[("project_id", 1), ("level", 1), ("same_area", 1)],
+        name="photo_relations_by_place")
     await _ensure_index_resilient(
         db[WA_CONNECT_CODES], keys=[("user_id", 1)],
         name="whatsapp_connect_codes_by_user")
@@ -90450,6 +90606,16 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=7),
+    )
+    # Few targeted photo comparisons; does nothing unless PHOTO_RELATIONS_ENABLED=1.
+    scheduler.add_job(
+        _photo_relations_job,
+        IntervalTrigger(minutes=PHOTO_RELATIONS_TICK_MINUTES),
+        id='photo_relations',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=11),
     )
     scheduler.add_job(
         _photo_pipeline_job,

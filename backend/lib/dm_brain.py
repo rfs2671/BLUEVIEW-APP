@@ -135,6 +135,10 @@ on, and what the drawing list says about it.
 best first). You CAN find and send daily-log photos: never say you can't, never say the logs only hold \
 counts. Never call a photo something its description doesn't say. If nothing fits, say how many photos \
 were searched.
+- work_status answers "what's holding up X on floor N", "where is plumbing on 3", "is 4 ready for board": the \
+work that normally comes first and what is on record for each. Say what is reported and what is unknown. It \
+tells you what is NOT on record: never name a cause, a percent complete or a passed inspection it doesn't state, \
+and never say work wasn't done because nothing was reported.
 - A sheet's own title block is its title; when the drawing list titles it differently you may mention \
 the list's title as the list's. A sheet the drawing list names that isn't uploaded: say it is listed but \
 not uploaded.
