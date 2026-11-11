@@ -46009,7 +46009,9 @@ async def bis_complaint_watch_tick():
     projects = await db.projects.find(await unattended_project_filter({
         "track_dob_status": True, "nyc_bin": {"$nin": [None, ""]}, **ACTIVE_PROJECT_FILTER,
     })).to_list(500)
-    async with httpx.AsyncClient(follow_redirects=True) as client:
+    # ServerHttpClient's one narrow BIS allowance (lib/server_http.BIS_WATCH_PATHS):
+    # GETs of the four read-only pages this watch reads, nothing else.
+    async with ServerHttpClient(follow_redirects=True, allow_bis_watch=True) as client:
         for p in projects:
             try:
                 s = await run_bis_complaint_watch_for_project(p, client, mode=mode)
