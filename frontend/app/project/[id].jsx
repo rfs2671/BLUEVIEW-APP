@@ -1272,11 +1272,7 @@ export default function ProjectDetailScreen() {
           {isAdmin && (
             <>
               <SectionLabel label="FILES" />
-              <Pressable
-                onPress={() => router.push(`/projects/${projectId}/files`)}
-                style={({ pressed }) => [pressed && { opacity: 0.7 }]}
-              >
-                <GlassCard style={s.dropboxRow}>
+              <GlassCard onPress={() => router.push(`/projects/${projectId}/files`)} style={s.dropboxRow}>
                   <Cloud size={20} strokeWidth={1.5} color={isDark ? '#4D8DFF' : '#0061FF'} />
                   <View style={s.dropboxRowInfo}>
                     <Text style={s.dropboxRowPath} numberOfLines={1}>
@@ -1290,7 +1286,6 @@ export default function ProjectDetailScreen() {
                   </View>
                   <ChevronRight size={18} strokeWidth={1.5} color={colors.text.muted} />
                 </GlassCard>
-              </Pressable>
             </>
           )}
 

@@ -251,12 +251,9 @@ export default function ChecklistsScreen() {
                 const complete = isComplete(assignment);
 
                 return (
-                  <Pressable
-                    key={assignment.id}
-                    onPress={() => handleOpenChecklist(assignment)}
-                    style={s.assignmentCard}
-                  >
-                    <GlassCard style={[s.card, complete && s.cardComplete]}>
+                  <GlassCard key={assignment.id}
+  onPress={() => handleOpenChecklist(assignment)}
+  style={[s.assignmentCard, s.card, complete && s.cardComplete]}>
                       <View style={s.cardHeader}>
                         <View style={s.cardInfo}>
                           <Text style={s.cardTitle}>{assignment.checklist?.title}</Text>
@@ -298,7 +295,6 @@ export default function ChecklistsScreen() {
                         </View>
                       </View>
                     </GlassCard>
-                  </Pressable>
                 );
               })}
             </View>

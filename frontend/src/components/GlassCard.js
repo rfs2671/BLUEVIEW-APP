@@ -206,6 +206,17 @@ function splitTint(inner, colors) {
 
 export const GlassCard = (props) => (props.variant === 'modal' ? <LegacyGlassCard {...props} /> : <SoftGlassCard {...props} />);
 
+// Props a screen puts on a pressable card that belong to the pressable itself, not the card's look.
+const PASS_THROUGH = [
+  'accessibilityRole', 'accessibilityLabel', 'accessibilityHint', 'accessibilityState', 'accessible',
+  'testID', 'hitSlop', 'onLongPress', 'delayLongPress', 'disabled', 'nativeID',
+];
+function passThrough(props) {
+  const out = {};
+  PASS_THROUGH.forEach((k) => { if (props[k] !== undefined) out[k] = props[k]; });
+  return out;
+}
+
 const SoftGlassCard = (props) => {
   const { children, style, contentStyle, onPress, hoverEffect = true, selected } = props;
   const { colors: themeColors } = useTheme();
@@ -224,6 +235,7 @@ const SoftGlassCard = (props) => {
   const anim = usePressAnim(pressed, selected, true);
   return (
     <CardWrapper
+      {...(onPress ? passThrough(props) : null)}
       {...cardProps}
       style={[outer, isHovered && !pressed && hoverEffect && { transform: [{ translateY: -2 }] }]}
     >

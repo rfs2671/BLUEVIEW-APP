@@ -170,11 +170,7 @@ export default function SiteDeviceHomeScreen() {
 
           {/* Top Row: Log Books + Daily Logs */}
           <View style={s.gridRow}>
-            <Pressable
-              style={s.buttonCard}
-              onPress={() => handleNavigate('/site/logbooks')}
-            >
-              <GlassCard style={s.buttonInner}>
+            <GlassCard onPress={() => handleNavigate('/site/logbooks')} style={[s.buttonCard, s.buttonInner]}>
                 <View style={[s.iconContainer, { backgroundColor: withAlpha(colors.primary, 0.2) }]}>
                   <ClipboardList size={64} strokeWidth={1.5} color={colors.primary} />
                 </View>
@@ -189,7 +185,6 @@ export default function SiteDeviceHomeScreen() {
                   </View>
                 ) : null}
               </GlassCard>
-            </Pressable>
 
             {/* THE DAILY LOGS TILE IS GONE, AND THE TABLET LOST NOTHING.
                 It opened app/site/daily-logs.jsx, which posted to
@@ -203,24 +198,15 @@ export default function SiteDeviceHomeScreen() {
 
           {/* Bottom Row: Documents + Worker Sign In */}
           <View style={s.gridRow}>
-            <Pressable
-              style={s.buttonCard}
-              onPress={() => handleNavigate('/site/documents')}
-            >
-              <GlassCard style={s.buttonInner}>
+            <GlassCard onPress={() => handleNavigate('/site/documents')} style={[s.buttonCard, s.buttonInner]}>
                 <View style={[s.iconContainer, { backgroundColor: semantic.attentionBg }]}>
                   <FolderOpen size={64} strokeWidth={1.5} color={semantic.neutral} />
                 </View>
                 <Text style={s.buttonLabel}>Documents</Text>
               </GlassCard>
-            </Pressable>
 
             {!isLocked && (
-              <Pressable
-                style={s.buttonCard}
-                onPress={() => handleNavigate('/site/checkins')}
-              >
-                <GlassCard style={s.buttonInner}>
+              <GlassCard onPress={() => handleNavigate('/site/checkins')} style={[s.buttonCard, s.buttonInner]}>
                   <View style={[s.iconContainer, { backgroundColor: semantic.verifiedBg }]}>
                     <UserCheck size={64} strokeWidth={1.5} color={semantic.neutral} />
                   </View>
@@ -235,7 +221,6 @@ export default function SiteDeviceHomeScreen() {
                     </View>
                   ) : null}
                 </GlassCard>
-              </Pressable>
             )}
           </View>
 
