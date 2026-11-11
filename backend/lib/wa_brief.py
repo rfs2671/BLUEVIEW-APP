@@ -20,7 +20,9 @@ record without the value a line needs is left out, never filled in.
 STANDING REMINDERS ARE WEEKLY (Roy, 2026-11-10: "I don't want WhatsApp to
 send every morning the ECB violations, court dates etc. if nothing new; once
 a week is more than enough"). A hearing, a permit's expiry and the open
-violations are listed on Mondays (New York). Any other morning says only
+violations are listed on Mondays (New York) - or, when Monday's brief was
+not delivered (a Yom Tov hold, an outage, a failed send), on the week's
+first brief that is (server._brief_weekly_due; `weekly` below). Any other morning says only
 what is new since the last brief: a new violation, summons or stop-work
 order, a status change, and a court date the city added or moved
 (brief_events).

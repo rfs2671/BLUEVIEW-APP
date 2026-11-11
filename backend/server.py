@@ -54962,6 +54962,30 @@ async def _brief_since(user_id: str, now: datetime,
     return max(now - timedelta(days=1), floor)
 
 
+async def _brief_weekly_due(user_id: str, now: datetime) -> bool:
+    """Does today's brief carry the weekly section (open violations, court
+    dates, permit expiry; lib/wa_brief.py)? Yes on the week's first brief
+    that goes out: Monday's, or - when Monday's was not delivered (a Yom Tov
+    hold, an outage, a send that failed for good) - the next one that does
+    that week (Mon-Sun, New York). A brief went out on a day when its whole
+    brief's ledger row (window: the day) is "sent". Today's own row is not
+    counted: a retry or "brief all" later today is the same brief as the
+    morning's. Read failing: Mondays, as before."""
+    today = wa_brief.local_now(now).date()
+    monday = today - timedelta(days=today.weekday())
+    if today == monday:
+        return True
+    try:
+        row = await db[WA_LEDGER].find_one(
+            {"user_id": str(user_id), "kind": MORNING_BRIEF_KIND, "status": "sent",
+             "window": {"$regex": "^[^:]*$", "$gte": monday.isoformat(),
+                        "$lt": today.isoformat()}}, {"_id": 1})
+    except Exception as e:
+        logger.warning(f"[wa-brief] weekly read failed: {type(e).__name__}")
+        return wa_brief.is_review_day(now)
+    return row is None
+
+
 async def _brief_follow_ups(pid: str, company_id: str, now: datetime,
                             me: Optional[dict]) -> dict:
     """The job's You / Waiting on others / Check lines: items due today,
@@ -55009,7 +55033,8 @@ async def _brief_me(user: dict) -> dict:
 
 
 async def _brief_job(project: dict, company_id: str, since: datetime,
-                     now: datetime, me: Optional[dict] = None) -> dict:
+                     now: datetime, me: Optional[dict] = None,
+                     weekly: Optional[bool] = None) -> dict:
     """One job's block: its address, its items, its follow-ups (due today /
     overdue, open punch), its headcount line."""
     pid = str(project.get("_id"))
@@ -55032,13 +55057,16 @@ async def _brief_job(project: dict, company_id: str, since: datetime,
         "project_id": pid,
         "company_id": _company_id_filter(company_id),
     }).to_list(2000))
-    items = wa_brief.job_items(rows, since, now, dot_rows, synced)
-    # Mondays: the job's open violations too, once a week; a record already
-    # a 🔴 New line today is not listed twice.
+    if weekly is None:
+        weekly = wa_brief.is_review_day(now)
+    items = wa_brief.job_items(rows, since, now, dot_rows, synced, weekly=weekly)
+    # The weekly section (_brief_weekly_due: Monday's, or the week's first
+    # brief delivered): the job's open violations too; a record already a
+    # 🔴 New line today is not listed twice.
     open_lines = (wa_brief.open_items(rows, dot_rows, wa_gc.today_et(now),
                                       skip={i["record"] for i in items if i.get("record")},
                                       synced=synced)
-                  if wa_brief.is_review_day(now) else [])
+                  if weekly else [])
     return {"id": pid, "label": wa_assistant.street_label(project),
             "items": items, "open": open_lines,
             **await _brief_follow_ups(pid, company_id, now, me),
@@ -55097,6 +55125,7 @@ async def _brief_for_accounts(users: List[dict], now: datetime, every_job: bool 
     multi = len(users) > 1
     today = wa_brief.local_now(now).date().isoformat()
     since = await _brief_since(lead_uid, now, before_day=today if every_job else None)
+    weekly = await _brief_weekly_due(lead_uid, now)
     jobs: List[dict] = []
     own_today: list = []
     own_later: list = []
@@ -55111,11 +55140,11 @@ async def _brief_for_accounts(users: List[dict], now: datetime, every_job: bool 
             continue
         co = await _company_display_name(company_id) if multi else ""
         me = await _brief_me(user)
-        mine = [await _brief_job(p, company_id, since, now, me) for p in projects]
+        mine = [await _brief_job(p, company_id, since, now, me, weekly) for p in projects]
         # Upcoming events: today's under each job's Today, the rest of the week
         # under its Later this week; a reminder of their own (no job) at the end.
         try:
-            events = await _upcoming_brief_events(user, company_id, role, now, since)
+            events = await _upcoming_brief_events(user, company_id, role, now, since, weekly)
         except Exception as e:
             logger.warning(f"[wa-brief] upcoming failed: {type(e).__name__}")
             events = []
@@ -58097,7 +58126,8 @@ async def _upcoming_for(user: dict, company_id: str, role: str, start: _Date, en
 
 
 async def _upcoming_brief_events(user: dict, company_id: str, role: str,
-                                 now: datetime, since: Optional[datetime] = None) -> List[dict]:
+                                 now: datetime, since: Optional[datetime] = None,
+                                 weekly: Optional[bool] = None) -> List[dict]:
     """The brief's events, today through a week out (wa_brief.brief_events):
     a court date from a city record on Mondays, or when the city added or
     moved it since the last brief (`since`; default a day ago). DOT OATH
@@ -58111,7 +58141,8 @@ async def _upcoming_brief_events(user: dict, company_id: str, role: str,
     rows = await _upcoming_for(user, company_id, role, today,
                                today + timedelta(days=_BRIEF_CITY_AHEAD_DAYS))
     return wa_brief.brief_events(rows, since or now - timedelta(days=1),
-                                 wa_brief.is_review_day(now), today=today)
+                                 wa_brief.is_review_day(now) if weekly is None else weekly,
+                                 today=today)
 
 
 #: How far ahead the brief looks for a court date the city added or moved.

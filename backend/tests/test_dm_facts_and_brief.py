@@ -34,7 +34,7 @@ from tests.test_whatsapp_phase1_foundations import ADMIN_PHONE, CO_A, _Ctx, _Wir
 from tests._pinned_clock import pin_server_clock  # noqa: E402
 from tests.test_whatsapp_dm_assistant import THOMAS, _Harness, _optin  # noqa: E402
 from tests.test_whatsapp_morning_brief import (  # noqa: E402
-    THU_7, WALWORTH, _run, _sends, _texts, _tick, _world,
+    THU_7, WALWORTH, _run, _sends, _texts, _tick, _week_began, _world,
 )
 
 NY = wa_facts.NY
@@ -511,6 +511,7 @@ class UserLevel(_Harness, unittest.TestCase):
         pin_server_clock(self, at=WED)
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
+        _week_began(db, "u_admin", WED)             # Monday's brief went out
         with _Ctx(db) as c:
             reply = self._send(c, f"{ADMIN_PHONE}@c.us", "send me my brief")
         self.assertIn("588 Thomas", reply)

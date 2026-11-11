@@ -32,7 +32,7 @@ from fastapi import HTTPException  # noqa: E402
 import server  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from tests.test_whatsapp_phase1_foundations import (  # noqa: E402
-    ADMIN_PHONE, CO_A, CO_B, CP_PHONE, PM_PHONE, _Ctx,
+    ADMIN_PHONE, CO_A, CO_B, CP_PHONE, PM_PHONE, _Ctx, _Wire,
 )
 from tests.test_whatsapp_dm_assistant import (  # noqa: E402
     PROJ_B, THOMAS, WALWORTH, _db as _base_db, _optin,
@@ -117,6 +117,20 @@ def _compose(now, jobs, own=None):
 
 def _tick(c, now):
     return _run(server._morning_brief_tick(now=now))
+
+
+def _week_began(db, uid, now):
+    """This week's Monday brief went out (its whole-brief ledger row): the
+    weekly section is said, and a later brief this week does not repeat it
+    (server._brief_weekly_due). A test of an ordinary weekday seeds it."""
+    today = wa_brief.local_now(now).date()
+    monday = (today - timedelta(days=today.weekday())).isoformat()
+    db[server.WA_LEDGER].rows.append({
+        "_id": f"wk_{uid}_{monday}", "user_id": uid, "kind": server.MORNING_BRIEF_KIND,
+        # Stamped a day back: the "since" these tests had with no row at all
+        # (server._brief_since), so only the weekly rule moves.
+        "window": monday, "status": "sent", "created_at": now - timedelta(days=1),
+        "expires_at": now + timedelta(days=30)})
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -417,6 +431,7 @@ class WhoGetsWhat(unittest.TestCase):
     def test_admin_gets_every_live_company_job(self):
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
+        _week_began(db, "u_admin", THU_7)
         with _Ctx(db) as c:
             _tick(c, THU_7)
         sends = _sends(c)
@@ -581,6 +596,7 @@ class TimeAndOnce(unittest.TestCase):
             self.assertEqual(_sends(c), [])
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
+        _week_began(db, "u_admin", SAT_7)
         self._set(db, "u_admin", brief_weekend=True)
         with _Ctx(db) as c:
             _tick(c, SAT_7)
@@ -590,6 +606,7 @@ class TimeAndOnce(unittest.TestCase):
         self.assertEqual(len(_sends(c)), 1)
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
+        _week_began(db, "u_admin", SAT_7)
         self._set(db, "u_admin", brief_weekend=True)
         db[server.WA_COMPANY_SETTINGS].rows.append({
             "_id": CO_A, "company_id": CO_A, "whatsapp_company": {"shabbos_off": False}})
@@ -617,6 +634,7 @@ class TimeAndOnce(unittest.TestCase):
     def test_new_means_since_the_last_brief(self):
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
+        _week_began(db, "u_admin", THU_7)
         with _Ctx(db) as c:
             _tick(c, THU_7)
             n = len(_sends(c))
@@ -1488,6 +1506,8 @@ class MondayBrief(unittest.TestCase):
     def _brief(self, now):
         db = _monday_world(now)
         _optin(db, "u_admin", ADMIN_PHONE)
+        if wa_brief.local_now(now).weekday():
+            _week_began(db, "u_admin", now)         # Monday's went out
         with _Ctx(db) as c:
             _tick(c, now)
         return _texts(c)
@@ -1632,3 +1652,103 @@ class CourtDatesInTheWeek(unittest.TestCase):
         chat = {"source": "chat", "kind": "inspection", "title": "Con Ed meter set",
                 "date": "2026-10-09", "history": []}
         self.assertEqual(self._titles([chat], weekly=False), ["Con Ed meter set"])
+
+
+# ── The weekly section is delivered once a week, whatever Monday was ──────
+
+MON_YK = datetime(2026, 9, 21, 12, 5, tzinfo=timezone.utc)     # Mon 8:05 AM ET, Yom Kippur
+TUE_AFTER_YK = MON_YK + timedelta(days=1)
+WED_AFTER_YK = MON_YK + timedelta(days=2)
+
+
+def _week_world():
+    """Walworth: one old open violation with a court date. Thomas: an open
+    stop-work order and a permit expiring that week. Nothing new."""
+    db = _db()
+    db.dob_logs.rows.extend([
+        _old(WALWORTH, "34000001", "2026-06-02", hearing_date="2026-11-04"),
+        _swo(THOMAS, "SWO77"),
+        _permit(THOMAS, "B01141294", "2026-09-30"),
+    ])
+    for r in db.dob_logs.rows:
+        r["company_id"] = CO_A
+    return db
+
+
+class TheWeeklySectionIsNeverLost(unittest.TestCase):
+    """Roy, 2026-11-11: if Monday's weekly section was not delivered (a
+    holiday hold, an outage, a failed send), the next brief that goes out
+    that week carries it - once."""
+
+    WEEKLY = ("📋 *Open violations*", "• DOB 34000001", "• Stop-work order SWO77",
+              "🟠 Permit B01141294")
+
+    def _days(self, *days, monday_send=True):
+        db = _week_world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        out = []
+        with _Ctx(db) as c:
+            for now in days:
+                before = len(_sends(c))
+                _tick(c, now)
+                out.append("\n".join(_texts(c)[before:]))
+        return out
+
+    def _has_weekly(self, text):
+        return [w for w in self.WEEKLY if w in text]
+
+    def test_yom_tov_monday_then_tuesday_carries_it_once(self):
+        self.assertTrue(server.wa_brief.is_review_day(MON_YK))
+        mon, tue, wed = self._days(MON_YK, TUE_AFTER_YK, WED_AFTER_YK)
+        self.assertEqual(mon, "")                               # held: Yom Kippur
+        self.assertEqual(self._has_weekly(tue), list(self.WEEKLY), tue)
+        self.assertEqual(tue.count("📋 *Open violations*"), 2)  # one per job, once
+        self.assertEqual(self._has_weekly(wed), [], wed)        # not again that week
+
+    def test_control_monday_delivered_tuesday_does_not_repeat_it(self):
+        mon, tue = self._days(MON_8, TUE_8)
+        self.assertIn("📋 *Open violations*", mon)
+        self.assertIn("• DOB 34000001", mon)
+        self.assertNotIn("📋 *Open violations*", tue)
+        self.assertEqual(self._has_weekly(tue), [], tue)
+
+    def test_an_outage_monday_the_next_brief_carries_it(self):
+        # No Monday brief at all (the server was down): Wednesday's is the
+        # week's first, and carries it; Thursday's does not.
+        wed, thu = self._days(WED_AFTER_YK, WED_AFTER_YK + timedelta(days=1))
+        self.assertEqual(self._has_weekly(wed), list(self.WEEKLY), wed)
+        self.assertEqual(self._has_weekly(thu), [], thu)
+
+    def test_a_failed_monday_send_the_next_brief_carries_it(self):
+        db = _week_world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        wire = _Wire([(500, {}, None)] * 50)       # WaAPI down all Monday morning
+        with _Ctx(db, wire=wire) as c:
+            _tick(c, MON_8)
+            self.assertTrue(_sends(c))                  # it was tried ...
+            self.assertFalse([r for r in db[server.WA_LEDGER].rows
+                              if r.get("status") == "sent"])   # ... and nothing went out
+            wire.responses = []                         # Tuesday: WaAPI is back
+            before = len(_sends(c))
+            _tick(c, TUE_8)
+        tue = "\n".join(_texts(c)[before:])
+        self.assertEqual(self._has_weekly(tue), list(self.WEEKLY), tue)
+
+    def test_the_rule(self):
+        db = _db()
+        sent = lambda day: {"_id": f"k{day}", "user_id": "u1", "kind": server.MORNING_BRIEF_KIND,
+                            "status": "sent", "window": day}
+        with patch.object(server, "db", db):
+            due = lambda now: _run(server._brief_weekly_due("u1", now))
+            self.assertTrue(due(TUE_8))                         # nothing went out this week
+            db[server.WA_LEDGER].rows.append(sent("2026-10-09"))    # last week's Friday
+            self.assertTrue(due(TUE_8))
+            db[server.WA_LEDGER].rows.append(dict(sent("2026-10-12:j1"), _id="kp"))  # a part only
+            self.assertTrue(due(TUE_8))
+            db[server.WA_LEDGER].rows.append(dict(sent("2026-10-13"), _id="kt"))     # today's own
+            self.assertTrue(due(TUE_8))
+            db[server.WA_LEDGER].rows.append(dict(sent("2026-10-12"), status="skipped_shabbos"))
+            self.assertTrue(due(TUE_8))
+            db[server.WA_LEDGER].rows.append(dict(sent("2026-10-12"), _id="km"))     # Monday's, sent
+            self.assertFalse(due(TUE_8))
+            self.assertTrue(due(MON_8))                         # Monday: always

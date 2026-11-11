@@ -268,6 +268,7 @@ class TheMorningBrief(unittest.TestCase):
     def test_saturday_and_yom_tov_skipped_then_nothing_later(self):
         db = B._world()
         B._optin(db, "u_admin", B.ADMIN_PHONE)
+        B._week_began(db, "u_admin", B.SAT_7)      # that week's Monday brief went out
         B.TimeAndOnce._set(None, db, "u_admin", brief_weekend=True)
         with B._Ctx(db) as c:
             rep = B._tick(c, B.SAT_7)
@@ -280,7 +281,11 @@ class TheMorningBrief(unittest.TestCase):
             B._tick(c, _ny(2026, 9, 21, 7, 5))                       # Yom Kippur, a Monday
             self.assertEqual(len(B._sends(c)), 1)
             B._tick(c, _ny(2026, 9, 22, 7, 5))
-            self.assertEqual(len(B._sends(c)), 2)
+            # Tuesday's brief, and Yom Kippur's weekly section with it: the
+            # week's first brief carries it (server._brief_weekly_due) - the
+            # job with an open violation gets its message too.
+            self.assertEqual(len(B._sends(c)), 3)
+            self.assertIn("📋 *Open violations*", B._texts(c)[1])
         self.assertEqual(db[server.WA_QUIET_QUEUE].rows, [])
 
 
