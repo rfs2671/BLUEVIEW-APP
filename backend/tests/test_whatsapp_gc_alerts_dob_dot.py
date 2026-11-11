@@ -462,7 +462,7 @@ class BriefWaitsForTheFirstSync(unittest.TestCase):
         first = NOON - timedelta(minutes=30)          # after the row was stored
         synced = {s: first for s in source_sync.SOURCES}
         texts = [i["text"] for i in wa_brief.job_items(
-            self._rows(), since, NOON, (), synced=synced)]
+            self._rows(), since, NOON, (), synced=synced, weekly=True)]
         self.assertFalse(any("New violation" in t for t in texts), texts)
         self.assertTrue(any("expires" in t for t in texts), texts)   # state, not "new"
         # Found after the first sync: new.
@@ -844,7 +844,7 @@ class TheBrief(unittest.TestCase):
         dot = [_dot("D1", detected_at=NOON - timedelta(hours=1)),
                _dot("P1", kind="dot_permit", raw_id="dotpermit:P1",
                     expiration_date=(TODAY + timedelta(days=4)).isoformat())]
-        texts = [i["text"] for i in wa_brief.job_items(dob, since, now, dot)]
+        texts = [i["text"] for i in wa_brief.job_items(dob, since, now, dot, weekly=True)]
         self.assertIn("🔴 New DOT summons D1, issued Oct 6, DEFAULT. DOT.", texts)
         self.assertTrue(any(t.startswith("🟡 Stop-work order SWO3 changed ACTIVE → RESCINDED")
                             for t in texts), texts)
@@ -858,13 +858,18 @@ class TheBrief(unittest.TestCase):
                     hearing_date="2026-10-20T00:00:00.000"),
                _dot("D6", detected_at=NOON - timedelta(days=9),
                     hearing_date="2026-09-01T00:00:00.000")]
-        texts = [i["text"] for i in wa_brief.job_items([], NOON - timedelta(hours=20), NOON, dot)]
+        texts = [i["text"] for i in wa_brief.job_items([], NOON - timedelta(hours=20), NOON, dot,
+                                                       weekly=True)]
         self.assertEqual(texts, ["🟠 OATH hearing Oct 20 · ticket #D5 · DOT."])
+        # Not every morning: a court date is Monday's reminder (Roy, 2026-11-10).
+        self.assertEqual(wa_brief.job_items([], NOON - timedelta(hours=20), NOON, dot,
+                                            weekly=False), [])
 
     def test_inactive_dot_permit_not_in_brief(self):
         dot = [_dot("P9", kind="dot_permit", raw_id="dotpermit:P9", status="EXPIRED",
                     expiration_date=(TODAY + timedelta(days=4)).isoformat())]
-        self.assertEqual(wa_brief.job_items([], NOON - timedelta(hours=20), NOON, dot), [])
+        self.assertEqual(wa_brief.job_items([], NOON - timedelta(hours=20), NOON, dot,
+                                            weekly=True), [])
 
     def test_old_dot_summons_is_not_new(self):
         dot = [_dot("D9", detected_at=NOON - timedelta(days=3))]
