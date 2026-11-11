@@ -109,6 +109,23 @@ def report(t: Dict[Tuple[str, str], Counter]) -> str:
     return "\n".join(lines)
 
 
+def plan_stages(explain: Dict[str, Any]) -> list:
+    """The winning plan's stages, outermost first: "FETCH <- IXSCAN(idx)".
+    Both explain formats: classic (winningPlan.stage / inputStage[s]) and the
+    slot-based engine's (winningPlan.queryPlan holds the same tree)."""
+    win = (explain.get("queryPlanner") or {}).get("winningPlan") or {}
+    win = win.get("queryPlan") or win
+    out = []
+    while isinstance(win, dict) and win:
+        stage = str(win.get("stage") or "?")
+        out.append(stage + (f"({win['indexName']})" if win.get("indexName") else ""))
+        nxt = win.get("inputStage")
+        if nxt is None and win.get("inputStages"):
+            nxt = win["inputStages"][0]
+        win = nxt or {}
+    return out
+
+
 _PERMITS = {"record_type": "permit"}
 _FIELDS = {"dataset": 1, "raw_dob_id": 1, "job_number": 1, "is_deleted": 1}
 
@@ -132,16 +149,15 @@ def main(args) -> int:
                                      {"$sort": {"n": -1}}, {"$limit": 1}])
     top = next(iter(busiest), None)
     if top:
-        plan = db.dob_logs.find({"project_id": top["_id"],
-                                 "record_type": {"$in": ["permit", "violation"]},
-                                 "is_deleted": {"$ne": True}}).explain()
-        win = (plan.get("queryPlanner") or {}).get("winningPlan") or {}
-        stages = []
-        while win:
-            stages.append(win.get("stage") + (f"({win['indexName']})" if win.get("indexName") else ""))
-            win = win.get("inputStage") or {}
-        print(f"\nbrief query plan (busiest project, {top['n']} permit rows): "
-              f"{' <- '.join(stages)}")
+        # A DIAGNOSTIC: it never stops the count or the backfill.
+        try:
+            plan = db.dob_logs.find({"project_id": top["_id"],
+                                     "record_type": {"$in": ["permit", "violation"]},
+                                     "is_deleted": {"$ne": True}}).explain()
+            print(f"\nbrief query plan (busiest project, {top['n']} permit rows): "
+                  f"{' <- '.join(plan_stages(plan)) or 'unreadable'}")
+        except Exception as e:
+            print(f"\nbrief query plan: not read ({type(e).__name__})")
 
     if not args.backfill:
         print("\nRead-only: nothing written.")

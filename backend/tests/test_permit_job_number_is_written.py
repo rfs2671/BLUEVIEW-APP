@@ -170,6 +170,22 @@ class TheCountScript(unittest.TestCase):
         self.assertEqual(pjn.shape("permit:B001:GC"), "permit:<other>")
         self.assertEqual(pjn.shape("121234567:PL"), "<job>:<work>")
 
+    def test_plan_stages_reads_both_explain_formats(self):
+        classic = {"queryPlanner": {"winningPlan": {
+            "stage": "FETCH", "inputStage": {"stage": "IXSCAN",
+                                             "indexName": "project_id_1_detected_at_-1"}}}}
+        sbe = {"queryPlanner": {"winningPlan": {
+            "queryPlan": classic["queryPlanner"]["winningPlan"],
+            "slotBasedPlan": {"slots": "...", "stages": "..."}}}}
+        want = ["FETCH", "IXSCAN(project_id_1_detected_at_-1)"]
+        self.assertEqual(pjn.plan_stages(classic), want)
+        self.assertEqual(pjn.plan_stages(sbe), want)          # Codex, #1022
+        self.assertEqual(pjn.plan_stages({"queryPlanner": {"winningPlan": {
+            "stage": "OR", "inputStages": [{"stage": "IXSCAN", "indexName": "a"}]}}}),
+            ["OR", "IXSCAN(a)"])
+        self.assertEqual(pjn.plan_stages({}), [])
+        self.assertEqual(pjn.plan_stages({"queryPlanner": {"winningPlan": {"x": 1}}}), ["?"])
+
     def test_tally(self):
         rows = [
             {"dataset": "rbx6-tga4", "raw_dob_id": "permit:B00736381-I1", "job_number": "B00736381-I1"},
