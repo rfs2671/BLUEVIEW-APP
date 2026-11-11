@@ -14,8 +14,10 @@ record without the value a line needs is left out, never filled in.
       Mondays only
   🟡  a DOB status change: permit issued / expired / revoked, stop-work order
       rescinded, or any change DOB marks as needing action
-  🟠  DOB or DOT permit expiring within 14 days, or expired in the last 30 -
-      Mondays only
+  🟠  DOB or DOT permit expiring within 14 days - weekly; a DOT permit
+      expired in the last 30 days - weekly
+  🟠  a DOB permit expired, however long ago - EVERY morning until it is
+      renewed (its newest row is past its date), unless revoked or signed off
 
 STANDING REMINDERS ARE WEEKLY (Roy, 2026-11-10: "I don't want WhatsApp to
 send every morning the ECB violations, court dates etc. if nothing new; once
@@ -208,20 +210,27 @@ def record_key(source: str, rid: Any) -> str:
     return f"{source}:{_text(rid)}"
 
 
+#: A permit whose work is signed off: an expired date on it is no news.
+_SIGNED_OFF = re.compile(r"\bSIGN(?:ED)?[\s-]*OFF\b")
+
+
 def _expiry_item(r: Dict[str, Any], num_field: str, source: str, today: date,
-                 *, work: str = "", label: str = "Permit") -> Optional[Dict[str, Any]]:
-    """🟠 a permit expiring within 14 days, or expired in the last 30."""
+                 *, work: str = "", label: str = "Permit", soon: bool = True,
+                 expired_within: Optional[int] = EXPIRED_RECENT_DAYS
+                 ) -> Optional[Dict[str, Any]]:
+    """🟠 a permit expiring within 14 days (`soon`), or expired - in the last
+    `expired_within` days, or (None) however long ago."""
     exp = wa_gc.parse_dob_date(r.get("expiration_date"))
     num = _text(r.get(num_field))
     if not exp or not num:
         return None
     days = (exp - today).days
     name = f"{label} {num}" + (f" ({work})" if work else "")
-    if 0 <= days <= PERMIT_SOON_DAYS:
+    if soon and 0 <= days <= PERMIT_SOON_DAYS:
         when = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''}"
         return {"rank": RANK_PERMIT, "order": (days,),
                 "text": f"🟠 {name} expires {_md(exp)} ({when}). {source}."}
-    if -EXPIRED_RECENT_DAYS <= days < 0:
+    if days < 0 and (expired_within is None or days >= -expired_within):
         ago = -days
         return {"rank": RANK_PERMIT, "order": (days,),
                 "text": f"🟠 {name} expired {_md(exp)} "
@@ -287,10 +296,18 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                         "text": f"🔴 New {label} {num}, {verb} {_md(issued)}, {status}. DOB."})
                     continue
 
-        # 🟠 permit expiring / expired (not for a revoked permit)
-        if weekly and rt == "permit" and _text(latest.get("permit_status")).upper() != "REVOKED":
+        # 🟠 permit expiring / expired (not for a revoked or signed-off one).
+        # EXPIRED IS DAILY, UNTIL RENEWED (Roy, 2026-11-11): work on an
+        # expired permit is work without one, so it is said every morning
+        # while the permit's newest row (DOB re-issues a renewal under the
+        # same filing number: a new row of this record) is past its date.
+        # Expiring soon is a standing reminder: the weekly brief's.
+        pstatus = _text(latest.get("permit_status")).upper()
+        if (rt == "permit" and pstatus != "REVOKED" and not _SIGNED_OFF.search(pstatus)
+                and not wa_alerts.status_is_closed(pstatus)):
             item = _expiry_item(latest, "job_number", "DOB", today,
-                                work=_text(latest.get("work_type")))
+                                work=_text(latest.get("work_type")),
+                                soon=weekly, expired_within=None)
             if item:
                 items.append(item)
 
