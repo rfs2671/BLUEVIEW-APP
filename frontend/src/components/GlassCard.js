@@ -175,7 +175,7 @@ const LegacyGlassCard = ({
    (backgroundColor / borderColor, e.g. the attention cards) is painted on the content layer, inside the rounded edge. */
 const TINT_KEYS = ['backgroundColor', 'borderColor', 'borderWidth'];
 function splitTint(inner, colors) {
-  const rest = {}; const tint = {};
+  const rest = {}; const tint = {}; const inside = {};
   // `overflow` is dropped: the soft surface draws its shadow outside the card, and a clip would cut it off.
   // Side borders (a severity stripe down the left edge, a top rule) are kept but move to the CONTENT layer, which is
   // rounded and clipped: drawn on the outer wrapper they float above or beside the soft surface as a stray straight
@@ -183,6 +183,9 @@ function splitTint(inner, colors) {
   Object.keys(inner).forEach((k) => {
     if (k === 'overflow') return;
     if (k.startsWith('border') && k.includes('Radius')) return;
+    // `gap` was always meant to space what is INSIDE the card, but a caller's style lands on the wrapper, which holds a
+    // single child, so it never did anything and everything in the card sat touching. It now goes to the content layer.
+    if (k === 'gap' || k === 'rowGap' || k === 'columnGap') { inside[k] = inner[k]; return; }
     (k.startsWith('border') || k === 'backgroundColor' ? tint : rest)[k] = inner[k];
   });
   // The old glass fill and hairline border are what a card used to BE. Callers still pass them (a row's own style
@@ -198,7 +201,7 @@ function splitTint(inner, colors) {
       }
     });
   }
-  return { rest, tint };
+  return { rest, tint, inside };
 }
 
 export const GlassCard = (props) => (props.variant === 'modal' ? <LegacyGlassCard {...props} /> : <SoftGlassCard {...props} />);
@@ -209,7 +212,7 @@ const SoftGlassCard = (props) => {
   const [isHovered, setIsHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
   const { outer, inner } = splitCardStyle(style);
-  const { rest, tint } = splitTint(inner, themeColors);
+  const { rest, tint, inside } = splitTint(inner, themeColors);
   const CardWrapper = onPress ? Pressable : View;
   const cardProps = onPress
     ? { onPress, onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false), onPressIn: () => setPressed(true), onPressOut: () => setPressed(false) }
@@ -223,7 +226,7 @@ const SoftGlassCard = (props) => {
     >
       <View style={[{ position: 'relative', minHeight: d.min }, rest]}>
         <PanelSurface kind="card" anim={anim} />
-        <Animated.View style={[softStyles.cardContent, contentStyle, tint, { borderRadius: d.radius }, pressShift(anim)]}>{children}</Animated.View>
+        <Animated.View style={[softStyles.cardContent, inside, contentStyle, tint, { borderRadius: d.radius }, pressShift(anim)]}>{children}</Animated.View>
       </View>
     </CardWrapper>
   );
@@ -244,7 +247,7 @@ export const StatCard = ({ children, style, onPress, selected }) => {
     : { onMouseEnter: () => setIsHovered(true), onMouseLeave: () => setIsHovered(false) };
   const { colors: themeColors } = useTheme();
   const { outer, inner } = splitCardStyle(style);
-  const { rest, tint } = splitTint(inner, themeColors);
+  const { rest, tint, inside } = splitTint(inner, themeColors);
   const d = SOFT_PANEL_DIMS.card;
   const anim = usePressAnim(pressed, selected);
   return (
@@ -252,7 +255,7 @@ export const StatCard = ({ children, style, onPress, selected }) => {
       <View style={[{ position: 'relative', minHeight: d.min }, rest]}>
         <PanelSurface kind="card" anim={anim} />
         <Animated.View style={[{ overflow: 'hidden', position: 'relative', borderRadius: d.radius }, tint, pressShift(anim)]}>
-          <View style={softStyles.statPadded}>{children}</View>
+          <View style={[softStyles.statPadded, inside]}>{children}</View>
         </Animated.View>
       </View>
     </CardWrapper>
@@ -302,7 +305,7 @@ export const GlassListItem = ({
 
   const d = SOFT_PANEL_DIMS.card;
   const anim = usePressAnim(pressedState, selected);
-  const { rest: restStyle, tint: tintStyle } = splitTint(StyleSheet.flatten(style) || {}, colors);
+  const { rest: restStyle, tint: tintStyle, inside: insideStyle } = splitTint(StyleSheet.flatten(style) || {}, colors);
   return (
     <Pressable
       onPress={onPress}
@@ -321,7 +324,7 @@ export const GlassListItem = ({
       <PanelSurface kind="card" anim={anim} />
       {/* `contentStyle` (optional) overrides the default spacing.lg inset: for
           dense rows where a 24px inset per side eats the content width. */}
-      <Animated.View style={[styles.listItemContent, contentStyle, tintStyle, { borderRadius: d.radius }, pressShift(anim)]}>
+      <Animated.View style={[styles.listItemContent, insideStyle, contentStyle, tintStyle, { borderRadius: d.radius }, pressShift(anim)]}>
         {children || defaultContent}
       </Animated.View>
     </Pressable>
