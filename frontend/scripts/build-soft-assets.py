@@ -34,6 +34,11 @@ os.makedirs(OUT, exist_ok=True)
 # stretched) by the app. Stretching a thin strip a long way drew wrongly on phones: nothing at all for a one-pixel
 # strip, then faded edges, bands and hairlines for wider ones. Corners are never stretched and always drew right.
 MID = 256
+# Every piece is cut BLEED_DP larger than the box it fills, with the real neighbouring pixels in the extra band, and the
+# app clips it to the box. A picture fades slightly at its own edge when it is drawn on a fractional pixel (any phone
+# whose density is not a whole number); with the bleed that fade happens outside the clip, so adjacent pieces meet
+# without a hairline.
+BLEED_DP = 2
 KEY = dict(body=60, margin=52, cap=138)    # cap = margin + 30 radius + 56 straight run
 FIELD = dict(body=60, margin=28, cap=102)  # cap = margin + 30 radius + 44 straight run
 
@@ -55,16 +60,17 @@ def resample(im, scale):
 
 
 def save_pieces(im, name, cap, margin):
-    """Cut a full-width render into L (cap), M (1 dp column) and R (cap) for each density."""
+    """Cut a full-width render into L (cap), M (MID dp tile) and R (cap) for each density, each with a bleed."""
     for scale, suffix in ((1, ''), (2, '@2x'), (3, '@3x')):
         r = resample(im, scale)
         c = cap * scale
-        W = r.size[0]
-        r.save(f'{OUT}/{name}_full{suffix}.png', optimize=True)  # whole picture, for iPhone's cap-insets stretch
+        W, H = r.size
+        B = BLEED_DP * scale
         assert W == (2 * cap + MID) * scale, (name, W)
-        r.crop((0, 0, c, r.size[1])).save(f'{OUT}/{name}_L{suffix}.png', optimize=True)
-        r.crop((c, 0, c + MID * scale, r.size[1])).save(f'{OUT}/{name}_M{suffix}.png', optimize=True)
-        r.crop((W - c, 0, W, r.size[1])).save(f'{OUT}/{name}_R{suffix}.png', optimize=True)
+        r.save(f'{OUT}/{name}_full{suffix}.png', optimize=True)  # whole picture, for iPhone's cap-insets stretch
+        r.crop((-B, -B, c + B, H + B)).save(f'{OUT}/{name}_L{suffix}.png', optimize=True)
+        r.crop((c - B, -B, c + MID * scale + B, H + B)).save(f'{OUT}/{name}_M{suffix}.png', optimize=True)
+        r.crop((W - c - B, -B, W + B, H + B)).save(f'{OUT}/{name}_R{suffix}.png', optimize=True)
 
 
 def check_seamless(im, cap):
@@ -132,20 +138,21 @@ def save_nine(tn, name, spec, pressed=False, dent=False):
     seam = max(np.abs(a[:, c - 3] - a[:, c + 1]).max(), np.abs(a[c - 3, :] - a[c + 1, :]).max())
     print(name, tn, im.size, 'seam delta', seam)
     for scale, suffix in ((1, ''), (2, '@2x'), (3, '@3x')):
-        r = resample(im, scale); k = C * scale; W = r.size[0]
+        r = resample(im, scale); k = C * scale; W = r.size[0]; B = BLEED_DP * scale; T = MID * scale
         r.save(f'{OUT}/{name}_{tn}_full{suffix}.png', optimize=True)
         assert W == (2 * C + MID) * scale
-        xs = {'l': (0, k), 'c': (k, k + MID * scale), 'r': (W - k, W)}
-        mid = (k + MID * scale // 2); q = 2 * scale
+        mid = k + T // 2; q = 2 * scale
         centre = r.crop((mid - q, mid - q, mid + q, mid + q))
         if scale == 1:
             PLATEAU.setdefault(tn, {})[name] = tuple(int(v) for v in np.asarray(centre)[q, q])
-        for ry, (y0, y1) in (('t', xs['l']), ('m', xs['c']), ('b', xs['r'])):
-            for cx, (x0, x1) in (('l', xs['l']), ('c', xs['c']), ('r', xs['r'])):
+        centre.save(f'{OUT}/{name}_{tn}_mc{suffix}.png', optimize=True)  # small: the app fills the middle with a colour
+        spans = {'l': (0, k), 'c': (k, k + T), 'r': (W - k, W)}
+        for ry in 'tmb':
+            for cx in 'lcr':
                 if ry == 'm' and cx == 'c':
-                    centre.save(f'{OUT}/{name}_{tn}_mc{suffix}.png', optimize=True)  # small: the app fills the middle with a colour
-                else:
-                    r.crop((x0, y0, x1, y1)).save(f'{OUT}/{name}_{tn}_{ry}{cx}{suffix}.png', optimize=True)
+                    continue
+                x0, x1 = spans[cx]; y0, y1 = spans[{'t': 'l', 'm': 'c', 'b': 'r'}[ry]]
+                r.crop((x0 - B, y0 - B, x1 + B, y1 + B)).save(f'{OUT}/{name}_{tn}_{ry}{cx}{suffix}.png', optimize=True)
 
 
 def save_pill(tn, spec, pressed=False, dent=False):
