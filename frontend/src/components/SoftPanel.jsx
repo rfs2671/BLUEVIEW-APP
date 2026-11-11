@@ -48,6 +48,14 @@ export function useTileCount() {
 export function usePressAnim(pressed, selected) {
   const v = useRef(new Animated.Value(pressed ? 1 : 0)).current;
   const sel = useRef(new Animated.Value(selected ? 1 : 0)).current;
+  // `live`: the pressed and dented pictures only EXIST while they can be seen (pressed, selected, or settling after a
+  // release). A list of a hundred records used to carry three full copies of the surface per card, all the time.
+  const [live, setLive] = useState(!!(pressed || selected));
+  useEffect(() => {
+    if (pressed || selected) { setLive(true); return undefined; }
+    const t = setTimeout(() => setLive(false), 900);
+    return () => clearTimeout(t);
+  }, [pressed, selected]);
   useEffect(() => {
     if (pressed) {
       Animated.timing(v, { toValue: 1, duration: 150, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
@@ -64,6 +72,7 @@ export function usePressAnim(pressed, selected) {
     }
   }, [selected, sel]);
   v.sel = sel;
+  v.live = live;
   v.selectable = selected !== undefined;
   return v;
 }
@@ -114,8 +123,8 @@ export function PanelSurface({ kind = 'card', anim, tone, baseOpacity }) {
     return (
       <Animated.View pointerEvents="none" style={[box, popStyle(anim)]}>
         <Animated.View style={[fill, { opacity: o.raised }]}><NineSlice kind={kind} tone={tone} /></Animated.View>
-        <Animated.View style={[fill, { opacity: o.pressed }]}><NineSlice kind={pressedKind} tone={tone} /></Animated.View>
-        {o.dent ? <Animated.View style={[fill, { opacity: o.dent }]}><NineSlice kind={DENT_KIND[kind]} tone={tone} /></Animated.View> : null}
+        {anim.live ? <Animated.View style={[fill, { opacity: o.pressed }]}><NineSlice kind={pressedKind} tone={tone} /></Animated.View> : null}
+        {o.dent && anim.live ? <Animated.View style={[fill, { opacity: o.dent }]}><NineSlice kind={DENT_KIND[kind]} tone={tone} /></Animated.View> : null}
       </Animated.View>
     );
   }
@@ -144,13 +153,24 @@ function NineSlice({ kind = 'card', tone }) {
 }
 
 function NineTiles({ set, c, plateau }) {
-  const [h, setH] = useState(640);
-  const nH = useTileCount();
-  const nV = Math.max(1, Math.ceil(h / TILE));
+  // Only as many tiles as the run between the corners needs, measured: a typical card is one tile along each edge.
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  const nH = box.w ? Math.max(1, Math.ceil((box.w - 2 * c) / TILE)) : 1;
+  const nV = box.h ? Math.max(1, Math.ceil((box.h - 2 * c) / TILE)) : 1;
   const fixed = { width: c, height: c };
   const mid = `rgba(${plateau[0]},${plateau[1]},${plateau[2]},${plateau[3] / 255})`;
   return (
-    <View style={StyleSheet.absoluteFill} onLayout={(e) => setH(e.nativeEvent.layout.height)}>
+    <View
+      style={StyleSheet.absoluteFill}
+      onLayout={(e) => {
+        const { width, height } = e.nativeEvent.layout;
+        // tile counts change in whole steps; ignore sub-tile changes so an expanding card does not re-render per frame
+        setBox((cur) => {
+          const nw = Math.ceil(width / 64); const nh = Math.ceil(height / 64);
+          return (Math.ceil(cur.w / 64) === nw && Math.ceil(cur.h / 64) === nh) ? cur : { w: width, h: height };
+        });
+      }}
+    >
       <View style={{ height: c, flexDirection: 'row' }}>
         <Image source={set.tl} style={fixed} fadeDuration={0} />
         <TileRow src={set.tc} height={c} count={nH} />
@@ -198,8 +218,8 @@ export function PillSurface({ anim, tone, baseOpacity }) {
     return (
       <Animated.View pointerEvents="none" style={[box, popStyle(anim)]}>
         <Animated.View style={[fill, { opacity: o.raised }]}><PillLayer tone={tone} /></Animated.View>
-        <Animated.View style={[fill, { opacity: o.pressed }]}><PillLayer tone={tone} state="p" /></Animated.View>
-        {o.dent ? <Animated.View style={[fill, { opacity: o.dent }]}><PillLayer tone={tone} state="d" /></Animated.View> : null}
+        {anim.live ? <Animated.View style={[fill, { opacity: o.pressed }]}><PillLayer tone={tone} state="p" /></Animated.View> : null}
+        {o.dent && anim.live ? <Animated.View style={[fill, { opacity: o.dent }]}><PillLayer tone={tone} state="d" /></Animated.View> : null}
       </Animated.View>
     );
   }
@@ -225,9 +245,10 @@ function PillLayer({ tone, state = '' }) {
 }
 
 function PillTiles({ set, d }) {
-  const n = useTileCount();
+  const [w, setW] = useState(0);
+  const n = w ? Math.max(1, Math.ceil((w - 2 * d.capW) / TILE)) : 1;
   return (
-    <View style={[StyleSheet.absoluteFill, { flexDirection: 'row' }]}>
+    <View style={[StyleSheet.absoluteFill, { flexDirection: 'row' }]} onLayout={(e) => setW((cur) => (Math.ceil(cur / 64) === Math.ceil(e.nativeEvent.layout.width / 64) ? cur : e.nativeEvent.layout.width))}>
       <Image source={set.L} style={{ width: d.capW, height: d.imgH }} fadeDuration={0} />
       <TileRow src={set.M} height={d.imgH} count={n} />
       <Image source={set.R} style={{ width: d.capW, height: d.imgH }} fadeDuration={0} />
@@ -267,8 +288,8 @@ export function PebbleSurface({ anim, tone, baseOpacity }) {
   return (
     <Animated.View pointerEvents="none" style={[box, popStyle(anim)]}>
       <Animated.Image source={set.up} style={[StyleSheet.absoluteFill, { opacity: o.raised }]} fadeDuration={0} />
-      <Animated.Image source={set.down} style={[StyleSheet.absoluteFill, { opacity: o.pressed }]} fadeDuration={0} />
-      {o.dent ? <Animated.Image source={set.dent} style={[StyleSheet.absoluteFill, { opacity: o.dent }]} fadeDuration={0} /> : null}
+      {anim.live ? <Animated.Image source={set.down} style={[StyleSheet.absoluteFill, { opacity: o.pressed }]} fadeDuration={0} /> : null}
+      {o.dent && anim.live ? <Animated.Image source={set.dent} style={[StyleSheet.absoluteFill, { opacity: o.dent }]} fadeDuration={0} /> : null}
     </Animated.View>
   );
 }
