@@ -1,0 +1,870 @@
+{
+ "475 West Broadway (fixture)": {
+  "segment": {
+   "boro": "1",
+   "on": "W BROADWAY",
+   "from": "PRINCE ST",
+   "to": "W HOUSTON ST"
+  },
+  "params": {
+   "4te8-9n3p": {
+    "$select": "boroughcod,onstreetna,fromstreet,tostreetna",
+    "$where": "boroughcod='M' AND (upper(onstreetna) like '%BROADWAY%' OR upper(fromstreet) like '%BROADWAY%' OR upper(tostreetna) like '%BROADWAY%')",
+    "$limit": "5000"
+   },
+   "jr6f-nsuv": {
+    "$select": "boroughcod,primarynam,primaryn_1",
+    "$where": "boroughcod='M' AND (upper(primarynam) like '%BROADWAY%' OR upper(primaryn_1) like '%BROADWAY%')",
+    "$limit": "5000"
+   }
+  },
+  "rows": {
+   "4te8-9n3p": [
+    {
+     "boroughcod": "M",
+     "onstreetna": "BARCLAY STREET",
+     "fromstreet": "CHURCH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "BARCLAY STREET",
+     "fromstreet": "GREENWICH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "BLEECKER STREET",
+     "fromstreet": "GREENE STREET EXTENSION",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "BLEECKER STREET",
+     "fromstreet": "THOMPSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "CANAL STREET",
+     "fromstreet": "THOMPSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "CANAL STREET",
+     "fromstreet": "WEST BROADWAY",
+     "tostreetna": "WOOSTER STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "DUANE STREET",
+     "fromstreet": "CHURCH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "DUANE STREET",
+     "fromstreet": "HUDSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "GRAND STREET",
+     "fromstreet": "THOMPSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "GRAND STREET",
+     "fromstreet": "WEST BROADWAY",
+     "tostreetna": "WOOSTER STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "MURRAY STREET",
+     "fromstreet": "CHURCH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "MURRAY STREET",
+     "fromstreet": "GREENWICH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "PARK PLACE",
+     "fromstreet": "CHURCH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "PARK PLACE",
+     "fromstreet": "GREENWICH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "PRINCE STREET",
+     "fromstreet": "THOMPSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "PRINCE STREET",
+     "fromstreet": "WEST BROADWAY",
+     "tostreetna": "WOOSTER STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "READE STREET",
+     "fromstreet": "CHURCH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "READE STREET",
+     "fromstreet": "HUDSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "SPRING STREET",
+     "fromstreet": "THOMPSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "SPRING STREET",
+     "fromstreet": "WEST BROADWAY",
+     "tostreetna": "WOOSTER STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "THOMAS STREET",
+     "fromstreet": "CHURCH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "THOMAS STREET",
+     "fromstreet": "HUDSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "VESEY STREET",
+     "fromstreet": "CHURCH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "VESEY STREET",
+     "fromstreet": "WASHINGTON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WARREN STREET",
+     "fromstreet": "CHURCH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WARREN STREET",
+     "fromstreet": "GREENWICH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WASHINGTON SQUARE SOUTH",
+     "fromstreet": "WASHINGTON SQUARE EAST",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST    3 STREET",
+     "fromstreet": "MERCER STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "6 AVENUE",
+     "tostreetna": "CANAL STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "6 AVENUE",
+     "tostreetna": "BEACH STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BARCLAY STREET",
+     "tostreetna": "PARK PLACE"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BARCLAY STREET",
+     "tostreetna": "VESEY STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BLEECKER STREET",
+     "tostreetna": "WEST    3 STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BLEECKER STREET",
+     "tostreetna": "WEST HOUSTON STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BROOME STREET",
+     "tostreetna": "GRAND STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BROOME STREET",
+     "tostreetna": "SPRING STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "CANAL STREET",
+     "tostreetna": "GRAND STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "CHAMBERS STREET",
+     "tostreetna": "READE STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "CHAMBERS STREET",
+     "tostreetna": "WARREN STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "DUANE STREET",
+     "tostreetna": "READE STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "DUANE STREET",
+     "tostreetna": "THOMAS STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BEACH STREET",
+     "tostreetna": "BEACH STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BEACH STREET",
+     "tostreetna": "NORTH MOORE STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "FRANKLIN STREET",
+     "tostreetna": "FRANKLIN STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "FRANKLIN STREET",
+     "tostreetna": "LEONARD STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "FRANKLIN STREET",
+     "tostreetna": "WHITE STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "LEONARD STREET",
+     "tostreetna": "WORTH STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "MURRAY STREET",
+     "tostreetna": "PARK PLACE"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "MURRAY STREET",
+     "tostreetna": "WARREN STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "NORTH MOORE STREET",
+     "tostreetna": "WHITE STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "PRINCE STREET",
+     "tostreetna": "SPRING STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "PRINCE STREET",
+     "tostreetna": "WEST HOUSTON STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "THOMAS STREET",
+     "tostreetna": "WORTH STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "WASHINGTON SQUARE SOUTH",
+     "tostreetna": "WEST    3 STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST HOUSTON STREET",
+     "fromstreet": "THOMPSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST HOUSTON STREET",
+     "fromstreet": "WEST BROADWAY",
+     "tostreetna": "WOOSTER STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WORTH STREET",
+     "fromstreet": "CHURCH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WORTH STREET",
+     "fromstreet": "HUDSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "CANAL STREET",
+     "fromstreet": "CHURCH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "BLEECKER STREET",
+     "fromstreet": "MERCER STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST    3 STREET",
+     "fromstreet": "THOMPSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "FRANKLIN STREET",
+     "tostreetna": "NORTH MOORE STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WASHINGTON SQUARE SOUTH",
+     "fromstreet": "THOMPSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "BLEECKER STREET",
+     "fromstreet": "WEST BROADWAY",
+     "tostreetna": "WOOSTER STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST    3 STREET",
+     "fromstreet": "WEST BROADWAY",
+     "tostreetna": "WOOSTER STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "BARCLAY STREET",
+     "fromstreet": "WASHINGTON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "CANAL STREET",
+     "fromstreet": "LAIGHT STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BEND",
+     "tostreetna": "FRANKLIN STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "CANAL STREET",
+     "fromstreet": "6 AVENUE",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BEND",
+     "tostreetna": "LEONARD STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST    3 STREET",
+     "fromstreet": "GREENE STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BEACH STREET",
+     "tostreetna": "WHITE STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "BLEECKER STREET",
+     "fromstreet": "GREENE STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST HOUSTON STREET",
+     "fromstreet": "MERCER STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "6 AVENUE",
+     "fromstreet": "LAIGHT STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "6 AVENUE",
+     "fromstreet": "WALKER STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "6 AVENUE",
+     "fromstreet": "WEST BROADWAY",
+     "tostreetna": "YORK STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "BROOME STREET",
+     "fromstreet": "THOMPSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "BROOME STREET",
+     "fromstreet": "WEST BROADWAY",
+     "tostreetna": "WOOSTER STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "CHAMBERS STREET",
+     "fromstreet": "CHURCH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "CHAMBERS STREET",
+     "fromstreet": "GREENWICH STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "HUDSON STREET",
+     "fromstreet": "READE STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "VARICK STREET",
+     "fromstreet": "NORTH MOORE STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WALKER STREET",
+     "fromstreet": "6 AVENUE",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WASHINGTON SQUARE SOUTH",
+     "fromstreet": "WEST    4 STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WATTS STREET",
+     "fromstreet": "THOMPSON STREET",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BEND",
+     "tostreetna": "VARICK STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "GRAND STREET",
+     "tostreetna": "WATTS STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "HUDSON STREET",
+     "tostreetna": "READE STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "HUDSON STREET",
+     "tostreetna": "WARREN STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "LEONARD STREET",
+     "tostreetna": "VARICK STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "SPRING STREET",
+     "tostreetna": "WATTS STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "CANAL STREET",
+     "tostreetna": "LISPENARD STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BEACH STREET",
+     "tostreetna": "LISPENARD STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "NORTH MOORE STREET",
+     "tostreetna": "WALKER STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "WALKER STREET",
+     "tostreetna": "WHITE STREET"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST    3 STREET",
+     "fromstreet": "PEDESTRIAN PATH",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "BLEECKER STREET",
+     "fromstreet": "PEDESTRIAN PATH",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST HOUSTON STREET",
+     "fromstreet": "PEDESTRIAN PATH",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WASHINGTON SQUARE SOUTH",
+     "fromstreet": "PEDESTRIAN PATH",
+     "tostreetna": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "onstreetna": "WEST BROADWAY",
+     "fromstreet": "BARCLAY STREET",
+     "tostreetna": "GREENWICH STREET"
+    }
+   ],
+   "jr6f-nsuv": [
+    {
+     "boroughcod": "M",
+     "primarynam": "CANAL STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "NORTH MOORE STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "6 AVENUE",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST BROADWAY",
+     "primaryn_1": "BARCLAY STREET"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST BROADWAY",
+     "primaryn_1": "PRINCE STREET"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "VESEY STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST BROADWAY",
+     "primaryn_1": "WATTS STREET"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST BROADWAY",
+     "primaryn_1": "WASHINGTON SQUARE SOUTH"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "BROOME STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WASHINGTON SQUARE SOUTH",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "SPRING STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST BROADWAY",
+     "primaryn_1": "PARK PLACE"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WATTS STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "BARCLAY STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST BROADWAY",
+     "primaryn_1": "WARREN STREET"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "DUANE STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "LISPENARD STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "PRINCE STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "GREENWICH STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST BROADWAY",
+     "primaryn_1": "WHITE STREET"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "GRAND STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "BLEECKER STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST BROADWAY",
+     "primaryn_1": "BROOME STREET"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "THOMAS STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "PARK PLACE",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST    3 STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "CHAMBERS STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "MURRAY STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WALKER STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST BROADWAY",
+     "primaryn_1": "MURRAY STREET"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WARREN STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "VARICK STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "LEONARD STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST BROADWAY",
+     "primaryn_1": "LEONARD STREET"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "READE STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "WEST BROADWAY",
+     "primaryn_1": "WORTH STREET"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "HUDSON STREET",
+     "primaryn_1": "WEST BROADWAY"
+    },
+    {
+     "boroughcod": "M",
+     "primarynam": "BEND",
+     "primaryn_1": "WEST BROADWAY"
+    }
+   ]
+  }
+ },
+ "546 Saratoga": {
+  "segment": {
+   "boro": "3",
+   "on": "SARATOGA AVE",
+   "from": "PITKIN AVE",
+   "to": "SUTTER AVE"
+  },
+  "params": {
+   "4te8-9n3p": {
+    "$select": "boroughcod,onstreetna,fromstreet,tostreetna",
+    "$where": "boroughcod='B' AND (upper(onstreetna) like '%SARATOGA%' OR upper(fromstreet) like '%SARATOGA%' OR upper(tostreetna) like '%SARATOGA%')",
+    "$limit": "5000"
+   },
+   "jr6f-nsuv": {
+    "$select": "boroughcod,primarynam,primaryn_1",
+    "$where": "boroughcod='B' AND (upper(primarynam) like '%SARATOGA%' OR upper(primaryn_1) like '%SARATOGA%')",
+    "$limit": "5000"
+   }
+  },
+  "rows": {
+   "4te8-9n3p": [
+    {
+     "boroughcod": "B",
+     "onstreetna": "PITKIN AVENUE",
+     "fromstreet": "LEGION STREET",
+     "tostreetna": "SARATOGA AVENUE"
+    },
+    {
+     "boroughcod": "B",
+     "onstreetna": "PITKIN AVENUE",
+     "fromstreet": "SARATOGA AVENUE",
+     "tostreetna": "STRAUSS STREET"
+    }
+   ],
+   "jr6f-nsuv": [
+    {
+     "boroughcod": "B",
+     "primarynam": "PITKIN AVENUE",
+     "primaryn_1": "SARATOGA AVENUE"
+    }
+   ]
+  }
+ },
+ "_fetched_at": "2026-11-11",
+ "_source": "data.cityofnewyork.us 4te8-9n3p (Block) and jr6f-nsuv (Intersection), rowsUpdatedAt 2025-12-08",
+ "_note": "Rows whose streets name the permit's on-street, as DOT's lists returned them for the recorded params (trimmed to that street)."
+}

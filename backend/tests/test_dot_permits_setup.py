@@ -172,6 +172,12 @@ def _fetch(address=(), segment=(), chain=(), stips=None, cross=None, fail=()):
                                            "stipulationfulltext": "FLAG PERSON",
                                            "createdon": "2026-10-21T10:00:00.000"}])
             return copy.deepcopy(got)
+        if dataset == "4te8-9n3p":
+            # SYNTHETIC: DOT's embargo block list naming the recorded Con Ed
+            # block, so these tests exercise the embargo's other rules (the
+            # street rule itself is in test_dot_embargo_streets.py).
+            return [{"boroughcod": "B", "onstreetna": CON_ED.get("onstreetname"),
+                     "fromstreet": CON_ED.get("fromstreetname"), "tostreetna": CON_ED.get("tostreetname")}]
         if dataset != dot_sync.PERMIT_DATASET:
             return []
         if "$group" in params:
@@ -812,7 +818,8 @@ class TheEmbargoCoversConfirmedPermitsOnly(unittest.TestCase):
 
     def test_pending_or_rejected_never_exposed(self):
         _need()
-        base = {**dot_sync.to_log("dot_permit", OTHER), "holiday_waiver": False}
+        base = {**dot_sync.to_log("dot_permit", OTHER), "holiday_waiver": False,
+                "holiday_embargo_street": True}       # SYNTHETIC: on DOT's list
         season = dot_embargo.season_for(date(2026, 11, 1))
         self.assertTrue(dot_embargo.needs_waiver(base, season))           # legacy = confirmed
         for st in ("needs_confirmation", "rejected"):
