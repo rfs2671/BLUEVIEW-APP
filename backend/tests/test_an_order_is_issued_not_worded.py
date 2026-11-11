@@ -162,7 +162,10 @@ class DobsWordsSurviveTheOpenDataRefresh(unittest.TestCase):
           "complaint_number": "3A70077", "status": "ACTIVE", "complaint_category": "8A",
           "date_entered": "07/07/2026", "bin": "3012345", "house_number": "1", "house_street": "MAIN ST"}
 
-    def _sync(self, mode, fresh_minutes):
+    BIS = {"status": "RESOLVED", "disposition_code": "L1", "disposition_date": "2026-07-07",
+           "disposition_desc": "PARTIAL STOP WORK ORDER"}
+
+    def _sync(self, mode, fresh_minutes, *, seen_minutes=5, top=None, od=None, bis=True):
         from datetime import datetime as _dt, timedelta as _td, timezone as _tz
         from tests import test_bis_watch_review2 as r2
         h, db = r2._gc_world()
@@ -170,25 +173,59 @@ class DobsWordsSurviveTheOpenDataRefresh(unittest.TestCase):
         row = dict(self.BIS_ROW, company_id=h.CO_A, detected_at=now - _td(days=2),
                    bis_first_seen_at=now - _td(days=2),
                    status_history=[{"status": "CLOSED", "at": now - _td(days=2), "source": "bis"}])
+        if bis:
+            row.update(bis=dict(self.BIS), bis_last_seen_at=now - _td(minutes=seen_minutes))
+        row.update(top or {})
         db.dob_logs.rows.append(row)
         db.source_sync_state.rows.append({"_id": "proj_a", "watch": {"bis_complaints": {
             "mode": "live", "last_error": None, "last_success_at": now - _td(minutes=fresh_minutes)}}})
         with h._Ctx(db=db), patch.object(server, "_bis_watch_mode", lambda: mode):
-            r2._open_data_sync(h, db, [dict(self.OD)])
-        return next(r for r in db.dob_logs.rows if r["raw_dob_id"] == "3A70077")
+            events = r2._open_data_sync(h, db, [dict(od or self.OD)])
+        return next(r for r in db.dob_logs.rows if r["raw_dob_id"] == "3A70077"), events
 
     def test_live_and_fresh_keeps_dobs_state_words_and_source(self):
-        row = self._sync("live", 10)
+        row, _ = self._sync("live", 10)
         self.assertEqual((row["complaint_status"], row["disposition_code"]), ("CLOSED", "L1"))
         self.assertEqual(row["disposition_label"], "L1 - PARTIAL STOP WORK ORDER")
         self.assertEqual(row["disposition_source"], "DOB BIS")
         self.assertEqual(len(row["status_history"]), 1)          # no flip recorded
 
-    def test_off_or_stale_lets_open_data_refresh_as_before(self):
-        for mode, minutes in (("off", 10), ("shadow", 10), ("live", 180)):
-            with self.subTest(mode=mode, minutes=minutes):
-                row = self._sync(mode, minutes)
+    def test_a_row_an_older_refresh_overwrote_is_repaired_not_frozen(self):
+        # What the pre-fix refresh left on the row: ACTIVE, no disposition,
+        # Levelog's label. BIS's own record still says RESOLVED / L1.
+        row, _ = self._sync("live", 10, top={"complaint_status": "ACTIVE", "current_status": "ACTIVE",
+                                             "disposition_code": None,
+                                             "disposition_label": "Open: awaiting DOB inspection"})
+        self.assertEqual((row["complaint_status"], row["disposition_code"]), ("CLOSED", "L1"))
+        self.assertEqual(row["disposition_label"], "L1 - PARTIAL STOP WORK ORDER")
+
+    def test_off_shadow_stale_or_not_listed_lets_open_data_refresh_as_before(self):
+        for mode, minutes, seen in (("off", 10, 5), ("shadow", 10, 5), ("live", 180, 5), ("live", 10, 180)):
+            with self.subTest(mode=mode, project_read_minutes=minutes, row_listed_minutes=seen):
+                row, _ = self._sync(mode, minutes, seen_minutes=seen)
                 self.assertEqual(row["complaint_status"], "ACTIVE")
+
+    def test_a_stop_work_disposition_bis_did_not_list_still_alerts_from_open_data(self):
+        # Watch live and fresh, but this complaint has no BIS record (an older
+        # page / another BIN): Open Data's A3 is news, and it emails.
+        row, events = self._sync("live", 10, bis=False,
+                                 top={"complaint_status": "ACTIVE", "current_status": "ACTIVE",
+                                      "disposition_code": None},
+                                 od=dict(self.OD, disposition_code="A3", disposition_date="11/09/2026"))
+        self.assertEqual(row["disposition_code"], "A3")
+        self.assertIn("swo", events)
+
+    def test_the_live_watch_stamps_what_it_listed_and_shadow_does_not(self):
+        from datetime import timedelta as _td
+        from tests.test_bis_complaint_watch_flow import _BIS, _run, _seed
+        db = _seed()
+        _run(db, _BIS(), "live", emails=[])
+        _run(db, _BIS(), "live", now=NOW + _td(minutes=30), emails=[])
+        r = next(d for d in db.dob_logs.docs if d["raw_dob_id"] == "3A88489")
+        self.assertEqual(r["bis_last_seen_at"], NOW + _td(minutes=30))
+        _run(db, _BIS(), "shadow", now=NOW + _td(minutes=40), emails=[])
+        r = next(d for d in db.dob_logs.docs if d["raw_dob_id"] == "3A88489")
+        self.assertEqual(r["bis_last_seen_at"], NOW + _td(minutes=30))
 
 
 class NoStopWorkWordsWithoutAnOrder(unittest.TestCase):
@@ -199,9 +236,9 @@ class NoStopWorkWordsWithoutAnOrder(unittest.TestCase):
         self.assertIn("STOP ALL WORK", server._generate_next_action({"stop_work_order_number": "1"},
                                                                     "swo", "Action"))
 
-    def test_a_complaints_stop_work_text_is_named_an_allegation(self):
+    def test_a_complaints_stop_work_text_is_not_named_an_issued_order(self):
         sa = cw.safety_assessment({"description": "WORK CONTINUING DESPITE SWO", "category": "86"})
-        self.assertIn("alleges", " ".join(sa["reasons"]))
+        self.assertIn("text mentions a stop-work order (not an issued order)", " ".join(sa["reasons"]))
         self.assertIn("an issued order", " ".join(cw.safety_assessment({"disposition_code": "A3"})["reasons"]))
 
     def test_the_source_says_where_the_words_came_from(self):

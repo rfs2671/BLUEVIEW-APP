@@ -180,7 +180,7 @@ def safety_assessment(rec: Mapping[str, Any]) -> Dict[str, Any]:
     reasons: List[str] = []
     if disposition_class(disp) == "order" or re.search(r"\b(P?SWO|STOP (ALL )?WORK)\b", text):
         reasons.append(f"DOB disposed it {disp}: an issued order" if disposition_class(disp) == "order"
-                       else "the complaint alleges work against a stop-work order (not an issued order)")
+                       else "the complaint's text mentions a stop-work order (not an issued order)")
         return {"tier": "order", "reasons": reasons}
     if cat in SAFETY_CATEGORIES:
         reasons.append(f"category {cat}: {get_category_label(cat)}")

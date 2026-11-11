@@ -319,3 +319,8 @@ An officially issued stop-work order is distinct from a violation that reference
 - **Left as found:**
   - A complaint disposed A3 → V3 → L2 does not alert the final lift. V3 is not an order, and the same gap already existed for H3/H4.
   - An analytics counter (`statistical_engine/triggers.py`) counts neighbours' stop-work orders by wording. It is not an alert path.
+- **Review of 69d7e909.** The first ownership fix copied the row's top-level fields and applied to the whole project, which caused two problems:
+  - A row an older refresh had overwritten stayed wrong for good.
+  - A complaint BIS had not listed (an older page, another BIN) could have a real Open Data change suppressed, along with its stop-work alert.
+
+  Ownership is now per complaint. BIS owns the fields only while the live watch read the project within the hour **and** listed that complaint within the hour (`bis_last_seen_at`, stamped once per BIN per live pass). The values come from the row's `bis` record, which no Open Data pass writes, so an overwritten row is repaired. Severity and advice follow BIS's state.

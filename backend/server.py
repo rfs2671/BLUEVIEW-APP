@@ -44729,12 +44729,13 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 if existing.get("is_deleted") is True:
                     continue   # a deleted row stays deleted (old insert-once rule)
                 if bis_owns_complaints and record_type == "complaint" \
-                        and not complaint_watch.is_311(existing):
-                    # BIS read this complaint within the hour; Open Data's
-                    # extract is from midnight. Keep DOB's own state and words
-                    # as BIS printed them (operator ruling 2026-11-11).
-                    dob_log = {**dob_log, **{k: existing[k] for k in _BIS_OWNED_COMPLAINT_FIELDS
-                                             if k in existing}}
+                        and not complaint_watch.is_311(existing) and _bis_saw_recently(existing, now):
+                    # BIS listed THIS complaint within the hour; Open Data's
+                    # extract is from midnight. Its state and words are what
+                    # BIS printed (the row's `bis` record, which no Open Data
+                    # pass writes -- so a row an older refresh overwrote is
+                    # repaired here, not frozen). Operator ruling 2026-11-11.
+                    dob_log = {**dob_log, **_bis_owned_values(existing)}
                 update, changed, legacy = _plan_in_place_refresh(
                     existing, dob_log, now)
                 if update:
@@ -45483,14 +45484,37 @@ _BIS_EMAIL_EVENT = {"new_complaint": "new", "stop_work_order": "swo", "vacate_or
 
 
 # A DOB complaint's status and disposition, as BIS printed them. While the BIS
-# watch is live and has read the project within BIS_OWNS_FOR, the Open Data
-# refresh keeps these: eabe-havv is a midnight extract published ~17:15 UTC, so
-# it would write yesterday's state (ACTIVE over BIS's CLOSED, no disposition
-# over BIS's L1) and Levelog's own label over DOB's words, flipping the row and
-# the counts until the next pass.
-_BIS_OWNED_COMPLAINT_FIELDS = ("complaint_status", "current_status", "status", "disposition_code",
-                               "disposition_date", "disposition_label", "disposition_source")
+# watch is live, read the project without error within BIS_OWNS_FOR, AND listed
+# this very complaint within BIS_OWNS_FOR (bis_last_seen_at), the Open Data
+# refresh takes these from the row's `bis` record: eabe-havv is a midnight
+# extract published ~17:15 UTC, so it would write yesterday's state (ACTIVE
+# over BIS's CLOSED, no disposition over BIS's L1) and Levelog's own label over
+# DOB's words. A complaint BIS did not list on its latest read (an older page,
+# another BIN) is Open Data's to refresh, as before.
 BIS_OWNS_FOR = timedelta(hours=1)
+
+
+def _bis_saw_recently(row: dict, now: datetime) -> bool:
+    exb = row.get("bis") or {}
+    seen = source_sync.as_utc(row.get("bis_last_seen_at"))
+    return bool(exb.get("status") and seen and now - seen <= BIS_OWNS_FOR)
+
+
+def _bis_owned_values(row: dict) -> dict:
+    """The complaint's state as BIS last printed it, in the row's vocabulary,
+    with the severity and advice that state implies."""
+    exb = row.get("bis") or {}
+    st = _bis_status_key(exb.get("status"))
+    code = exb.get("disposition_code") or None
+    cls = classify_complaint({"status": st, "disposition_code": code,
+                              "complaint_category": row.get("complaint_type") or "",
+                              "complaint_number": row.get("raw_dob_id") or ""})
+    return {"complaint_status": st, "current_status": st, "disposition_code": code,
+            "disposition_date": exb.get("disposition_date") or None,
+            "disposition_label": complaint_watch.disposition_words(exb),
+            "disposition_source": complaint_watch.disposition_source(exb),
+            "severity": cls.get("severity") or row.get("severity"),
+            "next_action": cls.get("action") or row.get("next_action")}
 
 
 async def _bis_owns_complaints(project_id: str, now: datetime) -> bool:
@@ -45664,6 +45688,16 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
             continue
         ok_bins.append(b)
         first_sync = b not in first_done
+        if mode == "live":
+            listed = [cn for cn in (r["complaint_number"] for r in read.rows)
+                      if (stored.get(cn) or {}).get("bis") and not stored[cn].get("is_deleted")]
+            if listed:
+                try:
+                    await db.dob_logs.update_many(
+                        {"project_id": pid, "raw_dob_id": {"$in": listed}, "bis": {"$exists": True}},
+                        {"$set": {"bis_last_seen_at": now}})
+                except Exception as e:
+                    logger.warning(f"[bis-watch] seen-stamp failed: {type(e).__name__}")
         for row in read.rows:
             cn = row["complaint_number"]
             ex = stored.get(cn)
