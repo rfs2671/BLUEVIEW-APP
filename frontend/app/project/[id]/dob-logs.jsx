@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -21,6 +21,7 @@ import {
   CheckCircle,
   RefreshCw,
   Settings,
+  SlidersHorizontal,
   ChevronDown,
   ChevronUp,
   X,
@@ -35,6 +36,7 @@ import {
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
+import SyncIconButton from '../../../src/components/SyncIconButton';
 import { useCornerInset, useBrandRoom } from '../../../src/components/CornerInset';
 import GlassInput from '../../../src/components/GlassInput';
 import FloatingNav from '../../../src/components/FloatingNav';
@@ -109,6 +111,8 @@ export default function DOBLogsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('idle'); // idle | syncing | success | error: drives the sync button's animation
+  const syncTimer = useRef(null);
   const [projectName, setProjectName] = useState('');
   const [nycBin, setNycBin] = useState('');
   const [trackDobStatus, setTrackDobStatus] = useState(false);
@@ -189,15 +193,30 @@ export default function DOBLogsScreen() {
     setRefreshing(false);
   };
 
+  // The button spins while the sync runs and turns into a green check when it is done (the same control and motion as
+  // the dashboard's sync button), then settles back. A success needs no message; a sync that found new records says
+  // so, and failures still get a toast because they have to say what went wrong.
+  const settleSync = (next) => {
+    setSyncStatus(next);
+    if (syncTimer.current) clearTimeout(syncTimer.current);
+    syncTimer.current = setTimeout(() => setSyncStatus('idle'), 2200);
+  };
+  useEffect(() => () => { if (syncTimer.current) clearTimeout(syncTimer.current); }, []);
+
   const handleSync = async () => {
+    if (syncing) return;
     setSyncing(true);
+    setSyncStatus('syncing');
+    if (syncTimer.current) clearTimeout(syncTimer.current);
     try {
       const result = await dobAPI.syncNow(projectId);
-      toast.success('Sync Complete', result.new_records > 0 ? `${result.new_records} new record(s) found.` : 'No new records found.');
       await fetchLogs();
+      settleSync('success');
+      if (result && result.new_records > 0) toast.success('Sync Complete', `${result.new_records} new record(s) found.`);
     } catch (error) {
       // Sync pulls from NYC DOB via our backend — impossible offline, and a
       // failed sync must not be mistaken for "no new records found".
+      settleSync('error');
       if (isOfflineError(error)) {
         toast.error('Offline', 'Syncing needs a connection. No DOB data was checked.');
         return;
@@ -369,10 +388,8 @@ export default function DOBLogsScreen() {
     const days = daysUntil(l.expiration_date);
     return days !== null && days >= 0;
   });
-  const expiredPermits = renewablePermits.filter(l => {
-    const days = daysUntil(l.expiration_date);
-    return days !== null && days < 0;
-  });
+  // Expired = renewable but not still-to-expire: includes a permit with no date whose status says expired.
+  const expiredCount = renewablePermits.length - expiringPermits.length;
 
   // DOT holiday embargo: an active, CONFIRMED permit exposed to Nov 15 –
   // Jan 2 with no waiver (stipulation 410), or whose stipulations could not be
@@ -527,7 +544,7 @@ export default function DOBLogsScreen() {
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard}>
+        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
@@ -658,7 +675,7 @@ export default function DOBLogsScreen() {
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={[s.logCard, isSWO && s.swoCard]}>
+        <GlassCard style={[s.logCard, isSWO && s.swoCard]} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
@@ -768,7 +785,7 @@ export default function DOBLogsScreen() {
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard}>
+        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: riskColor }]} />
@@ -891,7 +908,7 @@ export default function DOBLogsScreen() {
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard}>
+        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: resultConfig.color }]} />
@@ -938,7 +955,7 @@ export default function DOBLogsScreen() {
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={s.logCard}>
+        <GlassCard style={s.logCard} contentStyle={s.logCardContent}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
@@ -1004,7 +1021,8 @@ export default function DOBLogsScreen() {
             <HeaderBrand style={brandRoom} />
           </View>
           <View style={[s.headerRight, cornerInset]}>
-            {isAdmin && <GlassButton variant="icon" icon={<Settings size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={openConfigModal} />}
+            {/* NOT a gear: the corner of every screen already holds the app's Settings gear, and two gears side by side read as a mistake. */}
+            {isAdmin && <GlassButton variant="icon" icon={<SlidersHorizontal size={20} strokeWidth={1.6} color={colors.text.primary} />} onPress={openConfigModal} />}
           </View>
         </View>
 
@@ -1020,8 +1038,11 @@ export default function DOBLogsScreen() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchLogs} tintColor={colors.text.muted} />}
           data={loading ? [] : filteredLogs}
           keyExtractor={(item) => String(item.id)}
+          initialNumToRender={6}
+          maxToRenderPerBatch={6}
+          windowSize={7}
           renderItem={({ item }) => renderLogCard(item)}
-          ItemSeparatorComponent={() => <View style={{ height: spacing.md }} />}
+          ItemSeparatorComponent={() => <View style={{ height: spacing.xl }} />}
           ListHeaderComponent={
             <>
           {/* Title. The refresh control lives up here as a quiet icon-button:
@@ -1030,17 +1051,16 @@ export default function DOBLogsScreen() {
           <View style={s.titleSection}>
             <View style={s.titleTopRow}>
               <Text style={s.titleLabel}>{tc('title')}</Text>
-              <Pressable
-                onPress={handleSync}
-                disabled={syncing}
-                hitSlop={10}
-                accessibilityRole="button"
-                accessibilityLabel={syncing ? 'Syncing with NYC DOB' : 'Sync now'}
-                style={({ hovered }) => [s.syncChip, hovered && s.syncChipHover, syncing && s.syncChipDisabled]}
-              >
-                <RefreshCw size={13} strokeWidth={1.5} color={semantic.neutral} />
-                <Text style={s.syncChipText}>{syncing ? 'Syncing…' : 'Synced automatically'}</Text>
-              </Pressable>
+              <View style={s.syncRow}>
+                <Text style={s.syncChipText}>{syncStatus === 'syncing' ? 'Syncing…' : syncStatus === 'success' ? 'Up to date' : syncStatus === 'error' ? 'Sync failed' : 'Synced automatically'}</Text>
+                <SyncIconButton
+                  status={syncStatus}
+                  onPress={handleSync}
+                  disabled={syncing}
+                  size={44}
+                  accessibilityLabel={syncing ? 'Syncing with NYC DOB' : 'Sync now'}
+                />
+              </View>
             </View>
             <Text style={s.titleText}>{projectName}</Text>
             {isValidBin(nycBin) ? (
@@ -1063,7 +1083,31 @@ export default function DOBLogsScreen() {
                 so the count matches the list once you drill in. ── */}
           <View style={s.navRow}>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}>
-              <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]}>
+              <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]} contentStyle={(expiringPermits.length > 0 || expiredCount > 0) ? { paddingTop: spacing.xl } : undefined}>
+                {/* Permit warnings are two small marks on this tile instead of a banner of their own: a yellow warning with the
+                    number expiring (within 30 days), and a red one with the number already expired. Tap the tile to see them. */}
+                {(expiringPermits.length > 0 || expiredCount > 0) && (
+                  <View style={s.permitBadges} pointerEvents="none">
+                    {expiringPermits.length > 0 && (
+                      <View
+                        style={[s.permitBadge, { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder }]}
+                        accessibilityLabel={`${expiringPermits.length} permit${expiringPermits.length > 1 ? 's' : ''} expiring soon`}
+                      >
+                        <AlertTriangle size={12} strokeWidth={2.2} color={semantic.attention} />
+                        <Text style={[s.permitBadgeText, { color: semantic.attention }]}>{expiringPermits.length}</Text>
+                      </View>
+                    )}
+                    {expiredCount > 0 && (
+                      <View
+                        style={[s.permitBadge, { backgroundColor: semantic.criticalBg, borderColor: semantic.criticalBorder }]}
+                        accessibilityLabel={`${expiredCount} permit${expiredCount > 1 ? 's' : ''} expired`}
+                      >
+                        <AlertTriangle size={12} strokeWidth={2.2} color={semantic.criticalText} />
+                        <Text style={[s.permitBadgeText, { color: semantic.criticalText }]}>{expiredCount}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
                 <FileCheck size={22} strokeWidth={1.5} color={activeTab === 'permit' ? chrome.brand : colors.text.muted} />
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'permit' && s.navCountActive]}>{ofText(permitsExpiring, activePermits)}</Text>
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'permit' && s.navLabelActive]}>Expiring / Active Permits</Text>
@@ -1126,48 +1170,6 @@ export default function DOBLogsScreen() {
             <DotCompliancePanel projectId={projectId} embargoBanner={embargoBanner} toast={toast} />
           )}
 
-          {/* Renewal status banner */}
-          {activeTab !== 'dot' && renewablePermits.length > 0 && (
-            <GlassCard style={s.renewalBanner}>
-              <View style={s.renewalBannerHeader}>
-                <ShieldAlert size={16} strokeWidth={2} color={semantic.attention} />
-                <Text style={s.renewalBannerTitle}>
-                  {renewablePermits.length} Permit{renewablePermits.length > 1 ? 's' : ''} Need Renewal
-                </Text>
-              </View>
-              <View style={s.renewalStatsRow}>
-                {expiringPermits.length > 0 && (
-                  <View style={s.renewalStat}>
-                    <Text style={[s.renewalStatNum, { color: semantic.attention }]}>{expiringPermits.length}</Text>
-                    <Text style={s.renewalStatLabel}>Expiring</Text>
-                  </View>
-                )}
-                {expiredPermits.length > 0 && (
-                  <View style={s.renewalStat}>
-                    <Text style={[s.renewalStatNum, { color: semantic.criticalText }]}>{expiredPermits.length}</Text>
-                    <Text style={s.renewalStatLabel}>Expired</Text>
-                  </View>
-                )}
-              </View>
-              {renewablePermits.slice(0, 3).map((p) => {
-                const d = daysUntil(p.expiration_date);
-                return (
-                  <View key={p.id} style={s.renewalItem}>
-                    <Text style={s.renewalItemText} numberOfLines={1}>
-                      {p.work_type || p.permit_type || 'Permit'} ({p.job_number || '—'})
-                    </Text>
-                    <Text style={[s.renewalItemDays, { color: d !== null && d < 0 ? semantic.criticalText : semantic.attention }]}>
-                      {d !== null ? (d < 0 ? `${Math.abs(d)}d overdue` : `${d}d left`) : 'Expired'}
-                    </Text>
-                  </View>
-                );
-              })}
-              {renewablePermits.length > 3 && (
-                <Text style={s.renewalMore}>+{renewablePermits.length - 3} more — filter by Permits to see all</Text>
-              )}
-            </GlassCard>
-          )}
-
             </>
           }
           ListEmptyComponent={(() => {
@@ -1213,7 +1215,7 @@ export default function DOBLogsScreen() {
                   {isAdmin ? (
                     <GlassButton
                       title="Open DOB Config"
-                      icon={<Settings size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                      icon={<SlidersHorizontal size={16} strokeWidth={1.6} color={colors.text.primary} />}
                       onPress={openConfigModal}
                       style={{ marginTop: spacing.sm }}
                     />
@@ -1360,6 +1362,9 @@ function buildStyles(colors, isDark) {
     navCountActive: { color: chrome.brand },
     navLabel: { fontSize: 11, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
     navLabelActive: { color: chrome.brand },
+    permitBadges: { position: 'absolute', top: 6, right: 8, flexDirection: 'row', gap: 4, zIndex: 2 },
+    permitBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999, borderWidth: 1 },
+    permitBadgeText: { fontSize: 12, fontWeight: '700' },
 
     // Filter banner
     filterBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginBottom: spacing.md, borderRadius: borderRadius.lg, backgroundColor: semantic.verifiedBg, borderWidth: 1, borderColor: semantic.verifiedBorder },
@@ -1394,6 +1399,7 @@ function buildStyles(colors, isDark) {
 
     // Full-width sync button
     titleTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm, marginBottom: spacing.sm },
+    syncRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
     syncChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4, paddingHorizontal: spacing.sm, borderRadius: borderRadius.sm, borderWidth: 1, borderColor: border.subtle },
     syncChipText: { color: text.secondary, fontSize: 11, fontWeight: '500' },
     syncChipHover: { borderColor: border.medium, backgroundColor: surface.glassHover },
@@ -1401,7 +1407,11 @@ function buildStyles(colors, isDark) {
     totalText: { fontSize: 12, color: colors.text.muted, textAlign: 'center', marginBottom: spacing.lg },
 
     logsList: { gap: spacing.md },
-    logCard: { gap: spacing.sm },
+    // `gap` on the card's own style never reached the rows inside it (the style lands on the wrapper, which holds one
+    // child), which is why the badges, the title and the status lines were jammed together. The spacing lives on the
+    // content layer.
+    logCard: {},
+    logCardContent: { padding: spacing.lg, gap: spacing.md },
     swoCard: { borderColor: semantic.criticalBorder, borderWidth: 1 },
     // Header wraps on narrow viewports so date chips drop below
     // badges instead of pushing them off-screen.

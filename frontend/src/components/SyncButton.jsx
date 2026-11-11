@@ -56,7 +56,7 @@ export default function SyncButton({ onSyncComplete, style }) {
       status={isSyncing && status === 'idle' ? 'syncing' : status}
       onPress={handleSync}
       disabled={!isOnline}
-      size={34}
+      size={44}
       badge={queueStatus ? queueStatus.size : 0}
       accessibilityLabel="Sync now"
       style={style}
