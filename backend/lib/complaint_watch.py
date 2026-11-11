@@ -88,6 +88,15 @@ def disposition_words(rec: Mapping[str, Any]) -> Optional[str]:
     words = str(rec.get("disposition_desc") or rec.get("disposition_label") or "").strip() \
         or get_disposition_label(code)
     return f"{code} - {words}" if words and words != code else code
+
+
+def disposition_source(rec: Mapping[str, Any]) -> Optional[str]:
+    """Where disposition_words came from: BIS's printed words, or BIS's code
+    with the label from DOB's code table when BIS printed only the code."""
+    if not str(rec.get("disposition_code") or "").strip():
+        return None
+    return "DOB BIS" if str(rec.get("disposition_desc") or "").strip() \
+        else "DOB BIS (code); label from DOB's code table"
 RESCIND_DISPOSITIONS = {"L2", "L3", "Y2", "Y4"}
 
 
@@ -170,8 +179,8 @@ def safety_assessment(rec: Mapping[str, Any]) -> Dict[str, Any]:
     disp = str(rec.get("disposition_code") or "").upper()
     reasons: List[str] = []
     if disposition_class(disp) == "order" or re.search(r"\b(P?SWO|STOP (ALL )?WORK)\b", text):
-        reasons.append("stop-work or vacate order" if disposition_class(disp) == "order"
-                       else "DOB's text names a stop-work order")
+        reasons.append(f"DOB disposed it {disp}: an issued order" if disposition_class(disp) == "order"
+                       else "the complaint alleges work against a stop-work order (not an issued order)")
         return {"tier": "order", "reasons": reasons}
     if cat in SAFETY_CATEGORIES:
         reasons.append(f"category {cat}: {get_category_label(cat)}")

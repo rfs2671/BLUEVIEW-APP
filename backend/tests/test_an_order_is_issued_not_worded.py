@@ -147,5 +147,69 @@ class V3IsWhatDobSaysItIs(unittest.TestCase):
         self.assertIsNone(cw.disposition_words({"disposition_code": None}))
 
 
+class DobsWordsSurviveTheOpenDataRefresh(unittest.TestCase):
+    """Final review: Open Data's midnight extract wrote yesterday's state and
+    Levelog's own label over what BIS printed, with the source tag still
+    'DOB BIS'. While the watch is live and fresh, BIS owns those fields."""
+
+    BIS_ROW = {"_id": "bisc", "project_id": "proj_a", "record_type": "complaint", "raw_dob_id": "3A70077",
+               "complaint_number": "3A70077", "complaint_type": "8A", "complaint_status": "CLOSED",
+               "current_status": "CLOSED", "disposition_code": "L1", "disposition_date": "2026-07-07",
+               "disposition_label": "L1 - PARTIAL STOP WORK ORDER", "disposition_source": "DOB BIS",
+               "complaint_source": "DOB Complaint", "dataset": "bis", "nyc_bin": "3012345", "is_deleted": False}
+    # eabe-havv, a day behind: still ACTIVE, not yet disposed.
+    OD = {"_id_field": "complaint_number", "_record_type": "complaint", "_dataset": "eabe-havv",
+          "complaint_number": "3A70077", "status": "ACTIVE", "complaint_category": "8A",
+          "date_entered": "07/07/2026", "bin": "3012345", "house_number": "1", "house_street": "MAIN ST"}
+
+    def _sync(self, mode, fresh_minutes):
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        from tests import test_bis_watch_review2 as r2
+        h, db = r2._gc_world()
+        now = _dt.now(_tz.utc)
+        row = dict(self.BIS_ROW, company_id=h.CO_A, detected_at=now - _td(days=2),
+                   bis_first_seen_at=now - _td(days=2),
+                   status_history=[{"status": "CLOSED", "at": now - _td(days=2), "source": "bis"}])
+        db.dob_logs.rows.append(row)
+        db.source_sync_state.rows.append({"_id": "proj_a", "watch": {"bis_complaints": {
+            "mode": "live", "last_error": None, "last_success_at": now - _td(minutes=fresh_minutes)}}})
+        with h._Ctx(db=db), patch.object(server, "_bis_watch_mode", lambda: mode):
+            r2._open_data_sync(h, db, [dict(self.OD)])
+        return next(r for r in db.dob_logs.rows if r["raw_dob_id"] == "3A70077")
+
+    def test_live_and_fresh_keeps_dobs_state_words_and_source(self):
+        row = self._sync("live", 10)
+        self.assertEqual((row["complaint_status"], row["disposition_code"]), ("CLOSED", "L1"))
+        self.assertEqual(row["disposition_label"], "L1 - PARTIAL STOP WORK ORDER")
+        self.assertEqual(row["disposition_source"], "DOB BIS")
+        self.assertEqual(len(row["status_history"]), 1)          # no flip recorded
+
+    def test_off_or_stale_lets_open_data_refresh_as_before(self):
+        for mode, minutes in (("off", 10), ("shadow", 10), ("live", 180)):
+            with self.subTest(mode=mode, minutes=minutes):
+                row = self._sync(mode, minutes)
+                self.assertEqual(row["complaint_status"], "ACTIVE")
+
+
+class NoStopWorkWordsWithoutAnOrder(unittest.TestCase):
+    def test_a_violation_typed_with_stop_work_words_gets_violation_advice(self):
+        advice = server._generate_next_action({"violation_type": "SWO VIOLATION - AFTER HOURS"},
+                                              "violation", "Action")
+        self.assertNotIn("STOP ALL WORK", advice)
+        self.assertIn("STOP ALL WORK", server._generate_next_action({"stop_work_order_number": "1"},
+                                                                    "swo", "Action"))
+
+    def test_a_complaints_stop_work_text_is_named_an_allegation(self):
+        sa = cw.safety_assessment({"description": "WORK CONTINUING DESPITE SWO", "category": "86"})
+        self.assertIn("alleges", " ".join(sa["reasons"]))
+        self.assertIn("an issued order", " ".join(cw.safety_assessment({"disposition_code": "A3"})["reasons"]))
+
+    def test_the_source_says_where_the_words_came_from(self):
+        self.assertEqual(cw.disposition_source({"disposition_code": "V3", "disposition_desc": "X"}), "DOB BIS")
+        self.assertEqual(cw.disposition_source({"disposition_code": "V3"}),
+                         "DOB BIS (code); label from DOB's code table")
+        self.assertIsNone(cw.disposition_source({}))
+
+
 if __name__ == "__main__":
     unittest.main()

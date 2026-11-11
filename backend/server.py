@@ -44047,8 +44047,9 @@ def _generate_next_action(rec: dict, record_type: str, severity: str) -> str:
         return "Permit is active and current. No action needed."
 
     if record_type in ("violation", "swo"):
-        vtype = str(rec.get("violation_type", "") or rec.get("violation_type_code", "")).lower()
-        if "stop work" in vtype or "swo" in vtype:
+        # Only an issued order (the stop-work dataset) gets stop-work advice; a
+        # violation whose words cite one is a violation (ruling 2026-11-11).
+        if record_type == "swo":
             return "STOP ALL WORK. Contact DOB and your attorney immediately to resolve SWO."
         if severity == "Action":
             return "Active violation. Contact your expediter and schedule correction with DOB."
@@ -44572,7 +44573,9 @@ async def run_dob_sync_for_project(project: dict) -> list:
     existing_cursor = db.dob_logs.find({"project_id": project_id}, {"raw_dob_id": 1})
     async for doc in existing_cursor:
         existing_ids.add(doc.get("raw_dob_id"))
- 
+    # Read once per pass: does the live BIS watch own complaint state here?
+    bis_owns_complaints = await _bis_owns_complaints(project_id, datetime.now(timezone.utc))
+
     new_records = []
     for rec in raw_records:
         id_field = rec.get("_id_field", "unique_key")
@@ -44725,6 +44728,13 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # ── NON-PERMIT, ALREADY KNOWN: refresh in place ──
                 if existing.get("is_deleted") is True:
                     continue   # a deleted row stays deleted (old insert-once rule)
+                if bis_owns_complaints and record_type == "complaint" \
+                        and not complaint_watch.is_311(existing):
+                    # BIS read this complaint within the hour; Open Data's
+                    # extract is from midnight. Keep DOB's own state and words
+                    # as BIS printed them (operator ruling 2026-11-11).
+                    dob_log = {**dob_log, **{k: existing[k] for k in _BIS_OWNED_COMPLAINT_FIELDS
+                                             if k in existing}}
                 update, changed, legacy = _plan_in_place_refresh(
                     existing, dob_log, now)
                 if update:
@@ -45472,6 +45482,32 @@ _BIS_EMAIL_EVENT = {"new_complaint": "new", "stop_work_order": "swo", "vacate_or
                     "violation_served": "new"}
 
 
+# A DOB complaint's status and disposition, as BIS printed them. While the BIS
+# watch is live and has read the project within BIS_OWNS_FOR, the Open Data
+# refresh keeps these: eabe-havv is a midnight extract published ~17:15 UTC, so
+# it would write yesterday's state (ACTIVE over BIS's CLOSED, no disposition
+# over BIS's L1) and Levelog's own label over DOB's words, flipping the row and
+# the counts until the next pass.
+_BIS_OWNED_COMPLAINT_FIELDS = ("complaint_status", "current_status", "status", "disposition_code",
+                               "disposition_date", "disposition_label", "disposition_source")
+BIS_OWNS_FOR = timedelta(hours=1)
+
+
+async def _bis_owns_complaints(project_id: str, now: datetime) -> bool:
+    """True when the BIS watch is LIVE and read this project's complaints
+    without error within BIS_OWNS_FOR. Shadow never owns anything."""
+    if _bis_watch_mode() != "live":
+        return False
+    try:
+        st = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id}, {"watch": 1}) or {}
+    except Exception:
+        return False
+    w = ((st.get("watch") or {}).get("bis_complaints") or {})
+    ok = source_sync.as_utc(w.get("last_success_at"))
+    return bool(ok and w.get("mode") == "live" and not w.get("last_error")
+                and now - ok <= BIS_OWNS_FOR)
+
+
 def _first_synced_field(mode: str) -> str:
     """Each mode keeps its OWN first-sync baseline. Shadow marking a BIN synced
     made live's first pass treat every open complaint and active summons it had
@@ -45546,7 +45582,7 @@ def _bis_row_to_dob_log(rec: dict, project: dict, project_bin: str, decision: di
         "disposition_code": rec.get("disposition_code"),
         # DOB's exact disposition words, as BIS printed them, and where from.
         "disposition_label": complaint_watch.disposition_words(rec),
-        "disposition_source": "DOB BIS" if rec.get("disposition_code") else None,
+        "disposition_source": complaint_watch.disposition_source(rec),
         "severity": "Action" if sa["tier"] in ("order", "safety") else "Monitor",
         "signal_kind": "complaint_dob",
         "dataset": "bis",
@@ -45727,7 +45763,7 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
                     top["disposition_date"] = rec.get("disposition_date")
                 if rec.get("disposition_code"):
                     top["disposition_label"] = complaint_watch.disposition_words(rec)
-                    top["disposition_source"] = "DOB BIS"
+                    top["disposition_source"] = complaint_watch.disposition_source(rec)
                 after = {**ex, **top, "id": str(ex["_id"])}
                 changed = _bis_status_key(ex.get("current_status")) != top["current_status"]
                 hist, _legacy = status_hist.refreshed_history(ex, top["current_status"], now,

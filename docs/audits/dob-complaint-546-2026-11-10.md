@@ -306,3 +306,16 @@ An officially issued stop-work order is distinct from a violation that reference
   - DOB violation 2820774, a "V-DOB VIOLATION - ACTIVE" whose text reads "BOROUGH COMMISSIONER HAS ORDERED ALL WORK STOPPED". It was given subtype SWO_FULL. It is now COMM_ORDER, still open and on the open-violations list, with DOB's words intact. Its stored subtype is recomputed on the next Open Data refresh.
 - **The order gate and the Shabbos-critical rule** no longer read stop-work wording on a violation. Vacate wording is unchanged.
 - **DOB's exact disposition words and their source** are kept on BIS rows (`disposition_label`, `disposition_source: "DOB BIS"`). They also appear in the complaint alert (EN/ES) and on the Compliance card: "DOB disposition (BIS): V3 - STOP WORK ORDER VIOLATION SERVED FOR NON-COMPLIANT AFTER HOURS WORK."
+
+**Final review of the ruling change (995dc5d7).**
+- **Wording paths:** every remaining stop-work match on an alert path is keyed on the stop-work dataset or a complaint's order disposition.
+- **Issued orders:** they and their lifts still alert once.
+- **One real defect:** Open Data's midnight extract wrote yesterday's state and LeveLog's own label over what BIS had printed, while the source tag still said "DOB BIS". For example, ACTIVE with no disposition over CLOSED with "L1 - PARTIAL STOP WORK ORDER". It flipped the row and the counts until the next pass.
+  - **Fix:** while the watch is live and read the project within the hour, BIS owns a complaint's status and disposition fields. Off, shadow or a stale watch leaves Open Data as before.
+  - **Source tag:** it now says where the words came from: BIS's printed words, or BIS's code with DOB's code-table label.
+- **Also fixed:**
+  - A violation's type wording no longer yields "STOP ALL WORK" advice.
+  - A complaint's stop-work text is recorded as an allegation, not as "names a stop-work order".
+- **Left as found:**
+  - A complaint disposed A3 → V3 → L2 does not alert the final lift. V3 is not an order, and the same gap already existed for H3/H4.
+  - An analytics counter (`statistical_engine/triggers.py`) counts neighbours' stop-work orders by wording. It is not an alert path.
