@@ -70,6 +70,12 @@ BASELINE = {
     ("dob_logs", "complaint_source"),
     ("dob_logs", "complaint_date"),
     ("dob_logs", "expiration_date"),
+    # dob_logs.job_number: written by _extract_permit_fields, which RETURNS a
+    # dict (fields["job_number"] = ...) that the DOB sync merges into each
+    # permit row -- a returned dict, so the sweep sees no writer (the same
+    # writer as expiration_date above). Read by the brief's "mute B<permit>"
+    # command to check the permit is on one of the company's jobs (2026-11-11).
+    ("dob_logs", "job_number"),
     ("document_page_index", "file_hash"),
     ("document_page_index", "file_id"),
     ("document_page_index", "index_version"),

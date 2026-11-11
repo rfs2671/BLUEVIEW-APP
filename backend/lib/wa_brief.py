@@ -14,13 +14,18 @@ record without the value a line needs is left out, never filled in.
       Mondays only
   🟡  a DOB status change: permit issued / expired / revoked, stop-work order
       rescinded, or any change DOB marks as needing action
-  🟠  DOB or DOT permit expiring within 14 days, or expired in the last 30 -
-      Mondays only
+  🟠  DOB or DOT permit expiring within 14 days - weekly; a DOT permit
+      expired in the last 30 days - weekly
+  🟠  a DOB permit expired on one of the project's current job filings -
+      EVERY morning until renewed; any other expired DOB permit (an old
+      filing, or muted by an admin) - weekly ("Expired DOB permits" below)
 
 STANDING REMINDERS ARE WEEKLY (Roy, 2026-11-10: "I don't want WhatsApp to
 send every morning the ECB violations, court dates etc. if nothing new; once
 a week is more than enough"). A hearing, a permit's expiry and the open
-violations are listed on Mondays (New York). Any other morning says only
+violations are listed on Mondays (New York) - or, when Monday's brief was
+not delivered (a Yom Tov hold, an outage, a failed send), on the week's
+first brief that is (server._brief_weekly_due; `weekly` below). Any other morning says only
 what is new since the last brief: a new violation, summons or stop-work
 order, a status change, and a court date the city added or moved
 (brief_events).
@@ -57,7 +62,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 from lib import dob_penalty, dot_sync, source_sync, wa_alerts, wa_gc
 
@@ -206,20 +211,27 @@ def record_key(source: str, rid: Any) -> str:
     return f"{source}:{_text(rid)}"
 
 
+#: A permit whose work is signed off: an expired date on it is no news.
+_SIGNED_OFF = re.compile(r"\bSIGN(?:ED)?[\s-]*OFF\b")
+
+
 def _expiry_item(r: Dict[str, Any], num_field: str, source: str, today: date,
-                 *, work: str = "", label: str = "Permit") -> Optional[Dict[str, Any]]:
-    """🟠 a permit expiring within 14 days, or expired in the last 30."""
+                 *, work: str = "", label: str = "Permit", soon: bool = True,
+                 expired_within: Optional[int] = EXPIRED_RECENT_DAYS
+                 ) -> Optional[Dict[str, Any]]:
+    """🟠 a permit expiring within 14 days (`soon`), or expired - in the last
+    `expired_within` days, or (None) however long ago."""
     exp = wa_gc.parse_dob_date(r.get("expiration_date"))
     num = _text(r.get(num_field))
     if not exp or not num:
         return None
     days = (exp - today).days
     name = f"{label} {num}" + (f" ({work})" if work else "")
-    if 0 <= days <= PERMIT_SOON_DAYS:
+    if soon and 0 <= days <= PERMIT_SOON_DAYS:
         when = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''}"
         return {"rank": RANK_PERMIT, "order": (days,),
                 "text": f"🟠 {name} expires {_md(exp)} ({when}). {source}."}
-    if -EXPIRED_RECENT_DAYS <= days < 0:
+    if days < 0 and (expired_within is None or days >= -expired_within):
         ago = -days
         return {"rank": RANK_PERMIT, "order": (days,),
                 "text": f"🟠 {name} expired {_md(exp)} "
@@ -227,11 +239,96 @@ def _expiry_item(r: Dict[str, Any], num_field: str, source: str, today: date,
     return None
 
 
+# ── Expired DOB permits: daily on the job's live filings, else weekly ──────
+#
+# Roy, 2026-11-11: an expired permit is said EVERY morning only when it is
+# on one of the project's CURRENT job filings - and not when it was renewed.
+# Everything else expired (an old filing, a lapse two years back, a permit
+# an admin muted) goes in the weekly section only.
+#
+#   JOB          the job number without its filing suffix: B23173802-S5 and
+#                B23173802-S6 are one job (B23173802). A BIS job (numeric)
+#                is its own number.
+#   LIVE         a permit whose newest row is not past its expiration date,
+#                and is not revoked, signed off or closed.
+#   CURRENT JOB  a job with a live permit on this project, or whose newest
+#                permit lapsed within CURRENT_JOB_LAPSE_DAYS: a job whose
+#                only permit lapsed last week is still the job being built.
+#                Nothing else marks a filing current in the data we hold
+#                (a permit-bearing filing's job_status twin is dropped at
+#                sync), so the permits decide.
+#   RENEWED      a newer live permit exists for the same job and work type,
+#                whatever its filing sequence (B23173802-S6 renews -S5).
+
+CURRENT_JOB_LAPSE_DAYS = 365
+
+
+def base_job(job_number: Any) -> str:
+    """'B23173802-S5' -> 'B23173802'; '123456789' -> '123456789'."""
+    return _text(job_number).upper().split("-")[0].strip()
+
+
+def _work(r: Dict[str, Any]) -> str:
+    return " ".join(_text(r.get("work_type")).upper().split())
+
+
+def _permit_closed(r: Dict[str, Any]) -> bool:
+    st = _text(r.get("permit_status")).upper()
+    return st == "REVOKED" or bool(_SIGNED_OFF.search(st)) or wa_alerts.status_is_closed(st)
+
+
+class PermitFacts(NamedTuple):
+    live: Dict[Tuple[str, str], List[date]]   # (job, work) -> live permits' expirations
+    current: frozenset                         # current jobs
+
+
+def permit_facts(latest_permits: Iterable[Dict[str, Any]], today: date) -> PermitFacts:
+    """From each permit record's NEWEST row: which permits are live (per job
+    and work type), and which jobs are current."""
+    live: Dict[Tuple[str, str], List[date]] = {}
+    newest: Dict[str, date] = {}
+    for r in latest_permits:
+        job = base_job(r.get("job_number"))
+        exp = wa_gc.parse_dob_date(r.get("expiration_date"))
+        if not job or not exp or _permit_closed(r):
+            continue
+        newest[job] = max(newest.get(job, exp), exp)
+        if exp >= today:
+            live.setdefault((job, _work(r)), []).append(exp)
+    current = frozenset(j for j, exp in newest.items()
+                        if (today - exp).days <= CURRENT_JOB_LAPSE_DAYS)
+    return PermitFacts(live, current)
+
+
+def permit_renewed(r: Dict[str, Any], facts: PermitFacts) -> bool:
+    """A newer live permit for the same job and work type: its expiration
+    later than this one's (a renewal runs past what it renews)."""
+    exp = wa_gc.parse_dob_date(r.get("expiration_date"))
+    later = facts.live.get((base_job(r.get("job_number")), _work(r)), [])
+    return bool(exp and any(x > exp for x in later))
+
+
+#: "mute B23173802-S5 work finished, sign-off pending" / "unmute B23173802-S5":
+#: an admin's DM command (server._brief_mute_turn). The number as DOB writes a
+#: job filing: a borough letter or none, digits, an optional filing suffix.
+_MUTE = re.compile(r"^\s*(un)?mute\s+([A-Za-z]?\d{5,}(?:-[A-Za-z]{1,2}\d{1,3})?)(?![\w-])"
+                   r"\s*[:,.-]?\s*(.*?)\s*$", re.I | re.S)
+
+
+def parse_mute(text: Any) -> Optional[Tuple[str, str, str]]:
+    """("mute" | "unmute", PERMIT NUMBER, reason) or None."""
+    m = _MUTE.match(str(text or ""))
+    if not m:
+        return None
+    return ("unmute" if m.group(1) else "mute", m.group(2).upper(), m.group(3)[:200])
+
+
 def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
               now_utc: datetime,
               dot_rows: Iterable[Dict[str, Any]] = (),
               synced: Optional[Dict[str, datetime]] = None,
-              weekly: Optional[bool] = None) -> List[Dict[str, Any]]:
+              weekly: Optional[bool] = None,
+              muted: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
     """The items one job has today: [{rank, order, text}]. Pure. `dot_rows`
     are the job's dot_logs rows (DOT summonses and permits).
 
@@ -241,12 +338,19 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
 
     `synced` is {source: first_synced_at} (lib/source_sync.first_synced).
     When given, a source not in it gives no item at all, and nothing its
-    first sync stored is "new" or a "change"."""
+    first sync stored is "new" or a "change".
+
+    `muted`: {permit number (upper): reason} an admin muted ("mute B… why"):
+    its expired line is weekly only, with the reason."""
     today = wa_gc.today_et(now_utc)
     if since.tzinfo is None:
         since = since.replace(tzinfo=timezone.utc)
     if weekly is None:
         weekly = is_review_day(now_utc)
+    muted = {k.upper(): v for k, v in (muted or {}).items()}
+    grouped = group_records(rows)
+    facts = permit_facts([h[-1] for h in grouped.values()
+                          if _text(h[-1].get("record_type")).lower() == "permit"], today)
 
     def _cutoff(rt: str) -> Optional[datetime]:
         """`since`, moved up to the source's first sync; None: skip the row."""
@@ -257,7 +361,7 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
         return None if first is None else max(since, first)
 
     items: List[Dict[str, Any]] = []
-    for rid, hist in group_records(rows).items():
+    for rid, hist in grouped.items():
         first, latest = hist[0], hist[-1]
         rt = _text(latest.get("record_type")).lower()
         if rt == "swo" and wa_alerts.is_summons(latest):
@@ -287,11 +391,19 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                         "text": f"🔴 New {label} {num}, {verb} {_md(issued)}, {status}. DOB."})
                     continue
 
-        # 🟠 permit expiring / expired (not for a revoked permit)
-        if weekly and rt == "permit" and _text(latest.get("permit_status")).upper() != "REVOKED":
+        # 🟠 permit expiring / expired (not for a revoked or signed-off one,
+        # nor one renewed - see "Expired DOB permits" above). Expired on a
+        # current job, not muted: EVERY morning. Expired otherwise, or
+        # expiring soon: the weekly brief's.
+        if rt == "permit" and not _permit_closed(latest) and not permit_renewed(latest, facts):
+            num = _text(latest.get("job_number")).upper()
+            daily = (base_job(num) in facts.current and num not in muted)
             item = _expiry_item(latest, "job_number", "DOB", today,
-                                work=_text(latest.get("work_type")))
-            if item:
+                                work=_text(latest.get("work_type")),
+                                soon=weekly, expired_within=None)
+            if item and (weekly or (daily and "expired" in item["text"])):
+                if num in muted:
+                    item["text"] += f" Muted: {muted[num]}."
                 items.append(item)
 
         # 🟡 a status change: a permit issued / expired / revoked, a
