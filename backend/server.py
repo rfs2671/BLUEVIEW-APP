@@ -126,6 +126,7 @@ from lib import dot_summons  # noqa: E402
 from lib import dob_site_bins  # noqa: E402
 from lib import dob_alert_gate  # noqa: E402
 from lib import source_sync  # noqa: E402
+from lib import bis_complaints, bis_violations, complaint_watch  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
 from lib import wa_welcome  # noqa: E402
@@ -42002,6 +42003,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     # captures SWOs issued under Article 202.6 (a recent law).
     # Pre-Article-202.6 SWOs may not appear here. False-negative
     # risk surfaced in commit body.
+    #
+    # 2026-11-10: this is the COVID Executive Order 202.6 dataset. Its newest
+    # row is 2020-05-28 and NO current stop-work order is in it -- the 546
+    # Saratoga partial SWO of 2026-07-07 is a complaint disposition (L1) on
+    # BIS and an ECB violation, not a row here. It stays only as history. Its
+    # street column is `street`: the address query named `street_name`, 400'd
+    # on every pass, and that one failure kept `dob_violations` from ever
+    # first-syncing (tests/test_dob_query_columns_all_datasets.py).
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/3usq-5cid.json",
@@ -42014,7 +42023,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
             "url": "https://data.cityofnewyork.us/resource/3usq-5cid.json",
             "params": {
                 "house_number": house_num,
-                "$where": f"upper(street_name) like '%{street_name}%'",
+                "$where": f"upper(street) like '%{street_name}%'",
                 "$limit": "100",
                 "$order": "issue_date DESC",
             },
@@ -42118,7 +42127,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/xubg-57si.json",
             "params": {
-                "house_number": house_num,
+                "house_no": house_num,
                 "$where": f"upper(street_name) like '%{street_name}%'",
                 "$limit": "100",
                 "$order": "filing_date DESC",
@@ -42132,7 +42141,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/52dp-yji6.json",
-            "params": {"bin_number": nyc_bin, "$limit": "100", "$order": "report_filing_date DESC"},
+            "params": {"bin_number": nyc_bin, "$limit": "100", "$order": "inspection_date DESC"},
             "record_type": "boiler",
             "id_field": "tracking_number",
         })
@@ -42145,7 +42154,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/e5aq-a4j2.json",
-            "params": {"bin": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
+            "params": {"bin": nyc_bin, "$limit": "100", "$order": "status_date DESC"},
             "record_type": "elevator",
             "id_field": "device_number",
         })
@@ -42230,24 +42239,15 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
                             )
                         except Exception:
                             rec["_dataset"] = None
-                        if ep["record_type"] == "violation":
-                            # Check ALL text fields for stop work indicators across all 3 violation datasets
-                            swo_fields = [
-                                rec.get("violation_type", ""),
-                                rec.get("violation_type_code", ""),
-                                rec.get("description", ""),
-                                rec.get("violation_description", ""),
-                                rec.get("infraction_codes", ""),
-                                rec.get("penalty_description", ""),
-                                rec.get("section_of_law", ""),
-                                rec.get("severity", ""),
-                                rec.get("violation_category", ""),
-                                rec.get("certification_status", ""),
-                                rec.get("status", ""),
-                            ]
-                            combined = " ".join(str(f or "").lower() for f in swo_fields)
-                            if "stop work" in combined or "swo" in combined or "partial stop" in combined:
-                                rec["_record_type"] = "swo"
+                        # A violation is never retyped as a stop-work order from
+                        # its WORDING (operator ruling 2026-11-11). This retyped
+                        # every production 'swo' row that was not from the
+                        # stop-work dataset: two ECB summonses (39550534Y,
+                        # 39543624M) citing an SWO. A violation that references
+                        # or alleges stop-work conditions stays a violation, in
+                        # DOB's own classification; an order comes from the
+                        # stop-work dataset (3usq-5cid) or a complaint DOB
+                        # disposed with an order code (lib/complaint_watch).
                         all_records.append(rec)
                 else:
                     logger.warning(f"DOB API {ep['url']} returned {status_code}")
@@ -42257,6 +42257,12 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "",
             if answered is not None:
                 rt = ep["record_type"]
                 answered[rt] = answered.get(rt, True) and ok
+                # Per dataset too (lib/source_sync.answered_sources_by_dataset):
+                # one dataset failing must not close its whole source.
+                _ds = re.search(r"resource/([a-z0-9]{4}-[a-z0-9]{4})", ep["url"])
+                if _ds:
+                    _k = source_sync.DATASET_KEY + _ds.group(1)
+                    answered[_k] = answered.get(_k, True) and ok
             per_endpoint_stats.append({
                 "url": ep["url"].rsplit("/", 1)[-1].replace(".json", ""),
                 "record_type": ep["record_type"],
@@ -43541,14 +43547,18 @@ def _classify_violation_subtype(rec: dict) -> str:
 
     combined = f"{vtype} {desc}"
 
-    # Stop-work detection keyed on DOB's REAL phrasing, not just the literal
-    # "FULL STOP WORK". A borough-commissioner order reads "…ORDERED ALL WORK
-    # STOPPED…", which the old check missed → it fell through to COMM_ORDER and
-    # ranked below open violations. record_type=='swo' still forces stop-work.
-    stop_work = record_type == "swo" or any(p in combined for p in (
-        "STOP WORK", "WORK STOPPED", "WORK SHALL NOT RESUME",
-        "CEASE ALL WORK", "WORK SHALL STOP",
-    ))
+    if ecb_num and record_type != "swo":
+        # An ECB/OATH summons is a summons, not the order its text may cite
+        # (lib/wa_alerts.is_summons): report_regulatory and wa_alerts read a
+        # SWO_* subtype as a stop-work order.
+        return "ECB"
+
+    # A stop-work subtype only for a stop-work ORDER record (3usq-5cid). A
+    # violation whose words reference one -- "BOROUGH COMMISSIONER HAS ORDERED
+    # ALL WORK STOPPED" (2820774, a "V-DOB VIOLATION - ACTIVE") -- keeps DOB's
+    # own classification below (COMM_ORDER there); wording never makes an
+    # order (operator ruling 2026-11-11).
+    stop_work = record_type == "swo"
     if stop_work:
         return "SWO_PARTIAL" if "PARTIAL" in combined else "SWO_FULL"
     if "FULL VACATE" in combined:
@@ -44037,8 +44047,9 @@ def _generate_next_action(rec: dict, record_type: str, severity: str) -> str:
         return "Permit is active and current. No action needed."
 
     if record_type in ("violation", "swo"):
-        vtype = str(rec.get("violation_type", "") or rec.get("violation_type_code", "")).lower()
-        if "stop work" in vtype or "swo" in vtype:
+        # Only an issued order (the stop-work dataset) gets stop-work advice; a
+        # violation whose words cite one is a violation (ruling 2026-11-11).
+        if record_type == "swo":
             return "STOP ALL WORK. Contact DOB and your attorney immediately to resolve SWO."
         if severity == "Action":
             return "Active violation. Contact your expediter and schedule correction with DOB."
@@ -44331,6 +44342,31 @@ async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
                             f"(shares a job with BIN {nyc_bin}); {len(found)} records")
             else:
                 logger.info(f"[dob-sync] project {project_id}: BIN {cand} shares no job with BIN {nyc_bin}; not fetched")
+        # THE LOT'S OTHER BINS, PER BIS. A building's second BIN need not share
+        # a job with the first: 546 Saratoga's rear BIN 3423445 carries its own
+        # complaints and ECB violations and no job of 3255205's, so the rule
+        # above never reached it. BIS's property profile ("Additional BINs for
+        # Building") is DOB's own statement that it is the same lot; the BIS
+        # watch records it (watch.bis_complaints.lot_bins, also in shadow).
+        # Its own guard: a failed state read or lot-BIN fetch must never throw
+        # away the site-BIN records already found above.
+        try:
+            done = {re.sub(r"\D", "", str(nyc_bin))} | set(fetched_bins or [])
+            done |= {str(r.get("_site_bin")) for r in added if isinstance(r, dict)}
+            state = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id}) or {}
+            lot = ((state.get("watch") or {}).get("bis_complaints") or {}).get("lot_bins") or []
+            for cand in [b for b in lot if re.fullmatch(r"\d{7}", str(b)) and b not in done]:
+                found = await _query_dob_apis(cand, "", answered)
+                for r in found:
+                    if isinstance(r, dict):
+                        r["_site_bin"] = cand
+                added += dob_site_bins.new_records(list(records) + added, found)
+                if fetched_bins is not None:
+                    fetched_bins.append(cand)
+                logger.info(f"[dob-sync] project {project_id}: BIN {cand} is on the same lot per BIS; "
+                            f"{len(found)} records")
+        except Exception as e:
+            logger.warning(f"[dob-sync] lot BINs skipped for project {project_id}: {type(e).__name__}")
         return list(records) + added
     except Exception as e:
         logger.warning(f"[dob-sync] site BINs skipped for project {project_id}: {type(e).__name__}")
@@ -44400,8 +44436,10 @@ async def run_dob_sync_for_project(project: dict) -> list:
     async def _mark_synced():
         await _mark_sources_synced(
             project_id, company_id,
-            source_sync.answered_sources(answered, failed_types)
+            source_sync.answered_sources_by_dataset(answered, failed_types)
             & set(source_sync.DOB_SOURCES))
+        await _mark_datasets_synced(project_id, company_id,
+                                    source_sync.answered_datasets(answered))
 
     raw_records = await _query_dob_apis(nyc_bin, project_address, answered)
     site_bins: list = []
@@ -44535,7 +44573,9 @@ async def run_dob_sync_for_project(project: dict) -> list:
     existing_cursor = db.dob_logs.find({"project_id": project_id}, {"raw_dob_id": 1})
     async for doc in existing_cursor:
         existing_ids.add(doc.get("raw_dob_id"))
- 
+    # Read once per pass: does the live BIS watch own complaint state here?
+    bis_owns_complaints = await _bis_owns_complaints(project_id, datetime.now(timezone.utc))
+
     new_records = []
     for rec in raw_records:
         id_field = rec.get("_id_field", "unique_key")
@@ -44688,6 +44728,15 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # ── NON-PERMIT, ALREADY KNOWN: refresh in place ──
                 if existing.get("is_deleted") is True:
                     continue   # a deleted row stays deleted (old insert-once rule)
+                bis_owned = (bis_owns_complaints and record_type == "complaint"
+                             and not complaint_watch.is_311(existing) and _bis_saw_recently(existing, now))
+                if bis_owned:
+                    # BIS listed THIS complaint within the hour; Open Data's
+                    # extract is from midnight. Its state and words are what
+                    # BIS printed (the row's `bis` record, which no Open Data
+                    # pass writes -- so a row an older refresh overwrote is
+                    # repaired here, not frozen). Operator ruling 2026-11-11.
+                    dob_log = {**dob_log, **_bis_owned_values(existing)}
                 update, changed, legacy = _plan_in_place_refresh(
                     existing, dob_log, now)
                 if update:
@@ -44712,16 +44761,30 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # serves an A3 "Full Stop Work Order" as a new DISPOSITION on a
                 # complaint whose status stays ACTIVE. The 24h throttle and the
                 # before/after comparison keep it to one email.
-                if not legacy:
+                # A row BIS owns (above) is alerted by the BIS watch, which saw
+                # the state first: this refresh only re-writes it, never
+                # alerts it again (a repaired row would otherwise look new).
+                if not legacy and not bis_owned:
                     after = {**existing, **dob_log, **(update or {}),
                              "id": str(existing["_id"])}
-                    order = dob_alert_gate.update_issues_order(existing, after)
+                    before = existing
+                    # bis_first_seen_at, not `dataset`: the first refresh
+                    # overwrites `dataset`, and the false order came on the second.
+                    if existing.get("bis_first_seen_at") or existing.get("dataset") in ("bis", "bis-ecb"):
+                        # First stored by the BIS watch (different record_type
+                        # rules and free text). Compare like with like: only a
+                        # change of status or disposition can issue an order.
+                        before = {**existing, **{k: dob_log[k] for k in (
+                            "record_type", "_record_type", "description", "violation_type",
+                            "violation_description", "complaint_type", "category_label",
+                            "violation_category", "disposition_comments") if k in dob_log}}
+                    order = dob_alert_gate.update_issues_order(before, after)
                     if order:
                         await _stamp_order_issued(existing["_id"], order, now)
                         await _send_critical_dob_alert_throttled(
                             project, after, source="dob", event=order)
                     # ...or lifted one in full: the second update exception.
-                    lifted = dob_alert_gate.update_lifts_order(existing, after)
+                    lifted = dob_alert_gate.update_lifts_order(before, after)
                     if lifted:
                         await _stamp_order_lifted(existing["_id"], lifted, now)
                         await _send_critical_dob_alert_throttled(
@@ -45394,6 +45457,579 @@ async def nightly_dob_scan():
     # unparked, deliberately.
     #
     # See docs/audits/permit-expiry-claim-2026-08-27.md.
+
+# ── DOB BIS COMPLAINT WATCH (lib/bis_complaints, lib/complaint_watch) ────────
+#
+# THE GAP (546 Saratoga, 2026-11-10). eabe-havv, the only complaint source the
+# 15-minute scan reads, is a once-a-day extract: complaints DOB received at
+# 11:22 and 11:25 were not in it that day and could not be until the next
+# afternoon. BIS had both within hours. This job reads BIS -- newest-first, one
+# GET per BIN when nothing is new -- for every tracked project's BINs (its own,
+# the lot's other BINs per BIS, the site BINs), and reconciles by complaint
+# number with what the Open Data scan stored, so a complaint is one row and one
+# alert whichever source saw it first.
+#
+# MODES (BIS_COMPLAINT_WATCH_MODE): "off" (default) does nothing. "shadow" reads
+# BIS and records, per complaint, the decision it WOULD take in
+# complaint_watch_ledger -- no dob_logs write, no email, no WhatsApp. "live"
+# stores new complaints in dob_logs (the existing WhatsApp group path then
+# posts them under its own gates) and emails a safety complaint through
+# _send_critical_dob_alert_throttled. Turning on "live" is an operator ruling.
+COMPLAINT_WATCH_LEDGER = "complaint_watch_ledger"
+_BIS_UA = {"User-Agent": "Mozilla/5.0 (LeveLog DOB monitor)"}
+_BIS_KEEP = ("status", "received_at", "received_date", "priority", "assigned_to",
+             "last_inspection_date", "disposition_code", "disposition_date",
+             "disposition_desc", "ecb_violation_numbers", "comments")
+
+
+# lib/complaint_watch events -> lib/dob_alert_gate.EVENTS (the email's vocabulary).
+_BIS_EMAIL_EVENT = {"new_complaint": "new", "stop_work_order": "swo", "vacate_order": "vacate",
+                    "violation_served": "new"}
+
+
+# A DOB complaint's status and disposition, as BIS printed them. While the BIS
+# watch is live, read the project without error within BIS_OWNS_FOR, AND listed
+# this very complaint within BIS_OWNS_FOR (bis_last_seen_at), the Open Data
+# refresh takes these from the row's `bis` record: eabe-havv is a midnight
+# extract published ~17:15 UTC, so it would write yesterday's state (ACTIVE
+# over BIS's CLOSED, no disposition over BIS's L1) and Levelog's own label over
+# DOB's words. A complaint BIS did not list on its latest read (an older page,
+# another BIN) is Open Data's to refresh, as before.
+BIS_OWNS_FOR = timedelta(hours=1)
+
+
+def _bis_saw_recently(row: dict, now: datetime) -> bool:
+    exb = row.get("bis") or {}
+    seen = source_sync.as_utc(row.get("bis_last_seen_at"))
+    return bool(exb.get("status") and seen and now - seen <= BIS_OWNS_FOR)
+
+
+def _bis_owned_values(row: dict) -> dict:
+    """The complaint's state as BIS last printed it, in the row's vocabulary,
+    with the severity and advice that state implies."""
+    exb = row.get("bis") or {}
+    st = _bis_status_key(exb.get("status"))
+    code = exb.get("disposition_code") or None
+    cls = classify_complaint({"status": st, "disposition_code": code,
+                              "complaint_category": row.get("complaint_type") or "",
+                              "complaint_number": row.get("raw_dob_id") or ""})
+    return {"complaint_status": st, "current_status": st, "disposition_code": code,
+            "disposition_date": exb.get("disposition_date") or None,
+            "disposition_label": complaint_watch.disposition_words(exb),
+            "disposition_source": complaint_watch.disposition_source(exb),
+            "severity": cls.get("severity") or row.get("severity"),
+            "next_action": cls.get("action") or row.get("next_action")}
+
+
+async def _bis_owns_complaints(project_id: str, now: datetime) -> bool:
+    """True when the BIS watch is LIVE and read this project's complaints
+    without error within BIS_OWNS_FOR. Shadow never owns anything."""
+    if _bis_watch_mode() != "live":
+        return False
+    try:
+        st = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id}, {"watch": 1}) or {}
+    except Exception:
+        return False
+    w = ((st.get("watch") or {}).get("bis_complaints") or {})
+    ok = source_sync.as_utc(w.get("last_success_at"))
+    return bool(ok and w.get("mode") == "live" and not w.get("last_error")
+                and now - ok <= BIS_OWNS_FOR)
+
+
+def _first_synced_field(mode: str) -> str:
+    """Each mode keeps its OWN first-sync baseline. Shadow marking a BIN synced
+    made live's first pass treat every open complaint and active summons it had
+    not stored as new -- including years-old ones on the rear BIN, which the
+    Open Data scan never read -- and email them all the hour live went on."""
+    return "bins_first_synced" if mode == "live" else f"{mode}_bins_first_synced"
+
+
+async def _shadow_judged_new(pid: str, field: str, number: str) -> bool:
+    """Shadow recorded `would_alert` for this item: it was genuinely new when
+    shadow first saw it (past shadow's own first-sync baseline), and nobody was
+    told. Live tells them now, marked late, if it is still worth an alert."""
+    return bool(await db[COMPLAINT_WATCH_LEDGER].find_one(
+        {"project_id": pid, field: number, "mode": "shadow", "status": "would_alert"}))
+
+
+async def _owed_from_shadow(pid: str, field: str, number: str) -> bool:
+    """Shadow judged this item new, and no path has alerted it since: not the
+    Open Data email (its throttle key) and not live. Open Data may have stored
+    it silently meanwhile (its 2-day rule refuses a summons published late)."""
+    if not await _shadow_judged_new(pid, field, number):
+        return False
+    if await db.system_config.find_one({"key": {"$regex": f"^{re.escape(_dob_alert_key(pid, number))}(:|$)"}}):
+        return False
+    return not await db[COMPLAINT_WATCH_LEDGER].find_one(
+        {"project_id": pid, field: number, "mode": "live", "status": "alerting"})
+
+
+def _cw_prefix(mode: str) -> str:
+    """Ledger keys per mode. A decision shadow recorded must never stop LIVE
+    from storing and alerting the same item when the watch is switched on --
+    the last day's items are exactly what the watch is for."""
+    return "cw" if mode == "live" else f"cw-{mode}"
+
+
+def _bis_status_key(v) -> str:
+    """BIS says RESOLVED where Open Data says CLOSED; both are the same state."""
+    s = str(v or "").strip().upper()
+    return "CLOSED" if s in ("RESOLVED", "RES", "CLOSED", "CLO", "CLS") else s
+
+
+def _bis_watch_mode() -> str:
+    m = (os.environ.get("BIS_COMPLAINT_WATCH_MODE") or "off").strip().lower()
+    return m if m in ("off", "shadow", "live") else "off"
+
+
+def _bis_row_to_dob_log(rec: dict, project: dict, project_bin: str, decision: dict,
+                        first_sync: bool, now: datetime) -> dict:
+    """A dob_logs complaint row in the Open Data path's shape, so the Open Data
+    scan later finds it by raw_dob_id and refreshes it in place (no duplicate)."""
+    cn = rec["complaint_number"]
+    # Open Data's words (eabe-havv: ACTIVE / CLOSED). BIS's "RESOLVED" stored
+    # as-is counted as OPEN in /dob-summary, which looks for "closed".
+    st = _bis_status_key(rec.get("status")) or "ACTIVE"
+    sa = complaint_watch.safety_assessment(rec)
+    b = rec.get("bin") or project_bin
+    return {
+        "project_id": str(project.get("_id") or project.get("id")),
+        "company_id": project.get("company_id"),
+        "nyc_bin": b,
+        "record_type": "complaint",
+        "raw_dob_id": cn,
+        "complaint_number": cn,
+        "complaint_type": rec.get("category"),
+        "complaint_status": st,
+        "current_status": st,
+        "complaint_date": f"{rec.get('received_date') or rec.get('date_entered')}T00:00:00.000",
+        "description": rec.get("description"),
+        "incident_address": rec.get("address"),
+        "complaint_source": "DOB Complaint",
+        "category_label": get_category_label(rec.get("category") or ""),
+        "disposition_code": rec.get("disposition_code"),
+        # DOB's exact disposition words, as BIS printed them, and where from.
+        "disposition_label": complaint_watch.disposition_words(rec),
+        "disposition_source": complaint_watch.disposition_source(rec),
+        "severity": "Action" if sa["tier"] in ("order", "safety") else "Monitor",
+        "signal_kind": "complaint_dob",
+        "dataset": "bis",
+        "dob_link": bis_complaints.detail_url(cn),
+        "site_bin": b if b != project_bin else None,
+        "bin_first_pass": bool(first_sync and not decision.get("alert")),
+        "bis": {k: rec.get(k) for k in _BIS_KEEP},
+        "bis_first_seen_at": now,
+        "bis_last_seen_at": now,
+        "lifecycle": complaint_watch.lifecycle_events(rec),
+        "ai_summary": complaint_watch.card_summary(rec),
+        "next_action": ("Correct the cited conditions before the DOB inspector comes. "
+                        "A complaint is not a violation."),
+        "status_history": status_hist.new_row_history(st, now),
+        "detected_at": now,
+        "created_at": now,
+        "updated_at": now,
+        "is_deleted": False,
+    }
+
+
+async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: str,
+                                              now: Optional[datetime] = None) -> dict:
+    """One BIS pass for one project. Returns a summary; never raises on a BIS
+    failure (the failure is recorded as the source's last_error)."""
+    now = now or datetime.now(timezone.utc)
+    pid = str(project.get("_id") or project.get("id") or "")
+    cid = project.get("company_id")
+    own_bin = re.sub(r"\D", "", str(project.get("nyc_bin") or ""))
+    summary: Dict[str, Any] = {"project_id": pid, "bins": [], "errors": [], "decisions": []}
+    if len(own_bin) != 7 or own_bin.endswith("000000"):
+        summary["errors"].append("no usable BIN")
+        return summary
+    state = await db[SOURCE_SYNC_STATE].find_one({"_id": pid}) or {}
+    watch = (state.get("watch") or {}).get("bis_complaints") or {}
+    first_done = set(watch.get(_first_synced_field(mode)) or [])
+
+    # The lot's other BINs. A failed or wrong page is an ERROR (the source is
+    # not "fresh") and the BINs saved by the last good read stand in for it,
+    # so the rear BIN is never silently dropped for a pass.
+    saved_lot = list(watch.get("lot_bins") or [])
+    lot_bins: list = []
+    try:
+        r = await client.get(bis_complaints.property_url(own_bin), headers=_BIS_UA, timeout=30.0)
+        prof = bis_complaints.parse_property_profile(r.text) if r.status_code == 200 else {}
+        if prof.get("bin") == own_bin:
+            lot_bins = prof.get("additional_bins") or []
+        else:
+            summary["errors"].append(f"property profile: HTTP {r.status_code}" if r.status_code != 200
+                                     else "property profile: unrecognized page")
+            lot_bins = saved_lot
+    except Exception as e:
+        summary["errors"].append(f"property profile: {type(e).__name__}")
+        lot_bins = saved_lot
+    site_bins = [b for b in await db.dob_logs.distinct("site_bin", {"project_id": pid}) if b]
+    pbins = complaint_watch.bins_for_project(project, lot_bins=lot_bins, site_bins=site_bins)
+
+    stored: Dict[str, dict] = {}
+    # Deleted rows count as stored: a complaint someone removed is never
+    # re-inserted and re-alerted by this watch.
+    for row in await db.dob_logs.find({"project_id": pid, "record_type": "complaint"}).to_list(5000):
+        if complaint_watch.is_311(row):
+            continue
+        cn = bis_complaints.normalize_complaint_number(row.get("raw_dob_id") or row.get("complaint_number"))
+        if cn:
+            stored[cn] = row
+    if mode == "live":
+        # lib/complaint_watch.alert_decision owns the first-sync baseline (history
+        # silent, today's open complaints not); the generic initial-scan gate in
+        # _send_critical_dob_alert_throttled would also mute today's on pass one.
+        await _mark_initial_scan_done(pid, "bis")
+    ok_bins = []
+    for b in sorted(pbins):
+        read = await bis_complaints.read_bin(client, b, now=now, known=set(stored))
+        summary["bins"].append({"bin": b, "ok": read.ok, "complete": read.complete,
+                                "rows": len(read.rows), "total": read.total, "error": read.error})
+        if not read.ok:
+            summary["errors"].append(f"BIN {b}: {read.error}")
+            continue
+        ok_bins.append(b)
+        first_sync = b not in first_done
+        if mode == "live":
+            # Stamped only where the row's `bis` record already says what BIS
+            # just listed: a row whose BIS state is behind (its update is about
+            # to run below, or failed last pass) must never be marked current,
+            # or the Open Data refresh would keep the stale state over a newer one.
+            def _bis_matches(r):
+                exb = (stored.get(r["complaint_number"]) or {}).get("bis") or {}
+                return (bool(exb) and not stored[r["complaint_number"]].get("is_deleted")
+                        and _bis_status_key(exb.get("status")) == _bis_status_key(r.get("status"))
+                        and (exb.get("disposition_code") or None) == (r.get("disposition_code") or None))
+            listed = [r["complaint_number"] for r in read.rows if _bis_matches(r)]
+            if listed:
+                try:
+                    await db.dob_logs.update_many(
+                        {"project_id": pid, "raw_dob_id": {"$in": listed}, "bis": {"$exists": True}},
+                        {"$set": {"bis_last_seen_at": now}})
+                except Exception as e:
+                    logger.warning(f"[bis-watch] seen-stamp failed: {type(e).__name__}")
+        for row in read.rows:
+            cn = row["complaint_number"]
+            ex = stored.get(cn)
+            exb = (ex or {}).get("bis") or {}
+            ex_status = _bis_status_key(exb.get("status") or (ex or {}).get("current_status")
+                                        or (ex or {}).get("complaint_status"))
+            ex_disp = exb.get("disposition_code") or (ex or {}).get("disposition_code") or None
+            if ex is not None and ex.get("is_deleted"):
+                continue                      # removed by a person: left alone
+            if ex is not None and mode == "live" and first_sync \
+                    and await _owed_from_shadow(pid, "complaint_number", cn):
+                owed = complaint_watch.alert_decision(
+                    dict(row, bin=b), project_bins=pbins, first_sync=False, already_alerted=False,
+                    now=now, first_seen_at=None)
+                if owed["alert"] and owed["priority"] in ("high", "critical") \
+                        and owed["event"] not in ("stop_work_order", "vacate_order"):
+                    okey = f"cw:{pid}:{cn}:{owed['event']}"
+                    try:
+                        await db[COMPLAINT_WATCH_LEDGER].insert_one({
+                            "_id": okey, "project_id": pid, "company_id": cid, "complaint_number": cn,
+                            "bin": b, "event": owed["event"], "priority": owed["priority"], "late": True,
+                            "reason": "owed: shadow judged it new; stored since without an alert",
+                            "mode": "live", "first_seen_at": now, "status": "alerting"})
+                        await _send_critical_dob_alert_throttled(
+                            project, dict(ex, ai_summary=complaint_watch.render_alert(
+                                dict(row, bin=b), dict(owed, late=True),
+                                project_name=project.get("name") or "your project")),
+                            "bis", event=_BIS_EMAIL_EVENT.get(owed["event"], "new"))
+                    except Exception:
+                        pass                  # decided once
+            if ex is not None and ex_status == _bis_status_key(row.get("status")) \
+                    and ex_disp == (row.get("disposition_code") or None):
+                continue                      # nothing new on this complaint
+            if ex is None and await db[COMPLAINT_WATCH_LEDGER].find_one({
+                    "project_id": pid, "complaint_number": cn, "mode": mode,
+                    "bis_status": _bis_status_key(row.get("status")),
+                    "bis_disposition": row.get("disposition_code") or None}):
+                # This state was already decided and no row holds it (shadow
+                # stores none). A STORED row whose BIS state differs is always
+                # brought up to date below -- a state can come back (A3 -> L2
+                # -> A3, a second order) or last pass's write can have failed;
+                # the order rule and the email throttle keep it to one alert.
+                continue
+            rec = dict(row, bin=b)
+            fs = first_sync
+            if fs and mode == "live" and await _shadow_judged_new(pid, "complaint_number", cn):
+                fs = False
+            try:
+                d = await client.get(bis_complaints.detail_url(cn), headers=_BIS_UA, timeout=30.0)
+                det = bis_complaints.parse_complaint_detail(d.text) if d.status_code == 200 else {}
+            except Exception:
+                det = {}
+            if det.get("found"):
+                rec.update({k: v for k, v in det.items() if v not in (None, [], "") and k != "found"})
+            decision = complaint_watch.alert_decision(
+                rec, project_bins=pbins, first_sync=fs, already_alerted=False, now=now,
+                first_seen_at=(ex or {}).get("detected_at"))
+            if ex is not None and decision["event"] == "new_complaint" and decision["alert"]:
+                decision.update(alert=False, reason="already stored: status change only")
+            key = f"{_cw_prefix(mode)}:{pid}:{cn}:{decision['event']}"
+            if decision["alert"] and (
+                    await db.system_config.find_one(
+                        {"key": {"$regex": f"^{re.escape(_dob_alert_key(pid, cn))}(:|$)"}})
+                    or await db[COMPLAINT_WATCH_LEDGER].find_one({"_id": key})):
+                decision.update(alert=False, reason="duplicate: this complaint was already alerted")
+            status = ("would_alert" if decision["alert"] else "suppressed") if mode == "shadow" \
+                else ("alerting" if decision["alert"] else "suppressed")
+            ledger = {"_id": key, "project_id": pid, "company_id": cid, "complaint_number": cn,
+                      "bin": rec.get("bin"), "event": decision["event"], "priority": decision["priority"],
+                      "late": decision["late"], "reason": decision["reason"], "mode": mode,
+                      "received_at": rec.get("received_at") or rec.get("received_date"),
+                      "first_seen_at": now, "status": status,
+                      "bis_status": _bis_status_key(row.get("status")),
+                      "bis_disposition": row.get("disposition_code") or None}
+            try:
+                await db[COMPLAINT_WATCH_LEDGER].insert_one(ledger)
+            except Exception:
+                pass                              # the row exists: a decision is recorded once
+            summary["decisions"].append({k: ledger[k] for k in ("complaint_number", "event", "status", "reason")})
+            if mode != "live" or decision["reason"].startswith("wrong property"):
+                continue
+            if ex is None:
+                doc = _bis_row_to_dob_log(rec, project, own_bin, decision, fs, now)
+                try:
+                    await db.dob_logs.insert_one(doc)
+                except Exception as e:
+                    # No row, no decision: the next pass tries again.
+                    await db[COMPLAINT_WATCH_LEDGER].delete_one({"_id": key})
+                    logger.warning(f"[bis-watch] store failed for {cn}: {type(e).__name__}")
+                    continue
+                stored[cn] = doc
+            else:
+                # AN UPDATE. The disposition and status go onto the row itself
+                # (so the Open Data refresh a day later finds the order already
+                # in force and does not email it again), and whether it emails
+                # is the Open Data path's own rule: only an update that issued
+                # a stop-work or vacate order (dob_alert_gate, ruling 2026-10-22).
+                top = {"current_status": _bis_status_key(rec.get("status")) or ex.get("current_status"),
+                       "disposition_code": rec.get("disposition_code") or ex.get("disposition_code")}
+                top["complaint_status"] = top["current_status"]      # what /dob-summary counts
+                if rec.get("disposition_date"):
+                    top["disposition_date"] = rec.get("disposition_date")
+                if rec.get("disposition_code"):
+                    top["disposition_label"] = complaint_watch.disposition_words(rec)
+                    top["disposition_source"] = complaint_watch.disposition_source(rec)
+                after = {**ex, **top, "id": str(ex["_id"])}
+                changed = _bis_status_key(ex.get("current_status")) != top["current_status"]
+                hist, _legacy = status_hist.refreshed_history(ex, top["current_status"], now,
+                                                              changed=changed, in_place=True)
+                await db.dob_logs.update_one({"_id": ex["_id"]}, {"$set": {
+                    **top, "status_history": hist,
+                    "bis": {k: rec.get(k) for k in _BIS_KEEP}, "bis_last_seen_at": now,
+                    "lifecycle": complaint_watch.lifecycle_events(rec), "updated_at": now}})
+                order = dob_alert_gate.update_issues_order(ex, after)
+                if order:
+                    await _stamp_order_issued(ex["_id"], order, now)
+                    await _send_critical_dob_alert_throttled(project, after, "bis", event=order)
+                # And the second exception of the same ruling: an order LIFTED
+                # in full. BIS sees it first (10 minutes vs a daily extract), so
+                # if this path did not send it, the Open Data refresh would find
+                # the lift already stored and nobody would ever be told.
+                lifted = dob_alert_gate.update_lifts_order(ex, after)
+                if lifted:
+                    await _stamp_order_lifted(ex["_id"], lifted, now)
+                    await _send_critical_dob_alert_throttled(project, after, "bis", event=f"{lifted}_lifted")
+                continue
+            if decision["alert"] and decision["priority"] in ("high", "critical"):
+                # The email reads ai_summary / next_action off the row: give it
+                # the same words a person would get on WhatsApp.
+                doc = dict(doc, ai_summary=complaint_watch.render_alert(
+                    rec, decision, project_name=project.get("name") or "your project"),
+                    next_action=("Fix the cited conditions before the DOB inspector comes. "
+                                 "A complaint is not a violation."))
+                await _send_critical_dob_alert_throttled(
+                    project, doc, "bis", event=_BIS_EMAIL_EVENT.get(decision["event"], "new"))
+    await _bis_ecb_pass(project, client, pbins, mode=mode, now=now, summary=summary,
+                        first_done=set(((state.get("watch") or {}).get("bis_ecb") or {})
+                                       .get(_first_synced_field(mode)) or []))
+    if lot_bins:
+        summary["lot_bins"] = list(lot_bins)
+    upd: Dict[str, Any] = {"company_id": cid, "watch.bis_complaints.last_attempt_at": now,
+                           "watch.bis_complaints.mode": mode,
+                           "watch.bis_complaints.last_error": "; ".join(summary["errors"]) or None}
+    if ok_bins and not summary["errors"]:
+        upd["watch.bis_complaints.last_success_at"] = now
+    if lot_bins and mode == "live":
+        # Saved only when LIVE: the Open Data scan reads these BINs and stores
+        # (and may post) their records, which shadow must never cause.
+        upd["watch.bis_complaints.lot_bins"] = sorted(set(lot_bins))
+    await db[SOURCE_SYNC_STATE].update_one(
+        {"_id": pid},
+        {"$set": upd, "$addToSet": {f"watch.bis_complaints.{_first_synced_field(mode)}": {"$each": ok_bins}}},
+        upsert=True)
+    return summary
+
+
+async def _bis_ecb_pass(project: dict, client, pbins: set, *, mode: str, now: datetime,
+                        summary: dict, first_done: set) -> None:
+    """ECB/OATH summonses on BIS for every BIN of the project, reconciled by
+    number with what the Open Data scan stored (6bgk-3dad keys rows on the
+    same ECB number, so the next day's row refreshes this one in place).
+    Its own state (watch.bis_ecb), so a complaint-page failure never blocks
+    summons discovery and the other way round."""
+    pid = str(project.get("_id") or project.get("id") or "")
+    cid = project.get("company_id")
+    own_bin = re.sub(r"\D", "", str(project.get("nyc_bin") or ""))
+    stored: Dict[str, dict] = {}
+    for row in await db.dob_logs.find({"project_id": pid,
+                                       "record_type": {"$in": ["violation", "swo"]}}).to_list(5000):
+        n = bis_violations.normalize_violation_number(row.get("raw_dob_id"))
+        if n:
+            stored[n] = row
+    ok_bins, errors = [], []
+    summary.setdefault("ecb", [])
+    for b in sorted(pbins):
+        try:
+            r = await client.get(bis_violations.ecb_list_url(b), headers=_BIS_UA, timeout=30.0)
+        except Exception as e:
+            errors.append(f"BIN {b}: {type(e).__name__}")
+            continue
+        page = bis_violations.parse_ecb_list(r.text) if r.status_code == 200 else None
+        if page is None or page.get("bin") != b or page.get("total_issued") is None:
+            errors.append(f"BIN {b}: HTTP {r.status_code}" if r.status_code != 200
+                          else f"BIN {b}: unrecognized page")
+            continue
+        ok_bins.append(b)
+        summary["ecb"].append({"bin": b, "issued": page["total_issued"], "read": len(page["rows"]),
+                               "complete": page["complete"]})
+        first_sync = b not in first_done
+        for row in page["rows"]:
+            num = row["ecb_number"]
+            if num in stored:
+                if mode == "live" and first_sync and await _owed_from_shadow(pid, "violation_number", num):
+                    owed = complaint_watch.summons_decision(row, bin_=b, project_bins=pbins, first_sync=False,
+                                                            already_alerted=False, now=now)
+                    if owed["alert"] and owed["priority"] in ("high", "critical"):
+                        try:
+                            await db[COMPLAINT_WATCH_LEDGER].insert_one({
+                                "_id": f"cw:{pid}:ecb:{num}:new", "project_id": pid, "company_id": cid,
+                                "violation_number": num, "bin": b, "event": owed["event"],
+                                "priority": owed["priority"], "late": True,
+                                "reason": "owed: shadow judged it new; stored since without an alert",
+                                "mode": "live", "issue_date": row.get("issue_date"),
+                                "first_seen_at": now, "status": "alerting"})
+                            await _send_critical_dob_alert_throttled(
+                                project, dict(stored[num], ai_summary=complaint_watch.render_summons_alert(
+                                    row, owed, project_name=project.get("name") or "your project")),
+                                "bis", event="new")
+                        except Exception:
+                            pass
+                continue
+            key = f"{_cw_prefix(mode)}:{pid}:ecb:{num}:new"
+            seen = await db[COMPLAINT_WATCH_LEDGER].find_one({"_id": key})
+            if seen:
+                continue
+            fs = first_sync
+            if fs and mode == "live" and await _shadow_judged_new(pid, "violation_number", num):
+                fs = False
+            d = complaint_watch.summons_decision(
+                row, bin_=b, project_bins=pbins, first_sync=fs,
+                already_alerted=bool(await db.system_config.find_one(
+                    {"key": {"$regex": f"^{re.escape(_dob_alert_key(pid, num))}(:|$)"}})),
+                now=now)
+            status = (("would_alert" if d["alert"] else "suppressed") if mode == "shadow"
+                      else ("alerting" if d["alert"] else "suppressed"))
+            try:
+                await db[COMPLAINT_WATCH_LEDGER].insert_one({
+                    "_id": key, "project_id": pid, "company_id": cid, "violation_number": num,
+                    "bin": b, "event": d["event"], "priority": d["priority"], "late": d["late"],
+                    "reason": d["reason"], "mode": mode, "issue_date": row.get("issue_date"),
+                    "first_seen_at": now, "status": status})
+            except Exception:
+                continue
+            summary["decisions"].append({"complaint_number": num, "event": d["event"],
+                                         "status": status, "reason": d["reason"]})
+            if mode != "live":
+                continue
+            _cert = str(row.get("certification_status") or "").strip().upper()
+            od_status = None if _cert in ("", "NO COMPLIANCE RECORDED") else _cert
+            ecb_state = "ACTIVE" if row.get("active") else "RESOLVE"
+            doc = {
+                "project_id": pid, "company_id": cid, "nyc_bin": b, "record_type": "violation",
+                "raw_dob_id": num, "ecb_violation_number": num, "violation_number": num,
+                "violation_date": (row.get("issue_date") or "").replace("-", ""),
+                "violation_type": row.get("violation_type"), "severity": "Action" if row.get("active") else "Good",
+                # 6bgk-3dad's own words: its status is the certification status,
+                # absent while nothing is certified (BIS prints "NO COMPLIANCE
+                # RECORDED" there). Same words -> the next-day refresh is no change.
+                "current_status": od_status, "status": od_status,
+                "certification_status": od_status,
+                "ecb_violation_status": ecb_state,
+                "resolution_state": _classify_resolution_state({
+                    "ecb_violation_status": ecb_state, "certification_status": od_status,
+                    "hearing_status": row.get("hearing_status")}),
+                "violation_subtype": "ECB",
+                "status_history": status_hist.new_row_history(od_status, now),
+                "hearing_status": row.get("hearing_status"), "penalty_balance_due": row.get("balance_due"),
+                "infraction_code": row.get("infraction_code"), "severity_class": row.get("severity"),
+                "issuing_unit": row.get("unit"), "respondent_name": row.get("respondent"),
+                "description": f"ECB/OATH summons {num} ({row.get('severity') or ''}), {row.get('unit') or ''}",
+                "ai_summary": complaint_watch.summons_card_summary(row),
+                "next_action": "Correct the condition and file the Certificate of Correction.",
+                "signal_kind": "violation_ecb", "dataset": "bis-ecb",
+                "dob_link": bis_violations.ecb_detail_url(num),
+                "site_bin": b if b != own_bin else None,
+                "bin_first_pass": bool(fs and not d["alert"]),
+                "bis_first_seen_at": now, "detected_at": now, "created_at": now, "updated_at": now,
+                "is_deleted": False,
+            }
+            try:
+                await db.dob_logs.insert_one(doc)
+            except Exception as e:
+                await db[COMPLAINT_WATCH_LEDGER].delete_one({"_id": key})
+                logger.warning(f"[bis-watch] store failed for {num}: {type(e).__name__}")
+                continue
+            stored[num] = doc
+            if d["alert"] and d["priority"] in ("high", "critical"):
+                doc = dict(doc, ai_summary=complaint_watch.render_summons_alert(
+                    row, d, project_name=project.get("name") or "your project"),
+                    next_action="Correct the condition and file the Certificate of Correction.")
+                await _send_critical_dob_alert_throttled(project, doc, "bis", event="new")
+    upd = {"watch.bis_ecb.last_attempt_at": now, "watch.bis_ecb.mode": mode,
+           "watch.bis_ecb.last_error": "; ".join(errors) or None}
+    if ok_bins and not errors:
+        upd["watch.bis_ecb.last_success_at"] = now
+    summary["ecb_errors"] = errors        # its own state: never fails the complaint watch
+    await db[SOURCE_SYNC_STATE].update_one(
+        {"_id": pid}, {"$set": upd, "$addToSet": {f"watch.bis_ecb.{_first_synced_field(mode)}": {"$each": ok_bins}}},
+        upsert=True)
+
+
+async def bis_complaint_watch_tick():
+    """Every 10 minutes when BIS_COMPLAINT_WATCH_MODE is shadow or live."""
+    mode = _bis_watch_mode()
+    if mode == "off":
+        return
+    projects = await db.projects.find(await unattended_project_filter({
+        "track_dob_status": True, "nyc_bin": {"$nin": [None, ""]}, **ACTIVE_PROJECT_FILTER,
+    })).to_list(500)
+    # ServerHttpClient's one narrow BIS allowance (lib/server_http.BIS_WATCH_PATHS):
+    # GETs of the four read-only pages this watch reads, nothing else.
+    async with ServerHttpClient(follow_redirects=True, allow_bis_watch=True) as client:
+        for p in projects:
+            try:
+                s = await run_bis_complaint_watch_for_project(p, client, mode=mode)
+                logger.info(f"[bis-watch] {mode} project={s['project_id']} bins={s['bins']} "
+                            f"decisions={len(s['decisions'])} errors={s['errors']}")
+            except Exception as e:
+                logger.error(f"[bis-watch] project {p.get('_id')} failed: {type(e).__name__}")
+
+
+@api_router.get("/projects/{project_id}/dob-freshness")
+async def get_dob_freshness(project_id: str, project: dict = Depends(require_project_access)):
+    """What was checked and when, per complaint/violation source -- so a screen
+    never shows an empty list as 'no complaints' when nothing was checked."""
+    state = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id})
+    out = complaint_watch.freshness(state, now=datetime.now(timezone.utc))
+    out["bis_watch_mode"] = _bis_watch_mode()
+    return out
+
 
 async def renewal_digest_daily_cron():
     """Daily 7am-ET digest run.
@@ -48999,6 +49635,30 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             logger.warning(f"[wa-gc] record read failed: {type(e).__name__}")
             continue
         items = wa_alerts.collect(dob_rows, dot_rows, today)
+        # PER DATASET (lib/source_sync.dataset_gate): a violation row waits
+        # only on ITS dataset's first sync, and one stored by that first sync
+        # is history -- claimed silently, never posted.
+        try:
+            _st = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id})
+            _ds_first = source_sync.dataset_first_synced(_st)
+            _ds_failing = source_sync.dataset_failing(_st)
+        except Exception:
+            _ds_first = None
+        if _ds_first is not None:
+            _kept = []
+            for it in items:
+                g = source_sync.dataset_gate(it.get("rec") or {}, _ds_first, _ds_failing)
+                if g == "wait":
+                    report["kinds_waiting_sync"] += 1
+                    continue
+                if g == "baseline":
+                    await _gc_ledger_claim(
+                        wa_gc.ledger_id(project_id, it["kind"], it["item"]),
+                        kind=f"gc_{it['kind']}", project_id=project_id,
+                        company_id=company_id, status="baseline")
+                    continue
+                _kept.append(it)
+            items = _kept
         # The email's rules, for the group too (lib/dob_alert_gate, ruling
         # 2026-10-22): an update that issued a SWO / vacate order, and ONE
         # summary per newly added BIN. Everything a rule refuses is claimed
@@ -49256,6 +49916,37 @@ async def _mark_sources_synced(project_id: str, company_id: str,
                 {"$set": {f"sources.{s}.first_synced_at": now}})
         except Exception as e:
             logger.warning(f"[source-sync] state write failed: {type(e).__name__}")
+
+
+async def _mark_datasets_synced(project_id: str, company_id: str, datasets: Dict[str, bool],
+                                now: Optional[datetime] = None) -> None:
+    """Per-dataset sync state: synced_at / first_synced_at on a full answer,
+    last_error_at on a failure. A dataset's FIRST sync inherits its source's
+    first_synced_at when the source was already synced (legacy stand-in
+    included), so turning this on re-dates nothing that was already baselined."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        state = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id}) or {}
+        project = await db.projects.find_one({"_id": to_query_id(project_id)}, {"first_poll_completed_at": 1})
+        src_first = source_sync.first_synced(state, project)
+        have = source_sync.dataset_first_synced(state)
+    except Exception as e:
+        logger.warning(f"[source-sync] dataset state read failed: {type(e).__name__}")
+        return
+    for d, ok in sorted(datasets.items()):
+        try:
+            if not ok:
+                await db[SOURCE_SYNC_STATE].update_one(
+                    {"_id": project_id}, {"$set": {"company_id": company_id,
+                                                   f"datasets.{d}.last_error_at": now}}, upsert=True)
+                continue
+            upd = {"company_id": company_id, f"datasets.{d}.synced_at": now}
+            if d not in have:
+                src = source_sync.DATASET_SOURCE.get(d)
+                upd[f"datasets.{d}.first_synced_at"] = src_first.get(src) or now
+            await db[SOURCE_SYNC_STATE].update_one({"_id": project_id}, {"$set": upd}, upsert=True)
+        except Exception as e:
+            logger.warning(f"[source-sync] dataset state write failed: {type(e).__name__}")
 
 
 async def _project_first_synced(project_id: str) -> dict:
@@ -56040,9 +56731,12 @@ def _report_sync(project: dict, state: Optional[dict]) -> dict:
     rolling = source_sync.as_utc(project.get("last_dob_sync_at"))
     per_source = [at(n) for n in dob_names]
     dob = rolling or (min(a for a in per_source if a) if any(per_source) else None)
+    # A source now opens when ANY of its datasets answers; "complete" still
+    # means none of them is failing (lib/source_sync.dataset_failing).
+    failing = {source_sync.DATASET_SOURCE.get(d) for d in source_sync.dataset_failing(state)}
     dot_at = [a for a in (at(source_sync.DOT_OATH), at(source_sync.DOT_PERMITS)) if a]
     return {"tracking": bool(project.get("track_dob_status")), "dob": dob,
-            "dob_complete": all(per_source) if srcs else True,
+            "dob_complete": (all(per_source) and not (failing & set(dob_names))) if srcs else True,
             "dot": min(dot_at) if dot_at else None}
 
 
@@ -58733,7 +59427,7 @@ async def _dm_job_facts(company_id: str, project: dict, now: datetime,
         lines.append(f"  open violations: {len(open_v)}; new in the last 7 days: {len(new_v)}")
         for r in new_v[:5]:
             facts = wa_gc.violation_facts(r)
-            if r.get("record_type") == "swo":
+            if r.get("record_type") == "swo" and not wa_alerts.is_summons(r):
                 # A stop-work order keeps its number in its own field (Codex on #841).
                 num = str(r.get("stop_work_order_number") or r.get("violation_number") or "").strip()
                 lines.append(f"    new stop-work order {num or 'number not on record'} "
@@ -65701,6 +66395,51 @@ async def _handle_dob_status(project_id: str, *,
             lines.append(f"  - {desc}")
     else:
         lines.append("\nNo recent violations on file.")
+
+    # Open DOB complaints. This answer used to read violations only, so "any
+    # DOB issues at 546?" was answered "No recent violations on file" while two
+    # safety complaints sat open on BIS (2026-11-10). A complaint is not a
+    # violation; both are listed, under their own names.
+    complaints = await db.dob_logs.find({
+        "project_id": project_id,
+        "company_id": _company_id_filter(company_id),
+        "record_type": "complaint",
+        "is_deleted": {"$ne": True},
+        # 311 service requests are stored as complaints too: 169 of the 237
+        # complaint rows in production on 2026-11-10, up to 73 on one project,
+        # every one with complaint_source "311" (the erm2-nwe9 Open Data path
+        # writes "311 Complaint"). They are excluded HERE, by the database, so
+        # no number of them can push a DOB complaint out of what is read, and
+        # nothing is cut at a row count (tests/test_dob_status_real_mongo.py).
+        "complaint_source": {"$nin": ["311", "311 Complaint"]},
+    }).sort([("detected_at", -1), ("_id", -1)]).to_list(None)
+    # dob_logs keeps a row per status change: judge each complaint by its
+    # NEWEST row (re-sorted here too, so the rule never depends on the cursor).
+    complaints.sort(key=lambda c: source_sync.as_utc(c.get("detected_at"))
+                    or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    latest: Dict[str, dict] = {}
+    for c in complaints:
+        if complaint_watch.is_311(c):
+            continue
+        latest.setdefault(str(c.get("raw_dob_id") or c.get("_id")), c)
+    open_all = [c for c in latest.values() if complaint_watch.is_open(c)]
+    open_c = open_all[:5]
+    if open_c:
+        lines.append(f"\nOpen DOB complaints ({len(open_all)})"
+                     + (", the 5 newest:" if len(open_all) > 5 else ":"))
+        for c in open_c:
+            when = str(c.get("complaint_date") or "")[:10]
+            desc = str(c.get("description") or c.get("category_label") or "")[:80]
+            lines.append(f"  - {c.get('raw_dob_id')} ({when}): {desc}")
+    else:
+        lines.append("\nNo open DOB complaints on file.")
+    fresh = complaint_watch.freshness(
+        await db[SOURCE_SYNC_STATE].find_one({"_id": project_id}),
+        now=datetime.now(timezone.utc))
+    lines.append(fresh["note"])
+    if not fresh.get("can_say_no_new_summonses"):
+        lines.append("ECB/OATH summonses were not checked on DOB BIS recently; NYC Open Data "
+                     "updates once a day, so a summons issued today may not be listed yet.")
     return "\n".join(lines)
 
 
@@ -89321,6 +90060,16 @@ async def startup_event():
         nightly_dob_scan,
         IntervalTrigger(minutes=15),
         id='dob_nightly_scan',
+        replace_existing=True,
+    )
+
+    # BIS complaint watch: the same-day complaint source (bis_complaint_watch_tick).
+    # Registered always; the tick returns at once unless BIS_COMPLAINT_WATCH_MODE
+    # is "shadow" or "live", so turning it on is an env change, not a deploy.
+    scheduler.add_job(
+        bis_complaint_watch_tick,
+        IntervalTrigger(minutes=10),
+        id='bis_complaint_watch',
         replace_existing=True,
     )
 

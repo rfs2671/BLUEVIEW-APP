@@ -80,17 +80,43 @@ DIGEST_KIND = "dot_digest"
 
 RED, ORANGE, GREEN = "🔴", "🟠", "🟢"
 
-_CRITICAL_TEXT = re.compile(r"\bvacate\b|\bstop[- ]work order\b", re.IGNORECASE)
+# Wording that marks a violation critical: vacate only. A violation's words
+# naming a stop-work order never make it one (operator ruling 2026-11-11).
+_CRITICAL_TEXT = re.compile(r"\bvacate\b", re.IGNORECASE)
+
+
+_SUMMONS_DATASETS = ("6bgk-3dad", "bis-ecb")
+
+
+def is_summons(rec: Dict[str, Any]) -> bool:
+    """An ECB/OATH summons: a penalty notice, never itself a stop-work or
+    vacate order, even when its text cites one ("work contrary to SWO") -- and
+    even when an older scan stored it typed 'swo' (two production rows,
+    39550534Y and 39543624M). A row from the stop-work dataset (it carries a
+    stop_work_order_number) is an order."""
+    r = rec or {}
+    if r.get("stop_work_order_number"):
+        return False
+    return (bool(r.get("ecb_violation_number"))
+            or str(r.get("dataset") or r.get("_dataset") or "") in _SUMMONS_DATASETS
+            or str(r.get("violation_subtype") or "").upper() == "ECB")
 
 
 def is_critical(it: Dict[str, Any]) -> bool:
     """A Stop Work Order or a Vacate order: what may still post on Shabbos
     when the company says so. A rescinded order is not."""
+    rec = it.get("rec") or {}
+    if it.get("kind") in ("swo", "violation") and is_summons(rec):
+        return False
     if it.get("kind") in ("swo", "order"):
         return True
     if it.get("kind") not in ("violation", "complaint"):
         return False
-    rec = it.get("rec") or {}
+    if it.get("kind") == "complaint":
+        # Only DOB's disposition puts a complaint under an order; its text
+        # ("work contrary to stop work order") is an allegation.
+        from lib.complaint_watch import ORDER_DISPOSITIONS
+        return str(rec.get("disposition_code") or "").strip().upper() in ORDER_DISPOSITIONS
     sub = str(rec.get("violation_subtype") or "").upper()
     if sub.startswith(("SWO", "VACATE")):
         return True

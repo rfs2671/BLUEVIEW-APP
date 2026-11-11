@@ -1655,6 +1655,16 @@ export const dobAPI = {
     return response.data;
   },
 
+  // What was checked and when, per complaint source (backend
+  // lib/complaint_watch.freshness). An empty Complaints list is "none found in
+  // what was checked", never "none": NYC Open Data is a daily extract.
+  getDobFreshness: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/${encodeURIComponent(projectId)}/dob-freshness`
+    );
+    return response.data;
+  },
+
   // DOT Phase 1 B — the DOT tab. GET .../dot/permits returns
   // { permits: [view], needs_confirmation: [view], needs_confirmation_older,
   //   counts, setup_status, can_review }; a view carries number, series,

@@ -2199,6 +2199,22 @@ export default {
     unverified: 'Waiver not verified: {list}',
   },
 
+  // ── app/project/[id]/dob-logs.jsx — how fresh the complaint list is ──────
+  // 546 Saratoga, 2026-11-10: two DOB safety complaints were on BIS while this
+  // screen's Complaints tab said "No records of this type". NYC Open Data is a
+  // daily extract; the line says what was checked and when.
+  dobFreshness: {
+    live: 'Complaints checked on DOB BIS {ago}.',
+    notLive: 'Not checked on DOB BIS recently. NYC Open Data updates once a day, so a complaint filed today may not show here until tomorrow afternoon.',
+    failed: 'The last DOB BIS check failed ({error}).',
+    // Shadow mode reads BIS but adds nothing to this list yet: never "none".
+    shadow: 'DOB BIS is being checked in a trial mode that does not add records here yet. NYC Open Data updates once a day, so a complaint filed today may not show here until tomorrow afternoon.',
+    openData: 'NYC Open Data read {ago}.',
+    justNow: 'just now',
+    minutes: '{n} min ago',
+    hours: '{n} h ago',
+  },
+
   // ── app/project/[id]/dob-logs.jsx — the DOT tab (DOT Phase 1 B) ──────────
   // src/components/DotCompliancePanel.jsx. Setup (frontages + permittee
   // names), "needs confirmation" (another permittee on the block), and the

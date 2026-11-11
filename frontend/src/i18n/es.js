@@ -133,6 +133,18 @@ export default {
     unverified: 'Exención no verificada: {list}',
   },
 
+  // ── app/project/[id]/dob-logs.jsx — qué tan reciente es la lista de quejas ─
+  dobFreshness: {
+    live: 'Quejas revisadas en DOB BIS {ago}.',
+    notLive: 'No se ha revisado DOB BIS recientemente. NYC Open Data se actualiza una vez al día, así que una queja presentada hoy puede no aparecer aquí hasta mañana por la tarde.',
+    failed: 'La última revisión de DOB BIS falló ({error}).',
+    shadow: 'DOB BIS se está revisando en un modo de prueba que todavía no agrega registros aquí. NYC Open Data se actualiza una vez al día, así que una queja presentada hoy puede no aparecer aquí hasta mañana por la tarde.',
+    openData: 'NYC Open Data leído {ago}.',
+    justNow: 'ahora mismo',
+    minutes: 'hace {n} min',
+    hours: 'hace {n} h',
+  },
+
   // ── app/project/[id]/dob-logs.jsx — la pestaña del DOT (DOT Fase 1 B) ────
   dotCompliance: {
     tabLabel: 'Permisos del DOT',
