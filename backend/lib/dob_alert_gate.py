@@ -130,9 +130,10 @@ def order_in_force(row: Dict[str, Any]) -> Optional[str]:
         # A complaint is under an order only when DOB DISPOSED it with one.
         # Its text -- BIS's free text, or Open Data's category label (86 =
         # "Work Contrary to Stop Work Order") -- is what someone alleged.
-        from lib.complaint_watch import ORDER_DISPOSITIONS, VACATE_DISPOSITIONS
+        from lib.complaint_watch import (ORDER_DISPOSITIONS, PARTIAL_RESCIND_DISPOSITIONS,
+                                         VACATE_DISPOSITIONS)
         code = str(r.get("disposition_code") or "").strip().upper()
-        if code not in ORDER_DISPOSITIONS:
+        if code not in ORDER_DISPOSITIONS and code not in PARTIAL_RESCIND_DISPOSITIONS:
             return None
         return "vacate" if code in VACATE_DISPOSITIONS else "swo"
     text = _order_text(r)

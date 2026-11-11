@@ -282,3 +282,11 @@ The reviewer found **no way for off or shadow mode to write records, send email,
 - **D8.** A recovering dataset's history posts rather than baselines; the 2-day age rule still refuses it downstream, and no wrong post was observed.
 - **Two emails for one served violation.** A brand-new complaint closed on arrival with A8 is emailed once as the complaint and once as the summons it produced. This is low severity.
 - **The two legacy `swo` rows keep `record_type` `swo` in the database.** Every reader now treats them as summonses. Correcting the stored type is a production write that needs a ruling.
+
+**Second reviewer, on the fixes (1a79ba4b).** It confirmed that off and shadow still cannot write or send. Four tests fail on 1a79ba4b:
+- **A duplicate stop-work email.** An owed complaint alert recorded BIS's state, which kept the update path from writing an order onto the row. Open Data could then re-email the same stop-work order once the 24 h throttle expired. Now:
+  - an owed alert is never an order;
+  - the update path writes and stamps the order.
+- **V3.** DOB's action for it reads "Stop all work", so it stays an order. **This needs an operator ruling.**
+- **Partial rescinds.** A partial rescind (L3, Y4) leaves the order in force, so the later full lift alerts.
+- **Old summonses in the morning brief.** The brief no longer calls a summons an older scan typed `swo` a "Stop-work order".

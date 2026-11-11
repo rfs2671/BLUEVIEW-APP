@@ -45658,16 +45658,15 @@ async def run_bis_complaint_watch_for_project(project: dict, client, *, mode: st
                 owed = complaint_watch.alert_decision(
                     dict(row, bin=b), project_bins=pbins, first_sync=False, already_alerted=False,
                     now=now, first_seen_at=None)
-                if owed["alert"] and owed["priority"] in ("high", "critical"):
+                if owed["alert"] and owed["priority"] in ("high", "critical") \
+                        and owed["event"] not in ("stop_work_order", "vacate_order"):
                     okey = f"cw:{pid}:{cn}:{owed['event']}"
                     try:
                         await db[COMPLAINT_WATCH_LEDGER].insert_one({
                             "_id": okey, "project_id": pid, "company_id": cid, "complaint_number": cn,
                             "bin": b, "event": owed["event"], "priority": owed["priority"], "late": True,
                             "reason": "owed: shadow judged it new; stored since without an alert",
-                            "mode": "live", "first_seen_at": now, "status": "alerting",
-                            "bis_status": _bis_status_key(row.get("status")),
-                            "bis_disposition": row.get("disposition_code") or None})
+                            "mode": "live", "first_seen_at": now, "status": "alerting"})
                         await _send_critical_dob_alert_throttled(
                             project, dict(ex, ai_summary=complaint_watch.render_alert(
                                 dict(row, bin=b), dict(owed, late=True),

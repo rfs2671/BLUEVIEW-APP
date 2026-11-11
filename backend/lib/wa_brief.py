@@ -260,6 +260,8 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
     for rid, hist in group_records(rows).items():
         first, latest = hist[0], hist[-1]
         rt = _text(latest.get("record_type")).lower()
+        if rt == "swo" and wa_alerts.is_summons(latest):
+            rt = "violation"        # an ECB summons an older scan typed 'swo'
         cutoff = _cutoff(rt)
         if cutoff is None:
             continue
@@ -401,6 +403,8 @@ def open_items(rows: Iterable[Dict[str, Any]], dot_rows: Iterable[Dict[str, Any]
     found: List[Tuple[Tuple, str]] = []
     for r in wa_alerts.open_dob_violations(rows):
         rt = _text(r.get("record_type")).lower()
+        if rt == "swo" and wa_alerts.is_summons(r):
+            rt = "violation"        # an ECB summons an older scan typed 'swo'
         if not _ready(rt) or record_key("dob", r.get("raw_dob_id")) in skip:
             continue
         num = _text(r.get(_NUMBER_FIELD[rt])) or _text(r.get("violation_number"))

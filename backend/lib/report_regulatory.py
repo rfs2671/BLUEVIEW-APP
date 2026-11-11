@@ -96,12 +96,12 @@ def _is_swo(r: Dict[str, Any]) -> bool:
 
 
 def _kind_label(r: Dict[str, Any]) -> str:
+    if wa_alerts.is_summons(r):
+        return KIND_LABELS["violation"]     # never an order off an old 'swo' type or subtype
     if _t(r.get("violation_subtype")).upper().startswith("VACATE"):
         return "Vacate Order"
     if _is_swo(r):
         return "Stop Work Order"
-    if wa_alerts.is_summons(r):
-        return KIND_LABELS["violation"]     # never "Stop Work Order" off an old 'swo' type
     return KIND_LABELS.get(_rtype(r), _rtype(r).replace("_", " ").capitalize() or "Record")
 
 

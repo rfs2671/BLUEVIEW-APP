@@ -115,7 +115,7 @@ class D4DispositionsReadAsDobLabelsThem(unittest.TestCase):
                                  project_bins={"3255205"}, first_sync=False, already_alerted=False, now=NOW)
 
     def test_violations_for_disobeying_an_swo_are_violations(self):
-        for code in ("H3", "H4", "V3", "A4", "A1", "A5", "A9"):
+        for code in ("H3", "H4", "A4", "A1", "A5", "A9"):
             with self.subTest(code=code):
                 d = self._d(code)
                 self.assertEqual((d["alert"], d["event"], d["priority"]), (True, "violation_served", "high"))
@@ -226,6 +226,55 @@ class D9TheCountIsTheCount(unittest.TestCase):
         with patch.object(server, "db", db):
             out = asyncio.run(server._handle_dob_status("p546", company_id="co_blueview"))
         self.assertIn("Open DOB complaints (7), the 5 newest:", out)
+
+
+class FinalReviewOfTheFixes(unittest.TestCase):
+    """Second reviewer, on 1a79ba4b."""
+
+    def test_an_owed_complaint_now_under_an_order_emails_the_order_once_and_writes_it(self):
+        db = _seed()
+        _run(db, _BIS(), "shadow", now=NOW, emails=[])
+        # Open Data stored 3A88489 silently, no disposition yet (eabe-havv is days stale).
+        db.dob_logs.docs.append({"_id": "od_3A88489", "project_id": "p546", "company_id": "co_blueview",
+                                 "record_type": "complaint", "raw_dob_id": "3A88489", "complaint_number": "3A88489",
+                                 "complaint_status": "ACTIVE", "current_status": "ACTIVE",
+                                 "complaint_source": "DOB Complaint", "nyc_bin": "3255205", "is_deleted": False,
+                                 "detected_at": NOW + timedelta(days=1)})
+        # BIS three days on: DOB disposed 3A88489 A3 (full stop-work order).
+        client = _ListEdit("3A88489", '<td class="content" align="center"></td>',
+                           '<td class="content" align="center">A3</td>')
+        emails = []
+        _run(db, client, "live", now=NOW + timedelta(days=3), emails=emails)
+        self.assertEqual([e for e in emails if e[0] == "3A88489"], [("3A88489", "bis", "swo")])
+        row = next(d for d in db.dob_logs.docs if d["_id"] == "od_3A88489")
+        self.assertEqual(row["disposition_code"], "A3")
+        self.assertIsNotNone(row.get("order_issued"))
+        again = []
+        _run(db, client, "live", now=NOW + timedelta(days=3, minutes=10), emails=again)
+        self.assertEqual([e for e in again if e[0] == "3A88489"], [])
+
+    def test_v3_is_an_order_until_ruled_otherwise(self):
+        self.assertEqual(dob_alert_gate.order_in_force({"record_type": "complaint", "disposition_code": "V3"}),
+                         "swo")
+
+    def test_a_partial_rescind_leaves_the_order_so_the_full_lift_alerts(self):
+        a3 = {"record_type": "complaint", "disposition_code": "A3", "complaint_status": "ACTIVE"}
+        l3 = dict(a3, disposition_code="L3")
+        l2 = dict(a3, disposition_code="L2", complaint_status="CLOSED")
+        self.assertIsNone(dob_alert_gate.update_issues_order(a3, l3))
+        self.assertIsNone(dob_alert_gate.update_lifts_order(a3, l3))
+        self.assertEqual(dob_alert_gate.update_lifts_order(l3, l2), "swo")
+
+    def test_the_brief_does_not_call_an_old_summons_a_stop_work_order(self):
+        from lib import wa_brief
+        row = {"_id": "r1", "project_id": "p1", "record_type": "swo", "dataset": "6bgk-3dad",
+               "raw_dob_id": "39550534Y", "violation_number": "39550534Y", "violation_date": "20260601",
+               "current_status": None, "violation_subtype": "ECB"}
+        line = " ".join(wa_brief.open_items([row], [], NOW.date()))
+        self.assertIn("39550534Y", line)
+        self.assertNotIn("Stop-work order", line)
+        self.assertEqual(report_regulatory._kind_label(dict(row, violation_subtype="VACATE_FULL")),
+                         "DOB violation")
 
 
 class AMalformedIssueDateNeverAbortsThePass(unittest.TestCase):

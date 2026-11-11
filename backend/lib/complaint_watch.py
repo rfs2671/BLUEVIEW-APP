@@ -65,11 +65,17 @@ SAFETY_CATEGORIES = {"8A", "01", "02", "10", "14", "16", "28", "30", "40", "41",
 #   VIOLATION  a violation or summons SERVED -- including H3 / H4 / V3, served
 #              FOR disobeying a stop-work order: not a new order.
 #   RESCIND    an order lifted: L2 / Y2 in full, L3 / Y4 in part.
-ORDER_DISPOSITIONS = {"A3", "H5", "L1", "K4", "K6", "Y1", "Y3"}
-VACATE_DISPOSITIONS = {"Y1", "Y3"}
+#   V3 ("Stop Work Order Violation Served for Non-Compliant After Hours Work")
+#              stays an ORDER: DOB's action for it reads "Stop all work". The
+#              conservative reading until the operator rules otherwise.
+ORDER_DISPOSITIONS = {"A3", "H5", "L1", "K4", "K6", "V3", "Y1", "Y3"}
+VACATE_DISPOSITIONS = {"Y1", "Y3", "Y4"}
+# A PARTIAL rescind leaves the rest of the order in force (L3: SWO partially
+# rescinded; Y4: vacate partially rescinded), so a later full lift is a lift.
+PARTIAL_RESCIND_DISPOSITIONS = {"L3", "Y4"}
 EMERGENCY_DISPOSITIONS = {"P3", "RH", "RI"}
 VIOLATION_DISPOSITIONS = {"A1", "A2", "A4", "A5", "A6", "A8", "A9", "B1", "B2", "R5", "RK", "K5", "ND",
-                          "H3", "H4", "V3"}
+                          "H3", "H4"}
 RESCIND_DISPOSITIONS = {"L2", "L3", "Y2", "Y4"}
 
 
