@@ -1855,16 +1855,15 @@ class AnExpiredPermitIsDaily(unittest.TestCase):
             self.assertNotIn("🟠 Permit B02222222", text, day)      # expiring soon: weekly
         self.assertNotIn("🟠 Permit B01141294", after)            # renewed: said no more
 
-    def test_not_capped_at_30_days_and_not_for_signed_off_or_revoked(self):
+    def test_never_for_signed_off_or_revoked(self):
         now = TUE_8
-        rows = lambda **kw: [_permit(THOMAS, "B01141294", "2025-01-15", **kw)]
-        texts = lambda r: [i["text"] for i in wa_brief.job_items(r, now - timedelta(days=1), now,
-                                                                 weekly=False)]
-        self.assertEqual(texts(rows()),
-                         ["🟠 Permit B01141294 (General Construction) expired Jan 15 "
-                          "(636 days ago). DOB."])
-        self.assertEqual(texts(rows(permit_status="SIGNED OFF")), [])
-        self.assertEqual(texts(rows(permit_status="REVOKED")), [])
+        rows = lambda **kw: [_permit(THOMAS, "B01141294", "2026-09-15", **kw)]
+        for weekly in (False, True):
+            texts = lambda r: [i["text"] for i in wa_brief.job_items(
+                r, now - timedelta(days=1), now, weekly=weekly)]
+            self.assertEqual(len(texts(rows())), 1)                 # control: said
+            self.assertEqual(texts(rows(permit_status="SIGNED OFF")), [])
+            self.assertEqual(texts(rows(permit_status="REVOKED")), [])
 
     def test_a_dot_permit_stays_weekly(self):
         # A DOT street permit expires as a matter of course: not daily news.
@@ -1887,6 +1886,28 @@ class TwoYomTovDays(unittest.TestCase):
     """(3) Yom Tov on Monday AND Tuesday: Wednesday's brief carries the
     weekly section, once."""
 
+    def test_the_dates_are_the_code_calendars_pesach(self):
+        """(3) The test's days come from the Yom Tov calendar the code uses
+        (lib/shabbos.yom_tov_days, computed from the Hebrew calendar, New
+        York): 15 Nisan 5788 is Tue Apr 11 2028, so Pesach's first days are
+        Apr 11-12 and its last days (21-22 Nisan) Mon-Tue Apr 17-18."""
+        from datetime import date
+        from lib import shabbos
+        nisan_1 = date.fromordinal(shabbos._nisan_1(5788))
+        self.assertEqual(nisan_1, date(2028, 3, 28))
+        pesach = [d for d in shabbos.yom_tov_days(2028) if d.month == 4]
+        self.assertEqual(pesach, [date(2028, 4, 11), date(2028, 4, 12),
+                                  date(2028, 4, 17), date(2028, 4, 18)])
+        self.assertEqual(pesach[2:], [nisan_1 + timedelta(days=20), nisan_1 + timedelta(days=21)])
+        self.assertEqual((MON_PESACH.date(), TUE_PESACH.date()), tuple(pesach[2:]))
+        # Quiet from Sunday's candle lighting to Tuesday's nightfall; the
+        # Wednesday brief is outside it, Monday's and Tuesday's inside.
+        start, end = shabbos.window(date(2028, 4, 17))
+        self.assertTrue(start < MON_PESACH < end and start < TUE_PESACH < end)
+        self.assertTrue(WED_AFTER > end)
+        self.assertEqual(wa_brief.local_now(start).strftime("%a %b %d %H:%M"), "Sun Apr 16 18:17")
+        self.assertEqual(wa_brief.local_now(end).strftime("%a %b %d %H:%M"), "Tue Apr 18 21:19")
+
     def test_monday_and_tuesday_held_wednesday_carries_it_once(self):
         from lib import shabbos
         self.assertTrue(shabbos.is_rest_day(MON_PESACH.date()))
@@ -1907,3 +1928,100 @@ class TwoYomTovDays(unittest.TestCase):
         self.assertEqual([w for w in weekly if w in wed], list(weekly), wed)
         self.assertEqual(wed.count("📋 *Open violations*"), 2)       # once per job
         self.assertEqual([w for w in weekly if w in thu], [], thu)
+
+
+# ── Before #1021 merges, round 2 (Roy, 2026-11-11) ────────────────────────
+
+def _texts_of(rows, *, weekly, now=TUE_8, muted=None):
+    return [i["text"] for i in wa_brief.job_items(rows, now - timedelta(days=1), now,
+                                                  weekly=weekly, muted=muted)]
+
+
+class DailyOnlyOnCurrentFilings(unittest.TestCase):
+    """(1) The daily expired-permit line is for permits on the project's
+    CURRENT job filings; older / other expired permits are weekly only."""
+
+    ROWS = [
+        # The job being built: a live permit, and one of its permits lapsed.
+        _permit(THOMAS, "B30000001-I1", "2027-06-30", _id="p_live"),
+        _permit(THOMAS, "B30000001-S2", "2026-09-30", work="Plumbing", _id="p_lapsed"),
+        # An old filing: its only permit lapsed two years ago.
+        _permit(THOMAS, "B11111111-I1", "2024-10-01", _id="p_old"),
+    ]
+
+    def test_two_year_old_lapse_on_an_old_filing_is_weekly_only(self):
+        daily = _texts_of(self.ROWS, weekly=False)
+        weekly = _texts_of(self.ROWS, weekly=True)
+        self.assertEqual(daily, [
+            "🟠 Permit B30000001-S2 (Plumbing) expired Sep 30 (13 days ago). DOB."])
+        self.assertIn("🟠 Permit B11111111-I1 (General Construction) expired Oct 1 "
+                      "(742 days ago). DOB.", weekly)
+        self.assertIn("🟠 Permit B30000001-S2 (Plumbing) expired Sep 30 (13 days ago). DOB.",
+                      weekly)
+
+    def test_a_job_whose_only_permit_just_lapsed_is_still_current(self):
+        rows = [_permit(THOMAS, "B40000004-I1", "2026-10-05", _id="p_only")]
+        self.assertEqual(len(_texts_of(rows, weekly=False)), 1)
+        # ... and a year on, it is an old filing: weekly only.
+        later = TUE_8 + timedelta(days=wa_brief.CURRENT_JOB_LAPSE_DAYS + 1)
+        self.assertEqual(_texts_of(rows, weekly=False, now=later), [])
+        self.assertEqual(len(_texts_of(rows, weekly=True, now=later)), 1)
+
+    def test_the_rule(self):
+        self.assertEqual(wa_brief.base_job("b23173802-s5"), "B23173802")
+        self.assertEqual(wa_brief.base_job("121234567"), "121234567")
+        facts = wa_brief.permit_facts(self.ROWS, wa_brief.local_now(TUE_8).date())
+        self.assertEqual(facts.current, frozenset({"B30000001"}))
+
+
+class ARenewalIsANewerLivePermit(unittest.TestCase):
+    """(2) Renewed = a newer live permit for the same job number and work
+    type, whatever the filing sequence: B23173802-S6 renews -S5."""
+
+    S5 = _permit(THOMAS, "B23173802-S5", "2026-09-01", _id="p_s5")
+
+    def test_s5_expired_and_s6_active_no_expired_line(self):
+        s6 = _permit(THOMAS, "B23173802-S6", "2027-09-01", _id="p_s6")
+        for weekly in (False, True):
+            texts = _texts_of([self.S5, s6], weekly=weekly)
+            self.assertFalse([t for t in texts if "B23173802-S5" in t], (weekly, texts))
+
+    def test_controls(self):
+        # No renewal: S5 is said every morning (its job is current).
+        self.assertEqual(_texts_of([self.S5], weekly=False), [
+            "🟠 Permit B23173802-S5 (General Construction) expired Sep 1 (42 days ago). DOB."])
+        # Another work type does not renew it.
+        s6_plumbing = _permit(THOMAS, "B23173802-S6", "2027-09-01", work="Plumbing", _id="p_s6p")
+        self.assertTrue([t for t in _texts_of([self.S5, s6_plumbing], weekly=False)
+                         if "B23173802-S5" in t])
+        # Nor does a newer permit that is itself expired, or revoked.
+        s6_lapsed = _permit(THOMAS, "B23173802-S6", "2026-10-01", _id="p_s6l")
+        s6_revoked = _permit(THOMAS, "B23173802-S7", "2027-09-01", permit_status="REVOKED",
+                             _id="p_s7r")
+        self.assertTrue([t for t in _texts_of([self.S5, s6_lapsed, s6_revoked], weekly=False)
+                         if "B23173802-S5" in t])
+        # Another job's live permit does not renew it either.
+        other = _permit(THOMAS, "B99999999-S6", "2027-09-01", _id="p_other")
+        self.assertTrue([t for t in _texts_of([self.S5, other], weekly=False)
+                         if "B23173802-S5" in t])
+
+
+class AMutedPermitIsWeeklyOnly(unittest.TestCase):
+
+    def test_muted_daily_none_weekly_with_the_reason(self):
+        rows = [_permit(THOMAS, "B23173802-S5", "2026-09-01", _id="p_s5")]
+        muted = {"b23173802-s5": "sign-off pending"}
+        self.assertEqual(_texts_of(rows, weekly=False, muted=muted), [])
+        self.assertEqual(_texts_of(rows, weekly=True, muted=muted), [
+            "🟠 Permit B23173802-S5 (General Construction) expired Sep 1 (42 days ago). DOB. "
+            "Muted: sign-off pending."])
+
+    def test_the_command(self):
+        self.assertEqual(wa_brief.parse_mute("mute B23173802-S5 sign-off pending"),
+                         ("mute", "B23173802-S5", "sign-off pending"))
+        self.assertEqual(wa_brief.parse_mute("Unmute b23173802-s5"),
+                         ("unmute", "B23173802-S5", ""))
+        self.assertEqual(wa_brief.parse_mute("mute 121234567: old BIS job"),
+                         ("mute", "121234567", "old BIS job"))
+        self.assertIsNone(wa_brief.parse_mute("mute the group chat"))
+        self.assertIsNone(wa_brief.parse_mute("can you mute B23173802-S5"))

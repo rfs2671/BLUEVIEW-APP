@@ -54962,6 +54962,103 @@ async def _brief_since(user_id: str, now: datetime,
     return max(now - timedelta(days=1), floor)
 
 
+#: Permits an admin muted from the brief's daily expired-permit line
+#: ("mute B… <reason>" in a DM; "unmute B…" undoes it). One row per company
+#: and permit number, its history kept; every change audit-logged.
+BRIEF_PERMIT_MUTES = "brief_permit_mutes"
+
+
+async def _permit_mutes(company_id: Any) -> Dict[str, str]:
+    """{permit number: reason} muted in this company; {} when unreadable
+    (a read failing never hides a line)."""
+    try:
+        rows = await db[BRIEF_PERMIT_MUTES].find(
+            {"company_id": str(company_id or ""), "active": True},
+            {"permit": 1, "reason": 1}).to_list(2000)
+    except Exception as e:
+        logger.warning(f"[wa-brief] permit mutes unreadable: {type(e).__name__}")
+        return {}
+    return {str(r.get("permit") or "").upper(): str(r.get("reason") or "") for r in rows
+            if r.get("permit")}
+
+
+_MUTE_SAY = {
+    "en": {
+        "admin_only": "Only an admin can mute or unmute a permit in the brief.",
+        "why": "Say why, so the team can see it: mute {permit} <reason>",
+        "unknown": "I can't find permit {permit} on your jobs.",
+        "muted": "Muted {permit}: its expired line now comes only in Monday's weekly "
+                 "section, with your reason. Say \"unmute {permit}\" to undo.",
+        "unmuted": "Unmuted {permit}: if it is expired on a current job, it is in the "
+                   "brief every morning again.",
+        "not_muted": "{permit} isn't muted.",
+    },
+    "es": {
+        "admin_only": "Solo un administrador puede silenciar o reactivar un permiso en el resumen.",
+        "why": "Diga por qué, para que el equipo lo vea: mute {permit} <motivo>",
+        "unknown": "No encuentro el permiso {permit} en sus obras.",
+        "muted": "Silenciado {permit}: su línea de vencido solo aparece en la sección "
+                 "semanal del lunes, con su motivo. Diga \"unmute {permit}\" para deshacer.",
+        "unmuted": "Reactivado {permit}: si está vencido en una obra actual, vuelve al "
+                   "resumen cada mañana.",
+        "not_muted": "{permit} no está silenciado.",
+    },
+}
+
+
+async def _brief_mute_turn(ident: dict, dm_chat: str, text: str,
+                           now: Optional[datetime] = None) -> bool:
+    """"mute B23173802-S5 <reason>" / "unmute B23173802-S5": an ADMIN's
+    command, answered in code (never the model). True when it was one."""
+    cmd = wa_brief.parse_mute(text)
+    if not cmd:
+        return False
+    action, permit, reason = cmd
+    now = now or datetime.now(timezone.utc)
+    lang = "es" if dm_actions.reply_lang(reason or text) == "es" else "en"
+    say = lambda key: send_whatsapp_message(dm_chat, _MUTE_SAY[lang][key].format(permit=permit))
+    if wa_dm.norm_role(ident.get("role")) != "admin":
+        await say("admin_only")
+        return True
+    company_id = str(ident.get("company_id") or "")
+    uid = str(ident.get("user_id") or "")
+    key = f"{company_id}:{permit}"
+    if action == "mute":
+        if not reason:
+            await say("why")
+            return True
+        pids = [str(p.get("_id")) for p in ident.get("projects") or []]
+        found = await db.dob_logs.find_one({
+            "project_id": {"$in": pids}, "record_type": "permit",
+            "job_number": permit,               # DOB writes it upper-case
+            "is_deleted": {"$ne": True}}, {"_id": 1, "project_id": 1}) if pids else None
+        if not found:
+            await say("unknown")
+            return True
+        entry = {"action": "mute", "at": now, "by": uid, "reason": reason}
+        await db[BRIEF_PERMIT_MUTES].update_one({"_id": key}, {
+            "$set": {"company_id": company_id, "permit": permit, "active": True,
+                     "reason": reason, "muted_by": uid, "muted_at": now,
+                     "project_id": found.get("project_id")},
+            "$push": {"history": entry}}, upsert=True)
+        await audit_log("brief_permit_mute", uid, "permit", permit,
+                        {"company_id": company_id, "reason": reason, "via": "whatsapp_dm",
+                         "project_id": found.get("project_id")})
+        await say("muted")
+        return True
+    row = await db[BRIEF_PERMIT_MUTES].find_one({"_id": key, "active": True}, {"_id": 1})
+    if not row:
+        await say("not_muted")
+        return True
+    await db[BRIEF_PERMIT_MUTES].update_one({"_id": key}, {
+        "$set": {"active": False, "unmuted_by": uid, "unmuted_at": now},
+        "$push": {"history": {"action": "unmute", "at": now, "by": uid}}})
+    await audit_log("brief_permit_unmute", uid, "permit", permit,
+                    {"company_id": company_id, "via": "whatsapp_dm"})
+    await say("unmuted")
+    return True
+
+
 async def _brief_weekly_due(user_id: str, now: datetime) -> bool:
     """Does today's brief carry the weekly section (open violations, court
     dates, permit expiry; lib/wa_brief.py)? Yes on the week's first brief
@@ -55059,7 +55156,8 @@ async def _brief_job(project: dict, company_id: str, since: datetime,
     }).to_list(2000))
     if weekly is None:
         weekly = wa_brief.is_review_day(now)
-    items = wa_brief.job_items(rows, since, now, dot_rows, synced, weekly=weekly)
+    items = wa_brief.job_items(rows, since, now, dot_rows, synced, weekly=weekly,
+                               muted=await _permit_mutes(company_id))
     # The weekly section (_brief_weekly_due: Monday's, or the week's first
     # brief delivered): the job's open violations too; a record already a
     # 🔴 New line today is not listed twice.
@@ -81739,6 +81837,11 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0,
             # A voice note's answer starts with what was heard, so a misheard
             # question is visible (it replaces the old "Reply CORRECT" cue,
             # which confirmed a write this assistant no longer makes).
+            # "mute B… <reason>" / "unmute B…": an admin's brief command,
+            # in code - one company's, so never from a read across them.
+            if not cross and await _brief_mute_turn(ident, dm_chat, body):
+                return
+
             await _dm_assistant_reply(
                 ident, dm_chat, body, parsed.get("message_id_serialized") or "", brain=dm_brain_on,
                 heard=body if parsed.get("has_audio") else None,
