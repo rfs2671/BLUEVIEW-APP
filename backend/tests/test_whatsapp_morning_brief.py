@@ -32,7 +32,7 @@ from fastapi import HTTPException  # noqa: E402
 import server  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from tests.test_whatsapp_phase1_foundations import (  # noqa: E402
-    ADMIN_PHONE, CO_A, CO_B, CP_PHONE, PM_PHONE, _Ctx,
+    ADMIN_PHONE, CO_A, CO_B, CP_PHONE, PM_PHONE, _Ctx, _Wire,
 )
 from tests.test_whatsapp_dm_assistant import (  # noqa: E402
     PROJ_B, THOMAS, WALWORTH, _db as _base_db, _optin,
@@ -117,6 +117,20 @@ def _compose(now, jobs, own=None):
 
 def _tick(c, now):
     return _run(server._morning_brief_tick(now=now))
+
+
+def _week_began(db, uid, now):
+    """This week's Monday brief went out (its whole-brief ledger row): the
+    weekly section is said, and a later brief this week does not repeat it
+    (server._brief_weekly_due). A test of an ordinary weekday seeds it."""
+    today = wa_brief.local_now(now).date()
+    monday = (today - timedelta(days=today.weekday())).isoformat()
+    db[server.WA_LEDGER].rows.append({
+        "_id": f"wk_{uid}_{monday}", "user_id": uid, "kind": server.MORNING_BRIEF_KIND,
+        # Stamped a day back: the "since" these tests had with no row at all
+        # (server._brief_since), so only the weekly rule moves.
+        "window": monday, "status": "sent", "created_at": now - timedelta(days=1),
+        "expires_at": now + timedelta(days=30)})
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -234,11 +248,14 @@ class TheItems(unittest.TestCase):
             _permit(THOMAS, "B2", "2026-10-08", work="Plumbing"),
             _permit(THOMAS, "B3", "2026-10-01"),
             _permit(THOMAS, "B4", "2026-12-01"),                # far off
-            _permit(THOMAS, "B5", "2025-01-01"),                # long expired
+            # Long expired and never renewed: still said (Roy, 2026-11-11:
+            # an expired permit is daily until renewed; no 30-day cap).
+            _permit(THOMAS, "B5", "2025-01-01"),
             _permit(THOMAS, "B6", "2026-10-10", permit_status="REVOKED"),
             _permit(THOMAS, "B7", None),                        # no date: omit
         ]
         self.assertEqual(self._items(rows), [
+            "🟠 Permit B5 (General Construction) expired Jan 1 (645 days ago). DOB.",
             "🟠 Permit B3 (General Construction) expired Oct 1 (7 days ago). DOB.",
             "🟠 Permit B2 (Plumbing) expires Oct 8 (today). DOB.",
             "🟠 Permit B01141294 (General Construction) expires Oct 14 (6 days). DOB.",
@@ -417,6 +434,7 @@ class WhoGetsWhat(unittest.TestCase):
     def test_admin_gets_every_live_company_job(self):
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
+        _week_began(db, "u_admin", THU_7)
         with _Ctx(db) as c:
             _tick(c, THU_7)
         sends = _sends(c)
@@ -428,7 +446,7 @@ class WhoGetsWhat(unittest.TestCase):
         self.assertNotIn("Thomas", walworth)
         self.assertTrue(thomas.startswith("*Thu Oct 8* · *588 Thomas S Boyland St*"), thomas)
         # A Thursday: the expiring permit is Monday's reminder (WeeklyReminders).
-        self.assertNotIn("B01141294", thomas)
+        self.assertNotIn("🟠 Permit B01141294", thomas)
         self.assertIn("👷 8 on site · ABC Concrete 5 · GC 3", thomas)
         self.assertNotIn("Walworth", thomas)
         self.assertNotIn("35123456", thomas)
@@ -581,6 +599,7 @@ class TimeAndOnce(unittest.TestCase):
             self.assertEqual(_sends(c), [])
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
+        _week_began(db, "u_admin", SAT_7)
         self._set(db, "u_admin", brief_weekend=True)
         with _Ctx(db) as c:
             _tick(c, SAT_7)
@@ -590,6 +609,7 @@ class TimeAndOnce(unittest.TestCase):
         self.assertEqual(len(_sends(c)), 1)
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
+        _week_began(db, "u_admin", SAT_7)
         self._set(db, "u_admin", brief_weekend=True)
         db[server.WA_COMPANY_SETTINGS].rows.append({
             "_id": CO_A, "company_id": CO_A, "whatsapp_company": {"shabbos_off": False}})
@@ -617,6 +637,7 @@ class TimeAndOnce(unittest.TestCase):
     def test_new_means_since_the_last_brief(self):
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
+        _week_began(db, "u_admin", THU_7)
         with _Ctx(db) as c:
             _tick(c, THU_7)
             n = len(_sends(c))
@@ -628,8 +649,8 @@ class TimeAndOnce(unittest.TestCase):
         self.assertNotIn("35123456", fri)          # not new any more
         # Still expiring, and said on Mondays only (WeeklyReminders): not
         # every morning.
-        self.assertNotIn("B01141294", thu)
-        self.assertNotIn("B01141294", fri)
+        self.assertNotIn("🟠 Permit B01141294", thu)
+        self.assertNotIn("🟠 Permit B01141294", fri)
 
 
 class TheSettings(unittest.TestCase):
@@ -1488,6 +1509,8 @@ class MondayBrief(unittest.TestCase):
     def _brief(self, now):
         db = _monday_world(now)
         _optin(db, "u_admin", ADMIN_PHONE)
+        if wa_brief.local_now(now).weekday():
+            _week_began(db, "u_admin", now)         # Monday's went out
         with _Ctx(db) as c:
             _tick(c, now)
         return _texts(c)
@@ -1568,7 +1591,7 @@ class WeeklyReminders(unittest.TestCase):
         texts = _texts(c)
         mon, tue = "\n".join(texts[:n]), "\n".join(texts[n:])
         self.assertIn("🟠 Permit B01141294", mon)
-        self.assertNotIn("B01141294", tue)
+        self.assertNotIn("🟠 Permit B01141294", tue)
 
 
 def _city(title, date, *, agency="DOB", kind="hearing", created=None, history=()):
@@ -1632,3 +1655,373 @@ class CourtDatesInTheWeek(unittest.TestCase):
         chat = {"source": "chat", "kind": "inspection", "title": "Con Ed meter set",
                 "date": "2026-10-09", "history": []}
         self.assertEqual(self._titles([chat], weekly=False), ["Con Ed meter set"])
+
+
+# ── The weekly section is delivered once a week, whatever Monday was ──────
+
+MON_YK = datetime(2026, 9, 21, 12, 5, tzinfo=timezone.utc)     # Mon 8:05 AM ET, Yom Kippur
+TUE_AFTER_YK = MON_YK + timedelta(days=1)
+WED_AFTER_YK = MON_YK + timedelta(days=2)
+
+
+def _week_world(week_of=MON_YK):
+    """Walworth: one old open violation with a court date. Thomas: an open
+    stop-work order and a permit expiring that week (5 days after `week_of`:
+    a standing reminder, never expired during the test). Nothing new."""
+    db = _db()
+    expires = (wa_brief.local_now(week_of).date() + timedelta(days=5)).isoformat()
+    db.dob_logs.rows.extend([
+        _old(WALWORTH, "34000001", "2026-06-02", hearing_date="2030-11-04"),
+        _swo(THOMAS, "SWO77"),
+        _permit(THOMAS, "B01141294", expires),
+    ])
+    for r in db.dob_logs.rows:
+        r["company_id"] = CO_A
+    return db
+
+
+class TheWeeklySectionIsNeverLost(unittest.TestCase):
+    """Roy, 2026-11-11: if Monday's weekly section was not delivered (a
+    holiday hold, an outage, a failed send), the next brief that goes out
+    that week carries it - once."""
+
+    WEEKLY = ("📋 *Open violations*", "• DOB 34000001", "• Stop-work order SWO77",
+              "🟠 Permit B01141294")
+
+    def _days(self, *days, monday_send=True):
+        db = _week_world(days[0])
+        _optin(db, "u_admin", ADMIN_PHONE)
+        out = []
+        with _Ctx(db) as c:
+            for now in days:
+                before = len(_sends(c))
+                _tick(c, now)
+                out.append("\n".join(_texts(c)[before:]))
+        return out
+
+    def _has_weekly(self, text):
+        return [w for w in self.WEEKLY if w in text]
+
+    def test_yom_tov_monday_then_tuesday_carries_it_once(self):
+        self.assertTrue(server.wa_brief.is_review_day(MON_YK))
+        mon, tue, wed = self._days(MON_YK, TUE_AFTER_YK, WED_AFTER_YK)
+        self.assertEqual(mon, "")                               # held: Yom Kippur
+        self.assertEqual(self._has_weekly(tue), list(self.WEEKLY), tue)
+        self.assertEqual(tue.count("📋 *Open violations*"), 2)  # one per job, once
+        self.assertEqual(self._has_weekly(wed), [], wed)        # not again that week
+
+    def test_control_monday_delivered_tuesday_does_not_repeat_it(self):
+        mon, tue = self._days(MON_8, TUE_8)
+        self.assertIn("📋 *Open violations*", mon)
+        self.assertIn("• DOB 34000001", mon)
+        self.assertNotIn("📋 *Open violations*", tue)
+        self.assertEqual(self._has_weekly(tue), [], tue)
+
+    def test_an_outage_monday_the_next_brief_carries_it(self):
+        # No Monday brief at all (the server was down): Wednesday's is the
+        # week's first, and carries it; Thursday's does not.
+        wed, thu = self._days(WED_AFTER_YK, WED_AFTER_YK + timedelta(days=1))
+        self.assertEqual(self._has_weekly(wed), list(self.WEEKLY), wed)
+        self.assertEqual(self._has_weekly(thu), [], thu)
+
+    def test_a_failed_monday_send_the_next_brief_carries_it(self):
+        db = _week_world(MON_8)
+        _optin(db, "u_admin", ADMIN_PHONE)
+        wire = _Wire([(500, {}, None)] * 50)       # WaAPI down all Monday morning
+        with _Ctx(db, wire=wire) as c:
+            _tick(c, MON_8)
+            self.assertTrue(_sends(c))                  # it was tried ...
+            self.assertFalse([r for r in db[server.WA_LEDGER].rows
+                              if r.get("status") == "sent"])   # ... and nothing went out
+            wire.responses = []                         # Tuesday: WaAPI is back
+            before = len(_sends(c))
+            _tick(c, TUE_8)
+        tue = "\n".join(_texts(c)[before:])
+        self.assertEqual(self._has_weekly(tue), list(self.WEEKLY), tue)
+
+    def test_the_rule(self):
+        db = _db()
+        sent = lambda day: {"_id": f"k{day}", "user_id": "u1", "kind": server.MORNING_BRIEF_KIND,
+                            "status": "sent", "window": day}
+        with patch.object(server, "db", db):
+            due = lambda now: _run(server._brief_weekly_due("u1", now))
+            self.assertTrue(due(TUE_8))                         # nothing went out this week
+            db[server.WA_LEDGER].rows.append(sent("2026-10-09"))    # last week's Friday
+            self.assertTrue(due(TUE_8))
+            db[server.WA_LEDGER].rows.append(dict(sent("2026-10-12:j1"), _id="kp"))  # a part only
+            self.assertTrue(due(TUE_8))
+            db[server.WA_LEDGER].rows.append(dict(sent("2026-10-13"), _id="kt"))     # today's own
+            self.assertTrue(due(TUE_8))
+            db[server.WA_LEDGER].rows.append(dict(sent("2026-10-12"), status="skipped_shabbos"))
+            self.assertTrue(due(TUE_8))
+            db[server.WA_LEDGER].rows.append(dict(sent("2026-10-12"), _id="km"))     # Monday's, sent
+            self.assertFalse(due(TUE_8))
+            self.assertTrue(due(MON_8))                         # Monday: always
+
+
+# ── Before #1021 merges (Roy, 2026-11-11) ─────────────────────────────────
+
+class _FailFor(_Wire):
+    """WaAPI that answers 500 for one chat while `down` is on."""
+
+    def __init__(self, chat):
+        super().__init__()
+        self.chat, self.down = chat, True
+
+    async def post_raw(self, url, payload, headers):
+        self.calls.append(payload)
+        if self.down and payload.get("chatId") == self.chat:
+            return 500, {}, None
+        return 200, {"status": "success"}, None
+
+
+ADMIN2_PHONE = "15550001009"
+
+
+class TheWeekIsPerRecipient(unittest.TestCase):
+    """(1) "First delivered this week" is each person's own, never the
+    company's: two admins of one company, Monday's send fails for one -
+    only that one gets Tuesday's catch-up."""
+
+    def test_two_admins_one_monday_failure(self):
+        db = _week_world(MON_8)
+        admin = next(u for u in db.users.rows if u["_id"] == "u_admin")
+        db.users.rows.append(dict(admin, _id="u_admin2", phone=ADMIN2_PHONE,
+                                  email="admin2@example.com", full_name="Second Admin",
+                                  name="Second Admin"))
+        _optin(db, "u_admin", ADMIN_PHONE)
+        _optin(db, "u_admin2", ADMIN2_PHONE)
+        wire = _FailFor(f"{ADMIN2_PHONE}@c.us")
+        to = lambda chat, calls: "\n".join(
+            p["message"] for p in calls if "message" in p and p.get("chatId") == chat)
+        with _Ctx(db, wire=wire) as c:
+            _tick(c, MON_8)
+            mon = list(c.wire.calls)
+            wire.down = False                           # Tuesday: WaAPI is back for both
+            _tick(c, TUE_8)
+            tue = c.wire.calls[len(mon):]
+        one, two = f"{ADMIN_PHONE}@c.us", f"{ADMIN2_PHONE}@c.us"
+        self.assertIn("📋 *Open violations*", to(one, mon))         # delivered Monday
+        self.assertNotIn("📋 *Open violations*", to(one, tue))      # so not again
+        self.assertIn("📋 *Open violations*", to(two, tue))         # failed Monday: caught up
+        self.assertIn("• DOB 34000001", to(two, tue))
+        self.assertEqual(to(two, tue).count("📋 *Open violations*"), 2)   # once per job
+        sent = {(r["user_id"], r["window"]) for r in db[server.WA_LEDGER].rows
+                if r.get("status") == "sent" and ":" not in str(r.get("window"))}
+        self.assertIn(("u_admin", "2026-10-12"), sent)
+        self.assertNotIn(("u_admin2", "2026-10-12"), sent)
+        # The rule reads each person's own ledger.
+        with patch.object(server, "db", db):
+            self.assertFalse(_run(server._brief_weekly_due("u_admin", TUE_8)))
+            self.assertFalse(_run(server._brief_weekly_due("u_admin2", TUE_8 + timedelta(days=1))))
+
+
+class AnExpiredPermitIsDaily(unittest.TestCase):
+    """(2) An expired permit is said EVERY morning until it is renewed, not
+    only in the weekly section; one expiring soon stays weekly."""
+
+    EXPIRED = "🟠 Permit B01141294 (General Construction) expired Aug 31"
+
+    def _world(self):
+        db = _db()
+        db.dob_logs.rows.extend([
+            _permit(THOMAS, "B01141294", "2026-08-31"),             # 40+ days ago
+            _permit(THOMAS, "B02222222", "2026-10-20"),             # expiring, weekly
+        ])
+        _optin(db, "u_admin", ADMIN_PHONE)
+        _week_began(db, "u_admin", TUE_8)                      # Monday's went out
+        return db
+
+    def test_every_morning_until_renewed(self):
+        db = self._world()
+        days = [TUE_8, TUE_8 + timedelta(days=1), TUE_8 + timedelta(days=2)]
+        out = []
+        with _Ctx(db) as c:
+            for now in days:
+                n = len(_sends(c))
+                _tick(c, now)
+                out.append("\n".join(_texts(c)[n:]))
+            # Renewed: DOB re-issues under the same filing number, a new row
+            # of the same record with the new date.
+            db.dob_logs.rows.append(_permit(
+                THOMAS, "B01141294", "2027-08-31", _id="p_B01141294_renewed",
+                detected_at=days[-1] + timedelta(hours=2)))
+            n = len(_sends(c))
+            _tick(c, days[-1] + timedelta(days=1))
+            after = "\n".join(_texts(c)[n:])
+        for day, text in zip(("Tue", "Wed", "Thu"), out):
+            self.assertIn(self.EXPIRED, text, day)
+            self.assertNotIn("📋 *Open violations*", text, day)     # not the weekly section
+            self.assertNotIn("🟠 Permit B02222222", text, day)      # expiring soon: weekly
+        self.assertNotIn("🟠 Permit B01141294", after)            # renewed: said no more
+
+    def test_never_for_signed_off_or_revoked(self):
+        now = TUE_8
+        rows = lambda **kw: [_permit(THOMAS, "B01141294", "2026-09-15", **kw)]
+        for weekly in (False, True):
+            texts = lambda r: [i["text"] for i in wa_brief.job_items(
+                r, now - timedelta(days=1), now, weekly=weekly)]
+            self.assertEqual(len(texts(rows())), 1)                 # control: said
+            self.assertEqual(texts(rows(permit_status="SIGNED OFF")), [])
+            self.assertEqual(texts(rows(permit_status="REVOKED")), [])
+
+    def test_a_dot_permit_stays_weekly(self):
+        # A DOT street permit expires as a matter of course: not daily news.
+        dot = [{"_id": "dp", "project_id": THOMAS, "record_type": "dot_permit",
+                "raw_id": "dotpermit:P1", "number": "P1", "status": "ISSUED",
+                "expiration_date": "2026-10-10", "detected_at": THU_7 - timedelta(days=30)}]
+        daily = wa_brief.job_items([], TUE_8 - timedelta(days=1), TUE_8, dot, weekly=False)
+        weekly = wa_brief.job_items([], TUE_8 - timedelta(days=1), TUE_8, dot, weekly=True)
+        self.assertEqual(daily, [])
+        self.assertEqual([i["text"] for i in weekly],
+                         ["🟠 DOT permit P1 expired Oct 10 (3 days ago). DOT."])
+
+
+MON_PESACH = datetime(2028, 4, 17, 12, 5, tzinfo=timezone.utc)   # Mon 8:05 AM ET, Pesach
+TUE_PESACH = MON_PESACH + timedelta(days=1)                       # Pesach, its last day
+WED_AFTER = MON_PESACH + timedelta(days=2)
+
+
+class TwoYomTovDays(unittest.TestCase):
+    """(3) Yom Tov on Monday AND Tuesday: Wednesday's brief carries the
+    weekly section, once."""
+
+    def test_the_dates_are_the_code_calendars_pesach(self):
+        """(3) The test's days come from the Yom Tov calendar the code uses
+        (lib/shabbos.yom_tov_days, computed from the Hebrew calendar, New
+        York): 15 Nisan 5788 is Tue Apr 11 2028, so Pesach's first days are
+        Apr 11-12 and its last days (21-22 Nisan) Mon-Tue Apr 17-18."""
+        from datetime import date
+        from lib import shabbos
+        nisan_1 = date.fromordinal(shabbos._nisan_1(5788))
+        self.assertEqual(nisan_1, date(2028, 3, 28))
+        pesach = [d for d in shabbos.yom_tov_days(2028) if d.month == 4]
+        self.assertEqual(pesach, [date(2028, 4, 11), date(2028, 4, 12),
+                                  date(2028, 4, 17), date(2028, 4, 18)])
+        self.assertEqual(pesach[2:], [nisan_1 + timedelta(days=20), nisan_1 + timedelta(days=21)])
+        self.assertEqual((MON_PESACH.date(), TUE_PESACH.date()), tuple(pesach[2:]))
+        # Quiet from Sunday's candle lighting to Tuesday's nightfall; the
+        # Wednesday brief is outside it, Monday's and Tuesday's inside.
+        start, end = shabbos.window(date(2028, 4, 17))
+        self.assertTrue(start < MON_PESACH < end and start < TUE_PESACH < end)
+        self.assertTrue(WED_AFTER > end)
+        self.assertEqual(wa_brief.local_now(start).strftime("%a %b %d %H:%M"), "Sun Apr 16 18:17")
+        self.assertEqual(wa_brief.local_now(end).strftime("%a %b %d %H:%M"), "Tue Apr 18 21:19")
+
+    def test_monday_and_tuesday_held_wednesday_carries_it_once(self):
+        from lib import shabbos
+        self.assertTrue(shabbos.is_rest_day(MON_PESACH.date()))
+        self.assertTrue(shabbos.is_rest_day(TUE_PESACH.date()))
+        self.assertFalse(shabbos.is_rest_day(WED_AFTER.date()))
+        db = _week_world(MON_PESACH)
+        _optin(db, "u_admin", ADMIN_PHONE)
+        out = []
+        with _Ctx(db) as c:
+            for now in (MON_PESACH, TUE_PESACH, WED_AFTER, WED_AFTER + timedelta(days=1)):
+                n = len(_sends(c))
+                rep = _tick(c, now)
+                out.append(("\n".join(_texts(c)[n:]), rep))
+        (mon, mrep), (tue, trep), (wed, _w), (thu, _t) = out
+        self.assertEqual((mon, mrep["shabbos_skipped"]), ("", 1))
+        self.assertEqual((tue, trep["shabbos_skipped"]), ("", 1))
+        weekly = TheWeeklySectionIsNeverLost.WEEKLY
+        self.assertEqual([w for w in weekly if w in wed], list(weekly), wed)
+        self.assertEqual(wed.count("📋 *Open violations*"), 2)       # once per job
+        self.assertEqual([w for w in weekly if w in thu], [], thu)
+
+
+# ── Before #1021 merges, round 2 (Roy, 2026-11-11) ────────────────────────
+
+def _texts_of(rows, *, weekly, now=TUE_8, muted=None):
+    return [i["text"] for i in wa_brief.job_items(rows, now - timedelta(days=1), now,
+                                                  weekly=weekly, muted=muted)]
+
+
+class DailyOnlyOnCurrentFilings(unittest.TestCase):
+    """(1) The daily expired-permit line is for permits on the project's
+    CURRENT job filings; older / other expired permits are weekly only."""
+
+    ROWS = [
+        # The job being built: a live permit, and one of its permits lapsed.
+        _permit(THOMAS, "B30000001-I1", "2027-06-30", _id="p_live"),
+        _permit(THOMAS, "B30000001-S2", "2026-09-30", work="Plumbing", _id="p_lapsed"),
+        # An old filing: its only permit lapsed two years ago.
+        _permit(THOMAS, "B11111111-I1", "2024-10-01", _id="p_old"),
+    ]
+
+    def test_two_year_old_lapse_on_an_old_filing_is_weekly_only(self):
+        daily = _texts_of(self.ROWS, weekly=False)
+        weekly = _texts_of(self.ROWS, weekly=True)
+        self.assertEqual(daily, [
+            "🟠 Permit B30000001-S2 (Plumbing) expired Sep 30 (13 days ago). DOB."])
+        self.assertIn("🟠 Permit B11111111-I1 (General Construction) expired Oct 1 "
+                      "(742 days ago). DOB.", weekly)
+        self.assertIn("🟠 Permit B30000001-S2 (Plumbing) expired Sep 30 (13 days ago). DOB.",
+                      weekly)
+
+    def test_a_job_whose_only_permit_just_lapsed_is_still_current(self):
+        rows = [_permit(THOMAS, "B40000004-I1", "2026-10-05", _id="p_only")]
+        self.assertEqual(len(_texts_of(rows, weekly=False)), 1)
+        # ... and a year on, it is an old filing: weekly only.
+        later = TUE_8 + timedelta(days=wa_brief.CURRENT_JOB_LAPSE_DAYS + 1)
+        self.assertEqual(_texts_of(rows, weekly=False, now=later), [])
+        self.assertEqual(len(_texts_of(rows, weekly=True, now=later)), 1)
+
+    def test_the_rule(self):
+        self.assertEqual(wa_brief.base_job("b23173802-s5"), "B23173802")
+        self.assertEqual(wa_brief.base_job("121234567"), "121234567")
+        facts = wa_brief.permit_facts(self.ROWS, wa_brief.local_now(TUE_8).date())
+        self.assertEqual(facts.current, frozenset({"B30000001"}))
+
+
+class ARenewalIsANewerLivePermit(unittest.TestCase):
+    """(2) Renewed = a newer live permit for the same job number and work
+    type, whatever the filing sequence: B23173802-S6 renews -S5."""
+
+    S5 = _permit(THOMAS, "B23173802-S5", "2026-09-01", _id="p_s5")
+
+    def test_s5_expired_and_s6_active_no_expired_line(self):
+        s6 = _permit(THOMAS, "B23173802-S6", "2027-09-01", _id="p_s6")
+        for weekly in (False, True):
+            texts = _texts_of([self.S5, s6], weekly=weekly)
+            self.assertFalse([t for t in texts if "B23173802-S5" in t], (weekly, texts))
+
+    def test_controls(self):
+        # No renewal: S5 is said every morning (its job is current).
+        self.assertEqual(_texts_of([self.S5], weekly=False), [
+            "🟠 Permit B23173802-S5 (General Construction) expired Sep 1 (42 days ago). DOB."])
+        # Another work type does not renew it.
+        s6_plumbing = _permit(THOMAS, "B23173802-S6", "2027-09-01", work="Plumbing", _id="p_s6p")
+        self.assertTrue([t for t in _texts_of([self.S5, s6_plumbing], weekly=False)
+                         if "B23173802-S5" in t])
+        # Nor does a newer permit that is itself expired, or revoked.
+        s6_lapsed = _permit(THOMAS, "B23173802-S6", "2026-10-01", _id="p_s6l")
+        s6_revoked = _permit(THOMAS, "B23173802-S7", "2027-09-01", permit_status="REVOKED",
+                             _id="p_s7r")
+        self.assertTrue([t for t in _texts_of([self.S5, s6_lapsed, s6_revoked], weekly=False)
+                         if "B23173802-S5" in t])
+        # Another job's live permit does not renew it either.
+        other = _permit(THOMAS, "B99999999-S6", "2027-09-01", _id="p_other")
+        self.assertTrue([t for t in _texts_of([self.S5, other], weekly=False)
+                         if "B23173802-S5" in t])
+
+
+class AMutedPermitIsWeeklyOnly(unittest.TestCase):
+
+    def test_muted_daily_none_weekly_with_the_reason(self):
+        rows = [_permit(THOMAS, "B23173802-S5", "2026-09-01", _id="p_s5")]
+        muted = {"b23173802-s5": "sign-off pending"}
+        self.assertEqual(_texts_of(rows, weekly=False, muted=muted), [])
+        self.assertEqual(_texts_of(rows, weekly=True, muted=muted), [
+            "🟠 Permit B23173802-S5 (General Construction) expired Sep 1 (42 days ago). DOB. "
+            "Muted: sign-off pending."])
+
+    def test_the_command(self):
+        self.assertEqual(wa_brief.parse_mute("mute B23173802-S5 sign-off pending"),
+                         ("mute", "B23173802-S5", "sign-off pending"))
+        self.assertEqual(wa_brief.parse_mute("Unmute b23173802-s5"),
+                         ("unmute", "B23173802-S5", ""))
+        self.assertEqual(wa_brief.parse_mute("mute 121234567: old BIS job"),
+                         ("mute", "121234567", "old BIS job"))
+        self.assertIsNone(wa_brief.parse_mute("mute the group chat"))
+        self.assertIsNone(wa_brief.parse_mute("can you mute B23173802-S5"))
