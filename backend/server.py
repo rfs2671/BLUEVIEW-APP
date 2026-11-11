@@ -50332,13 +50332,49 @@ async def _dot_read_stipulations(row: dict, fetch, now: datetime,
                            dot_embargo.stipulation_params(permit))
         if cache is not None:
             cache[permit] = recs
+    # Is the permit's street under the embargo at all? DOT's own block and
+    # intersection lists (lib/dot_embargo.on_embargo_list). Read even when the
+    # stipulations fail, so an embargoed permit still shows "waiver not
+    # verified". A failed list read leaves the stored answer alone; none
+    # stored is "not checked", never True.
+    street = await _dot_embargo_street(row.get("segment"), fetch, cache)
     if recs is None:
+        if street is not None:
+            await db.dot_logs.update_one({"_id": row["_id"]},
+                                         {"$set": {"holiday_embargo_street": street}})
         return "failed"
     fields = dot_embargo.stipulation_fields(permit, recs)
+    if street is not None:
+        fields["holiday_embargo_street"] = street
     await db.dot_logs.update_one(
         {"_id": row["_id"]},
         {"$set": {**fields, "stipulations_fetched_at": now}})
     return "read" if fields["holiday_waiver"] is not None else "unknown"
+
+
+async def _dot_embargo_street(segment, fetch, cache: Optional[dict] = None) -> Optional[bool]:
+    """True / False from DOT's embargo lists for the permit's segment; None
+    when the segment is unusable or a list could not be read."""
+    params = dot_embargo.embargo_list_params(segment or {})
+    if params is None:
+        return None
+    got = {}
+    for ds, p in params.items():
+        key = ("embargo", ds, p["$where"])
+        if cache is not None and key in cache:
+            recs = cache[key]
+        else:
+            try:
+                recs = await fetch(ds, p)
+            except Exception:
+                recs = None
+            if cache is not None:
+                cache[key] = recs
+        if recs is None:
+            return None
+        got[ds] = recs
+    return dot_embargo.on_embargo_list(segment or {}, got[dot_embargo.EMBARGO_BLOCK_DATASET],
+                                       got[dot_embargo.EMBARGO_INTERSECTION_DATASET])
 
 
 async def _dot_stipulations_for_new(project_id: str, raw_id: str, fetch,

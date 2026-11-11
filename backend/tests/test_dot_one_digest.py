@@ -65,7 +65,8 @@ def _ny7(d: date) -> datetime:
 def _embargo_row(num: str):
     """SYNTHETIC: the recorded permit, another number, working Oct 20 - Dec 20,
     no waiver (stipulation 410 absent)."""
-    return _row(num, date(2026, 12, 20), holiday_waiver=False, work_start="2026-10-20T00:00:00.000")
+    return _row(num, date(2026, 12, 20), holiday_waiver=False, work_start="2026-10-20T00:00:00.000",
+                holiday_embargo_street=True)      # West Broadway: a listed block
 
 
 def _expiry_row(num: str, end: date, **kw):
@@ -286,7 +287,8 @@ def _gc_row(num: str, end: date, waiver: bool):
                                          "issuedworkstartdate": "2026-10-20T00:00:00.000",
                                          "permitstatusshortdesc": "ISSUED & PRINTED"})
     return {**log, "_id": f"g_{num}", "project_id": "proj_a", "company_id": CO_A,
-            "holiday_waiver": waiver, "detected_at": datetime(2026, 9, 1, tzinfo=UTC)}
+            "holiday_waiver": waiver, "holiday_embargo_street": True,
+            "detected_at": datetime(2026, 9, 1, tzinfo=UTC)}
 
 
 class OneGroupPostADay(unittest.TestCase):

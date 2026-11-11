@@ -15,6 +15,14 @@ them. The sync stores them on the permit's dot_logs row as
 `stipulations: [{id, text}]` and `holiday_waiver`.
 
 THE RULE. A project's DOT permit is EXPOSED for a season when it is
+  * ON AN EMBARGOED STREET: DOT publishes the embargo's blocks (4te8-9n3p,
+    "Holiday Construction Embargo - Block": borough, on street, from street,
+    to street) and intersections (jr6f-nsuv). The embargo is NOT citywide: on
+    2026-11-11 it flagged all 36 waiver-less active permits LeveLog holds
+    (546 Saratoga Ave, Hopkinson Ave, Walworth St), none of which is on a
+    listed block. `holiday_embargo_street` on the dot_logs row is True / False
+    when DOT's list was read, None when it could not be -- and only True is
+    exposed (a failed read never raises a warning);
   * CONFIRMED as the project's (dot_sync.permit_confirmed: address-matched,
     permittee + frontage, or a "needs confirmation" permit a person accepted);
     a pending or rejected permit is never exposed;
@@ -138,9 +146,13 @@ def work_dates(row: Dict[str, Any]):
 
 
 def exposed(row: Dict[str, Any], season: Season) -> bool:
-    """An active DOT permit whose work dates overlap the season. Without a
-    work end date nothing can be said, so it is not exposed."""
+    """An active DOT permit on an embargoed street whose work dates overlap
+    the season. Without a work end date nothing can be said, so it is not
+    exposed; nor is a permit whose street DOT's list does not name, or whose
+    street could not be checked."""
     if (row.get("record_type") or "dot_permit") != "dot_permit":
+        return False
+    if row.get("holiday_embargo_street") is not True:
         return False
     if not dot_sync.permit_confirmed(row):
         return False
@@ -217,6 +229,69 @@ def stipulation_fields(permit: str, records: Iterable[Dict[str, Any]]) -> Dict[s
     waiver: Optional[bool] = (any(is_waiver_id(s["id"]) for s in out)
                               if out else None)
     return {"stipulations": out, "holiday_waiver": waiver}
+
+
+# ── Is the permit's street under the embargo? (DOT's own list) ──────────────
+
+EMBARGO_BLOCK_DATASET = "4te8-9n3p"          # Holiday Construction Embargo - Block
+EMBARGO_INTERSECTION_DATASET = "jr6f-nsuv"   # Holiday Construction Embargo - Intersection
+_BORO_LETTER = {"1": "M", "2": "X", "3": "B", "4": "Q", "5": "S"}
+
+
+def _key_word(street: Any) -> str:
+    """The street's longest word, for a LIKE that cannot miss a spelling
+    (AVE / AVENUE, numbered streets)."""
+    words = [w for w in dot_sync.norm_street(street).split() if w not in ("AVE", "ST", "RD", "BLVD", "PL")]
+    return max(words, key=len) if words else ""
+
+
+def embargo_list_params(segment: Dict[str, Any]) -> Optional[Dict[str, Dict[str, str]]]:
+    """{dataset: params} reading every embargoed block and intersection that
+    names the permit's on-street, in its borough. None when the permit names
+    no usable segment (then its street cannot be checked: None, never True)."""
+    seg = segment or {}
+    boro = _BORO_LETTER.get(str(seg.get("boro") or ""))
+    w = _key_word(seg.get("on")).replace("'", "''")
+    if not boro or not w:
+        return None
+    return {
+        EMBARGO_BLOCK_DATASET: {
+            "$select": "boroughcod,onstreetna,fromstreet,tostreetna",
+            "$where": (f"boroughcod='{boro}' AND (upper(onstreetna) like '%{w}%' "
+                       f"OR upper(fromstreet) like '%{w}%' OR upper(tostreetna) like '%{w}%')"),
+            "$limit": "5000"},
+        EMBARGO_INTERSECTION_DATASET: {
+            "$select": "boroughcod,primarynam,primaryn_1",
+            "$where": f"boroughcod='{boro}' AND (upper(primarynam) like '%{w}%' OR upper(primaryn_1) like '%{w}%')",
+            "$limit": "5000"},
+    }
+
+
+def on_embargo_list(segment: Dict[str, Any], blocks: Iterable[Dict[str, Any]],
+                    intersections: Iterable[Dict[str, Any]]) -> bool:
+    """True when DOT lists the permit's own block (same on-street, the same two
+    cross streets in either order) or the permit IS a listed intersection (its
+    cross streets are one street, and that pair is listed). A block that only
+    ENDS at a listed intersection is not on the list: 546 Saratoga Ave's permits
+    run Saratoga from Pitkin to Sutter; Pitkin & Saratoga is a listed
+    intersection, Saratoga between them is not a listed block."""
+    seg = segment or {}
+    on, a, b = seg.get("on"), seg.get("from"), seg.get("to")
+    same = dot_sync.same_street
+    for r in blocks or []:
+        if not same(r.get("onstreetna"), on):
+            continue
+        f, t = r.get("fromstreet"), r.get("tostreetna")
+        if (same(f, a) and same(t, b)) or (same(f, b) and same(t, a)):
+            return True
+    cross = {dot_sync.norm_street(x) for x in (a, b) if dot_sync.norm_street(x)}
+    if len(cross) == 1:
+        (c,) = tuple(cross)
+        for r in intersections or []:
+            p, q = r.get("primarynam"), r.get("primaryn_1")
+            if (same(p, on) and same(q, c)) or (same(q, on) and same(p, c)):
+                return True
+    return False
 
 
 # ── What is due today ───────────────────────────────────────────────────────
