@@ -1047,7 +1047,7 @@ export default function DOBLogsScreen() {
                 so the count matches the list once you drill in. ── */}
           <View style={s.navRow}>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}>
-              <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]} contentStyle={(expiringPermits.length > 0 || expiredCount > 0) ? { paddingTop: spacing.xl } : undefined}>
+              <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]}>
                 {/* Permit warnings are two small marks on this tile instead of a banner of their own: a yellow warning with the
                     number expiring (within 30 days), and a red one with the number already expired. Tap the tile to see them. */}
                 {(expiringPermits.length > 0 || expiredCount > 0) && (
@@ -1319,7 +1319,9 @@ function buildStyles(colors, isDark) {
     // inside GlassCard's built-in cardContent padding (spacing.xl each
     // side). 118px leaves ~70px usable which comfortably fits both.
     navCardWrap: { flexGrow: 1, flexBasis: 150, minWidth: 150 },
-    navCard: { alignItems: 'center', paddingVertical: spacing.md, paddingHorizontal: spacing.xs, gap: 4 },
+    // The same top room on all four tiles (the Permits tile carries warning marks in that corner) and `flex: 1` so a tile
+    // stretches to the height of the one beside it: the pairs always match.
+    navCard: { flex: 1, alignItems: 'center', paddingTop: spacing.xl, paddingBottom: spacing.md, paddingHorizontal: spacing.xs, gap: 4 },
     navCardActive: { borderColor: semantic.verifiedBorder, backgroundColor: semantic.verifiedBg },
     navCount: { fontSize: 20, fontWeight: '700', color: colors.text.primary },
     navCountActive: { color: chrome.brand },
