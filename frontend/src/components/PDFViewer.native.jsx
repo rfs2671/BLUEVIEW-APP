@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, Modal, Pressable, ActivityIndicator, Linking, TextInput, ScrollView, Dimensions, Platform, Share } from 'react-native';
-import { X, Download, FileText, ExternalLink, MapPin, Send, Trash2, CheckCircle, Users, Search, ChevronUp, ChevronDown } from 'lucide-react-native';
-import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
+import { View, Text, StyleSheet, Modal, Pressable, ActivityIndicator, Linking, TextInput, ScrollView, Dimensions, Platform, Share, Image } from 'react-native';
+import { X, Download, FileText, ExternalLink, MapPin, Send, Trash2, CheckCircle, Users, Search, ChevronUp, ChevronDown, Share2, Camera, Image as ImageIcon } from 'lucide-react-native';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import { dropboxAPI, annotationsAPI, usersAPI, projectsAPI } from '../utils/api';
+import { useT } from '../i18n';
+import { sheetLabelFor, formatShareDate, shareFileName } from '../utils/planNoteShare';
+import { COMPOSER_HTML, createComposerBridge, isImageDataUri, sharePlanNoteImage, shareStatusKey } from '../utils/planNoteShareNative';
 
 // Build a stable document identifier for an annotation. Direct-upload files
 // have empty `path` so we use a `file:{id}` sentinel that the backend
@@ -468,6 +475,109 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
     }
   }, [selectedAnnotation, loadAnnotations]);
 
+  // ── SHARE A PLAN NOTE AS ONE IMAGE (parity with the web viewer, #946) ────
+  //
+  // On a saved note: optional context, an optional photo (camera or gallery),
+  // then ONE image (the plan crop with the marker, the photo, a caption bar
+  // with context / project / sheet id / date) handed to the OS share sheet as a
+  // FILE. Nothing is prefilled and nothing goes to our backend or to any
+  // messaging provider; the user picks WhatsApp in the sheet. Offered to every
+  // role that can open the plan: there is no role check.
+  //
+  // The image is drawn by a hidden WebView's <canvas> (planNoteShareNative.js
+  // says why), mounted only while the share panel is open.
+  const tShare = useT('planNoteShare');
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareContext, setShareContext] = useState('');
+  const [sharePhoto, setSharePhoto] = useState(null);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareNote, setShareNote] = useState('');
+  const [shareProjectName, setShareProjectName] = useState('');
+  const [composerKey, setComposerKey] = useState(0);
+  const composerRef = useRef(null);
+  const composerBridge = useRef(null);
+  if (!composerBridge.current) {
+    composerBridge.current = createComposerBridge({
+      inject: (js) => {
+        if (!composerRef.current) throw new Error('composer not mounted');
+        composerRef.current.injectJavaScript(js);
+      },
+    });
+  }
+  const selectedAnnId = selectedAnnotation ? (selectedAnnotation._id || selectedAnnotation.id) : null;
+  useEffect(() => {
+    setShareOpen(false); setShareContext(''); setSharePhoto(null); setShareNote(''); setShareBusy(false);
+  }, [selectedAnnId, visible]);
+  useEffect(() => { setShareProjectName(''); }, [projectId]);
+  // The page goes with the panel; anything still waiting on it is rejected.
+  useEffect(() => {
+    if (!shareOpen) return undefined;
+    const bridge = composerBridge.current;
+    return () => bridge.reset();
+  }, [shareOpen, composerKey]);
+  // The project name is for the caption only. Read when the panel opens; the
+  // caption simply leaves it out if this fails (offline).
+  useEffect(() => {
+    if (!shareOpen || !projectId || shareProjectName) return undefined;
+    let mounted = true;
+    projectsAPI.getById(projectId)
+      .then((p) => { if (mounted) setShareProjectName((p && p.name) || ''); })
+      .catch(() => { /* optional */ });
+    return () => { mounted = false; };
+  }, [shareOpen, projectId, shareProjectName]);
+
+  const pickSharePhoto = useCallback(async (fromCamera) => {
+    if (shareBusy) return;
+    setShareNote('');
+    try {
+      const perm = fromCamera
+        ? await ImagePicker.requestCameraPermissionsAsync()
+        : await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm || perm.status !== 'granted') {
+        setShareNote(tShare(fromCamera ? 'cameraPermission' : 'libraryPermission'));
+        return;
+      }
+      const result = fromCamera
+        ? await ImagePicker.launchCameraAsync({ quality: 0.8, base64: false })
+        : await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.8, base64: false,
+        });
+      if (!result || result.canceled) return;
+      const asset = (result.assets || [])[0];
+      if (asset && asset.uri) setSharePhoto({ uri: asset.uri, width: asset.width, height: asset.height });
+    } catch (_e) {
+      setShareNote(tShare('photoFailed'));
+    }
+  }, [shareBusy, tShare]);
+
+  const handleShareImage = useCallback(async () => {
+    if (!selectedAnnotation || shareBusy) return;
+    setShareBusy(true);
+    setShareNote('');
+    const date = formatShareDate(new Date());
+    const sheetLabel = sheetLabelFor(file, selectedAnnotation.page_number);
+    let res = null;
+    try {
+      res = await sharePlanNoteImage({
+        bridge: composerBridge.current,
+        planDataUri: selectedAnnotation.screenshot,
+        photo: sharePhoto,
+        context: shareContext,
+        projectName: shareProjectName,
+        sheetLabel,
+        date,
+        filename: shareFileName(sheetLabel, date),
+        ImageManipulator, FileSystem, Sharing,
+        // busy ends when the image exists, not when the sheet closes (see there)
+        onComposed: () => setShareBusy(false),
+      });
+    } finally {
+      setShareBusy(false);
+    }
+    const key = shareStatusKey(res && res.status);
+    if (key) setShareNote(tShare(key));
+  }, [selectedAnnotation, shareBusy, sharePhoto, shareContext, shareProjectName, file, tShare]);
+
   const getMarkerColor = (annotation) => {
     if (annotation.status === 'resolved') return semantic.verified;
     const creatorId = annotation.created_by?._id || annotation.created_by?.id || annotation.created_by;
@@ -933,6 +1043,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
               </Pressable>
             </View>
 
+            {!shareOpen && (
             <ScrollView style={styles.threadScroll} contentContainerStyle={{ paddingBottom: 8 }}>
               {/* Original comment */}
               <View style={styles.threadEntry}>
@@ -957,8 +1068,10 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
               ))}
             </ScrollView>
 
+            )}
+
             {/* Reply input */}
-            {selectedAnnotation.status !== 'resolved' && (
+            {!shareOpen && selectedAnnotation.status !== 'resolved' && (
               <View style={styles.replyRow}>
                 <TextInput
                   style={styles.replyInput}
@@ -973,6 +1086,56 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
               </View>
             )}
 
+            {/* Share image: the panel takes the thread's place while open, so
+                the sheet keeps its height. Colours are fixed (the sheet is
+                always dark), not read from the theme. */}
+            {shareOpen && (
+              <ScrollView style={styles.sharePanel} keyboardShouldPersistTaps="handled">
+                <TextInput
+                  style={styles.shareInput}
+                  placeholder={tShare('contextPlaceholder')}
+                  placeholderTextColor="#64748b"
+                  value={shareContext}
+                  onChangeText={setShareContext}
+                  multiline
+                  accessibilityLabel={tShare('contextPlaceholder')}
+                />
+                <View style={styles.sharePhotoRow}>
+                  <Pressable style={styles.sharePhotoBtn} onPress={() => pickSharePhoto(true)} disabled={shareBusy}
+                    accessibilityRole="button" accessibilityLabel={tShare('takePhoto')}>
+                    <Camera size={16} strokeWidth={1.5} color="#e2e8f0" />
+                    <Text style={styles.sharePhotoBtnText}>{tShare('takePhoto')}</Text>
+                  </Pressable>
+                  <Pressable style={styles.sharePhotoBtn} onPress={() => pickSharePhoto(false)} disabled={shareBusy}
+                    accessibilityRole="button" accessibilityLabel={tShare('choosePhoto')}>
+                    <ImageIcon size={16} strokeWidth={1.5} color="#e2e8f0" />
+                    <Text style={styles.sharePhotoBtnText}>{tShare('choosePhoto')}</Text>
+                  </Pressable>
+                </View>
+                {!!sharePhoto && (
+                  <View style={styles.sharePhotoRow}>
+                    <Image source={{ uri: sharePhoto.uri }} style={styles.sharePhotoThumb} />
+                    <Text style={styles.shareHint}>{tShare('photoAttached')}</Text>
+                    <Pressable onPress={() => setSharePhoto(null)} disabled={shareBusy} hitSlop={8}
+                      accessibilityRole="button" accessibilityLabel={tShare('removePhoto')}>
+                      <Text style={styles.shareRemoveText}>{tShare('removePhoto')}</Text>
+                    </Pressable>
+                  </View>
+                )}
+                {!isImageDataUri(selectedAnnotation.screenshot) && (
+                  <Text style={styles.shareHint}>{tShare('noPlanCrop')}</Text>
+                )}
+                <Pressable style={[styles.shareGoBtn, shareBusy && { opacity: 0.6 }]} onPress={handleShareImage} disabled={shareBusy}
+                  accessibilityRole="button" accessibilityLabel={tShare('share')}>
+                  {shareBusy
+                    ? <ActivityIndicator size="small" color="#141A1F" />
+                    : <Share2 size={16} strokeWidth={1.5} color="#141A1F" />}
+                  <Text style={styles.shareGoText}>{shareBusy ? tShare('preparing') : tShare('share')}</Text>
+                </Pressable>
+                {!!shareNote && <Text style={styles.shareHint}>{shareNote}</Text>}
+              </ScrollView>
+            )}
+
             {/* Actions */}
             <View style={styles.threadActions}>
               {selectedAnnotation.status !== 'resolved' && (
@@ -981,6 +1144,11 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                   <Text style={styles.resolveBtnText}>Mark Resolved</Text>
                 </Pressable>
               )}
+              <Pressable style={[styles.shareBtn, shareOpen && styles.shareBtnOpen]} onPress={() => setShareOpen((v) => !v)}
+                accessibilityRole="button" accessibilityLabel={tShare('shareImage')} accessibilityState={{ expanded: shareOpen }}>
+                <Share2 size={16} strokeWidth={1.5} color="#25D366" />
+                <Text style={styles.shareBtnText}>{tShare('shareImage')}</Text>
+              </Pressable>
               {canDelete(selectedAnnotation) && (
                 <Pressable style={styles.deleteBtn} onPress={handleDelete}>
                   <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
@@ -989,6 +1157,30 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
               )}
             </View>
           </View>
+        )}
+
+        {/* The share image's drawing surface: a WebView with a real <canvas>,
+            invisible, mounted only while the share panel is open. Its page
+            makes no request (CSP default-src 'none'; images are data: URIs). */}
+        {shareOpen && !!selectedAnnotation && React.createElement(
+          require('react-native-webview').default,
+          {
+            key: `composer-${composerKey}`,
+            ref: composerRef,
+            source: { html: COMPOSER_HTML },
+            originWhitelist: ['*'],
+            javaScriptEnabled: true,
+            domStorageEnabled: false,
+            allowFileAccess: false,
+            setSupportMultipleWindows: false,
+            style: styles.composer,
+            pointerEvents: 'none',
+            importantForAccessibility: 'no-hide-descendants',
+            accessibilityElementsHidden: true,
+            onMessage: (e) => composerBridge.current.onMessage(e?.nativeEvent?.data),
+            onRenderProcessGone: () => { composerBridge.current.reset(); setComposerKey((k) => k + 1); },
+            onContentProcessDidTerminate: () => { composerBridge.current.reset(); setComposerKey((k) => k + 1); },
+          }
         )}
       </View>
     </Modal>
@@ -1064,9 +1256,25 @@ const styles = StyleSheet.create({
   replyRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
   replyInput: { flex: 1, backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 10, color: '#e2e8f0', fontSize: 14 },
   replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#E3C27A', alignItems: 'center', justifyContent: 'center' },
-  threadActions: { flexDirection: 'row', gap: 12, marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08) },
+  threadActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08) },
   resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.verifiedBg },
   resolveBtnText: { color: semantic.verified, fontSize: 13, fontWeight: '600' },
   deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.criticalBg },
   deleteBtnText: { color: semantic.neutralStrong, fontSize: 13, fontWeight: '600' },
+
+  // Share image (fixed colours: the bottom sheet is always #0f172a)
+  shareBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: withAlpha('#25D366', 0.15) },
+  shareBtnOpen: { borderWidth: 1, borderColor: '#25D366' },
+  shareBtnText: { color: '#25D366', fontSize: 13, fontWeight: '600' },
+  sharePanel: { maxHeight: 260, marginVertical: 8 },
+  shareInput: { backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 10, color: '#e2e8f0', fontSize: 14, minHeight: 60, textAlignVertical: 'top' },
+  sharePhotoRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginTop: 10 },
+  sharePhotoBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: withAlpha('#ffffff', 0.08) },
+  sharePhotoBtnText: { color: '#e2e8f0', fontSize: 13, fontWeight: '600' },
+  sharePhotoThumb: { width: 44, height: 44, borderRadius: 6, backgroundColor: withAlpha('#ffffff', 0.08) },
+  shareHint: { color: '#94a3b8', fontSize: 12, marginTop: 8 },
+  shareRemoveText: { color: '#E3C27A', fontSize: 12, fontWeight: '600' },
+  shareGoBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, alignSelf: 'flex-start', backgroundColor: '#E3C27A', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, marginTop: 12 },
+  shareGoText: { color: '#141A1F', fontSize: 14, fontWeight: '600' },
+  composer: { position: 'absolute', left: 0, top: 0, width: 1, height: 1, opacity: 0 },
 });

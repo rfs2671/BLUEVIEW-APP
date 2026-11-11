@@ -2078,6 +2078,26 @@ export default {
     downloadLabel: 'Download',
   },
 
+  // ── Plan note "Share image" in the phone app's plan viewer ─────────────────
+  // (PDFViewer.native.jsx; the web viewer's copy of #946 is English-only).
+  planNoteShare: {
+    shareImage: 'Share image',
+    contextPlaceholder: 'Context (optional)',
+    takePhoto: 'Take photo',
+    choosePhoto: 'Choose photo',
+    removePhoto: 'Remove photo',
+    photoAttached: 'Photo attached',
+    noPlanCrop: 'The plan crop for this note is not ready yet; the image will carry the photo and caption.',
+    share: 'Share',
+    preparing: 'Preparing...',
+    unavailable: 'This device has no share option for files.',
+    failed: 'The share sheet could not open. Try again.',
+    composeFailed: 'Could not build the image. Try again.',
+    cameraPermission: 'Allow camera access to take a photo.',
+    libraryPermission: 'Allow photo access to choose a photo.',
+    photoFailed: 'Could not get the photo. Try again.',
+  },
+
   // ── app/projects/[id]/schedule.jsx — import and confirm the project schedule ─
   //
   // ENGLISH ONLY, like the rest of the project reports screens (they carry no

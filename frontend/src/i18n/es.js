@@ -109,6 +109,24 @@ export default {
     downloadLabel: 'Descargar',
   },
 
+  planNoteShare: {
+    shareImage: 'Compartir imagen',
+    contextPlaceholder: 'Contexto (opcional)',
+    takePhoto: 'Tomar foto',
+    choosePhoto: 'Elegir foto',
+    removePhoto: 'Quitar foto',
+    photoAttached: 'Foto adjunta',
+    noPlanCrop: 'El recorte del plano para esta nota aún no está listo; la imagen llevará la foto y el texto.',
+    share: 'Compartir',
+    preparing: 'Preparando...',
+    unavailable: 'Este dispositivo no tiene opción para compartir archivos.',
+    failed: 'No se pudo abrir el menú para compartir. Inténtelo de nuevo.',
+    composeFailed: 'No se pudo crear la imagen. Inténtelo de nuevo.',
+    cameraPermission: 'Permita el acceso a la cámara para tomar una foto.',
+    libraryPermission: 'Permita el acceso a las fotos para elegir una foto.',
+    photoFailed: 'No se pudo obtener la foto. Inténtelo de nuevo.',
+  },
+
   // ── La etiqueta de Cumplimiento (ver en.js: una etiqueta, un espacio) ─────
   // "Enable DOB Tracking" queda en inglés: es el nombre del interruptor tal como
   // aparece en pantalla, y ese interruptor no está traducido.
