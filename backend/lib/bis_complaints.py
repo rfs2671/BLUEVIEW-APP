@@ -44,6 +44,30 @@ def list_url(bin_: str, *, allcount: Optional[str] = None) -> str:
     return f"{BIS_BASE}ComplaintsByAddressServlet?requestid=1&allbin={bin_}"
 
 
+class StatelessBisClient:
+    """BIS keeps a person's last search in a session cookie and can answer the
+    next search of ANOTHER kind with the old page. Measured in production
+    2026-11-11 with one client shared across projects: a complaints request
+    for BIN 3426220 came back as the OATH/ECB search page, and an ECB request
+    for BIN 3255362 failed the same way -- both reported as "unrecognized
+    page". Every request therefore goes out with no session, except the
+    continuation of a complaints list (requestid=2), which pages within one."""
+
+    def __init__(self, client):
+        self._c = client
+
+    def _jar(self):
+        inner = getattr(self._c, "_inner", self._c)
+        return getattr(inner, "cookies", None)
+
+    async def get(self, url, **kw):
+        if "requestid=2" not in str(url):
+            jar = self._jar()
+            if jar is not None:
+                jar.clear()
+        return await self._c.get(url, **kw)
+
+
 def detail_url(complaint_number: str) -> str:
     return f"{BIS_BASE}OverviewForComplaintServlet?complaintno={complaint_number}&requestid=0"
 
@@ -95,7 +119,15 @@ def parse_complaint_list(page: str) -> ListPage:
     prem = re.search(r"Premises:\s*(.+?)\s+BIN:", flat)
     blk = re.search(r"Block:\s*(\d+)", flat)
     lot = re.search(r"Lot:\s*(\d+)", flat)
-    tot = re.search(r"(\d+)\s+Total Complaints", flat)
+    # The count sits right after "Lot: <n>". A BIN with no complaints prints
+    # "NO COMPLAINT RECORDS FOUND" and an EMPTY count, and the old pattern took
+    # the LOT number for it (12 Walworth St, lot 33: "33 complaints, 0 rows",
+    # 2026-11-11) -- an incomplete read on every pass.
+    if "NO COMPLAINT RECORDS FOUND" in flat.upper():
+        tot = re.match(r"(0)", "0")
+    else:
+        tot = (re.search(r"Lot:\s*\d+\s+(\d+)\s+Total Complaints", flat)
+               or re.search(r"(?<!Lot: )(\d+)\s+Total Complaints", flat))
     pg = re.search(r"Page:\s*(\d+)\s+of\s+(\d+)", flat)
     nxt = None
     form = re.search(r'<form[^>]*name="frmnext".*?</form>', body, flags=re.S | re.I)
