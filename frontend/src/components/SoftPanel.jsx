@@ -45,7 +45,7 @@ export function useTileCount() {
  * Opacity and transform only, so everything runs on the native driver. Pass `selected` (true/false) to make the
  * surface selectable; leave it undefined for a plain button.
  */
-export function usePressAnim(pressed, selected) {
+export function usePressAnim(pressed, selected, lazy = false) {
   const v = useRef(new Animated.Value(pressed ? 1 : 0)).current;
   const sel = useRef(new Animated.Value(selected ? 1 : 0)).current;
   // `live`: the pressed and dented pictures only EXIST while they can be seen (pressed, selected, or settling after a
@@ -72,7 +72,9 @@ export function usePressAnim(pressed, selected) {
     }
   }, [selected, sel]);
   v.sel = sel;
-  v.live = live;
+  // Buttons keep their pressed picture mounted (a button that has to build it at the moment of the tap shows no animation
+  // at all). Only list cards pass `lazy` and build it on demand.
+  v.live = lazy ? live : true;
   v.selectable = selected !== undefined;
   return v;
 }

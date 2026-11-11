@@ -450,12 +450,9 @@ export default function WhatsAppGroupsScreen() {
                     const open = configOpenId === groupId;
                     return (
                       <View key={`cfg-${groupId}`}>
-                        <Pressable
-                          onPress={() => setConfigOpenId(open ? null : groupId)}
-                          style={({ pressed }) => [pressed && { opacity: 0.8 }]}
-                          accessibilityRole="button"
-                        >
-                          <GlassCard style={s.groupItem}>
+                        <GlassCard onPress={() => setConfigOpenId(open ? null : groupId)}
+  accessibilityRole="button"
+  style={s.groupItem}>
                             <View style={s.groupRow}>
                               <Text style={[s.groupName, { flex: 1 }]} numberOfLines={1}>
                                 {groupLabel(group.group_name)}
@@ -465,7 +462,6 @@ export default function WhatsAppGroupsScreen() {
                                 : <ChevronRight size={18} color={colors.text.muted} />}
                             </View>
                           </GlassCard>
-                        </Pressable>
                         {open ? (
                           <GroupConfigPanel
                             group={group}

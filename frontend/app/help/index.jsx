@@ -83,17 +83,12 @@ export default function HelpIndex() {
         {HELP_CARDS.map((card) => {
           const Icon = card.icon;
           return (
-            <Pressable
-              key={card.path}
-              onPress={() => router.push(card.path)}
-              style={({ pressed }) => [
-                styles.cardWrap,
-                pressed && { opacity: 0.85 },
-              ]}
-              accessibilityRole="link"
-              accessibilityLabel={card.title}
-            >
-              <GlassCard style={styles.card} hoverEffect={false}>
+            <GlassCard key={card.path}
+  onPress={() => router.push(card.path)}
+  accessibilityRole="link"
+  accessibilityLabel={card.title}
+  style={[styles.cardWrap, styles.card]}
+  hoverEffect={false}>
                 <View style={styles.cardHeader}>
                   <View style={styles.iconCircle}>
                     <Icon size={20} strokeWidth={1.5} color={colors.text.primary} />
@@ -103,7 +98,6 @@ export default function HelpIndex() {
                 <Text style={styles.cardTitle}>{card.title}</Text>
                 <Text style={styles.cardSubtitle}>{card.subtitle}</Text>
               </GlassCard>
-            </Pressable>
           );
         })}
       </View>

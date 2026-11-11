@@ -685,12 +685,7 @@ export default function SettingsScreen() {
           {isPlatformOperator(user) ? (
             <>
               <SectionLabel label="PLATFORM" />
-              <Pressable
-                onPress={() => router.push('/owner')}
-                accessibilityRole="button"
-                style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
-              >
-                <GlassCard style={s.card}>
+              <GlassCard onPress={() => router.push('/owner')} accessibilityRole="button" style={s.card}>
                   <View style={s.settingRow}>
                     <View style={s.settingLeft}>
                       <ShieldCheck size={20} strokeWidth={1.5} color={colors.text.secondary} />
@@ -704,19 +699,12 @@ export default function SettingsScreen() {
                     <ChevronRight size={20} strokeWidth={1.5} color={colors.text.muted} />
                   </View>
                 </GlassCard>
-              </Pressable>
             </>
           ) : null}
 
           {/* ── NOTIFICATIONS ─────────────────────────────────────────── */}
           <SectionLabel label="NOTIFICATIONS" />
-          <Pressable
-            onPress={() => router.push('/settings/notifications')}
-            style={({ pressed }) => [
-              { opacity: pressed ? 0.7 : 1 },
-            ]}
-          >
-            <GlassCard style={s.card}>
+          <GlassCard onPress={() => router.push('/settings/notifications')} style={s.card}>
               <View style={s.settingRow}>
                 <View style={[s.settingLeft, { flex: 1, minWidth: 0 }]}>
                   <Bell size={20} strokeWidth={1.5} color={colors.text.secondary} />
@@ -730,7 +718,6 @@ export default function SettingsScreen() {
                 <ChevronRight size={20} strokeWidth={1.5} color={colors.text.muted} />
               </View>
             </GlassCard>
-          </Pressable>
 
           {/* ── PERSONAL DETAILS ───────────────────────────────────────── */}
           <SectionLabel label="PERSONAL DETAILS" />

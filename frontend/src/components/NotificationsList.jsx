@@ -281,10 +281,7 @@ function NotificationItem({ item, colors, onPress }) {
   const isUnread = !item.read_at;
   const styles = _makeStyles(colors);
   return (
-    <Pressable onPress={onPress}>
-      <GlassCard
-        style={[styles.itemCard, isUnread && styles.itemCardUnread]}
-      >
+    <GlassCard onPress={onPress} style={[styles.itemCard, isUnread && styles.itemCardUnread]}>
         <View style={styles.itemRow}>
           <Icon size={18} color={tint} />
           <View style={styles.itemBody}>
@@ -307,7 +304,6 @@ function NotificationItem({ item, colors, onPress }) {
           </View>
         </View>
       </GlassCard>
-    </Pressable>
   );
 }
 
