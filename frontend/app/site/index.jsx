@@ -124,7 +124,7 @@ export default function SiteDeviceHomeScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={s.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top', 'bottom']}>
         {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>
