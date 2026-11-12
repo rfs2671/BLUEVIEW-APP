@@ -736,8 +736,15 @@ export default function LogBooksScreen() {
         // by acquiring a rule, not by this predicate weakening. A sixth type
         // added as_needed with no rule is still silent, still null, still
         // visible.
+        // ...BUT NEVER WHILE AN ORIENTATION IS WAITING FOR THE CP'S SIGNATURE.
+        // A worker counts as oriented once the orientation happened, signed or
+        // not, so the period row says satisfied while his entry is still a
+        // draft -- and a draft never reaches the site tablet or the filed
+        // record. Hiding the row then left nothing on the CP's home telling
+        // him there was anything to sign.
         .filter((t) => !(t.frequency === 'as_needed'
-          && periodSatisfied(periods, t.key) === true));
+          && periodSatisfied(periods, t.key) === true
+          && !((notifications?.unsigned_orientations || 0) > 0)));
     }
 
     // Nothing from the server yet (first paint, or offline). Local filtering,
