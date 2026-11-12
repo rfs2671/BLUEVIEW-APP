@@ -1426,6 +1426,16 @@ export const logbooksAPI = {
     return response.data;
   },
 
+  // Workers who checked in after today's Daily Jobsite Log was signed. The
+  // server opens the correction (with the reason filled in) if one is not
+  // already open; the CP reviews and signs it.
+  syncLateArrivals: async (projectId) => {
+    const response = await apiClient.post(
+      `/api/logbooks/project/${projectId}/daily-jobsite/late-arrivals`, {},
+    );
+    return response.data;
+  },
+
   getNotifications: async (projectId) => {
     const response = await apiClient.get(`/api/logbooks/project/${projectId}/notifications`);
     return response.data;

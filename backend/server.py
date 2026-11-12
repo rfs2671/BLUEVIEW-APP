@@ -34679,6 +34679,132 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     return serialize_id(created_child)
 
 
+# ── LATE ARRIVALS AFTER THE DAILY JOBSITE LOG WAS SIGNED ───────────────────
+#
+# OPERATOR RULING 2026-11-12: workers who check in after the day's Daily Jobsite
+# Log is signed "have to be included in the books", automatically. A signed
+# record is never rewritten -- the CP's signature covers exactly what he saw --
+# so "automatically" means: the correction is OPENED for him, already carrying
+# the reason, and the screen's own roster reconciliation (which runs on any
+# unlocked daily log) adds the new crews the moment it is opened. All that is
+# left for the CP is to review and sign.
+#
+# IDEMPOTENT. An unsigned correction already open on the chain is reused, never
+# a second one -- the forks open_amendment_head exists to prevent.
+
+def _daily_log_worker_ids(log: dict) -> set:
+    out = set()
+    for a in ((log or {}).get("data") or {}).get("activities") or []:
+        for wid in (a or {}).get("worker_ids") or []:
+            if wid:
+                out.add(str(wid))
+    return out
+
+
+@api_router.post("/logbooks/project/{project_id}/daily-jobsite/late-arrivals")
+async def sync_daily_jobsite_late_arrivals(
+    project_id: str,
+    current_user = Depends(get_current_user),
+    _proj = Depends(require_project_access),
+):
+    """Open a correction of today's SIGNED Daily Jobsite Log when workers have
+    checked in since it was signed. Returns {late_workers, amendment_id,
+    created}. Safe to call on every load of the CP's home."""
+    day = eastern_today()
+    logs = await db.logbooks.find({
+        "project_id": project_id,
+        "log_type": "daily_jobsite",
+        "date": day,
+        "is_deleted": {"$ne": True},
+        **WITHDRAWN_EXCLUDED,
+    }).to_list(100)
+    if not logs:
+        return {"late_workers": [], "amendment_id": None, "created": False}
+
+    def _signed(l):
+        return bool(l.get("is_locked") or l.get("status") == "submitted" or l.get("cp_signature"))
+
+    def _order(l):
+        c = l.get("created_at")
+        return (c if isinstance(c, datetime) else datetime.min.replace(tzinfo=timezone.utc), str(l.get("_id", "")))
+
+    signed = [l for l in logs if _signed(l)]
+    if not signed:
+        # Nothing filed yet: the open log reconciles with the gate by itself.
+        return {"late_workers": [], "amendment_id": None, "created": False}
+    head = max(signed, key=_order)
+
+    roster = await get_project_checkins_today(
+        project_id=project_id, date=day, envelope=False,
+        current_user=current_user, _proj=None,
+    )
+    if isinstance(roster, dict):
+        roster = roster.get("workers") or []
+    on_log = _daily_log_worker_ids(head)
+    late = [
+        {"worker_id": str(w.get("worker_id")), "worker_name": w.get("worker_name") or "",
+         "company": w.get("company") or ""}
+        for w in (roster or [])
+        if isinstance(w, dict) and w.get("worker_id") and w.get("blocked") is not True
+        and str(w.get("worker_id")) not in on_log
+    ]
+    if not late:
+        return {"late_workers": [], "amendment_id": None, "created": False}
+
+    # A correction already open anywhere on today's chain is the one to use.
+    open_one = open_amendment_head([l for l in logs if l.get("is_amendment")])
+    if open_one is not None:
+        return {"late_workers": late, "amendment_id": str(open_one["_id"]), "created": False}
+
+    try:
+        await _authorize_logbook_write(str(head["_id"]), current_user)
+    except HTTPException:
+        # Not this user's to correct (e.g. an admin's view of a CP's log):
+        # report, open nothing.
+        return {"late_workers": late, "amendment_id": None, "created": False}
+
+    names = ", ".join(sorted({w["worker_name"] for w in late if w["worker_name"]}))[:300]
+    reason = (f"Added automatically: {len(late)} worker{'s' if len(late) != 1 else ''} "
+              f"checked in after this log was signed ({names}).")
+    now = datetime.now(timezone.utc)
+    child = {
+        "project_id": head.get("project_id"),
+        "project_name": head.get("project_name", ""),
+        "company_id": head.get("company_id"),
+        "log_type": head.get("log_type"),
+        "date": head.get("date"),
+        "data": head.get("data"),
+        "cp_signature": None,
+        "cp_name": None,
+        "status": "draft",
+        "is_locked": False,
+        "is_amendment": True,
+        "parent_logbook_id": str(head["_id"]),
+        "amendment_reason": reason,
+        "auto_late_arrivals": True,
+        "created_by": current_user.get("id"),
+        "created_by_name": "LeveLog (automatic)",
+        "created_at": now,
+        "updated_at": now,
+        "is_deleted": False,
+    }
+    from pymongo.errors import DuplicateKeyError
+    try:
+        result = await db.logbooks.insert_one(child)
+    except DuplicateKeyError:
+        # Another device opened it a moment ago; use that one.
+        raced = await db.logbooks.find({
+            "parent_logbook_id": str(head["_id"]), "is_deleted": {"$ne": True}, **WITHDRAWN_EXCLUDED,
+        }).to_list(50)
+        winner = open_amendment_head(raced)
+        return {"late_workers": late, "amendment_id": str(winner["_id"]) if winner else None, "created": False}
+    await audit_log("logbook_amend_auto_late_arrivals", str(current_user.get("id", "")), "logbook",
+                    str(result.inserted_id), {"parent_logbook_id": str(head["_id"]), "late": len(late)})
+    created_child = await db.logbooks.find_one({"_id": result.inserted_id})
+    await ensure_signature_ledger_row(created_child, written_by="auto_late_arrivals")
+    return {"late_workers": late, "amendment_id": str(result.inserted_id), "created": True}
+
+
 @api_router.post("/logbooks/{logbook_id}/withdraw")
 async def withdraw_amendment(logbook_id: str, data: dict = None, current_user = Depends(get_current_user)):
     """Take back an UNSIGNED amendment. A state, not a delete.

@@ -155,6 +155,9 @@ export default function LogBooksScreen() {
   // wrong instead of the generic "expired SST cards or workers with no trade
   // assigned" it used to print whatever the mix was. The reasons come from the
   // flagged endpoint's existing `flag_reasons` array — nothing new is stored.
+  // {late_workers, amendment_id} when workers checked in after today's daily
+  // log was signed; null otherwise.
+  const [lateArrivals, setLateArrivals] = useState(null);
   const [flagged, setFlagged] = useState({
     count: 0, projectId: null, expired: 0, unknown: 0, needsTrade: 0,
   });
@@ -320,6 +323,14 @@ export default function LogBooksScreen() {
 
   const fetchProjectData = async (projectId) => {
     try {
+      // FIRST, so the logs read below already includes the correction it may
+      // open. A failure costs only the card; nothing else waits on it.
+      if (!readOnly) {
+        const late = await logbooksAPI.syncLateArrivals(projectId).catch(() => null);
+        setLateArrivals(late && Array.isArray(late.late_workers) && late.late_workers.length ? late : null);
+      } else {
+        setLateArrivals(null);
+      }
       const [logs, notifs, scaffoldInfo, reqLogbooks, catalog] = await Promise.all([
         logbooksAPI.getByProject(projectId, null, today).catch(() => []),
         logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [], stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: [], attestation_gaps: [] })),
@@ -1209,6 +1220,23 @@ export default function LogBooksScreen() {
                 </Text>
               </GlassCard>
             </Pressable>
+          )}
+
+          {/* LATE ARRIVALS. Workers who checked in after today's Daily Jobsite
+              Log was signed are added to a correction automatically; this is
+              the one tap left -- open it, check it, sign it. */}
+          {lateArrivals && (
+            <GlassCard onPress={() => handleOpenLog('daily_jobsite')} style={styles.notifCard}>
+              <View style={styles.notifHeader}>
+                <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
+                <Text style={styles.notifTitle}>
+                  {lateArrivals.late_workers.length} worker{lateArrivals.late_workers.length > 1 ? 's' : ''} arrived after the Daily Jobsite Log was signed
+                </Text>
+              </View>
+              <Text style={styles.notifWorker}>
+                {[...new Set(lateArrivals.late_workers.map((w) => w.company).filter(Boolean))].join(', ') || 'New crews'} added to a correction of today's log. Tap to review and sign it.
+              </Text>
+            </GlassCard>
           )}
 
           {/* Check-in review entry point. Lives here because /logbooks/* is
