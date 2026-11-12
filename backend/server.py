@@ -9439,6 +9439,30 @@ def pm_has_full_access(user) -> bool:
     return pm_access_level(user) == PM_ACCESS_FULL
 
 
+def assigned_project_ids(user) -> List[str]:
+    return [str(p) for p in ((user or {}).get("assigned_projects") or [])]
+
+
+def scoped_to_assigned_projects(user) -> bool:
+    """True when this account sees ONLY its assigned projects.
+
+    A PM on "Assigned jobs only", and -- by the operator's ruling of
+    2026-11-12 -- the CP and the superintendent: a super assigned to one job
+    sees that job, not every job his company runs.
+
+    AN UNASSIGNED CP OR SUPERINTENDENT KEEPS THE COMPANY VIEW, deliberately and
+    for now. Scoping an account with an empty list would leave it with no
+    projects at all, mid-shift, and nothing on its screen would say why. The
+    PM is unaffected by this carve-out: his default has always been his list.
+    """
+    role = str((user or {}).get("role") or "").strip().lower()
+    if role == ROLE_PM:
+        return not pm_has_full_access(user)
+    if role in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
+        return bool(assigned_project_ids(user))
+    return False
+
+
 def pm_scoped_to_assigned(user) -> bool:
     """A PM who acts on their assigned jobs only (the default level)."""
     return pm_access_level(user) == PM_ACCESS_ASSIGNED
@@ -9583,11 +9607,15 @@ def project_access_ok(project: dict, project_id: str, current_user: dict) -> boo
     # write gates that name ROLES_SCOPED_TO_ASSIGNED_PROJECTS. Moving them here
     # would be a real behaviour change on live accounts, and it is a separate
     # decision from creating a role nobody holds.
+    #
+    # THAT DECISION WAS MADE 2026-11-12: the operator ruled that a CP or
+    # superintendent sees his assigned projects only. They now come through
+    # this branch too -- see scoped_to_assigned_projects for the one carve-out
+    # (an account with no assignment at all keeps the company view).
     # A PM on "Assigned jobs only" (the default); one with full access
     # ("Same as admin") takes the company branch below.
-    if (str(current_user.get("role") or "").strip().lower() == ROLE_PM
-            and not pm_has_full_access(current_user)):
-        return str(project_id) in (current_user.get("assigned_projects") or [])
+    if scoped_to_assigned_projects(current_user):
+        return str(project_id) in assigned_project_ids(current_user)
 
     user_company = get_user_company_id(current_user)
     if user_company and str(project.get("company_id") or "") == str(user_company):
@@ -16998,6 +17026,12 @@ async def get_projects(
         query["company_id"] = company_id
     elif not is_platform_operator(current_user):
         query["_id"] = None
+    # THE LIST MATCHES THE ACCESS RULE. project_access_ok refuses a scoped
+    # account every project off its list; listing those projects anyway put
+    # jobs on his screen he could not open, and made the first of them --
+    # alphabetically, not his -- the one his Log Books opened on.
+    if company_id and scoped_to_assigned_projects(current_user):
+        query["_id"] = {"$in": [to_query_id(p) for p in assigned_project_ids(current_user)]}
 
     result = await paginated_query(
         db.projects, query, sort_field="name", sort_dir=1,

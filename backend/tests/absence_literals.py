@@ -402,9 +402,6 @@ _BARE_BY_DESIGN: set[tuple[str, str]] = {
     # the same `code`, which is the positive control that the haystack really is
     # that function's source.
     #
-    #   ROLES_SCOPED_TO_ASSIGNED_PROJECTS / is_superintendent
-    #        project_access_ok is the three-branch security rule; the
-    #        create_logbook fix must not have widened it.
     #   _card_number_shape
     #        neither reader may re-implement the card rule it already had to
     #        scope to SST types once.
@@ -423,8 +420,6 @@ _BARE_BY_DESIGN: set[tuple[str, str]] = {
     #        the authenticated path injects rather than consulting the flag.
     #   unsafe_conditions / cs_applicable_items
     #        neither renderer may build its own item list.
-    ("test_assigned_project_gate_roles.py", "ROLES_SCOPED_TO_ASSIGNED_PROJECTS"),
-    ("test_assigned_project_gate_roles.py", "is_superintendent"),
     ("test_card_finding_both_reads.py", "_card_number_shape"),
     ("test_client_version_stamp.py", "to_query_id"),
     ("test_cs_attribution.py", "raise"),
