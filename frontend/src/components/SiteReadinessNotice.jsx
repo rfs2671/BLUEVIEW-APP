@@ -6,6 +6,7 @@ import { spacing, borderRadius } from '../styles/theme';
 import {
   SITE_READY_UNKNOWN,
   SITE_READY_NEVER,
+  SITE_READY_CURRENT,
   readSiteReadiness,
   describeReadiness,
 } from '../utils/siteDeviceReadiness';
@@ -24,7 +25,11 @@ import {
  * the one distinction that matters, which is that a failed read is temporary
  * and an unfinished device is not.
  */
-export default function SiteReadinessNotice({ readiness, style }) {
+export default function SiteReadinessNotice({ readiness, style, hideFilling = false }) {
+  // `hideFilling`: the site home states "still saving" in its own status panel,
+  // so it asks this banner to stay out of THAT state only. Every warning state
+  // (never complete, ageing, out of room) is still drawn here, unchanged.
+  if (hideFilling && readiness && readiness.state === SITE_READY_CURRENT && readiness.filling) return null;
   const copy = describeReadiness(readiness);
   if (!copy) return null;
 

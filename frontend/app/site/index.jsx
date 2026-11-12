@@ -9,18 +9,19 @@ import {
   Building2,
   LogOut,
   Lock,
+  ChevronRight,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard } from '../../src/components/GlassCard';
-import GlassButton from '../../src/components/GlassButton';
+import { SoftBox, SoftPebble } from '../../src/components/SoftPanel';
 import { useAuth } from '../../src/context/AuthContext';
 import { useLogoutConfirm } from '../../src/hooks/useLogoutConfirm';
 import { useInspectorLock } from '../../src/context/InspectorLockContext';
 import { dailyLogsAPI, checkinsAPI } from '../../src/utils/api';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import SiteReadinessNotice, { useSiteReadiness } from '../../src/components/SiteReadinessNotice';
+import { SITE_READY_CURRENT } from '../../src/utils/siteDeviceReadiness';
 import { settleFetch } from '../../src/utils/offlineState';
-import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import { easternToday } from '../../src/utils/dates';
@@ -104,6 +105,20 @@ export default function SiteDeviceHomeScreen() {
   // Badge copy for a count we could NOT read. Never a number.
   const unknownBadge = (state) => (state === 'offline' ? 'Offline' : 'Unavailable');
 
+  // WHAT THE TABLET HOLDS, AS A NUMBER IN THE PANEL. Only for the ordinary
+  // states -- a device that is still filling, or is complete. Every state that
+  // is a WARNING (never complete, ageing, out of room) still gets the full
+  // SiteReadinessNotice above the panel, word for word as before.
+  const savedValue = (() => {
+    const r = readiness || {};
+    if (r.state !== SITE_READY_CURRENT) return null;
+    if (r.filling && Number.isFinite(r.saved) && Number.isFinite(r.expected)) return `${r.saved}/${r.expected}`;
+    return 'All';
+  })();
+  const stillSaving = readiness?.state === SITE_READY_CURRENT && readiness?.filling;
+
+  const countText = (state, n) => (loading ? '–' : state === 'ok' ? String(n) : unknownBadge(state));
+
   const handleNavigate = (path) => {
     router.push(path);
   };
@@ -122,27 +137,32 @@ export default function SiteDeviceHomeScreen() {
     router.replace('/site/logbooks');
   };
 
+  const TILES = [
+    { key: 'logs', path: '/site/logbooks', Icon: ClipboardList, label: 'Log Books', tint: semantic.attention },
+    { key: 'docs', path: '/site/documents', Icon: FolderOpen, label: 'Documents', tint: INK },
+    ...(!isLocked ? [{ key: 'workers', path: '/site/checkins', Icon: UserCheck, label: 'Worker Sign In', tint: semantic.verified }] : []),
+  ];
+
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top', 'bottom']}>
         {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>
-            <View style={s.siteBadge}>
-              <Building2 size={14} strokeWidth={1.5} color={semantic.neutral} />
+            <SoftBox kind="slimw" style={s.siteBadge} contentStyle={s.siteBadgeInner}>
+              <Building2 size={14} strokeWidth={1.8} color={semantic.verified} />
               <Text style={s.siteBadgeText}>SITE DEVICE</Text>
+            </SoftBox>
+            <View style={s.headerText}>
+              <Text style={s.projectName} numberOfLines={1}>
+                {siteProject?.name || 'Project'}
+              </Text>
+              <Text style={s.headerDate}>{todayLabel()}</Text>
             </View>
-            <Text style={s.projectName} numberOfLines={1}>
-              {siteProject?.name || 'Project'}
-            </Text>
           </View>
-          <Pressable
-            onPress={handleLogout}
-            style={s.logoutBtn}
-            hitSlop={12}
-          >
-            <LogOut size={18} strokeWidth={1.5} color="#64748b" />
-          </Pressable>
+          <SoftPebble onPress={handleLogout} hitSlop={12} accessibilityLabel="Log out">
+            <LogOut size={18} strokeWidth={1.8} color={INK} />
+          </SoftPebble>
         </View>
 
         {/* Main Content */}
@@ -151,8 +171,9 @@ export default function SiteDeviceHomeScreen() {
               This is the screen somebody is on when he decides whether to take
               the device off the wifi, so the device-level fact goes above the
               tiles rather than being discovered inside one of them. Silent
-              whenever the tablet is complete and current. */}
-          <SiteReadinessNotice readiness={readiness} style={s.offlineBanner} />
+              whenever the tablet is complete and current -- and, here only,
+              while it is merely still filling: the panel below says that one. */}
+          <SiteReadinessNotice readiness={readiness} hideFilling style={s.offlineBanner} />
 
           {/* One explicit banner when either count could not be read. The tiles
               still open — only the NUMBERS are unknown, and they say so. */}
@@ -169,88 +190,78 @@ export default function SiteDeviceHomeScreen() {
           )}
 
           {/* Top Row: Log Books + Daily Logs */}
-          <View style={s.gridRow}>
-            <Pressable
-              style={s.buttonCard}
-              onPress={() => handleNavigate('/site/logbooks')}
-            >
-              <GlassCard style={s.buttonInner}>
-                <View style={[s.iconContainer, { backgroundColor: withAlpha(colors.primary, 0.2) }]}>
-                  <ClipboardList size={64} strokeWidth={1.5} color={colors.primary} />
+          {/* TODAY ON SITE — the day at a glance for anyone walking past. */}
+          <SoftBox kind="card" contentStyle={s.panel}>
+            <Text style={s.panelTitle}>TODAY ON SITE</Text>
+            <View style={s.statRow}>
+              <View style={s.stat}>
+                <Text style={[s.statValue, { color: semantic.verified }, workersState !== 'ok' && s.statUnknown]}>
+                  {countText(workersState, workersOnSite)}
+                </Text>
+                <Text style={s.statLabel}>workers on site</Text>
+              </View>
+              <View style={s.stat}>
+                <Text style={[s.statValue, { color: semantic.attention }, logsState !== 'ok' && s.statUnknown]}>
+                  {countText(logsState, todayLogsCount)}
+                </Text>
+                <Text style={s.statLabel}>logs today</Text>
+              </View>
+              {savedValue ? (
+                <View style={s.stat}>
+                  <Text style={s.statValue}>{savedValue}</Text>
+                  <Text style={s.statLabel}>saved to tablet</Text>
                 </View>
-                <Text style={s.buttonLabel}>Log Books</Text>
-                {!loading && logsState !== 'ok' ? (
-                  <View style={[s.badge, s.badgeUnknown]}>
-                    <Text style={[s.badgeText, s.badgeTextUnknown]}>{unknownBadge(logsState)}</Text>
-                  </View>
-                ) : !loading && todayLogsCount > 0 ? (
-                  <View style={s.badge}>
-                    <Text style={s.badgeText}>{todayLogsCount} today</Text>
-                  </View>
-                ) : null}
-              </GlassCard>
-            </Pressable>
+              ) : null}
+            </View>
+            {stillSaving ? (
+              <Text style={s.panelNote}>
+                Still saving {Math.max(0, (readiness.expected || 0) - (readiness.saved || 0))} files — the tablet keeps going by itself while it has Wi-Fi. Anything not saved yet will not open without signal.
+              </Text>
+            ) : null}
+          </SoftBox>
 
-            {/* THE DAILY LOGS TILE IS GONE, AND THE TABLET LOST NOTHING.
-                It opened app/site/daily-logs.jsx, which posted to
-                /api/daily-logs -- a collection whose last row is dated 16
-                April 2026. The Log Books tile above is the daily record the
-                compliance gate and the report actually read, so this was a
-                second door to the same room and it led to a dead one. It also
-                told a man an offline save would sync on reconnect, which
-                draftSync refuses for that type, so it never did. */}
-          </View>
-
-          {/* Bottom Row: Documents + Worker Sign In */}
-          <View style={s.gridRow}>
-            <Pressable
-              style={s.buttonCard}
-              onPress={() => handleNavigate('/site/documents')}
-            >
-              <GlassCard style={s.buttonInner}>
-                <View style={[s.iconContainer, { backgroundColor: semantic.attentionBg }]}>
-                  <FolderOpen size={64} strokeWidth={1.5} color={semantic.neutral} />
-                </View>
-                <Text style={s.buttonLabel}>Documents</Text>
-              </GlassCard>
-            </Pressable>
-
-            {!isLocked && (
-              <Pressable
-                style={s.buttonCard}
-                onPress={() => handleNavigate('/site/checkins')}
+          <View style={s.tiles}>
+            {TILES.map(({ key, path, Icon, label, tint }) => (
+              <SoftBox
+                key={key}
+                kind="card"
+                onPress={() => handleNavigate(path)}
+                style={s.tile}
+                contentStyle={s.tileInner}
+                accessibilityRole="button"
+                accessibilityLabel={label}
               >
-                <GlassCard style={s.buttonInner}>
-                  <View style={[s.iconContainer, { backgroundColor: semantic.verifiedBg }]}>
-                    <UserCheck size={64} strokeWidth={1.5} color={semantic.neutral} />
-                  </View>
-                  <Text style={s.buttonLabel}>Worker Sign In</Text>
-                  {!loading && workersState !== 'ok' ? (
-                    <View style={[s.badge, s.badgeUnknown]}>
-                      <Text style={[s.badgeText, s.badgeTextUnknown]}>{unknownBadge(workersState)}</Text>
-                    </View>
-                  ) : !loading && workersOnSite > 0 ? (
-                    <View style={s.badge}>
-                      <Text style={s.badgeText}>{workersOnSite} on site</Text>
-                    </View>
-                  ) : null}
-                </GlassCard>
-              </Pressable>
-            )}
+                <SoftBox kind="well" style={s.iconWell} contentStyle={s.iconWellInner}>
+                  <Icon size={48} strokeWidth={1.6} color={tint} />
+                </SoftBox>
+                <Text style={s.tileLabel} numberOfLines={1}>{label}</Text>
+                <ChevronRight size={28} strokeWidth={1.8} color={MUTED} />
+              </SoftBox>
+            ))}
           </View>
 
           {/* Tier 1 ③ Inspector Mode — hand-off toggle. This dashboard is
               site_device-only, so the control is always shown here. One
               tap confines the app to the read-only logbooks tab; the
-              Exit control there releases it. */}
-          <View style={s.lockBar}>
-            <GlassButton
-              title="Hand to Inspector (read-only)"
-              icon={<Lock size={18} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={handleLockPress}
-              style={s.lockBtn}
-            />
-          </View>
+              Exit control there releases it. Full width, its own words on
+              two lines, and never under the Android bar (SafeAreaView bottom). */}
+          <SoftBox
+            kind="slim"
+            onPress={handleLockPress}
+            style={s.lockBtn}
+            contentStyle={s.lockInner}
+            accessibilityRole="button"
+            accessibilityLabel="Hand to Inspector, read-only"
+          >
+            <View style={s.lockIcon}>
+              <Lock size={22} strokeWidth={2} color={semantic.attention} />
+            </View>
+            <View style={s.lockText}>
+              <Text style={s.lockTitle}>Hand to Inspector</Text>
+              <Text style={s.lockSub}>Locks this tablet to read-only Log Books</Text>
+            </View>
+            <ChevronRight size={26} strokeWidth={1.8} color={MUTED} />
+          </SoftBox>
         </View>
       </SafeAreaView>
       {logoutDialog}
@@ -258,134 +269,79 @@ export default function SiteDeviceHomeScreen() {
   );
 }
 
-function buildStyles(colors, isDark) {
+// The site tablet is held to the light theme, so its ink is fixed.
+const INK = '#1C2B38';
+const MUTED = 'rgba(28,43,56,0.62)';
+
+function todayLabel() {
+  try {
+    return new Date().toLocaleDateString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric', timeZone: 'America/New_York',
+    });
+  } catch (_e) {
+    return '';
+  }
+}
+
+function buildStyles(colors) {
   return StyleSheet.create({
-    container: {
-      flex: 1,
-    },
+    container: { flex: 1 },
     header: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
-      paddingHorizontal: spacing.lg,
-      paddingVertical: spacing.md,
-    },
-    headerLeft: {
-      flex: 1,
-      flexDirection: 'row',
-      alignItems: 'center',
+      paddingHorizontal: spacing.xl,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.lg,
       gap: spacing.md,
     },
-    // 44 minimum - work gloves.
-    logoutBtn: {
-      width: 44,
-      height: 44,
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderRadius: 8,
-      backgroundColor: withAlpha('#ffffff', 0.05),
-    },
-    siteBadge: {
+    headerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+    headerText: { flex: 1 },
+    siteBadge: { width: 150 },
+    siteBadgeInner: { height: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+    siteBadgeText: { fontSize: 12, fontWeight: '700', letterSpacing: 1.5, color: semantic.verified },
+    projectName: { fontSize: 20, fontWeight: '700', color: INK },
+    headerDate: { fontSize: 13, color: MUTED, marginTop: 2 },
+    content: { flex: 1, paddingHorizontal: spacing.xl, paddingBottom: spacing.lg, gap: spacing.lg },
+    offlineBanner: { marginTop: 0, marginBottom: 0 },
+    panel: { paddingHorizontal: spacing.xl, paddingVertical: spacing.lg, gap: spacing.md },
+    panelTitle: { fontSize: 14, fontWeight: '700', letterSpacing: 2, color: MUTED },
+    statRow: { flexDirection: 'row' },
+    stat: { flex: 1, alignItems: 'center' },
+    statValue: { fontFamily: typography.display, fontSize: 40, fontWeight: '800', color: INK },
+    statUnknown: { fontSize: 20, color: semantic.attention, paddingVertical: 12 },
+    statLabel: { fontSize: 14, color: MUTED, marginTop: 2 },
+    panelNote: { fontSize: 14, color: MUTED, textAlign: 'center' },
+    tiles: { flex: 1, gap: spacing.lg },
+    tile: { flex: 1 },
+    tileInner: {
+      flex: 1,
       flexDirection: 'row',
       alignItems: 'center',
-      gap: spacing.xs,
-      paddingHorizontal: spacing.sm,
-      paddingVertical: spacing.xs,
-      backgroundColor: withAlpha('#94a3b8', 0.15),
-      borderRadius: borderRadius.full,
-      borderWidth: 1,
-      borderColor: withAlpha('#94a3b8', 0.3),
-    },
-    siteBadgeText: {
-      ...typography.label,
-      fontSize: 12,
-      color: semantic.verified,
-      letterSpacing: 1,
-    },
-    projectName: {
-      fontSize: 18,
-      fontWeight: '400',
-      color: colors.text.primary,
-      flex: 1,
-    },
-    content: {
-      flex: 1,
-      padding: spacing.xl,
+      paddingHorizontal: spacing.xl,
       gap: spacing.xl,
     },
-    gridRow: {
+    iconWell: { width: 104, height: 104 },
+    iconWellInner: { width: 104, height: 104, alignItems: 'center', justifyContent: 'center' },
+    tileLabel: { flex: 1, fontFamily: typography.display, fontSize: 30, fontWeight: '800', color: INK },
+    lockBtn: { minHeight: 84 },
+    lockInner: {
+      minHeight: 84,
       flexDirection: 'row',
-      gap: spacing.xl,
-      flex: 1,
+      alignItems: 'center',
+      paddingHorizontal: spacing.xl,
+      gap: spacing.lg,
     },
-    buttonCard: {
-      flex: 1,
-    },
-    buttonInner: {
-      flex: 1,
+    lockIcon: {
+      width: 48,
+      height: 48,
+      borderRadius: 24,
       alignItems: 'center',
       justifyContent: 'center',
-      padding: spacing.md,
-      position: 'relative',
+      backgroundColor: withAlpha(semantic.attention, 0.14),
     },
-    // A FIXED SQUARE, NOT width:100% + maxWidth + aspectRatio. Android sized
-    // the box's height from the full tile width BEFORE clamping its width, so
-    // each icon box drew as a tall narrow column that ran over the tile's
-    // label and out past the card. Web never showed it.
-    iconContainer: {
-      width: 112,
-      height: 112,
-      borderRadius: borderRadius.xxl,
-      alignItems: 'center',
-      justifyContent: 'center',
-      marginBottom: spacing.lg,
-    },
-    buttonLabel: {
-      fontFamily: typography.display,
-      fontSize: 20,
-      fontWeight: '700',
-      color: colors.text.primary,
-      textAlign: 'center',
-    },
-    badge: {
-      position: 'absolute',
-      top: spacing.lg,
-      right: spacing.lg,
-      paddingHorizontal: spacing.md,
-      paddingVertical: spacing.xs,
-      backgroundColor: colors.glass.background,
-      borderRadius: borderRadius.full,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-    },
-    badgeText: {
-      fontSize: 15,
-      fontWeight: '600',
-      color: colors.text.primary,
-    },
-    // Count could not be read — visually distinct from a real count so nobody
-    // reads it as data.
-    badgeUnknown: {
-      backgroundColor: withAlpha(semantic.attention, 0.12),
-      borderColor: withAlpha(semantic.attention, 0.35),
-    },
-    badgeTextUnknown: {
-      color: semantic.attention,
-    },
-    offlineBanner: {
-      marginTop: 0,
-      marginBottom: 0,
-    },
-    // Inspector Mode lock bar (below the grid, not flex — fixed row).
-    lockBar: {
-      alignItems: 'center',
-      gap: spacing.xs,
-    },
-    lockBtn: {
-      alignSelf: 'stretch',
-      backgroundColor: withAlpha(semantic.attention, 0.12),
-      borderColor: withAlpha(semantic.attention, 0.35),
-      minHeight: 56,
-    },
+    lockText: { flex: 1 },
+    lockTitle: { fontSize: 22, fontWeight: '800', color: INK },
+    lockSub: { fontSize: 15, color: MUTED, marginTop: 2 },
   });
 }
