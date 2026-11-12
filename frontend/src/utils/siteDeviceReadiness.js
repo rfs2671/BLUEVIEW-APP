@@ -401,8 +401,9 @@ export function describeReadiness(readiness) {
       tone: 'attention',
       heading: 'Still saving this project to the tablet',
       body: `${r.saved} of ${r.expected} plans, documents and logbooks are on this `
-        + 'tablet so far. The rest need Wi-Fi. Anything not yet saved will not open '
-        + 'once the signal drops.',
+        + 'tablet so far. The tablet keeps saving the rest by itself while it has '
+        + 'Wi-Fi; this clears when all of them are on it. Anything not yet saved '
+        + 'will not open once the signal drops.',
       detail: null,
     };
   }

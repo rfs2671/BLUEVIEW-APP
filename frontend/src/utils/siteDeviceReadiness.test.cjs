@@ -370,7 +370,7 @@ async function main() {
     const c = describeReadiness(r);
     ok(c.heading === COPY.filling.heading, 'a complete set still filling says so');
     ok(c.body === '1 of 3 plans, documents and logbooks are on this tablet so far. '
-      + 'The rest need Wi-Fi. Anything not yet saved will not open once the signal drops.',
+      + 'The tablet keeps saving the rest by itself while it has Wi-Fi; this clears when all of them are on it. Anything not yet saved will not open once the signal drops.',
       'and it prints the real fraction, with the real denominator');
 
     const noDir = readinessFrom({
