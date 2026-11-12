@@ -932,6 +932,26 @@ export const dropboxAPI = {
     return response.data;
   },
 
+  // The files in ONE site-device folder, each with `hidden` (true = the gate
+  // tablet does not show it). Admin only.
+  getSiteDeviceFolderFiles: async (projectId, folder) => {
+    const response = await apiClient.get(
+      `/api/projects/${projectId}/site-device-files`,
+      { params: { folder } }
+    );
+    return response.data;
+  },
+
+  // Replace which files in ONE folder the gate tablet hides. Other folders'
+  // choices are untouched.
+  setSiteDeviceHiddenFiles: async (projectId, folder, hidden) => {
+    const response = await apiClient.put(
+      `/api/projects/${projectId}/site-device-files`,
+      { folder, hidden }
+    );
+    return response.data;
+  },
+
   setSiteDeviceSubfolders: async (projectId, subfolders) => {
     const response = await apiClient.put(
       `/api/projects/${projectId}/site-device-subfolders`,

@@ -18,6 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { readSiteReadiness, readinessForFilesScreen } from '../../../src/utils/siteDeviceReadiness';
 import { uploadEach, errorDetail, batchSummary } from '../../../src/utils/multiUpload';
 import SiteReadinessNotice from '../../../src/components/SiteReadinessNotice';
+import SiteVisibilityPanel from '../../../src/components/SiteVisibilityPanel';
 import { noteProjectOpened } from '../../../src/utils/adminPlanPrefetch';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -272,11 +273,8 @@ export default function ProjectFilesScreen() {
   const [confirmUnlink, setConfirmUnlink] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
 
-  // Site-device visibility -- which top-level subfolders the kiosk role may
-  // see. Empty selection = the kiosk sees nothing.
-  const [siteDeviceSubfolders, setSiteDeviceSubfolders] = useState([]);
-  const [siteDeviceSelected, setSiteDeviceSelected] = useState([]);
-  const [savingSiteVisibility, setSavingSiteVisibility] = useState(false);
+  // Site-device visibility lives in <SiteVisibilityPanel>, which loads and
+  // saves its own state (a folder switch, then per-file switches inside it).
 
   /**
    * THE ONE ROLE PREDICATE ON THIS SCREEN. Every admin-gated control below
@@ -517,7 +515,6 @@ export default function ProjectFilesScreen() {
     }
 
     if (isAdmin && effectiveProject?.dropbox_folder_path) {
-      fetchSiteDeviceVisibility();
     }
 
     setLoading(false);
@@ -600,7 +597,6 @@ export default function ProjectFilesScreen() {
       setShowFolderPicker(false);
       toast.success('Linked', `This project now reads from ${target}.`);
       handleSync();
-      if (isAdmin) fetchSiteDeviceVisibility();
     } catch (error) {
       console.error('Failed to link folder:', error);
       toast.error('Error', error.response?.data?.detail || 'Could not link folder');
@@ -636,49 +632,6 @@ export default function ProjectFilesScreen() {
       toast.error('Error', error.response?.data?.detail || 'Could not unlink the folder');
     } finally {
       setUnlinking(false);
-    }
-  };
-
-  // ── Site-device visibility ─────────────────────────────────────────────
-  const fetchSiteDeviceVisibility = async () => {
-    if (!projectId) return;
-    try {
-      const data = await dropboxAPI.getSiteDeviceSubfolders(projectId);
-      setSiteDeviceSubfolders(Array.isArray(data?.subfolders) ? data.subfolders : []);
-      setSiteDeviceSelected(Array.isArray(data?.selected) ? data.selected : []);
-    } catch (e) {
-      // Admin-only endpoint; a non-admin gets 403 and simply sees no card.
-      console.warn('Site device visibility load failed:', e?.message);
-      setSiteDeviceSubfolders([]);
-      setSiteDeviceSelected([]);
-    }
-  };
-
-  const toggleSiteSubfolder = (name) => {
-    if (!isAdmin) return;
-    setSiteDeviceSelected((prev) => {
-      const low = (name || '').toLowerCase();
-      const has = prev.some((x) => x.toLowerCase() === low);
-      return has ? prev.filter((x) => x.toLowerCase() !== low) : [...prev, name];
-    });
-  };
-
-  const handleSaveSiteVisibility = async () => {
-    if (!isAdmin) return;
-    setSavingSiteVisibility(true);
-    try {
-      await dropboxAPI.setSiteDeviceSubfolders(projectId, siteDeviceSelected);
-      toast.success(
-        'Saved',
-        siteDeviceSelected.length === 0
-          ? 'Site devices will see no files from this project.'
-          : `Site devices can see ${siteDeviceSelected.length} folder(s).`,
-      );
-    } catch (e) {
-      console.error('Save site visibility failed:', e);
-      toast.error('Error', e.response?.data?.detail || 'Could not save');
-    } finally {
-      setSavingSiteVisibility(false);
     }
   };
 
@@ -1517,36 +1470,8 @@ export default function ProjectFilesScreen() {
                   on a Dropbox link left that the one project where nothing
                   could ever be made visible. The card renders whenever the
                   server offers something selectable. */}
-              {isAdmin && siteDeviceSubfolders.length > 0 && (
-                <GlassCard style={s.linkCard}>
-                  <Text style={s.cardLabel}>VISIBLE ON SITE DEVICES</Text>
-                  <Text style={s.siteHint}>
-                    Kiosks see only the folders ticked here. With none ticked they
-                    see no files from this project. Files uploaded in the app are
-                    ticked as "Uploaded in App".
-                  </Text>
-                  {siteDeviceSubfolders.map((name) => {
-                    const on = siteDeviceSelected.some(
-                      (x) => x.toLowerCase() === name.toLowerCase());
-                    return (
-                      <Pressable
-                        key={name}
-                        onPress={() => toggleSiteSubfolder(name)}
-                        style={({ pressed }) => [s.siteRow, pressed && { opacity: 0.7 }]}
-                      >
-                        {on
-                          ? <CheckCircle size={18} strokeWidth={1.5} color={semantic.verified} />
-                          : <Folder size={18} strokeWidth={1.5} color={colors.text.subtle} />}
-                        <Text style={s.siteName}>{name}</Text>
-                      </Pressable>
-                    );
-                  })}
-                  <GlassButton
-                    title={savingSiteVisibility ? 'Saving…' : 'Save visibility'}
-                    onPress={handleSaveSiteVisibility}
-                    loading={savingSiteVisibility}
-                  />
-                </GlassCard>
+              {isAdmin && (
+                <SiteVisibilityPanel projectId={projectId} toast={toast} />
               )}
 
               </ScrollView>
