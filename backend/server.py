@@ -28478,11 +28478,29 @@ def _site_device_may_retrieve(project: dict, current_user: dict,
     """
     if not _is_site_device(current_user):
         return True
+    if (file_path or "").strip().lower() in _site_excluded_paths(project):
+        return False
     return _path_is_under_allowed_subfolder(
         file_path or "",
         project.get("dropbox_folder_path") or "",
         _normalize_subfolder_names(project.get("site_device_subfolders") or []),
     )
+
+
+def _site_excluded_paths(project: dict) -> set:
+    """Single files an admin switched OFF inside a folder that is ticked.
+
+    THE FOLDER IS STILL THE UNIT; THIS IS ITS EXCEPTIONS LIST. A ticked folder
+    shows everything in it except these. Keyed by the file's visibility path
+    (lower-cased) rather than its row id, so a Dropbox file that is replaced by
+    a newer version under the same name stays hidden -- which is what "hide
+    this drawing" means to the person who said it.
+    """
+    return {
+        str(p).strip().lower()
+        for p in ((project or {}).get("site_device_excluded_paths") or [])
+        if str(p or "").strip()
+    }
 
 
 @api_router.get("/projects/{project_id}/dropbox-subfolders")
@@ -28525,10 +28543,12 @@ async def list_dropbox_subfolders(
         # A project that has only ever had direct uploads has no linked folder.
         # That early return used to answer with nothing selectable at all —
         # precisely the project on which every file is invisible.
+        _subs = [APP_UPLOADS_VIRTUAL_FOLDER] if has_app_uploads else []
         return {
-            "subfolders": [APP_UPLOADS_VIRTUAL_FOLDER] if has_app_uploads else [],
+            "subfolders": _subs,
             "selected": selected,
             "folder_path": "",
+            "hidden_counts": _hidden_counts_by_folder(project, _subs),
         }
 
     try:
@@ -28563,7 +28583,22 @@ async def list_dropbox_subfolders(
         "folder_path": folder_path,
         "subfolders": subfolders,
         "selected": selected,
+        "hidden_counts": _hidden_counts_by_folder(project, subfolders),
     }
+
+
+def _hidden_counts_by_folder(project: dict, subfolders: List[str]) -> Dict[str, int]:
+    """How many single files are switched off inside each folder -- what the
+    folder row says ("2 files hidden") before anybody opens it."""
+    folder_path = project.get("dropbox_folder_path") or ""
+    excluded = _site_excluded_paths(project)
+    out: Dict[str, int] = {}
+    for name in subfolders or []:
+        wanted = _normalize_subfolder_names([name])
+        n = sum(1 for p in excluded if _path_is_under_allowed_subfolder(p, folder_path, wanted))
+        if n:
+            out[name] = n
+    return out
 
 
 @api_router.put("/projects/{project_id}/site-device-subfolders", dependencies=[Depends(require_approved), Depends(require_project_access)])
@@ -28601,6 +28636,91 @@ async def set_site_device_subfolders(
         "message": "Site device visibility updated",
         "site_device_subfolders": cleaned,
     }
+
+
+@api_router.get("/projects/{project_id}/site-device-files")
+async def list_site_device_folder_files(
+    project_id: str,
+    folder: str = Query(..., min_length=1, max_length=300),
+    current_user = Depends(get_admin_user),
+):
+    """Admin-only: the files in ONE site-device folder, each with whether the
+    gate tablet shows it. Drives the "tap a folder, switch files on or off"
+    sheet. Reads the synced file list -- no Dropbox call -- so it is the same
+    set of files the tablet itself is offered.
+    """
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project_access_ok(project, project_id, current_user):
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    company_id = get_user_company_id(current_user) or project.get("company_id")
+    folder_path = project.get("dropbox_folder_path") or ""
+    wanted = _normalize_subfolder_names([folder])
+    excluded = _site_excluded_paths(project)
+
+    rows = await db.project_files.find(
+        {"project_id": project_id, "company_id": company_id, "is_deleted": {"$ne": True}},
+        {"name": 1, "dropbox_path": 1, "r2_key": 1, "size": 1, "modified": 1},
+    ).to_list(5000)
+    files = []
+    for rec in rows:
+        vpath = _visibility_path_for_record(rec)
+        if not vpath or not _path_is_under_allowed_subfolder(vpath, folder_path, wanted):
+            continue
+        files.append({
+            "path": vpath,
+            "name": rec.get("name") or vpath.rsplit("/", 1)[-1],
+            "size": rec.get("size", 0) or 0,
+            "hidden": vpath.strip().lower() in excluded,
+        })
+    files.sort(key=lambda f: (f["name"] or "").lower())
+    return {"folder": folder, "files": files}
+
+
+@api_router.put("/projects/{project_id}/site-device-files", dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def set_site_device_folder_files(
+    project_id: str,
+    data: dict,
+    current_user = Depends(get_admin_user),
+):
+    """Admin-only: which files in ONE folder the gate tablet must NOT show.
+
+    Body: {"folder": "<name>", "hidden": ["<path>", ...]}. Replaces the hidden
+    set for that folder only; exceptions in other folders are left alone, so
+    two admins working different folders cannot undo each other.
+    """
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    folder = data.get("folder")
+    hidden = data.get("hidden")
+    if not isinstance(folder, str) or not folder.strip():
+        raise HTTPException(status_code=400, detail="folder is required")
+    if not isinstance(hidden, list) or not all(isinstance(h, str) for h in hidden):
+        raise HTTPException(status_code=400, detail="hidden must be an array of file paths")
+    folder_path = project.get("dropbox_folder_path") or ""
+    wanted = _normalize_subfolder_names([folder])
+
+    def _in_folder(p: str) -> bool:
+        return _path_is_under_allowed_subfolder(p, folder_path, wanted)
+
+    # Only paths that really are in this folder may be set from it.
+    new_hidden = {h.strip().lower() for h in hidden if h.strip() and _in_folder(h.strip())}
+    kept = [p for p in (project.get("site_device_excluded_paths") or [])
+            if not _in_folder(str(p or ""))]
+    merged = sorted(set(str(p).strip().lower() for p in kept if str(p or "").strip()) | new_hidden)
+    await db.projects.update_one(
+        {"_id": to_query_id(project_id)},
+        {"$set": {
+            "site_device_excluded_paths": merged,
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+    return {"folder": folder, "hidden": sorted(new_hidden)}
 
 
 def _dropbox_api_path(stored: str) -> str:
@@ -28745,7 +28865,11 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
         project.get("site_device_subfolders") or []
     )
 
+    excluded_paths = _site_excluded_paths(project)
+
     def _visible_to_site(path: str) -> bool:
+        if (path or "").strip().lower() in excluded_paths:
+            return False
         return _path_is_under_allowed_subfolder(
             path, folder_path or "", allowed_subfolders
         )
@@ -29042,7 +29166,11 @@ async def get_project_manifest(
         project.get("site_device_subfolders") or []
     )
 
+    excluded_paths = _site_excluded_paths(project)
+
     def _visible_to_site(path: str) -> bool:
+        if (path or "").strip().lower() in excluded_paths:
+            return False
         return _path_is_under_allowed_subfolder(
             path, folder_path, allowed_subfolders
         )
