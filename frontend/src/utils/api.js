@@ -1336,6 +1336,16 @@ export const logbooksAPI = {
     return Array.isArray(data) ? data : (data?.items ?? []);
   },
 
+  // A per-worker log (the orientation) holds one row per man and outgrows the
+  // server's default page of 50 on a real job. Same read, the server's max page.
+  getAllByProject: async (projectId, logType) => {
+    const response = await apiClient.get(`/api/logbooks/project/${projectId}`, {
+      params: { log_type: logType, limit: 500 },
+    });
+    const data = response.data;
+    return Array.isArray(data) ? data : (data?.items ?? []);
+  },
+
   getById: async (logbookId) => {
     const response = await apiClient.get(`/api/logbooks/${logbookId}`);
     return response.data;
