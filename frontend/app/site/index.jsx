@@ -328,10 +328,13 @@ function buildStyles(colors, isDark) {
       padding: spacing.md,
       position: 'relative',
     },
+    // A FIXED SQUARE, NOT width:100% + maxWidth + aspectRatio. Android sized
+    // the box's height from the full tile width BEFORE clamping its width, so
+    // each icon box drew as a tall narrow column that ran over the tile's
+    // label and out past the card. Web never showed it.
     iconContainer: {
-      width: '100%',
-      maxWidth: 120,
-      aspectRatio: 1,
+      width: 112,
+      height: 112,
       borderRadius: borderRadius.xxl,
       alignItems: 'center',
       justifyContent: 'center',
