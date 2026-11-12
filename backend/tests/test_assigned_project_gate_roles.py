@@ -95,37 +95,36 @@ class WhatMustNotChange(unittest.TestCase):
         of."""
         self.assertNotIn("site_device", server.ROLES_SCOPED_TO_ASSIGNED_PROJECTS)
 
-    def test_project_access_ok_does_not_scope_cp_or_superintendent(self):
-        """NEITHER OF THESE TWO ROLES IS SCOPED BY project_access_ok, and that
-        is still true.
-
-        THE DOCSTRING THIS REPLACES SAID "project_access_ok is untouched", and
-        it is not any more: the roles change added a branch for the Site
-        Manager / PM, ahead of the company branch, because a role whose whole
-        definition is "admin powers SCOPED TO ASSIGNED PROJECTS" cannot reach a
-        branch that admits anyone in the company. That branch names ROLE_PM
-        alone.
-
-        A SENTENCE SAYING A FUNCTION IS UNTOUCHED IS FALSE THE FIRST TIME
-        ANYBODY TOUCHES IT, and a test whose name is that sentence goes on
-        passing while its name lies -- the two identifiers it banned are still
-        absent. So the name and the claim are narrowed to the thing that
-        actually matters here: cp and superintendent are held to their
-        assignments by the five WRITE gates that name
-        ROLES_SCOPED_TO_ASSIGNED_PROJECTS, not by this function, and moving
-        them would be a live behaviour change on real accounts.
+    def test_cp_and_superintendent_see_only_their_assigned_projects(self):
+        """OPERATOR RULING 2026-11-12: a super assigned to one job sees that
+        job, not every job his company runs. This replaces the test that pinned
+        the opposite ("project_access_ok does not scope cp or superintendent"),
+        which recorded a decision that has now been taken the other way.
         """
-        import ast
-        import inspect
-        import textwrap
-        code = ast.unparse(ast.parse(textwrap.dedent(
-            inspect.getsource(server.project_access_ok))))
-        self.assertNotIn("ROLES_SCOPED_TO_ASSIGNED_PROJECTS", code)
-        self.assertNotIn("is_superintendent", code)
-        # The PM branch that IS there. Asserted so its absence is a failure
-        # too: without it he inherits the company branch and the scoping in his
-        # own definition silently does not exist.
-        self.assertIn("ROLE_PM", code)
+        project = {"company_id": "c1"}
+        for role in ("cp", "superintendent"):
+            u = {"role": role, "company_id": "c1", "assigned_projects": ["p1"]}
+            self.assertTrue(server.project_access_ok(project, "p1", u), role)
+            self.assertFalse(server.project_access_ok(project, "p2", u), role)
+
+    def test_an_unassigned_cp_or_superintendent_keeps_the_company_view(self):
+        """THE CARVE-OUT. Scoping an empty list would leave the account with no
+        projects at all, mid-shift, with nothing saying why."""
+        project = {"company_id": "c1"}
+        for role in ("cp", "superintendent"):
+            u = {"role": role, "company_id": "c1", "assigned_projects": []}
+            self.assertTrue(server.project_access_ok(project, "p2", u), role)
+            self.assertFalse(server.project_access_ok(
+                {"company_id": "c2"}, "p9", u), role)
+
+    def test_the_pm_and_the_admin_are_unchanged(self):
+        project = {"company_id": "c1"}
+        pm = {"role": "pm", "company_id": "c1", "assigned_projects": []}
+        self.assertFalse(server.project_access_ok(project, "p1", pm))
+        pm_full = {**pm, "pm_access": "full"}
+        self.assertTrue(server.project_access_ok(project, "p1", pm_full))
+        admin = {"role": "admin", "company_id": "c1", "assigned_projects": ["p1"]}
+        self.assertTrue(server.project_access_ok(project, "p2", admin))
 
 
 if __name__ == "__main__":
