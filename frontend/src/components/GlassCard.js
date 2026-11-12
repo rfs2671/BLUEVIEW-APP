@@ -204,7 +204,11 @@ function splitTint(inner, colors) {
   return { rest, tint, inside };
 }
 
-export const GlassCard = (props) => (props.variant === 'modal' ? <LegacyGlassCard {...props} /> : <SoftGlassCard {...props} />);
+export const GlassCard = (props) => {
+  const { themeForced } = useTheme();
+  // dialogs keep the frosted look; so does the site tablet (see below)
+  return (props.variant === 'modal' || themeForced) ? <LegacyGlassCard {...props} /> : <SoftGlassCard {...props} />;
+};
 
 // Props a screen puts on a pressable card that belong to the pressable itself, not the card's look.
 const PASS_THROUGH = [
@@ -253,7 +257,7 @@ const softStyles = StyleSheet.create({
 /* ═══════════════════════════════════════════════════════════════════════════════
    StatCard
    ═══════════════════════════════════════════════════════════════════════════════ */
-export const StatCard = ({ children, style, onPress, selected }) => {
+const SoftStatCard = ({ children, style, onPress, selected }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
   const CardWrapper = onPress ? Pressable : View;
@@ -282,7 +286,7 @@ softStyles.statPadded = { paddingVertical: spacing.md, paddingHorizontal: spacin
 /* ═══════════════════════════════════════════════════════════════════════════════
    GlassListItem
    ═══════════════════════════════════════════════════════════════════════════════ */
-export const GlassListItem = ({
+const SoftGlassListItem = ({
   children,
   title,
   subtitle,
@@ -345,6 +349,150 @@ export const GlassListItem = ({
       </Animated.View>
     </Pressable>
   );
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   THE SITE TABLET KEEPS THE ORIGINAL CARDS.
+   A site device is held to the light theme (the theme's `themeForced`). Its screens were laid out around the original
+   frosted card, and the soft surfaces changed their layout (stretched icon boxes, missing labels), so on a site device
+   every card, stat card and list row is the original one, exactly as before the soft style.
+   ═══════════════════════════════════════════════════════════════════════════════ */
+const LegacyStatCard = ({ children, style, onPress }) => {
+  const [isHovered, setIsHovered] = useState(false);
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
+  const CardWrapper = onPress ? Pressable : View;
+
+  const cardProps = onPress
+    ? {
+        onPress,
+        onHoverIn: () => setIsHovered(true),
+        onHoverOut: () => setIsHovered(false),
+      }
+    : {
+        onMouseEnter: () => setIsHovered(true),
+        onMouseLeave: () => setIsHovered(false),
+      };
+
+  const gradientColors = isDark ? DARK_GRADIENT : LIGHT_GRADIENT;
+
+  const { outer, inner } = splitCardStyle(style);
+
+  return (
+    <CardWrapper
+      {...cardProps}
+      style={[
+        outer,
+        outerAura(colors),
+        isHovered && { transform: [{ scale: 1.03 }, { translateY: -4 }] },
+      ]}
+    >
+     <View
+      style={[
+        styles.statCard,
+        auraRim(colors),
+        innerAura(colors),
+        inner,
+        isHovered && { borderColor: colors.glass.borderHover },
+      ]}
+     >
+      <LinearGradient
+        colors={gradientColors}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <CardSheen radius={borderRadius.xl} active={isHovered} intro />
+      <View style={styles.statPadded}>{children}</View>
+     </View>
+    </CardWrapper>
+  );
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   GlassListItem
+   ═══════════════════════════════════════════════════════════════════════════════ */
+const LegacyGlassListItem = ({
+  children,
+  title,
+  subtitle,
+  leftIcon,
+  rightIcon,
+  showBorder,
+  style,
+  contentStyle,
+  onPress,
+  disabled,
+}) => {
+  const [isHovered, setIsHovered] = useState(false);
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
+
+  const gradientColors = isDark ? DARK_GRADIENT : LIGHT_GRADIENT;
+
+  const defaultContent = (
+    <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+      {leftIcon && <View style={{ marginRight: 12 }}>{leftIcon}</View>}
+      <View style={{ flex: 1 }}>
+        {title && (
+          <Text style={{ color: colors.text.primary, fontSize: 16, fontWeight: '500' }}>
+            {title}
+          </Text>
+        )}
+        {subtitle && (
+          <Text style={{ color: colors.text.muted, fontSize: 13, marginTop: 2 }}>
+            {subtitle}
+          </Text>
+        )}
+      </View>
+      {rightIcon && <View style={{ marginLeft: 12 }}>{rightIcon}</View>}
+    </View>
+  );
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      onHoverIn={() => setIsHovered(true)}
+      onHoverOut={() => setIsHovered(false)}
+      style={({ pressed }) => [
+        styles.listItem,
+        auraRim(colors),
+        innerAura(colors),
+        isHovered && {
+          ...(isDark && { borderColor: colors.glass.borderHover }),
+          transform: [{ scale: 1.01 }, { translateY: -2 }],
+        },
+        pressed && styles.listItemPressed,
+        disabled && styles.listItemDisabled,
+        showBorder && styles.listItemBorder,
+        style,
+      ]}
+    >
+      <LinearGradient
+        colors={gradientColors}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <CardSheen radius={borderRadius.xl} active={isHovered} />
+      {/* `contentStyle` (optional) overrides the default spacing.lg inset — for
+          dense rows where a 24px inset per side eats the content width. */}
+      <View style={[styles.listItemContent, contentStyle]}>
+        {children || defaultContent}
+      </View>
+    </Pressable>
+  );
+};
+
+
+export const StatCard = (props) => {
+  const { themeForced } = useTheme();
+  return themeForced ? <LegacyStatCard {...props} /> : <SoftStatCard {...props} />;
+};
+export const GlassListItem = (props) => {
+  const { themeForced } = useTheme();
+  return themeForced ? <LegacyGlassListItem {...props} /> : <SoftGlassListItem {...props} />;
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════
