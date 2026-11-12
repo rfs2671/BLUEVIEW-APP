@@ -98,6 +98,28 @@ const ORIENTATION_SECTIONS = [
 
 const ALL_KEYS = ORIENTATION_SECTIONS.flatMap(s => s.items.map(i => i.key));
 
+/**
+ * WHICH CHECKLIST THIS RECORD HOLDS. Two shapes are on file:
+ *   - this screen's manual entry: the 18 keys above, `true` when ticked;
+ *   - the gate check-in page (backend/checkin.html): its own 12 items, keyed
+ *     by the English sentence, each `{checked, checked_at}`.
+ * Reading a gate record against the 18 keys found none of them and showed
+ * "0/18" over a worker who had ticked every box. The site tablet already
+ * reads both shapes (app/site/logbooks.jsx); this is the same rule.
+ */
+const checkedOf = (v) => (v && typeof v === 'object' ? !!v.checked : !!v);
+const checklistSectionsFor = (checklist) => {
+  const isMap = !!checklist && typeof checklist === 'object' && !Array.isArray(checklist);
+  if (!isMap) return ORIENTATION_SECTIONS;
+  if (ALL_KEYS.some((k) => k in checklist)) return ORIENTATION_SECTIONS;
+  const keys = Object.keys(checklist);
+  if (keys.length === 0) return ORIENTATION_SECTIONS;
+  return [{
+    section: 'Site Orientation (completed at check-in)',
+    items: keys.map((k) => ({ key: k, label: k })),
+  }];
+};
+
 const LOG_TYPE = 'subcontractor_orientation';
 
 /**
@@ -395,7 +417,7 @@ export default function SubcontractorOrientation() {
       // Get ALL orientation docs for this project (no date filter — these are
       // ongoing). Offline-aware: a failed refresh keeps the cache on screen and
       // says so, instead of the old `.catch(() => [])` blank roster.
-      const r = await settleFetch(() => logbooksAPI.getByProject(projectId, LOG_TYPE));
+      const r = await settleFetch(() => logbooksAPI.getAllByProject(projectId, LOG_TYPE));
       setFetchState(r.status);
       if (r.status === 'ok') {
         const merged = collapseChains(
@@ -884,9 +906,10 @@ export default function SubcontractorOrientation() {
   };
 
   const getChecklistCompletion = (checklist) => {
-    if (!checklist) return { checked: 0, total: ALL_KEYS.length };
-    const checked = ALL_KEYS.filter(k => checklist[k]).length;
-    return { checked, total: ALL_KEYS.length };
+    const keys = checklistSectionsFor(checklist).flatMap((sec) => sec.items.map((i) => i.key));
+    if (!checklist) return { checked: 0, total: keys.length };
+    const checked = keys.filter((k) => checkedOf(checklist[k])).length;
+    return { checked, total: keys.length };
   };
 
   if (loading) {
@@ -1223,11 +1246,11 @@ export default function SubcontractorOrientation() {
                         </View>
 
                         {/* Show all checklist items */}
-                        {ORIENTATION_SECTIONS.map((section) => (
+                        {checklistSectionsFor(d.checklist).map((section) => (
                           <View key={section.section} style={styles.sectionBlock}>
                             <Text style={styles.sectionLabel}>{section.section}</Text>
                             {section.items.map((item) => {
-                              const isChecked = d.checklist ? !!d.checklist[item.key] : false;
+                              const isChecked = d.checklist ? checkedOf(d.checklist[item.key]) : false;
                               return (
                                 <View key={item.key} style={styles.readonlyCheckRow}>
                                   <View style={[styles.checkbox, isChecked && styles.checkboxActive]}>
