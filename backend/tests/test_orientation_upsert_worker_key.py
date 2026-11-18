@@ -43,7 +43,9 @@ from server import LogbookCreate  # noqa: E402
 
 PROJECT_ID = "6a5f63bc147407d3261df2c7"
 DATE = "2026-07-29"
-USER = {"_id": "admin1", "id": "admin1", "role": "admin", "company_id": "co1"}
+# The superintendent files (operator ruling 2026-11-18: an admin reads only).
+USER = {"_id": "admin1", "id": "admin1", "role": "superintendent", "company_id": "co1",
+        "assigned_projects": [PROJECT_ID]}
 
 
 def _get(doc, key):

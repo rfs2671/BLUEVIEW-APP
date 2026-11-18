@@ -32,7 +32,8 @@ import server  # noqa: E402
 from scripts import backfill_photo_thumbnails as BF  # noqa: E402
 from tests.source_text import code_of  # noqa: E402
 
-USER = {"_id": "u1", "id": "u1", "role": "admin", "company_id": "companyA",
+# The superintendent files (operator ruling 2026-11-18: an admin reads only).
+USER = {"_id": "u1", "id": "u1", "role": "superintendent", "company_id": "companyA",
         "account_status": "approved", "assigned_projects": ["projA"]}
 PROJECT = {"_id": "projA", "company_id": "companyA", "name": "588 Thomas"}
 ORIG = "logbook-photos/projA/cap_1/cap_1.jpg"

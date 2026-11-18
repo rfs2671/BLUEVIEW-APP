@@ -3,9 +3,13 @@
 // THE SITE MANAGER / PM CAN REACH LOG BOOKS, READ FILED LOGS, AND ADD
 // PHOTOGRAPHS — AND IS NEVER INVITED TO WRITE ONE.
 //
-// The server always allowed it (ROLES_WITH_READ_ONLY_LOGBOOKS: read + append
-// photographs; refuse create/edit/finalize/amend/delete), but nothing in his
-// nav or on his project screen linked to /logbooks.
+// The server always allowed it (read + append photographs; refuse create/edit/
+// finalize/amend), but nothing in his nav or on his project screen linked to
+// /logbooks.
+//
+// OPERATOR RULING 2026-11-18: only the SUPERINTENDENT and the CP fill in and
+// sign a log (ROLES_THAT_FILE_LOGBOOKS, an allow-list). A PM at EITHER level and
+// an admin read and add photographs. The "Same as admin" PM is no longer exempt.
 const fs = require('fs');
 const path = require('path');
 const { loadEsm } = require('./esmHarness.cjs');
@@ -21,11 +25,24 @@ function ok(cond, label) {
 // ── who ──
 ok(M.readsLogbooksOnly({ role: 'pm' }) && M.readsLogbooksOnly({ role: ' PM ', pm_access: 'assigned' }),
   'a PM on "Assigned jobs only" (or with no level stored) reads log books only');
-ok(!M.readsLogbooksOnly({ role: 'pm', pm_access: 'full' }),
-  'a PM on "Same as admin" is NOT read-only (server: pm_has_full_access exempts him)');
-ok(M.canOpenLogBooksTile({ role: 'pm', pm_access: 'full' }), 'but he still gets the tile');
-ok(!M.readsLogbooksOnly({ role: 'cp' }) && !M.readsLogbooksOnly({ role: 'superintendent' })
-  && !M.readsLogbooksOnly({ role: 'admin' }) && !M.readsLogbooksOnly(null), 'filers and admins are unchanged');
+ok(M.readsLogbooksOnly({ role: 'pm', pm_access: 'full' }),
+  'a PM on "Same as admin" reads log books only too (ruling 2026-11-18: no exemption)');
+ok(M.canOpenLogBooksTile({ role: 'pm', pm_access: 'full' }), 'and he still gets the tile');
+ok(M.readsLogbooksOnly({ role: 'admin' }) && M.readsLogbooksOnly({ role: ' Admin ' }),
+  'an admin reads log books only');
+ok(M.readsLogbooksOnly({ role: 'owner' }) && M.readsLogbooksOnly({ role: 'worker' }),
+  'an allow-list: a role nobody listed reads only');
+ok(!M.readsLogbooksOnly({ role: 'cp' }) && !M.readsLogbooksOnly({ role: ' Superintendent ' }),
+  'the superintendent and the CP file');
+ok(!M.readsLogbooksOnly({ role: 'site_device', site_mode: true }), 'the gate tablet is unchanged');
+ok(!M.readsLogbooksOnly(null), 'no user yet: not read-only (auth still loading)');
+ok(JSON.stringify(M.ROLES_THAT_FILE_LOGBOOKS) === JSON.stringify(['superintendent', 'cp']),
+  'the filers are the two the operator named');
+// THE SERVER'S LIST, READ FROM THE SERVER. Two copies of one rule drift; this
+// holds them to the same membership.
+const serverPy = fs.readFileSync(path.join(FRONTEND, '..', 'backend', 'server.py'), 'utf8');
+ok(/\nROLES_THAT_FILE_LOGBOOKS = \(ROLE_SUPERINTENDENT, "cp"\)\r?\n/.test(serverPy),
+  'server.py names the same two filers');
 ok(M.canOpenLogBooksTile({ role: 'pm' }) && !M.canOpenLogBooksTile({ role: 'admin' }), 'the project tile is the PM\'s');
 
 // ── which jobs (the server's project_access_ok split) ──
@@ -36,6 +53,8 @@ ok(M.pmLogbookProjects({ role: 'pm', pm_access: 'assigned' }, jobs).length === 0
 ok(M.pmLogbookProjects({ role: 'pm', pm_access: 'full', assigned_projects: [] }, jobs).length === 3,
   '"Same as admin" PM: every job');
 ok(M.pmLogbookProjects({ role: 'cp' }, jobs).length === 3, 'others pass through to the screen\'s own rule');
+ok(M.pmLogbookProjects({ role: 'admin', assigned_projects: [] }, jobs).length === 3,
+  'an admin (read-only now) still lists every job: read-only is not assigned-only');
 ok(M.pmLogbookProjects({ role: 'pm' }, null).length === 0, 'no list, no crash');
 
 // ── what opens ──
@@ -58,7 +77,8 @@ ok(/picked = initialProject\(cachedVisible\)/.test(hub) && /const first = initia
 ok(/if \(readOnly && !pmMayOpen\(filed \? 'submitted' : null\)\) \{[\s\S]{0,500}?PM_NOT_FILED_TITLE[\s\S]{0,40}?return;/.test(hub),
   'an unfiled log is named, not opened');
 ok(/const openable = readOnly\s*\?\s*pmMayOpen\(status\)/.test(hub), 'tile chevron/lock follows the PM rule');
-ok(/!readOnly && selectedProject && activations\.length > 0/.test(hub), 'site switches hidden from the PM');
+ok(/\(!readOnly \|\| isAdminUser\) && selectedProject && activations\.length > 0/.test(hub),
+  'site switches hidden from the assigned PM, kept for an admin (configuring the job is not filing)');
 ok(/setNotifications\(readOnly \? \{\s*\.\.\.notifs, attestation_gaps: \[\], unaffirmed_logbooks: 0, stale_unsigned_logbooks: 0,/.test(hub),
   '"yours to sign" worklists hidden from the PM');
 ok(/\{!readOnly && \(\s*<GlassButton\s*title="Open Tool Box Talk"/.test(hub), 'no "Open Tool Box Talk" for the PM');
@@ -80,6 +100,9 @@ ok(/photoTarget && \(\s*<Pressable\s*onPress=\{\(\) => router\.push\(`\/logbooks
 
 // ── the editor and the lock bar ──
 const stepper = read('src/components/logbookStepper/LogbookStepper.jsx');
+ok(/Filing is done by the superintendent or the CP\./.test(M.PM_NOT_FILED_BODY)
+  && /Filing is done by the superintendent or the CP\./.test(M.PM_LOGBOOKS_NOTE),
+  'the copy names who files');
 ok(/const pmNotice = \(readsLogbooksOnly\(user\) && !locked && !loading\)/.test(stepper)
   && /const unavailable = unavailableProp \|\| pmNotice;/.test(stepper) && /if \(unavailable\) \{/.test(stepper),
   'editor: an unfiled log is the no-form notice (no fields, footer or lock bar) for the PM');

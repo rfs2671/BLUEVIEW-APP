@@ -1183,8 +1183,8 @@ export default function PreShiftSignIn() {
     );
   }
 
-  // A Site Manager / PM on "Assigned jobs only" reads a FILED sheet; an open
-  // one is the CP's work in progress, and its Save Draft / Submit would only
+  // A Site Manager / PM (either level) or an admin reads a FILED sheet; an
+  // open one is the superintendent's or the CP's work in progress, and its Save Draft / Submit would only
   // meet the server's refusal after he had typed into it. This screen owns no
   // LogbookStepper, so it says so itself, in the same words.
   if (readsLogbooksOnly(user) && !locked) {

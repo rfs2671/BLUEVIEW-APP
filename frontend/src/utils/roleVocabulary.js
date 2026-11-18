@@ -55,7 +55,9 @@ export const ASSIGNABLE_ROLES = [
   {
     value: 'admin',
     label: 'Admin',
-    blurb: 'Full access to this company, including user management.',
+    // Ruling 2026-11-18: only the superintendent and the CP fill in a log.
+    blurb: 'Full access to this company, including user management. '
+      + 'Daily logs are view-only — may add photographs; the superintendent or the CP files them.',
   },
   {
     value: ROLE_PM,
@@ -63,8 +65,9 @@ export const ASSIGNABLE_ROLES = [
     // The permission level (below) decides how far that goes.
     blurb: 'Runs jobs. On "Assigned jobs only" (the default): adds subs, sets punch '
       + 'contacts and acts on the jobs they are assigned to. Cannot create projects, '
-      + 'and daily logs are view-only — may add photographs, may not sign. '
-      + 'On "Same as admin": everything an admin does on every job. '
+      + 'and daily logs are view-only — may add photographs, may not fill in or sign; '
+      + 'the superintendent or the CP files them. '
+      + 'On "Same as admin": everything an admin does on every job (logs stay view-only). '
       + 'Never manages users or admins.',
   },
   {

@@ -171,14 +171,15 @@ class NothingELSEHeHoldsMovesEither(unittest.TestCase):
                       server.ROLES_REQUIRING_COMPANY)
 
     def test_neither_role_is_read_only_on_logbooks(self):
-        self.assertNotIn("cp", server.ROLES_WITH_READ_ONLY_LOGBOOKS)
-        self.assertNotIn(server.ROLE_SUPERINTENDENT,
-                         server.ROLES_WITH_READ_ONLY_LOGBOOKS)
+        # An allow-list since the ruling of 2026-11-18: both are ON it.
+        self.assertIn("cp", server.ROLES_THAT_FILE_LOGBOOKS)
+        self.assertIn(server.ROLE_SUPERINTENDENT, server.ROLES_THAT_FILE_LOGBOOKS)
+        for role in ("cp", server.ROLE_SUPERINTENDENT):
+            server.refuse_if_logbooks_are_read_only({"role": role})
 
     def test_neither_role_loses_its_signing_capacity(self):
-        self.assertNotIn("cp", server.ROLES_WITHOUT_SIGNING_AUTHORITY)
-        self.assertNotIn(server.ROLE_SUPERINTENDENT,
-                         server.ROLES_WITHOUT_SIGNING_AUTHORITY)
+        for role in ("cp", server.ROLE_SUPERINTENDENT):
+            server.refuse_if_no_signing_capacity({"role": role})
 
     def test_his_licence_reads_UNKNOWN_and_not_OK_after_the_migration(self):
         """He arrives as a superintendent with no DOB number recorded, because

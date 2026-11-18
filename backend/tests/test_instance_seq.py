@@ -55,8 +55,11 @@ from server import LogbookCreate  # noqa: E402
 
 PROJECT_ID = "6a5f63bc147407d3261df2c7"
 DATE = "2026-07-29"
-USER = {"_id": "u1", "id": "u1", "role": "admin", "company_id": "co1",
-        "full_name": "Carl CP"}
+# The superintendent files (operator ruling 2026-11-18: an admin reads only).
+USER = {"_id": "u1", "id": "u1", "role": "superintendent", "company_id": "co1",
+        "full_name": "Carl CP",
+        # the second id is test_another_PROJECT_does_not_advance_it's jobsite
+        "assigned_projects": [PROJECT_ID, "6a5f63bc147407d3261df2c8"]}
 
 # An IMMEDIATE type. These are the ones that can legitimately recur in a day,
 # and therefore the only ones for which the number means anything.

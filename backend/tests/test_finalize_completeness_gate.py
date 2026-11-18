@@ -115,7 +115,9 @@ def _mk_db(**overrides):
     return db
 
 
-def _finalize(db, *, role="admin", assigned_projects=None):
+# THE SUPERINTENDENT FINALIZES (operator ruling 2026-11-18: only he and the CP
+# file; an admin reads). This defaulted to "admin" until then.
+def _finalize(db, *, role="superintendent", assigned_projects=None):
     user = {
         "_id": "u1", "id": "u1", "role": role, "company_id": "co_a",
         "full_name": "Ada Admin",

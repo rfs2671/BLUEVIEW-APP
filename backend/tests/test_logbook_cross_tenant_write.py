@@ -210,8 +210,9 @@ class TheVictimsRecordSurvives(Base):
 
     def test_company_A_ITSELF_still_edits_its_own_row(self):
         """The control. Without it every assertion above would also pass on a
-        server that refused everyone."""
-        self.create(_user("admin", "coA"))
+        server that refused everyone. A superintendent of company A: an admin
+        files nothing since the ruling of 2026-11-18."""
+        self.create(_user("superintendent", "coA", assigned_projects=[A_PROJECT]))
         self.assertEqual(len(self.db.logbooks.docs), 1, "upserted, not duplicated")
         self.assertEqual(self.db.logbooks.docs[0]["data"],
                          {"note": "written by the intruder"},
@@ -273,9 +274,15 @@ class EveryRoleThatReachedItIsGated(Base):
 class TheThreeLegitimatePathsStillWork(Base):
     """A tenant gate that breaks a real flow is not a fix."""
 
-    def test_same_company_admin(self):
-        self.create(_user("admin", "coA"))
+    def test_same_company_superintendent(self):
+        """Was "same company admin". Since the ruling of 2026-11-18 only the
+        superintendent and the CP file; the admin's refusal is the next test."""
+        self.create(_user("superintendent", "coA", assigned_projects=[A_PROJECT]))
         self.assertEqual(len(self.db.logbooks.docs), 1)
+
+    def test_same_company_admin_is_refused(self):
+        e = self.refused(_user("admin", "coA"))
+        self.assertEqual(e.status_code, 403)
 
     def test_an_ASSIGNED_user_of_another_company(self):
         """Branch 3 of the shared rule. validate_assignable_projects makes
@@ -312,7 +319,7 @@ class TheThreeLegitimatePathsStillWork(Base):
         that is a CP losing a filed day to an admin action taken while he was
         out of signal. Authorization was what was missing, not existence."""
         self.db.projects.docs[0]["marked_for_deletion"] = True
-        self.create(_user("admin", "coA"))
+        self.create(_user("superintendent", "coA", assigned_projects=[A_PROJECT]))
         self.assertEqual(len(self.db.logbooks.docs), 1)
 
 

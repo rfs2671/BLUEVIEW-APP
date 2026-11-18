@@ -12,8 +12,13 @@ different places, because they are five different kinds of rule:
   SCOPE        project_access_ok, branch 1b. A RETURN, not a fall-through.
   USERS        get_user_admin, on the six /admin/users routes.
   PROJECTS     POST /projects keeps get_admin_user, which does not admit him.
-  LOGBOOKS     refuse_if_logbooks_are_read_only, at the four write gates.
+  LOGBOOKS     refuse_if_logbooks_are_read_only, at the write gates.
   SIGNING      record_signature_event, before anything is written.
+
+Since the ruling of 2026-11-18 LOGBOOKS and SIGNING are one ALLOW-list,
+ROLES_THAT_FILE_LOGBOOKS (superintendent, cp): a PM at EITHER level, and an
+admin, read and add photographs. The request-level proof is
+test_only_the_super_and_the_cp_file_a_log.py.
 
 ── THE ONE THAT WOULD HAVE BEEN SILENT ─────────────────────────────────────
 
@@ -200,14 +205,17 @@ class HeCannotCreateAProject(unittest.TestCase):
 
 class DailyLogsAreViewOnly(unittest.TestCase):
     WRITE_GATES = (
-        "_authorize_logbook_write",   # update / finalize / amend / delete
+        "_authorize_logbook_write",   # update / finalize / amend / withdraw / delete
         "create_logbook",
         "create_daily_log",
         "update_daily_log",
+        "update_scaffold_info",       # the scaffold log's project memory
     )
 
-    def test_the_role_is_named_by_a_constant(self):
-        self.assertEqual(server.ROLES_WITH_READ_ONLY_LOGBOOKS, (PM,))
+    def test_the_filers_are_named_by_a_constant(self):
+        self.assertEqual(set(server.ROLES_THAT_FILE_LOGBOOKS),
+                         {server.ROLE_SUPERINTENDENT, "cp"})
+        self.assertNotIn(PM, server.ROLES_THAT_FILE_LOGBOOKS)
 
     def test_every_write_gate_refuses_him(self):
         for name in self.WRITE_GATES:
@@ -218,15 +226,26 @@ class DailyLogsAreViewOnly(unittest.TestCase):
             )
 
     def test_the_refusal_fires(self):
+        """At EITHER level: "Same as admin" no longer exempts him."""
         from fastapi import HTTPException
-        with self.assertRaises(HTTPException) as ctx:
-            server.refuse_if_logbooks_are_read_only({"role": PM})
-        self.assertEqual(ctx.exception.status_code, 403)
+        for pm in ({"role": PM}, {"role": PM, "pm_access": "assigned"},
+                   {"role": PM, "pm_access": "full"}):
+            with self.assertRaises(HTTPException) as ctx:
+                server.refuse_if_logbooks_are_read_only(pm)
+            self.assertEqual(ctx.exception.status_code, 403)
 
-    def test_it_does_not_fire_for_anybody_else(self):
-        for role in ("cp", server.ROLE_SUPERINTENDENT, "admin", "owner",
-                     "site_device"):
+    def test_it_does_not_fire_for_the_filers_or_the_device(self):
+        for role in ("cp", server.ROLE_SUPERINTENDENT, "site_device"):
             server.refuse_if_logbooks_are_read_only({"role": role})
+
+    def test_an_admin_reads_too_but_still_deletes(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException):
+            server.refuse_if_logbooks_are_read_only({"role": "admin"})
+        server.refuse_if_logbooks_are_read_only({"role": "admin"}, deleting=True)
+        with self.assertRaises(HTTPException):
+            server.refuse_if_logbooks_are_read_only(
+                {"role": PM, "pm_access": "full"}, deleting=True)
 
     def test_appending_a_photograph_is_NOT_refused(self):
         """The one write the ruling grants him. Its absence here is the
@@ -246,18 +265,22 @@ class DailyLogsAreViewOnly(unittest.TestCase):
 
 
 class HeSignsNothing(unittest.TestCase):
-    def test_the_role_is_named_by_a_constant(self):
-        self.assertEqual(server.ROLES_WITHOUT_SIGNING_AUTHORITY, (PM,))
+    def test_he_has_no_capacity_at_either_level(self):
+        from fastapi import HTTPException
+        for user in ({"role": PM}, {"role": PM, "pm_access": "full"},
+                     {"role": "admin"}):
+            with self.assertRaises(HTTPException):
+                server.refuse_if_no_signing_capacity(user)
 
     def test_the_ledger_endpoint_refuses_him(self):
-        self.assertIn("ROLES_WITHOUT_SIGNING_AUTHORITY",
+        self.assertIn("refuse_if_no_signing_capacity",
                       _src(server.record_signature_event))
 
     def test_the_refusal_is_ahead_of_every_write(self):
         """A 403 after the document read is still a refusal; a 403 after the
         ledger insert is a signed record by a person with no capacity."""
         src = _src(server.record_signature_event)
-        self.assertLess(src.index("ROLES_WITHOUT_SIGNING_AUTHORITY"),
+        self.assertLess(src.index("refuse_if_no_signing_capacity"),
                         src.index("create_signature_event"))
 
 
