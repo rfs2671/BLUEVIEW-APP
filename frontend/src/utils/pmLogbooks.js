@@ -72,10 +72,14 @@ export function pmMayOpen(status) {
   return status === 'submitted';
 }
 
+// English, then Spanish: the people who read these are on site.
 export const PM_LOGBOOKS_NOTE =
   'View-only. You can read filed logs and add photographs to today’s. '
-  + 'Filing is done by the superintendent or the CP.';
+  + 'Filing is done by the superintendent or the CP. / '
+  + 'Solo lectura. Puede leer los registros presentados y añadir fotos a los de hoy. '
+  + 'Los registros los llena el superintendente o el CP.';
 
-export const PM_NOT_FILED_TITLE = 'Not filed yet';
+export const PM_NOT_FILED_TITLE = 'Not filed yet / Aún no presentado';
 export const PM_NOT_FILED_BODY =
-  'You can read this log once it is filed. Filing is done by the superintendent or the CP.';
+  'You can read this log once it is filed. Filing is done by the superintendent or the CP. / '
+  + 'Podrá leer este registro cuando se presente. Lo llena el superintendente o el CP.';
