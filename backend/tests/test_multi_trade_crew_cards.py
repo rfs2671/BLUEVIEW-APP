@@ -330,14 +330,16 @@ class TheServerStampsWorkTradesOnSave(unittest.TestCase):
         db.logbooks.find_one = AsyncMock(return_value=dict(stored))
         db.logbooks.update_one = AsyncMock(side_effect=update_one)
         db.projects.find_one = AsyncMock(return_value=dict(PROJECT))
-        admin = {"_id": "u9", "id": "u9", "role": "admin", "company_id": "co_a",
-                 "account_status": "approved", "assigned_projects": ["proj1"]}
+        # The CP: only the superintendent and the CP fill in a log (ruled
+        # 2026-11-18), so the filer here is one of them, not an admin.
+        cp = {"_id": "u9", "id": "u9", "role": "cp", "company_id": "co_a",
+              "account_status": "approved", "assigned_projects": ["proj1"]}
         with patch.object(server, "db", db), \
                 patch.object(server, "audit_log", AsyncMock()), \
                 patch.object(server, "_remember_other_activities", AsyncMock()), \
                 patch.object(server, "_remember_other_locations", AsyncMock()):
             asyncio.run(server.update_logbook(
-                logbook_id="lb1", data=server.LogbookUpdate(data=data), current_user=admin))
+                logbook_id="lb1", data=server.LogbookUpdate(data=data), current_user=cp))
         return captured["set"]
 
     DRAFT = {"_id": "lb1", "project_id": "proj1", "company_id": "co_a",
