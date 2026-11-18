@@ -623,8 +623,9 @@ export default function ProjectFilesScreen() {
     try {
       await dropboxAPI.linkToProject(projectId, null);
       setProject((p) => (p ? { ...p, dropbox_folder_path: null } : p));
-      setSiteDeviceSubfolders([]);
-      setSiteDeviceSelected([]);
+      // The site-device folder state moved into <SiteVisibilityPanel> (#1048);
+      // the two setters left here no longer existed, so a successful unlink
+      // threw and reported "Could not unlink the folder".
       setConfirmUnlink(false);
       toast.success('Unlinked', 'This project no longer reads from Dropbox.');
     } catch (error) {
