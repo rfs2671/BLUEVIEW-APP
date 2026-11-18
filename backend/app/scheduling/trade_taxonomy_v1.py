@@ -338,6 +338,10 @@ TRADES: Dict[str, List[str]] = {
         # logging "layout" and "framing (layout, track and studs)" as if they
         # were different work. Trades that lay out something else keep SHARED_LAYOUT.
         "interior_framing",
+        # The words a metal-stud crew writes on a sheet (operator, 2026-11-18:
+        # a company doing framing, sheetrock, taping and painting found no way
+        # to log any of it beyond its one roster trade).
+        _n("iframe_metal_stud", "metal stud framing"),
         _n("iframe_ceiling_drops", "ceiling drops"),
         _n("iframe_door_bucks", "door bucks"),
         _n("iframe_soffits_bulkheads", "soffits and bulkheads"),
@@ -364,6 +368,11 @@ TRADES: Dict[str, List[str]] = {
     ],
     "Drywall": [
         "drywall", "taping",
+        # Compound is its own pass on a real job (tape, then two or three coats
+        # of compound), and "spackle" is what a CP calls it. Spanish crews say
+        # "masilla" -- that word is a search alias below, not the label, because
+        # chip labels are the English record (a logbook is filed in English).
+        _n("dry_spackle_compound", "spackle / compound"),
         _n("dry_hang_board", "hang board"),
         _n("dry_sand", "sand"),
         _n("dry_skim_coat", "skim coat"),
@@ -603,6 +612,27 @@ ROSTER_TRADE_MAP: Dict[str, List[str]] = {
     "insulation": ["Insulation"],
     "firestopping": ["Firestopping"],
     "drywall": ["Drywall"],
+    # WHAT A DRYWALL CREW IS CALLED ON A NYC SITE (operator, 2026-11-18). Every
+    # one of these fell back to the unfiltered catalogue, whose graph nodes do
+    # not include hang board, compound or skim coat at all -- so a crew written
+    # "Sheetrock" could not find its own work on its own card.
+    "sheetrock": ["Drywall"],
+    "sheet rock": ["Drywall"],
+    "taping": ["Drywall"],
+    "tape": ["Drywall"],
+    "taper": ["Drywall"],
+    "tapers": ["Drywall"],
+    "spackle": ["Drywall"],
+    "compound": ["Drywall"],
+    # No plaster trade in the taxonomy; skim coat and patching are Drywall's.
+    "plaster": ["Drywall"],
+    "plasterer": ["Drywall"],
+    "plasterers": ["Drywall"],
+    # Metal stud is the interior partition crew. "Metal framing" has not said
+    # interior or load-bearing, so it claims both, as "framing" claims both.
+    "metal stud": ["Interior framing"],
+    "metal studs": ["Interior framing"],
+    "metal framing": ["Interior framing", "CFS (cold-formed steel)"],
     "flooring": ["Flooring"],
     "tile": ["Tile and stone"],
     "stone": ["Tile and stone"],
@@ -709,3 +739,141 @@ def node_ids_for_trades(trades) -> frozenset:
     for t in (trades or []):
         out.update(TRADES.get(t, ()))
     return frozenset(out)
+
+
+# ── Which catalog trade a piece of logged work belongs to ────────────────
+#
+# THE CONTRACT FOR THE PROGRESS REPORT (operator, 2026-11-18). One company on a
+# real job frames, hangs sheetrock, tapes and paints, and its crew card is ONE
+# row with ONE roster trade -- the worker's trade is unique per project, and the
+# gate headcount depends on that. So the row's `trade` cannot say what the
+# crew's work WAS. `work_trades` on the activity row does: the catalog trade
+# (a key of TRADES) of each selected activity, distinct, in chip order.
+#
+# A NODE CLAIMED BY SEVERAL TRADES is attributed to the first trade in the
+# CONTEXT that claims it -- the row's own work_trades as already recorded, then
+# the card's roster trade, then the company's other rostered trades -- and
+# only when none of those claims it, to its first claimant in TRADES order.
+# `patching` on a Drywall card is Drywall's, not Foundation / Concrete's.
+# Deterministic, so the client and the server compute the same answer.
+
+#: node id -> every catalog trade that claims it, in TRADES declaration order.
+CLAIMANTS: Dict[str, List[str]] = {}
+for _trade, _ids in TRADES.items():
+    for _nid in _ids:
+        CLAIMANTS.setdefault(_nid, [])
+        if _trade not in CLAIMANTS[_nid]:
+            CLAIMANTS[_nid].append(_trade)
+
+
+def catalog_trades_for_node(node_id) -> List[str]:
+    """Every catalog trade claiming this node, TRADES order. [] for unknown."""
+    if not isinstance(node_id, str):
+        return []
+    return list(CLAIMANTS.get(node_id.strip(), ()))
+
+
+def pick_work_trade(node_id, context=()) -> "str | None":
+    """The one catalog trade this node's work counts toward, given a context."""
+    claimants = catalog_trades_for_node(node_id)
+    if not claimants:
+        return None
+    for t in (context or ()):
+        if t in claimants:
+            return t
+    return claimants[0]
+
+
+def clean_work_trades(value) -> List[str]:
+    """A list of catalog trade names, distinct, order kept. Anything else is
+    dropped -- a stale or hand-built client cannot write a trade that is not in
+    the catalog."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: List[str] = []
+    for t in value:
+        if isinstance(t, str) and t in TRADES and t not in out:
+            out.append(t)
+    return out
+
+
+def derive_work_trades(activity_ids, context=(), fallback=()) -> List[str]:
+    """`work_trades` for one activity row.
+
+    activity_ids  the row's selected chip ids ("other:<label>" is free text).
+    context       catalog trades preferred for a node several trades claim.
+    fallback      the card's own catalog trade(s): used when something was
+                  selected but none of it is catalog work (free text only).
+
+    Nothing selected -> []: a crew that logged no work has no work trade.
+    Pure and total.
+    """
+    ids = [i.strip() for i in (activity_ids if isinstance(activity_ids, (list, tuple)) else [])
+           if isinstance(i, str) and i.strip()]
+    ctx = clean_work_trades(context)
+    out: List[str] = []
+    for i in ids:
+        t = pick_work_trade(i, ctx)
+        if t and t not in out:
+            out.append(t)
+    if not out and ids:
+        out = clean_work_trades(fallback)
+    return out
+
+
+#: Extra words a person types when looking for a trade's work, beyond the
+#: trade's own name and the roster keys that resolve to it. Spanish is here
+#: because the crews are; the chip labels themselves stay English (the record).
+SEARCH_ALIASES: Dict[str, List[str]] = {
+    "Drywall": ["sheetrock", "gypsum", "board", "masilla", "compuesto", "tablaroca", "yeso",
+                "cinta", "spackle", "compound", "mud", "tape"],
+    "Painting": ["paint", "pintura", "pintar", "pintor", "primer"],
+    "Interior framing": ["metal stud", "studs", "track", "estructura", "marcos"],
+    "Wood framing": ["wood", "madera", "carpentry"],
+    "CFS (cold-formed steel)": ["metal framing", "steel stud", "light gauge"],
+    "Flooring": ["piso", "pisos"],
+    "Tile and stone": ["ceramica", "azulejo", "losa"],
+    "Insulation": ["aislamiento"],
+    "Ceilings": ["techo", "drop ceiling", "act"],
+    "Electrical": ["electric", "electricista"],
+    "Plumbing": ["plomeria", "plomero"],
+}
+
+
+def search_aliases_for(trade: str) -> List[str]:
+    """Lowercase words that should find this trade's work in a search."""
+    out: List[str] = []
+
+    def _add(w):
+        w = normalize_roster_trade(w)
+        if w and w not in out:
+            out.append(w)
+
+    _add(trade)
+    for key, trades in ROSTER_TRADE_MAP.items():
+        if trade in trades:
+            _add(key)
+    for w in SEARCH_ALIASES.get(trade, ()):
+        _add(w)
+    return out
+
+
+def trade_catalog(labels: "Dict[str, str] | None" = None) -> List[dict]:
+    """Every catalog trade with every activity it claims, for the card's
+    "More work" picker: [{trade, aliases, activities: [{id, label,
+    catalog_trades}]}], TRADES order. `labels` maps a node id to its label
+    (the sequence graph's scope); a new node's label is its own."""
+    lab = dict(labels or {})
+    for n in NEW_NODES:
+        lab.setdefault(n.id, getattr(n, "scope", n.id))
+    out: List[dict] = []
+    for trade, ids in TRADES.items():
+        out.append({
+            "trade": trade,
+            "aliases": search_aliases_for(trade),
+            "activities": [
+                {"id": i, "label": lab.get(i, i), "catalog_trades": catalog_trades_for_node(i)}
+                for i in ids
+            ],
+        })
+    return out

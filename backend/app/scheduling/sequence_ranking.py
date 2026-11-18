@@ -117,6 +117,7 @@ def rank_activities(
     remembered_other_labels: Optional[Sequence[str]] = None,
     graph: Optional[SequenceGraph] = None,
     trade: Optional[str] = None,
+    company_trades: Optional[Sequence[str]] = None,
 ) -> ActivityRanking:
     """Order the activity chips for one project-day.
 
@@ -151,12 +152,30 @@ def rank_activities(
         no edges, so they are offered by trade and ordered by declaration, but
         cannot rank off what happened yesterday until the signed sequence
         document gives them edges.
+    company_trades
+        CATALOG trade names (TRADES keys) the crew's COMPANY is rostered for on
+        this project, besides the crew's own trade. One company frames, hangs
+        sheetrock, tapes and paints on a real job, and its card is one row with
+        one roster trade (operator, 2026-11-18: "its nowhere to be added").
+        Their activities join the CATALOG band AFTER the crew's own trade's,
+        never the suggested band: the card's own trade comes first. A crew
+        whose own trade resolves to nothing is narrowed to these instead of
+        falling back to the unfiltered catalogue.
     """
     from app.scheduling.trade_taxonomy_v1 import (
-        node_ids_for_trades, trades_for_roster, NEW_NODES,
+        node_ids_for_trades, trades_for_roster, NEW_NODES, TRADES,
+        catalog_trades_for_node, pick_work_trade,
     )
-    _trades = trades_for_roster(trade)
+    _own = trades_for_roster(trade)
+    _company = []
+    for _t in (company_trades or ()):
+        if isinstance(_t, str) and _t in TRADES and _t not in _own and _t not in _company:
+            _company.append(_t)
+    _trades = _own + _company
+    _own_ids = node_ids_for_trades(_own) if _own else frozenset()
     _trade_ids = node_ids_for_trades(_trades) if _trades else frozenset()
+    # The company's trades that are NOT the card's own: sorted after it.
+    _extra_ids = (_trade_ids - _own_ids) if _own_ids else frozenset()
     g = graph if graph is not None else build_sequence_rules_v1()
     raw_system = structural_system
     system = resolve_structural_system(raw_system)
@@ -204,7 +223,8 @@ def rank_activities(
     # holding them out, and both are gone — remove one and the ten vanish from
     # the product entirely rather than moving to the right cards.
     if _trade_ids:
-        suggested &= _trade_ids
+        # The card's own trade when it resolved; the company's otherwise.
+        suggested &= (_own_ids or _trade_ids)
     suggested_ids = _strip_other(sorted(suggested, key=lambda i: (order[i], i)))
 
     # ── band 2: remembered "Other" entries for this project ──────────
@@ -229,7 +249,7 @@ def rank_activities(
     _catalog_pool = (allowed & _trade_ids) if _trade_ids else allowed
     catalog_ids = _strip_other(
         sorted((i for i in _catalog_pool if i not in placed),
-               key=lambda i: (order[i], i))
+               key=lambda i: (i in _extra_ids, order[i], i))
     )
 
     chips: List[ActivityChip] = []
@@ -240,7 +260,9 @@ def rank_activities(
         # says "there is no rule row to read a trade from" rather than implying
         # one was found and was blank.
         chips.append(ActivityChip(id=chip_id, label=label, rank=len(chips),
-                                  band=band, trade=trade_of.get(chip_id)))
+                                  band=band, trade=trade_of.get(chip_id),
+                                  catalog_trades=catalog_trades_for_node(chip_id),
+                                  work_trade=pick_work_trade(chip_id, _trades)))
 
     for i in suggested_ids:
         _emit(i, label_of[i], "suggested")

@@ -32,6 +32,10 @@ SYNONYMS: Dict[str, str] = {
     # Drywall
     "drywall": "Drywall", "sheetrock": "Drywall", "taper": "Drywall", "taping": "Drywall",
     "drywaller": "Drywall", "sheet rock": "Drywall", "gypsum": "Drywall", "board": "Drywall",
+    # What a drywall crew's work is called on site (operator, 2026-11-18). No
+    # plaster trade is published, and its work (skim coat, patching) is Drywall's.
+    "tape": "Drywall", "spackle": "Drywall", "compound": "Drywall", "plaster": "Drywall",
+    "masilla": "Drywall", "tablaroca": "Drywall",
     # Painting
     "paint": "Painting", "painter": "Painting", "painting": "Painting", "pintor": "Painting",
     "pintura": "Painting",
@@ -45,6 +49,8 @@ SYNONYMS: Dict[str, str] = {
     # Framing (carpentry is ruled under Framing)
     "framing": "Framing", "framer": "Framing", "carpenter": "Framing", "carpentry": "Framing",
     "carpintero": "Framing", "carpinteria": "Framing", "wood framing": "Framing",
+    "metal stud": "Framing", "metal studs": "Framing", "metal framing": "Framing",
+    "steel stud": "Framing", "steel studs": "Framing",
     # Concrete / Formwork
     "concrete": "Concrete", "cement": "Concrete", "concreto": "Concrete",
     "formwork": "Formwork", "forms": "Formwork", "foundation": "Formwork",

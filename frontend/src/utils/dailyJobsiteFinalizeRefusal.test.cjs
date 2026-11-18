@@ -419,6 +419,12 @@ async function run({ pushError, savedId = 'log123', saveFailed = false, locale =
     // into a test of the guard instead. The guard has its own coverage in
     // draftFreshness.test.cjs.
     draftConflict: null,
+    // `work_trades` ON EVERY PAYLOAD ROW (the progress report's contract).
+    // Declared for the same reason as draftConflict: this harness injects every
+    // free name, and an undeclared one throws before the refusal path. Nothing
+    // here is about which trade a crew's work belongs to -- the derivation is
+    // executed in multiTradeCrewCards.test.cjs and recomputed by the server.
+    rowWorkTrades: () => [],
     // AND THE PREDICATE THAT READS IT — THE REAL ONE, NOT A STUB.
     //
     // The guard is `if (submitRefused(draftConflict)) return;`, so the harness

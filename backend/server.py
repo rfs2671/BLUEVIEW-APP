@@ -32671,6 +32671,12 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     if not project_access_ok(project, data.project_id, current_user):
         raise HTTPException(status_code=403, detail="Not authorized for this project")
 
+    # WHICH CATALOG TRADE EACH CREW'S WORK BELONGS TO, derived server-side so a
+    # stale client cannot omit it (see _with_work_trades), before anything
+    # below reads or writes the payload.
+    if data.log_type == "daily_jobsite" and isinstance(data.data, dict):
+        data.data = _with_work_trades(data.data, project)
+
     # ── SUBMIT GATE ─────────────────────────────────────────────────────────
     # For the nine IMMEDIATE types the signature IS the freeze: `is_locked` is
     # set below purely from `status == "submitted"`, so without this check a POST
@@ -33290,8 +33296,11 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     # submitted), so no flow in use reaches this; it closes the shape.
     _cleared_sig = None
     _stored_sig = (existing_lb or {}).get("cp_signature")
+    # WORK_TRADES IS DERIVED, NOT CONTENT. Stamped below on every daily_jobsite
+    # write, so a log saved before the field existed differs from its own
+    # re-save by that field alone -- which must not un-affirm a signature.
     if (data.data is not None
-            and data.data != (existing_lb or {}).get("data")
+            and _without_work_trades(data.data) != _without_work_trades((existing_lb or {}).get("data"))
             and _is_affirmed_signature(_stored_sig)):
         _incoming = data.cp_signature
         _fresh = (_is_affirmed_signature(_incoming)
@@ -33421,6 +33430,15 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     now = datetime.now(timezone.utc)
     update = {"updated_at": now}
     if data.data is not None:
+        # The same derivation create_logbook stamps (see _with_work_trades):
+        # the stored log type decides, since LogbookUpdate carries none.
+        if (existing_lb or {}).get("log_type") == "daily_jobsite" and isinstance(data.data, dict):
+            try:
+                _wt_project = await db.projects.find_one(
+                    {"_id": to_query_id((existing_lb or {}).get("project_id"))})
+            except Exception:  # pragma: no cover - a save never fails on this
+                _wt_project = None
+            data.data = _with_work_trades(data.data, _wt_project or {})
         update["data"] = data.data
     if _cleared_sig is not None:
         # The stale mark, un-affirmed (see NEW CONTENT ON A SIGNED DRAFT).
@@ -35238,6 +35256,73 @@ async def _remember_other_activities(project_id, data) -> None:
         )
 
 
+def _company_catalog_trades(project, company) -> List[str]:
+    """Catalog trades (trade_taxonomy_v1.TRADES keys) one company is rostered
+    for on this project: every `trade_assignments` row whose company matches by
+    _roster_key, resolved through trades_for_roster, distinct, roster order.
+
+    A company may hold several rows -- one per trade -- while each of its
+    workers holds ONE trade on the project (worker_project_trades is unique on
+    worker + project, and the headcount depends on that). This is how the
+    crew's card reaches the company's other trades without touching either.
+    """
+    from app.scheduling.trade_taxonomy_v1 import trades_for_roster
+    key = _roster_key(company)
+    if not key or not isinstance(project, dict):
+        return []
+    out: List[str] = []
+    for row in project.get("trade_assignments") or []:
+        if not isinstance(row, dict) or _roster_key(row.get("company")) != key:
+            continue
+        for t in trades_for_roster(row.get("trade")):
+            if t not in out:
+                out.append(t)
+    return out
+
+
+def _with_work_trades(data, project):
+    """`data` with `work_trades` on every activity row of a daily_jobsite payload.
+
+    THE CONTRACT THE PROGRESS REPORT READS: the catalog trade(s) the row's
+    selected work belongs to, distinct, in chip order -- derived here from
+    `activity_ids` so a stale client that never heard of the field cannot omit
+    it, and so a hand-built one cannot write a trade outside the catalog. The
+    client's own value is honoured only as the CONTEXT for an activity several
+    trades claim (it saw which group the CP picked it from); the answer is
+    always recomputed. Free text only -> the card's own trade. Nothing selected
+    -> [].
+
+    A NEW dict with new row dicts: the caller's payload is not mutated. A row
+    that is not a dict, and a payload with no activities list, pass through.
+    """
+    from app.scheduling.trade_taxonomy_v1 import (
+        clean_work_trades, derive_work_trades, trades_for_roster,
+    )
+    if not isinstance(data, dict) or not isinstance(data.get("activities"), list):
+        return data
+    rows = []
+    for row in data["activities"]:
+        if not isinstance(row, dict):
+            rows.append(row)
+            continue
+        own = trades_for_roster(row.get("trade"))
+        context = (clean_work_trades(row.get("work_trades")) + own
+                   + _company_catalog_trades(project, row.get("company")))
+        rows.append({**row, "work_trades": derive_work_trades(_row_chip_ids(row), context, own)})
+    return {**data, "activities": rows}
+
+
+def _without_work_trades(data):
+    """`data` with the derived `work_trades` taken off every activity row --
+    for comparing content. It is derived from what the CP selected, so its
+    appearing on a row is not new content and must not un-affirm a signature."""
+    if not isinstance(data, dict) or not isinstance(data.get("activities"), list):
+        return data
+    return {**data, "activities": [
+        ({k: v for k, v in r.items() if k != "work_trades"} if isinstance(r, dict) else r)
+        for r in data["activities"]]}
+
+
 @api_router.get(
     "/projects/{project_id}/activity-chips",
     dependencies=[Depends(require_approved), Depends(require_project_access)],
@@ -35246,9 +35331,18 @@ async def get_activity_chips(
     project_id: str,
     date: Optional[str] = None,
     trade: Optional[str] = None,
+    company: Optional[str] = None,
+    catalog: bool = False,
     current_user = Depends(get_current_user),
 ):
     """Ranked activity chips for one project-day.
+
+    `company` is the crew's company. Its OTHER rostered trades on this project
+    (trade_assignments rows for that company, matched by _roster_key) join the
+    catalog band after the crew's own trade -- one company frames, hangs
+    sheetrock, tapes and paints, and its card is one row with one trade.
+    `catalog=true` adds `trade_catalog`: every catalog trade and its activities,
+    for the card's "More work" picker (work of a trade nobody rostered).
 
     RANKING ONLY. The response orders chips and says why; it never pre-selects
     one (ActivityChip.selected is Literal[False], so a pre-selected chip is
@@ -35291,12 +35385,14 @@ async def get_activity_chips(
     # catalog bands narrow to what that trade actually does — an electrical
     # crew was being offered drywall because the ranking keyed off the
     # PROJECT's prior day and nothing else.
+    _company_trades = _company_catalog_trades(project, company)
     ranking = rank_activities(
         project_id=str(project_id),
         prior_activity_ids=_activity_chip_ids((prior or {}).get("data")),
         structural_system=project.get("structural_system"),
         remembered_other_labels=project.get(PROJECT_OTHER_ACTIVITIES_FIELD) or [],
         trade=trade,
+        company_trades=_company_trades,
     )
     # THE CREW'S OWN HISTORY, ITS TRADE'S SEQUENCE AND THE CONFIRMED SCHEDULE
     # (app/scheduling/crew_history.py, trade_sequence.py, schedule_hints.py).
@@ -35347,6 +35443,15 @@ async def get_activity_chips(
     out["trade"] = trade or None
     _resolved = trades_for_roster(trade)
     out["resolved_trades"] = _resolved
+    # The catalog trades the crew's company is rostered for on this project,
+    # the card's own first. Empty without a `company`.
+    out["company"] = company or None
+    out["company_trades"] = _company_trades
+    if catalog:
+        from app.scheduling.sequence_rules_v1 import build_sequence_rules_v1
+        from app.scheduling.trade_taxonomy_v1 import trade_catalog
+        out["trade_catalog"] = trade_catalog(
+            {n.id: getattr(n, "scope", n.id) for n in build_sequence_rules_v1().nodes})
 
     # LEARN WHAT ADMINS ACTUALLY TYPE, rather than guessing at synonyms.
     #

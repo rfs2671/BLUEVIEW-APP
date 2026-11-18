@@ -1351,14 +1351,18 @@ export const CHIP_SLOTS = 4;
  *
  * Returns { primary, rest, basis }. `always` is gone from the shape.
  */
-export function composeChipBands({ chips, allChips, resolvedTrades, priorDate }) {
+export function composeChipBands({ chips, allChips, resolvedTrades, priorDate, companyTrades }) {
   // A malformed chip is DROPPED FIRST, before anything reads `.band`. The
   // ranker is total and never returns one, but this runs on a network response
   // and a chip list that throws would stop a CP logging a day of work — the
   // one thing the whole sequence layer is written not to do.
   const notOther = (c) => c && typeof c === 'object' && c.id !== OTHER_CHIP_ID;
   const mine = (Array.isArray(chips) ? chips : []).filter(notOther);
-  const filtered = Array.isArray(resolvedTrades) && resolvedTrades.length > 0;
+  // FILTERED when the crew's own trade resolved OR its company's rostered
+  // trades did: the server narrows a crew typed "Laborer" whose company is
+  // rostered for drywall and painting to those two trades' work.
+  const filtered = (Array.isArray(resolvedTrades) && resolvedTrades.length > 0)
+    || (Array.isArray(companyTrades) && companyTrades.length > 0);
 
   const suggested = mine.filter((c) => c.band === 'suggested');
   const tradeCatalog = filtered ? mine.filter((c) => c.band === 'catalog') : [];
@@ -1428,7 +1432,151 @@ export function composeChipBands({ chips, allChips, resolvedTrades, priorDate })
   // work from its own expander.
   const rest = mine.filter((c) => !shown.has(c.id));
 
-  return { primary, rest, basis, hidden: rest.length };
+  // THE COMPANY'S OTHER TRADES, GROUPED. One company frames, hangs sheetrock,
+  // tapes and paints (operator, 2026-11-18), and the server adds its other
+  // rostered trades' work to this card AFTER the card's own trade. The
+  // expander says which trade each group is, so a CP looking for "taping"
+  // scans the Drywall group rather than one long list. First-seen order; a
+  // chip with no work_trade (unfiltered, or a remembered entry) groups
+  // under ''.
+  const restGroups = [];
+  for (const c of rest) {
+    const trade = typeof c.work_trade === 'string' ? c.work_trade : '';
+    const g = restGroups.find((x) => x.trade === trade);
+    if (g) g.chips.push(c);
+    else restGroups.push({ trade, chips: [c] });
+  }
+
+  return { primary, rest, restGroups, basis, hidden: rest.length };
+}
+
+/**
+ * The cache key for one crew's chip list: its trade AND its company, because
+ * the company's other rostered trades join the list -- two Framing crews of
+ * two companies can see different cards. A crew with no company keys on its
+ * trade alone, exactly as before, and '' is still the unfiltered list.
+ */
+export function crewChipKey(trade, company) {
+  const t = String(trade || '').trim();
+  const c = rosterKey(company);
+  return c ? `${t}|${c}` : t;
+}
+
+/**
+ * `work_trades` for one activity row -- THE CONTRACT THE PROGRESS REPORT
+ * READS: the catalog trade(s) the row's selected work belongs to, distinct, in
+ * chip order. The JS mirror of trade_taxonomy_v1.derive_work_trades. The
+ * server recomputes it on every save (server.py _with_work_trades), so this is
+ * the value a draft carries until then, not the authority.
+ *
+ *   activityIds    the row's selected chip ids ("other:<label>" is free text)
+ *   claimantsById  Map id -> the catalog trades claiming it (chip.catalog_trades)
+ *   context        trades preferred for an activity several trades claim
+ *   fallback       the card's own catalog trade(s), used when something was
+ *                  selected but none of it is catalog work (free text only)
+ *
+ * Nothing selected -> []. Pure and total.
+ */
+export function workTradesFor(activityIds, claimantsById, context, fallback) {
+  const list = (v) => (Array.isArray(v) ? v : []).filter((t) => typeof t === 'string' && t);
+  const ids = list(activityIds).map((i) => i.trim()).filter(Boolean);
+  const ctx = list(context);
+  const claimantsOf = (id) => (claimantsById && typeof claimantsById.get === 'function'
+    ? list(claimantsById.get(id)) : []);
+  const out = [];
+  for (const id of ids) {
+    const claimants = claimantsOf(id);
+    if (claimants.length === 0) continue;
+    const pick = ctx.find((t) => claimants.includes(t)) || claimants[0];
+    if (!out.includes(pick)) out.push(pick);
+  }
+  if (out.length === 0 && ids.length > 0) {
+    for (const t of list(fallback)) if (!out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/**
+ * Map id -> catalog trades, from every chip list the screen holds and the
+ * "More work" catalogue. Every source carries the same claimant list for an id.
+ */
+export function claimantsIndex(chipLists, tradeCatalog) {
+  const m = new Map();
+  for (const chips of (Array.isArray(chipLists) ? chipLists : [])) {
+    for (const c of (Array.isArray(chips) ? chips : [])) {
+      if (c && typeof c.id === 'string' && Array.isArray(c.catalog_trades)
+          && c.catalog_trades.length > 0 && !m.has(c.id)) m.set(c.id, c.catalog_trades);
+    }
+  }
+  for (const g of (Array.isArray(tradeCatalog) ? tradeCatalog : [])) {
+    for (const a of (Array.isArray(g && g.activities) ? g.activities : [])) {
+      if (a && typeof a.id === 'string' && Array.isArray(a.catalog_trades)
+          && a.catalog_trades.length > 0 && !m.has(a.id)) m.set(a.id, a.catalog_trades);
+    }
+  }
+  return m;
+}
+
+/**
+ * One catalog trade's activities as chips, for the card's "More work" picker:
+ * work of a trade the company is NOT rostered for (only "Framing" on the
+ * roster, and they taped today). Each chip carries `work_trade` = that trade.
+ */
+export function catalogTradeChips(tradeCatalog, trade) {
+  const g = (Array.isArray(tradeCatalog) ? tradeCatalog : []).find((x) => x && x.trade === trade);
+  if (!g || !Array.isArray(g.activities)) return [];
+  return g.activities
+    .filter((a) => a && typeof a.id === 'string' && typeof a.label === 'string')
+    .map((a) => ({ id: a.id, label: a.label, catalog_trades: a.catalog_trades || [], work_trade: trade }));
+}
+
+/**
+ * TYPE-AHEAD OVER EVERY CATALOG TRADE'S WORK -- what `searchChips` over the
+ * unfiltered list could not do. That list is the sequence graph's 83 nodes, so
+ * "hang board", "skim coat" and "prime" were in it for no query, and
+ * "sheetrock" or "compound" matched no label at all.
+ *
+ * A query matches an activity by its label (every word, as searchChips does),
+ * OR a trade by its name or aliases ("sheetrock", "masilla", "pintura"), which
+ * lists that trade's work after the label matches. Never "Other", never a chip
+ * already on the card, each id once, at most `limit`. Pure and total.
+ */
+export function searchCatalog(tradeCatalog, query, exclude = [], limit = 12) {
+  const q = String(query == null ? '' : query).trim().toLowerCase();
+  if (q.length < 2 || !Array.isArray(tradeCatalog)) return [];
+  const words = q.split(' ').filter(Boolean);
+  const skip = new Set(Array.isArray(exclude) ? exclude : []);
+  const seen = new Set();
+  const byLabel = [];
+  const byTrade = [];
+  for (const g of tradeCatalog) {
+    if (!g || typeof g.trade !== 'string' || !Array.isArray(g.activities)) continue;
+    const names = [g.trade, ...(Array.isArray(g.aliases) ? g.aliases : [])]
+      .filter((x) => typeof x === 'string' && x).map((x) => x.toLowerCase());
+    const tradeHit = names.some((n) => n.startsWith(q) || n === q);
+    for (const a of g.activities) {
+      if (!a || typeof a.id !== 'string' || typeof a.label !== 'string') continue;
+      if (a.id === OTHER_CHIP_ID || a.id.startsWith('other:') || skip.has(a.id)) continue;
+      const chip = { id: a.id, label: a.label, catalog_trades: a.catalog_trades || [], work_trade: g.trade };
+      const label = a.label.toLowerCase();
+      if (words.every((w) => label.includes(w))) {
+        if (!seen.has(a.id)) { seen.add(a.id); byLabel.push(chip); }
+      } else if (tradeHit) {
+        byTrade.push(chip);
+      }
+    }
+  }
+  byLabel.sort((a, b) => (
+    (b.label.toLowerCase().startsWith(words[0]) ? 1 : 0) - (a.label.toLowerCase().startsWith(words[0]) ? 1 : 0)
+    || a.label.length - b.label.length || a.label.localeCompare(b.label)
+  ));
+  const out = [...byLabel];
+  for (const c of byTrade) {
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    out.push(c);
+  }
+  return out.slice(0, Math.max(1, Number(limit) || 12));
 }
 
 /**
@@ -1474,6 +1622,11 @@ export function searchChips(allChips, query, exclude = [], limit = 12) {
 
 export default {
   searchChips,
+  searchCatalog,
+  catalogTradeChips,
+  claimantsIndex,
+  workTradesFor,
+  crewChipKey,
   rosterKey,
   GATE_SOURCE,
   CP_SOURCE,

@@ -429,7 +429,15 @@ export default {
     chipsSuggested: 'Suggested from yesterday',
     chipsAlwaysAvailable: 'Always available',
     chipsCatalog: 'All activities',
-    chipsSearchPlaceholder: 'Search every activity…',
+    chipsSearchPlaceholder: 'Search all work — sheetrock, taping, paint…',
+    // MORE WORK, ANY TRADE: one company frames, hangs sheetrock, tapes and
+    // paints, and its roster may list only one of those (operator,
+    // 2026-11-18). This namespace is English-only by rule (EN_ONLY_NAMESPACES
+    // in i18n.test.cjs -- a logbook is an English record), so the two
+    // controls a Spanish-speaking CP must find carry both languages in the
+    // one string. The record they write is the English chip label.
+    chipsMoreWork: 'More work / Más trabajos',
+    chipsMoreWorkPick: 'Which trade? / ¿Qué oficio?',
     chipsSearchNone: 'Nothing matches — use Other and type it.',
     // Shown when a crew's four come from its TRADE rather than from the
     // sequence. Most trades' activities carry no edges in the graph, so a
