@@ -183,7 +183,9 @@ class TheReportReadsWhatIsStored(unittest.TestCase):
             raise AssertionError("vision was called for a photo that already has a verdict")
         with mock.patch.object(server, "db", db), mock.patch.object(server, "_report_judge_photo", boom):
             chosen = asyncio.run(server._report_photos(rep, "p1"))
-        self.assertEqual(len(chosen), 5)                          # a full row, from stored verdicts alone
+        # every qualifying photo, from stored verdicts alone (up to eight per sub and
+        # kind of work since 2026-11-18; six here)
+        self.assertEqual(len(chosen), min(6, server.progress_report.MAX_PER_SUB))
         self.assertEqual(rep["photos_unjudged"], 0)
 
     def test_only_photos_without_a_verdict_are_judged_now(self):

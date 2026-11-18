@@ -137,7 +137,10 @@ class TheChart(unittest.TestCase):
         rep = _report()
         self.assertGreaterEqual((rep["end"] - rep["start"]).days + 1, RR.GANTT_MIN_DAYS)
         html = _html(rep)
-        self.assertIn("Schedule progress", html)
+        # Ruled 2026-11-18: this chart is who was on site, not the schedule; the
+        # progress page (lib/progress_stages) is where progress is read.
+        self.assertIn("Crews on site, day by day", html)
+        self.assertNotIn("Schedule progress", html)
         self.assertEqual(html.count("<td class='who'><span"), len(rep["subs"]))
 
     def test_the_earliest_start_is_on_top(self):

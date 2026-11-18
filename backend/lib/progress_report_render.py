@@ -2,15 +2,15 @@
 
 DESIGN RULES (they are the product's credibility, not decoration)
   * Page 1 answers, in 60 seconds: how much activity, what changed since the
-    previous period, who is on site, what is at risk, what is coming, and
-    whether a schedule and financials are verified.
-  * Sections that have nothing to say are LEFT OUT (no empty "None" pages);
-    what is missing is said once, briefly, where a reader would look for it
-    (the schedule and financial cards on page 1, the basis page at the end).
+    previous period, who is on site, what is at risk, what is coming, and how
+    far each kind of work has got (estimated from the daily logs).
+  * Sections that have nothing to say are LEFT OUT (no empty "None" pages,
+    no "Not provided" cards: ruled 2026-11-18, a card a user has no way to
+    fill is not shown).
   * Every statement carries a small source tag -- G gate check-ins, L filed
-    daily logs, R DOB/DOT record, S schedule, F financials -- and the last
-    page indexes the sources, so a reader can tell a record from a figure the
-    engine calculated.
+    daily logs, R DOB/DOT record, S schedule -- and the last page indexes the
+    sources, so a reader can tell a record from a figure the engine
+    calculated. An ESTIMATE says so where it is printed.
   * Photographs are real photographs from the filed daily logs, each with the
     sub, the date, the location as written and the sub's own work line. No
     generated imagery, and no before/after pairing.
@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from lib import progress_report as P
+from lib import progress_stages as ST
 from lib import project_report as base
 from lib.datefmt import strftime as _fmt
 
@@ -123,9 +124,9 @@ table.floors th { text-align: center; padding: 2px 0; font-size: 7pt; }
 table.floors td.name { text-align: left; white-space: nowrap; padding-right: 8px; font-size: 8pt; border: 0;
                        border-bottom: 1px solid #e3e7ee; }
 .photos { font-size: 0; }
-.strip-row { page-break-inside: avoid; margin-top: 10px; }
-.strip-row h4 { margin: 0 0 4px; font-size: 9.5pt; }
-.photo { display: inline-block; vertical-align: top; width: 19%; margin: 0 1% 6px 0; page-break-inside: avoid; font-size: 9pt; }
+.strip-row { margin-top: 10px; }
+.strip-row h4 { margin: 0 0 4px; font-size: 9.5pt; page-break-after: avoid; }
+.photo { display: inline-block; vertical-align: top; width: 24%; margin: 0 1% 6px 0; page-break-inside: avoid; font-size: 9pt; }
 .photo .frame { height: 1.9in; background: #eef1f5; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
 .photo img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block; }
 .photo .cap { font-size: 8pt; margin-top: 3px; }
@@ -135,6 +136,30 @@ table.floors td.name { text-align: left; white-space: nowrap; padding-right: 8px
 .legend { font-size: 7.5pt; color: #5b6676; margin-top: 6px; }
 .chart { display: block; margin: 4px 0; }
 .foot { font-size: 7.5pt; color: #5b6676; margin-top: 10px; }
+table.board { table-layout: fixed; }
+table.board th { text-align: center; padding: 2px 1px; font-size: 7pt; border-bottom: 1px solid #12263F; }
+table.board th.work { text-align: left; width: 30%; }
+table.board th.est, table.board td.est { width: 17%; text-align: left; }
+table.board th.trend, table.board td.trend { width: 12%; }
+table.board td { padding: 2px 1px; border-bottom: 1px solid #fff; vertical-align: middle; page-break-inside: avoid; }
+table.board td.work { font-size: 8.3pt; padding-right: 6px; border-bottom: 1px solid #e3e7ee; }
+table.board td.work .who { display: block; font-size: 7.3pt; color: #5b6676; }
+table.board td.cell { text-align: center; font-size: 6.6pt; font-weight: 700; border-left: 1.5px solid #fff; }
+td.st-done { background: #12263F; color: #fff; }
+td.st-active { background: #2A7F8E; color: #fff; }
+td.st-started { background: #cfe0ef; color: #12263F; }
+td.st-none { background: #f3f5f8; color: #9aa4b2; font-weight: 400; }
+td.est .bar { height: 7px; background: #e3e7ee; border-radius: 3px; margin-top: 2px; }
+td.est .bar i { display: block; height: 7px; background: #2A7F8E; border-radius: 3px; }
+td.est b { font-size: 9pt; color: #12263F; }
+.card .prow { font-size: 8.2pt; margin: 1px 0; display: flex; align-items: center; gap: 6px; }
+.card .prow span { flex: 1 1 auto; min-width: 0; }
+.card .prow .bar { flex: 0 0 52px; height: 5px; background: #e3e7ee; border-radius: 3px; }
+.card .prow .bar i { display: block; height: 5px; background: #2A7F8E; border-radius: 3px; }
+ul.plain { margin: 0 0 6px; padding-left: 14px; font-size: 8.9pt; }
+ul.plain li { margin: 0 0 3px; }
+.photos { page-break-inside: avoid; }
+.floorhead { page-break-after: avoid; font-size: 7.5pt; color: #5b6676; letter-spacing: .6px; text-transform: uppercase; margin: 2px 0 2px; }
 """
 
 
@@ -304,12 +329,28 @@ def _risks_block(rep: Dict[str, Any]) -> str:
     return f"<div><h4>Risks and watch items</h4>{body}</div>"
 
 
+def _est_words(n: Optional[int]) -> str:
+    return f"about {n}%" if n is not None else "—"
+
+
+def _progress_card(rep: Dict[str, Any]) -> str:
+    """Page 1: the kinds of work of this period and their estimate, with the
+    word ESTIMATED on it. Nothing when the logs name no work."""
+    board = rep.get("progress") or {}
+    trades = board.get("trades") or {}
+    keys = [k for k in (board.get("worked_in_period") or list(trades)) if trades[k].get("estimate") is not None][:4]
+    if not keys:
+        return ""
+    rows = "".join(f"<div class='prow'><span>{_e(trades[k]['label'])} — <b>{_est_words(trades[k]['estimate'])}</b></span>"
+                   f"<div class='bar'><i style='width:{trades[k]['estimate']}%'></i></div></div>" for k in keys)
+    return (f"<div class='card'><h4>Progress (estimated) {_tag('L')}</h4>{rows}"
+            "<div class='muted'>Estimated from the filed daily logs; see the progress page.</div></div>")
+
+
 def _schedule_card(rep: Dict[str, Any]) -> str:
     plan = rep["schedule"]
     if not (plan and plan.get("usable")):
-        return ("<div class='card na'><h4>Schedule</h4><div class='big'>Not provided</div>"
-                "<div class='muted'>No confirmed schedule is on file, so completion and milestone status "
-                "are not reported.</div></div>")
+        return ""
     proj, ms, c = plan["project"], plan["milestones"], plan["counts"]
     lines = [f"<span class='big'>{c['complete']} of {c['activities']}</span> activities complete "
              "<span class='muted'>(count, not a percent)</span>"]
@@ -329,19 +370,6 @@ def _schedule_card(rep: Dict[str, Any]) -> str:
             + f"<div class='muted'>{asof}</div></div>")
 
 
-def _finance_card(rep: Dict[str, Any]) -> str:
-    f = rep["financials"]
-    if not f:
-        return ("<div class='card na'><h4>Financial</h4><div class='big'>Not provided</div>"
-                "<div class='muted'>No confirmed budget, change-order or draw data is on file.</div></div>")
-    figs = f["figures"]
-    pick = [("revised_contract", "Revised contract"), ("contract_value", "Contract"),
-            ("billed_to_date", "Billed to date"), ("cost_to_complete", "Cost to complete")]
-    shown = [f"{lbl}: <b>${figs[k]:,.0f}</b>" for k, lbl in pick if k in figs][:3]
-    return (f"<div class='card'><h4>Financial {_tag('F')}</h4>" + "<br>".join(shown)
-            + f"<div class='muted'>As of {_e(_fmt(f['as_of'], '%b %-d, %Y'))} · {_e(f['source'])}</div></div>")
-
-
 def _coming_block(rep: Dict[str, Any]) -> str:
     up = rep["upcoming"][:5]
     if not up:
@@ -351,7 +379,7 @@ def _coming_block(rep: Dict[str, Any]) -> str:
                       for u in up) + "</ul></div>")
 
 
-_LABELS = ("Reported work", "Regulatory", "Schedule", "Financial")
+_LABELS = ("Reported work", "Regulatory", "Schedule", "Progress")
 
 
 def _lead(text: str) -> str:
@@ -483,11 +511,78 @@ def _progress(rep: Dict[str, Any], images: Optional[Dict[str, str]] = None) -> s
     legend = ("<div class='legend'><span class='dot' style='background:#5b6676'></span>On site"
               + ("&nbsp;&nbsp;<svg width='8' height='8' viewBox='0 0 8 8'><circle cx='4' cy='4' r='3' fill='#fff' "
                  f"stroke='{NAVY}'/></svg> Photo in this report" if photo_days else "") + "</div>")
-    return (f"<section class='pg'><h2>Schedule progress {_tag('G')}{_tag('L')}</h2>"
+    return (f"<section class='pg'><h2>Crews on site, day by day {_tag('G')}{_tag('L')}</h2>"
             "<p class='muted'>Who worked when, and what they reported, from site check-ins and filed daily logs. "
             "A bar is days on site, not measured completion.</p>"
             f"<table class='gantt'><tr><td class='who'></td><td class='bar'>{_gantt_axis(start, end, ticks)}</td><td class='n'></td></tr>"
             f"{''.join(rows)}</table>{legend}</section>")
+
+
+_STAGE_CLS = {ST.DONE: "st-done", ST.ACTIVE: "st-active", ST.STARTED: "st-started", ST.NONE: "st-none"}
+_STAGE_SHORT = {ST.DONE: "Done", ST.ACTIVE: "Active", ST.STARTED: "Started", ST.NONE: "–"}
+
+
+def _trend_svg(points: List[Optional[int]], width: int = 64, height: int = 16) -> str:
+    """The estimate week by week, as a small line from 0 to 100."""
+    pts = [(i, v) for i, v in enumerate(points) if v is not None]
+    if len(pts) < 2:
+        return ""
+    n = max(len(points) - 1, 1)
+    xy = " ".join(f"{1 + i * (width - 2) / n:.1f},{height - 1 - v * (height - 2) / 100:.1f}" for i, v in pts)
+    lx, ly = xy.split(" ")[-1].split(",")
+    return (f"<svg class='chart' width='{width}' height='{height}' viewBox='0 0 {width} {height}'>"
+            f"<line x1='0' y1='{height - 1}' x2='{width}' y2='{height - 1}' stroke='{LINE}' stroke-width='1'/>"
+            f"<polyline points='{xy}' fill='none' stroke='#2A7F8E' stroke-width='1.4'/>"
+            f"<circle cx='{lx}' cy='{ly}' r='1.8' fill='#2A7F8E'/></svg>")
+
+
+def _board_section(rep: Dict[str, Any]) -> str:
+    """THE PROGRESS PAGE: in plain English, then the stage of each kind of
+    work on each floor, its estimate and how the estimate has moved week by
+    week. Everything here is read from the filed daily logs by the fixed rules
+    of lib/progress_stages, and printed as an estimate."""
+    board = rep.get("progress") or {}
+    trades = board.get("trades") or {}
+    if not trades:
+        return ""
+    floors = board.get("floors") or []
+    order = list(board.get("worked_in_period") or []) + [k for k in trades if k not in (board.get("worked_in_period") or [])]
+    hist = board.get("history") or []
+    plain = "".join(f"<li>{_e(ST.sentence(trades[k], floors))}</li>" for k in order)
+    other = any(trades[k].get("elsewhere") for k in order)
+    head = ("<tr><th class='work'>Kind of work</th>" + "".join(f"<th>Fl {f}</th>" for f in floors)
+            + ("<th>Other</th>" if other else "") + "<th class='est'>Estimate</th>"
+            + ("<th class='trend'>Week by week</th>" if len(hist) > 1 else "") + "</tr>")
+    rows = []
+    for k in order:
+        t = trades[k]
+        cells = "".join(f"<td class='cell {_STAGE_CLS[t['cells'][f]['stage']]}'>{_STAGE_SHORT[t['cells'][f]['stage']]}</td>"
+                        for f in floors)
+        if other:
+            ew = t.get("elsewhere")
+            cells += (f"<td class='cell {_STAGE_CLS[ew['stage']]}'>{_STAGE_SHORT[ew['stage']]}</td>" if ew
+                      else "<td class='cell st-none'>–</td>")
+        est = t.get("estimate")
+        est_html = (f"<b>{_est_words(est)}</b><div class='bar'><i style='width:{est}%'></i></div>" if est is not None
+                    else "<span class='muted'>not tied to a floor</span>")
+        trend = (f"<td class='trend'>{_trend_svg([h['estimates'].get(k) for h in hist])}</td>" if len(hist) > 1 else "")
+        who = f"<span class='who'>{_e(', '.join(t['companies']))}</span>" if t.get("companies") else ""
+        rows.append(f"<tr><td class='work'>{_e(t['label'])}{who}</td>{cells}<td class='est'>{est_html}</td>{trend}</tr>")
+    legend = ("<div class='legend'>"
+              + "&nbsp;&nbsp;".join(f"<span class='dot' style='background:{c}'></span>{_e(lbl)}"
+                                    for c, lbl in (("#12263F", "Done — appears complete"),
+                                                   ("#2A7F8E", "Active — worked in the last 7 days"),
+                                                   ("#cfe0ef", "Started — worked earlier"),
+                                                   ("#f3f5f8", "Not reported on that floor")))
+              + "</div>")
+    span = (f" Week by week: the estimate at the end of each of the last {len(hist)} weeks, read from the logs "
+            "filed up to that day." if len(hist) > 1 else "")
+    return (f"<section class='pg'><h2>Progress by trade and floor (estimated) {_tag('L')}</h2>"
+            f"<p class='muted'>How far each kind of work has got on each floor, read from the filed daily logs "
+            f"and their photographs up to {_e(_fmt(rep['end'], '%b %-d, %Y'))}.{_e(span)}</p>"
+            f"<ul class='plain'>{plain}</ul>"
+            f"<table class='board'>{head}{''.join(rows)}</table>{legend}"
+            f"<div class='strip'><b>How the estimate is made.</b> {_e(ST.BASIS)}</div></section>")
 
 
 def _schedule_section(rep: Dict[str, Any]) -> str:
@@ -554,33 +649,55 @@ def _schedule_section(rep: Dict[str, Any]) -> str:
             f"{mtable}{dev}{planned}{groups}{floors}</section>")
 
 
+def _photo_cell(p: Dict[str, Any], images: Dict[str, str]) -> str:
+    see = f"<br><span class='muted'>{_e(p['caption'])}</span>" if p.get("caption") else ""
+    return (f"<div class='photo'><div class='frame'><img src='{images[p['key']]}'/></div>"
+            f"<div class='cap'>{_e(_fmt(p['date'], '%b %-d'))}"
+            f"{' · ' + _e(p['where']) if p.get('where') else ''}{see}</div></div>")
+
+
+def _photo_rows(ps: List[Dict[str, Any]], images: Dict[str, str], per: int = 4) -> str:
+    """Photographs four to a row, each row its own block, so a page can break
+    between rows (one block of eight left a blank page under its heading)."""
+    return "".join(f"<div class='photos'>{''.join(_photo_cell(p, images) for p in ps[i:i + per])}</div>"
+                   for i in range(0, len(ps), per))
+
+
 def _photos(rep: Dict[str, Any], images: Dict[str, str]) -> str:
-    """One ROW per subcontractor: up to five photographs in date order, so the
-    row reads as progress over the period. Whole photographs (object-fit:
-    contain), portrait or landscape, never cropped."""
+    """One block per subcontractor AND kind of work: up to eight photographs,
+    grouped by the floor they were filed on, each floor in date order. Whole
+    photographs (object-fit: contain), portrait or landscape, never cropped."""
     shown = [p for p in rep["photos"] if images.get(p["key"])]
     if not shown:
         return ""
     order = {s["key"]: n for n, s in enumerate(rep.get("subs") or [])}
-    by_sub: Dict[str, List[Dict[str, Any]]] = {}
+    groups: Dict[Any, List[Dict[str, Any]]] = {}
     for p in shown:
-        by_sub.setdefault(P.company_key(p["sub"]) or p["sub"], []).append(p)
+        groups.setdefault((P.company_key(p["sub"]) or p["sub"], p.get("family") or ""), []).append(p)
+
+    def gkey(kv):
+        (sub, fam), group = kv
+        return (order.get(sub, 99), group[0]["sub"], ST.ORDER.get(fam, 99))
     rows = []
-    for key, group in sorted(by_sub.items(), key=lambda kv: (order.get(kv[0], 99), kv[1][0]["sub"])):
-        group = sorted(group, key=lambda p: (str(p["date"]), p["key"]))
-        cells = []
-        for p in group:
-            see = f"<br><span class='muted'>{_e(p['caption'])}</span>" if p.get("caption") else ""
-            cells.append(f"<div class='photo'><div class='frame'><img src='{images[p['key']]}'/></div>"
-                         f"<div class='cap'>{_e(_fmt(p['date'], '%b %-d'))}"
-                         f"{' · ' + _e(p['where']) if p.get('where') else ''}{see}</div></div>")
-        trade = f" <span class='muted'>· {_e(group[0]['trade'])}</span>" if group[0].get("trade") else ""
-        rows.append(f"<div class='strip-row'><h4>{_e(group[0]['sub'])}{trade}</h4>"
-                    f"<div class='photos'>{''.join(cells)}</div></div>")
-    return (f"<section class='pg'><h2>Visual progress {_tag('L')}</h2><p class='muted'>Up to five photographs per "
-            "subcontractor from the filed daily logs, in date order across the period, chosen for installed work that is "
-            "clearly visible. Sub, date and location are as filed and are not independently verified; the words under "
-            "each photograph describe the picture only (automated).</p>"
+    for (sub, fam), group in sorted(groups.items(), key=gkey):
+        by_place: Dict[str, List[Dict[str, Any]]] = {}
+        for p in sorted(group, key=lambda p: (P._floor_order(p), str(p["date"]), p["key"])):
+            by_place.setdefault(str(p.get("where") or ""), []).append(p)
+        # A heading per floor only when each photo is filed on ONE floor: "floors
+        # 1-4", "floors 2-4" and "floor 4" as headings say nothing (588's logs).
+        one_floor = all(len(ps[0].get("floors") or []) == 1 for ps in by_place.values())
+        if len(by_place) > 1 and one_floor:
+            body = "".join(f"<div class='floorhead'>{_e(w or 'Location not given')}</div>{_photo_rows(ps, images)}"
+                           for w, ps in by_place.items())
+        else:
+            body = _photo_rows(sorted(group, key=lambda p: (str(p["date"]), p["key"])), images)
+        label = group[0].get("family_label") or ST.LABEL.get(fam, "") or group[0].get("trade") or ""
+        what = f" <span class='muted'>· {_e(label)}</span>" if label else ""
+        rows.append(f"<div class='strip-row'><h4>{_e(group[0]['sub'])}{what}</h4>{body}</div>")
+    return (f"<section class='pg'><h2>Visual progress {_tag('L')}</h2><p class='muted'>Up to eight photographs per "
+            "subcontractor and kind of work from the filed daily logs, grouped by floor and in date order, chosen for "
+            "installed work that is clearly visible. Sub, date and location are as filed and are not independently "
+            "verified; the words under a photograph describe the picture only (automated).</p>"
             f"{''.join(rows)}</section>")
 
 
@@ -673,23 +790,6 @@ def _n(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
-def _financial(rep: Dict[str, Any]) -> str:
-    f = rep["financials"]
-    if not f:
-        return ""
-    labels = [("contract_value", "Original contract"), ("approved_changes", "Approved changes"),
-              ("revised_contract", "Revised contract"), ("budget", "Budget"),
-              ("billed_to_date", "Billed to date"), ("paid_to_date", "Paid to date"),
-              ("retainage", "Retainage held"), ("cost_to_complete", "Estimated cost to complete"),
-              ("contingency_remaining", "Contingency remaining")]
-    rows = "".join(f"<tr><td>{lbl}</td><td class='n'>${f['figures'][k]:,.0f}</td></tr>"
-                   for k, lbl in labels if k in f["figures"])
-    ds = f"<p><b>Draw / payment status:</b> {_e(f['draw_status'])}</p>" if f.get("draw_status") else ""
-    return (f"<section><h2>Financial overview {_tag('F')}</h2><p class='muted'>Figures as provided and confirmed "
-            f"({_e(f['source'])}), as of {_e(_fmt(f['as_of'], '%b %-d, %Y'))}. Levelog does not calculate or "
-            f"estimate financial figures.</p><table class='keep'>{rows}</table>{ds}</section>")
-
-
 def _basis(rep: Dict[str, Any], report_id: str) -> str:
     notes = "".join(f"<li>{_e(n)}</li>" for n in rep["data_notes"])
     lim = "".join(f"<li>{_e(n)}</li>" for n in rep["limitations"])
@@ -711,16 +811,18 @@ def _basis(rep: Dict[str, Any], report_id: str) -> str:
     stamp = hashlib.sha256(f"{report_id}|{rep['engine']}|{rep['generated'].isoformat()}".encode()).hexdigest()[:10]
     levels = ("<div class='strip'><b>How to read the progress in this report.</b> "
               "<b>Documented</b> — work the subs reported in daily logs. "
+              "<b>Estimated</b> — the stages and percentages on the progress page, read from those logs by the "
+              "fixed rules printed there. "
               "<b>Measurable</b> — counts or a percent exactly as a confirmed schedule file states them"
               f"{'' if rep.get('schedule') else ' (none on file for this report)'}. "
-              "<b>Verified physical progress</b> — not claimed: nothing here is independently verified on site, and no "
-              "completion percentage is calculated from headcount, log wording or photographs.</div>")
+              "<b>Verified physical progress</b> — not claimed: nothing here is independently verified on site, and "
+              "no figure is calculated from headcount.</div>")
     return (f"<section class='keep'><h2>Basis, data notes and evidence</h2>{levels}"
             f"<div class='two'><div><h4>What this report does not contain</h4><ul class='tight'>{lim}</ul></div>"
             f"<div><h4>Data notes</h4><ul class='tight'>{notes or '<li>No discrepancies to note.</li>'}</ul></div></div>"
             f"<h3>Evidence index</h3><table class='ev'><tr><th>ID</th><th>Source</th><th>Detail</th></tr>{''.join(ev)}</table>"
             f"<div class='legend'><b>G</b> site check-ins · <b>L</b> filed daily logs · <b>R</b> DOB/DOT record · "
-            f"<b>S</b> project schedule · <b>F</b> financial figures</div>"
+            f"<b>S</b> project schedule</div>"
             f"<div class='foot'>Generated {_e(_fmt(rep['generated'].astimezone(P.NY), '%B %-d, %Y %-I:%M %p'))} ET "
             f"· engine {_e(rep['engine'])} · reference {stamp}{' · report ' + _e(report_id[:8]) if report_id else ''}. "
             f"The facts printed here are stored with the report.</div></section>")
@@ -731,8 +833,8 @@ def _basis(rep: Dict[str, Any], report_id: str) -> str:
 def render_html(reps: List[Dict[str, Any]], *, gc: str = "", title: str = "", now: Optional[datetime] = None,
                 images: Optional[Dict[str, str]] = None, report_id: str = "") -> str:
     """The PDF's HTML: per job the executive overview first, then the sections
-    that have something to say (progress, schedule, photographs, workforce,
-    regulatory, financial) and the basis page."""
+    that have something to say (progress board, crews, schedule, workforce,
+    photographs, regulatory) and the basis page."""
     global _KEEP
     _KEEP = _record_numbers(reps)
     images = images or {}
@@ -745,10 +847,10 @@ def render_html(reps: List[Dict[str, Any]], *, gc: str = "", title: str = "", no
         body.append(first + _mast(rep) + _kpis(rep) + _overview(rep)
                     + f"<section class='keep'><div class='two'>{_changes_block(rep)}{_risks_block(rep)}</div></section>"
                     + f"<section class='keep'><div class='two'>{_coming_block(rep) or '<div></div>'}"
-                      f"<div style='display:flex;gap:8px'>{_schedule_card(rep)}{_finance_card(rep)}</div></div></section>"
+                      f"<div style='display:flex;gap:8px'>{_progress_card(rep)}{_schedule_card(rep)}</div></div></section>"
                     + "<div style='page-break-after:always'></div>"
-                    + _progress(rep, images) + _schedule_section(rep) + _workforce(rep) + _photos(rep, images)
-                    + _regulatory(rep) + _financial(rep) + _basis(rep, report_id))
+                    + _board_section(rep) + _progress(rep, images) + _schedule_section(rep) + _workforce(rep)
+                    + _photos(rep, images) + _regulatory(rep) + _basis(rep, report_id))
     return (f"<!doctype html><html><head><meta charset='utf-8'><title>{_e(title)}</title>"
             f"<style>{css}</style></head><body>{''.join(body)}</body></html>")
 

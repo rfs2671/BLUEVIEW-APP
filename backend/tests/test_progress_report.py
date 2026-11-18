@@ -281,14 +281,26 @@ class ThePhotographs(unittest.TestCase):
         self.assertFalse([p for p in photos if verdicts[p["key"]]["kind"] in ("people", "document", "blurry")])
         self.assertEqual(len({(p["sub"], p["date"], p["where"]) for p in photos}), len(photos))
 
-    def test_never_more_than_five_of_one_sub(self):
+    def test_never_more_than_eight_of_one_sub_and_kind_of_work(self):
+        # Ruled 2026-11-18: up to eight per sub AND kind of work (was five per sub).
         cands = []
-        for i in range(8):
+        for i in range(12):
             cands.append({"key": f"k{i}", "date": date(2026, 10, 2) + timedelta(days=i), "sub": "Arkon Builders",
-                          "trade": "Framing", "where": f"floor {i}", "words": "Framing", "work": "Framing",
+                          "trade": "Framing", "where": f"floor {i + 1}", "words": "Framing", "work": "Framing",
                           "source": "daily log", "log_id": "x"})
-        ver = {c["key"]: {"ok": True, "kind": "progress", "score": 5 + i % 3} for i, c in enumerate(cands)}
+        ver = {c["key"]: {"ok": True, "kind": "progress", "score": 6 + i % 3} for i, c in enumerate(cands)}
+        self.assertEqual(P.MAX_PER_SUB, 8)
         self.assertEqual(len(P.pick_photos(cands, ver)), P.MAX_PER_SUB)
+
+    def test_one_company_doing_two_kinds_of_work_gets_a_row_for_each(self):
+        # 588: Arkon Builders' line reads "Ceiling drops, interior framing, sheet rack".
+        cands = [{"key": f"k{i}", "date": date(2026, 10, 2) + timedelta(days=i), "sub": "Arkon Builders",
+                  "trade": "Framers", "where": "floor 2", "words": "x", "work": "x", "source": "daily log",
+                  "log_id": "x", "families": ["framing", "drywall"] if i % 2 else ["drywall"]} for i in range(6)]
+        ver = {c["key"]: {"ok": True, "kind": "progress", "score": 8, "work": "framing"} for c in cands}
+        got = P.pick_photos(cands, ver)
+        self.assertEqual({p["family"] for p in got}, {"framing", "drywall"})
+        self.assertEqual(len(got), 6)
 
     def test_every_sub_gets_a_row_never_padded(self):
         cands = []
@@ -317,7 +329,7 @@ class ThePhotographs(unittest.TestCase):
         self.assertEqual(got[0]["caption"], "Stair installed")
         self.assertNotIn("Wooden", got[0]["caption"])
         for p in rep()["photos"]:
-            self.assertIn(p["caption"], [""] + list(P.WORK_CAPTION.values()))
+            self.assertIn(p["caption"], [""] + list(P.FAMILY_CAPTION.values()))
 
     def test_a_crew_that_installs_nothing_has_no_installed_work_photo(self):
         # REAL 588: a cleaning crew (Echo) was shown with a framing photograph.
@@ -349,8 +361,9 @@ class ThePhotographs(unittest.TestCase):
         self.assertTrue(v["ok"])
         self.assertEqual(P.parse_verdict('{"kind":"progress","ok":true,"work":"spaceship"}')["work"], "other")
 
-    def test_a_row_of_five_per_sub_inside_a_page_budget(self):
-        self.assertEqual((P.MAX_PER_SUB, P.MAX_PHOTOS), (5, 35))
+    def test_eight_per_sub_and_kind_of_work_inside_a_page_budget(self):
+        # Ruled 2026-11-18 (the Nov 4-17 588 report printed 26 of 223 filed photos).
+        self.assertEqual((P.MAX_PER_SUB, P.MAX_PHOTOS), (8, 100))
 
     def row_cands(self, sub, days, per_day=1, trade="Framers"):
         out = []
@@ -366,7 +379,7 @@ class ThePhotographs(unittest.TestCase):
         ver = {c["key"]: {"ok": True, "kind": "progress", "score": 8, "work": "framing"} for c in cands}
         got = P.pick_photos(cands, ver)
         days = [p["date"] for p in got]
-        self.assertEqual(len(got), 5)
+        self.assertEqual(len(got), P.MAX_PER_SUB)
         self.assertEqual(days, sorted(days))
         self.assertLessEqual(days[0], date(2026, 10, 3))               # the first stretch is represented
         self.assertGreaterEqual(days[-1], date(2026, 10, 13))          # and the last
@@ -393,7 +406,12 @@ class ThePhotographs(unittest.TestCase):
                              {"ok": True, "kind": "progress", "score": 3, "work": "framing"} if i < 4 else
                              {"ok": False, "kind": "blurry", "score": 9, "work": "framing"} if i < 6 else
                              {"ok": True, "kind": "progress", "score": 9, "work": "plumbing"})
-        self.assertEqual(len(P.pick_photos(cands, ver)), 2)
+        # Ruled 2026-11-18: pipe in a framer's open wall is wall work and is kept
+        # (2 framing + 2 plumbing); weak and blurry still never fill a row.
+        self.assertEqual(len(P.pick_photos(cands, ver)), 4)
+        for k in list(ver)[6:]:
+            ver[k] = {"ok": True, "kind": "progress", "score": 9, "work": "stairs"}
+        self.assertEqual(len(P.pick_photos(cands, ver)), 2)           # a stair is not a framer's work
 
     def test_judging_samples_every_sub_evenly_across_the_period(self):
         cands = self.row_cands("Arkon Builders", 11, per_day=10) + self.row_cands("MQ Steel", 1, per_day=3)
@@ -482,9 +500,9 @@ class TheRealWorldFindings(unittest.TestCase):
         r["photos"] = P.pick_photos(cands, ver)
         html = RR.render_html([r], gc="", title="t", now=F.NOW, images={p["key"]: uri for p in r["photos"]})
         rows = re.findall(r"<div class='strip-row'>(.*?)</div></div></div>(?=<div class='strip-row'>|</section>)", html, re.S)
-        self.assertEqual(len(html.split("class='strip-row'")) - 1, 2)                # one row per sub
+        self.assertEqual(len(html.split("class='strip-row'")) - 1, 2)                # one row per sub and work
         counts = sorted(len(re.findall(r"class='photo'", chunk)) for chunk in html.split("class='strip-row'")[1:])
-        self.assertEqual(counts, [3, 5])                                              # never padded, never above five
+        self.assertEqual(counts, [3, 8])                                              # never padded, never above eight
         self.assertIn("object-fit: contain", html)
 
     def test_the_same_expiry_is_one_line(self):
@@ -534,9 +552,20 @@ class TheScheduleIsTheFilesOrNothing(unittest.TestCase):
         html = RR.render_html([r], gc="", title="t", now=F.NOW, images={})
         self.assertIsNone(r["schedule"])
         self.assertNotIn("Schedule and completion", html)
-        self.assertIn("Not provided", html)
-        self.assertTrue(any("No confirmed project schedule" in x for x in r["limitations"]))
-        self.assertTrue(any(o.startswith("Schedule — no confirmed project schedule") for o in r["overview"]))
+        # Ruled 2026-11-18: no "Not provided" card a user has no way to fill; the
+        # progress is read from the logs and every percent printed is an
+        # estimate, labelled, on the progress card and page only.
+        self.assertNotIn("Not provided", html)
+        self.assertTrue(any("No project schedule file" in x for x in r["limitations"]))
+        self.assertFalse(any(o.startswith("Schedule —") for o in r["overview"]))
+        self.assertIn("Progress (estimated)", html)
+        self.assertIsNone(re.search(r"\d\s?%", " ".join(r["overview"])))
+        body = re.sub(r"<style>.*?</style>", "", html, flags=re.S)
+        body = re.sub(r"width:\s*\d+%|width=['\"]\d+%['\"]", "", body)
+        found = list(re.finditer(r"\d+%", body))
+        self.assertTrue(found)
+        for m in found:
+            self.assertEqual(body[m.start() - 6:m.start()], "about ", body[m.start() - 60:m.end() + 10])
 
     def test_a_confirmed_schedule_reports_its_own_dates_and_counts(self):
         r = rep(schedule=True)
@@ -597,16 +626,15 @@ class TheFinancialsAreProvidedOrAbsent(unittest.TestCase):
                               now=F.NOW, images={})
         self.assertNotIn("Financial overview", html)
 
-    def test_provided_figures_are_printed_as_provided_and_never_computed(self):
+    def test_financials_are_never_printed(self):
+        # Ruled 2026-11-18: hidden -- no screen collects them, so the report has
+        # no financial card or section, even when a record holds figures.
         r = F.report(financials=self.GOOD)
-        f = r["financials"]
-        self.assertEqual(f["figures"], {"contract_value": 4_200_000, "approved_changes": 85_000,
-                                        "billed_to_date": 1_610_000})
+        self.assertIsNone(r["financials"])
         html = RR.render_html([r], gc="", title="t", now=F.NOW, images={})
-        self.assertIn("Financial overview", html)
-        self.assertIn("$4,200,000", html)
-        self.assertNotIn("4,285,000", html)              # no revised contract worked out for them
-        self.assertIn("does not calculate", html)
+        for word in ("Financial", "$4,200,000", "financial figures"):
+            self.assertNotIn(word, html)
+        self.assertFalse(any("financial" in x.lower() for x in r["limitations"]))
 
 
 class OneReportAnyPeriod(unittest.TestCase):
@@ -810,8 +838,8 @@ class TradeMismatchAndPhotoMinimum(unittest.TestCase):
         chosen = P.pick_photos(cands, ver)
         why = {r["sub"]: r["why"] for r in P.photo_review(cands, ver, chosen)}
         self.assertEqual(why["Arkon Builders"], "used")
-        self.assertTrue(why["Echo"].startswith("trade mismatch"))
-        self.assertTrue(why["Quality Plumbing"].startswith("trade mismatch"))
+        self.assertTrue(why["Echo"].startswith("crew installs nothing"))
+        self.assertTrue(why["Quality Plumbing"].startswith("trade mismatch"))     # a stair under a plumber
         self.assertTrue(why["Power Direct"].startswith("not installed work"))
         self.assertTrue(why["J&G"].startswith("score 3 below"))
 

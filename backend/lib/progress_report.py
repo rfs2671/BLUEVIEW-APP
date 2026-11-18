@@ -27,10 +27,14 @@ WHAT IS DELIBERATELY NOT IN THIS REPORT (and why)
   * Individual workers: counts by sub only.
   * Free-text site observations: unclassified and potentially personal. The
     structured daily inspections (pass / fail per item) are included.
-  * A percent complete derived from manpower, log wording or photographs. A
-    percent appears only when the schedule file itself reports it (lib/
-    schedule_plan.py), attributed to that file and its data date.
-  * Any financial figure that was not provided and confirmed.
+  * A MEASURED percent complete. Operator ruling 2026-11-18: the report reads
+    progress from the daily logs and their photographs automatically -- a
+    trade-by-floor stage board with an ESTIMATED percent per trade (lib/
+    progress_stages.py), printed only on the progress page and the page-1
+    progress card, always labelled as estimated from site records. A schedule
+    file's own percent (lib/schedule_plan.py) is still printed as the file's.
+  * Financial figures. Ruled 2026-11-18: hidden -- no screen collects them,
+    so the report has no financial card or section at all.
 
 PERIOD-AWARE, NOT PERIOD-SPECIFIC. Weekly, bi-weekly, monthly, quarterly and
 custom reports are the same report. The period changes only the granularity
@@ -50,21 +54,22 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from lib import attendance as att
 from lib import project_report as base
-from lib import report_calendar, report_regulatory
+from lib import progress_stages, report_calendar, report_regulatory
 from lib.datefmt import strftime as _fmt
 
 NY = base.NY
 ENGINE_VERSION = "2026.10.2"
 UPCOMING_DAYS = 30
-#: A row of up to FIVE photographs per sub, spread across the period in date order
-#: (the real 588 logs held 209 photographs in 11 days; the first version judged 30
-#: and showed 2 per sub). Never padded: a sub with three qualifying photographs
-#: gets three. MAX_PHOTOS is the page budget for the whole report.
-MIN_PHOTOS, MAX_PHOTOS = 4, 35
-MAX_PER_SUB = 5
+#: Up to EIGHT photographs per sub AND kind of work (operator ruling 2026-11-18:
+#: the Nov 4-17 588 report printed 26 of 223 filed photos at five per sub),
+#: spread across the period and the floors. Never padded: a trade with three
+#: qualifying photographs gets three. MAX_PHOTOS is the page budget.
+MIN_PHOTOS, MAX_PHOTOS = 4, 100
+MAX_PER_SUB = 8
 #: What vision is asked to judge: up to this many photographs per sub, evenly
-#: spread over the period (cost is about $0.0005 each and verdicts are cached).
-JUDGE_PER_SUB = 14
+#: spread over the period (cost is about $0.0005 each and verdicts are cached;
+#: the filing-time pipeline has usually judged them all already).
+JUDGE_PER_SUB = 20
 #: A photograph must show installed work STRONGLY to appear: fewer than four
 #: photographs is better than a weak one used to fill the page.
 MIN_SCORE = 6.0
@@ -352,6 +357,7 @@ def _log_activities(logs: Iterable[dict], start: date, end: date) -> List[Dict[s
             out.append({"date": d, "company": company, "log": f"{lg.get('_id') or d}:{slot}",
                         "log_id": str(lg.get("_id") or ""), "key": key,
                         "trade": str(a.get("trade") or "").strip(), "workers": workers, "work": work,
+                        "work_trades": [str(t) for t in (a.get("work_trades") or []) if t],
                         "where": where, "floors": floors_in(where) or floors_in(a.get("work_description")),
                         "photos": [p for p in (a.get("photos") or []) if isinstance(p, dict)],
                         "amended": amended})
@@ -675,7 +681,9 @@ def photo_candidates(acts: List[Dict[str, Any]], start: date, end: date,
             if key:
                 out.append({"key": key, "date": a["date"], "sub": a["company"], "trade": a["trade"],
                             "where": place, "words": work_line(a["work"] or a["trade"], place),
-                            "work": a["work"], "log_id": a["log_id"], "source": "daily log", "photo": p})
+                            "work": a["work"], "log_id": a["log_id"], "source": "daily log", "photo": p,
+                            "families": list(dict.fromkeys(f for f, _ph in progress_stages.families_of(a))),
+                            "floors": list(a["floors"])})
     seen, uniq = set(), []
     for c in sorted(out, key=lambda c: (c["date"], c["key"])):
         if c["key"] not in seen:
@@ -799,35 +807,99 @@ WORK_CAPTION = {"framing": "Framing in place", "plumbing": "Plumbing installed",
                 "facade": "Facade work", "other": "Installed work", "none": "Installed work"}
 
 
+#: The kinds of work (lib/progress_stages) a vision `work` answer can show: it
+#: tells studs from pipe but not sheetrock from taping, so "framing" covers
+#: everything built in a wall.
+VISION_FAMILIES = {
+    "framing": {"framing", "drywall", "taping", "painting", "insulation"},
+    "plumbing": {"plumbing", "plumbing_finish", "sprinkler", "sprinkler_finish"},
+    "electrical": {"electrical", "electrical_finish", "low_voltage", "low_voltage_finish"},
+    "hvac": {"hvac", "hvac_finish"}, "stairs": {"steel"},
+    # underlayment and self-levelling read as concrete; exterior work is shot from the scaffold
+    "concrete": {"concrete", "excavation", "flooring"}, "masonry": {"facade"},
+    "facade": {"facade", "windows", "roofing"}, "demolition": {"demolition"},
+    "scaffolding": {"facade", "windows", "roofing"}}
+#: What the photograph shows, in FIXED words, by the kind of work it is filed
+#: under -- printed only when the vision model saw that kind of work.
+FAMILY_CAPTION = {"framing": "Framing in place", "drywall": "Drywall / sheetrock", "taping": "Taping & compound",
+                  "painting": "Painting", "insulation": "Insulation installed", "plumbing": "Plumbing installed",
+                  "plumbing_finish": "Plumbing fixtures", "electrical": "Electrical work installed",
+                  "electrical_finish": "Electrical finish", "low_voltage": "Low-voltage work installed",
+                  "hvac": "Ductwork installed", "hvac_finish": "HVAC finish", "sprinkler": "Sprinkler piping",
+                  "flooring": "Flooring / tile", "steel": "Stair installed", "concrete": "Concrete work",
+                  "excavation": "Excavation / foundations", "facade": "Facade work", "windows": "Windows",
+                  "roofing": "Roofing", "demolition": "Demolition work"}
+
+
+def photo_family(c: Dict[str, Any], v: Dict[str, Any]) -> str:
+    """The kind of work a photo is filed under: the one its log line names; of
+    several ("Ceiling drops, interior framing, sheet rack"), the one the
+    vision model saw, else the first. '' when the line names none."""
+    fams = _line_families(c)           # without its line's work: the crew's trade
+    if not fams:
+        return ""
+    seen = VISION_FAMILIES.get(str(v.get("work") or "none"))
+    if seen:
+        for f in fams:
+            if f in seen:
+                return f
+    return fams[0]
+
+
+#: What the vision model can tell apart from wall work without doubt: a stair,
+#: a slab, a scaffold, a facade. A photo of one of these filed under a line that
+#: names none of them is someone else's work (an audit found a stair under a
+#: plumber's line).
+DISTINCT_SIGHTS = ("stairs", "concrete", "scaffolding", "demolition", "facade", "masonry")
+
+
+def _line_families(c: Dict[str, Any]) -> List[str]:
+    fams = list(c.get("families") or [])
+    if not fams:
+        crew = progress_stages.crew_family(c.get("trade"), c.get("sub"))
+        fams = [crew] if crew else []
+    return fams
+
+
 def _consistent(c: Dict[str, Any], v: Dict[str, Any]) -> bool:
-    """A photo is the sub's evidence only if what it shows is that sub's kind
-    of work: a plumber's log with a photo of a stair is not plumbing progress,
-    and a crew that installs nothing has no installed-work photo. Unknown on
-    either side is not a contradiction."""
+    """A photo is the sub's evidence unless the crew installs nothing (a cleaning
+    crew was credited with a framing photo on the first real 588 report) or
+    the model clearly SEES a different, unmistakable kind of work
+    (DISTINCT_SIGHTS) than anything the photo's log line names.
+
+    NO VETO OVER WALL WORK (operator ruling 2026-11-18, "very little photos").
+    The old rule dropped a photo whenever the model's one-word trade differed
+    from the sub's: on the Nov 4-17 588 report that removed 38 photographs,
+    most of them an electrician's or plumber's work in an open stud wall the
+    model called "framing". Studs, pipe, conduit and duct share a wall; such a
+    photo is kept and only its caption is withheld."""
     label = f"{c.get('trade') or ''} {c.get('sub') or ''}".lower()
     if any(w in label for w in _NON_INSTALL):
         return False
-    sub_fam = trade_family(c.get("trade"), c.get("sub"))
     seen = str(v.get("work") or "none")
-    if not sub_fam or seen in ("none", "other"):
-        return True
-    return seen == sub_fam
+    fams = _line_families(c)
+    if seen in DISTINCT_SIGHTS and fams:
+        return bool(VISION_FAMILIES.get(seen, set()) & set(fams))
+    return True
+
+
+def _floor_order(c: Dict[str, Any]) -> Tuple[int, str]:
+    fl = c.get("floors") or []
+    return (min(fl) if fl else 999, str(c.get("where") or ""))
 
 
 def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]],
                 most: int = MAX_PHOTOS) -> List[Dict[str, Any]]:
-    """Four to eight photographs that show INSTALLED work: only photos vision
-    calls a clear progress shot (never materials, a corridor, people, a
-    document or a blur) whose visible work matches the sub's kind of work,
-    the strongest of each sub first, then the next strongest, never the same
-    sub, day and place twice and never more than two of one sub.
+    """Up to MAX_PER_SUB photographs per sub AND kind of work that show
+    INSTALLED work: only photos vision calls a clear progress shot (never
+    materials, a corridor, people, a document or a blur), spread across the
+    floors the work was filed on and across the period, never the same sub,
+    work, day and place twice.
 
-    THE CAPTION IS WHAT THE PHOTO SHOWS, in FIXED WORDS by the kind of work the
-    model sees (WORK_CAPTION), not the log's words for the activity row it was
-    attached to (an audit found a stair photographed under a plumber's log
-    line) and not the model's free text (the first real report read "wooden
-    stairs" for a steel stair). The sub, date and place are as the log filed
-    them.
+    THE CAPTION IS WHAT THE PHOTO SHOWS, in FIXED WORDS (FAMILY_CAPTION), and
+    only when the vision model saw that kind of work (VISION_FAMILIES) -- not
+    the model's free text (the first real report read "wooden stairs" for a
+    steel stair). The sub, date and place are as the log filed them.
 
     NO BEFORE / AFTER: nothing checks that two photos show the same place."""
     good = []
@@ -837,32 +909,37 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
         v = verdicts.get(c["key"]) or {}
         if (v.get("ok") and v.get("kind", "progress") == "progress" and _consistent(c, v)
                 and float(v.get("score") or 0) >= MIN_SCORE):
-            # Words under a photo only when they agree with whose photo it is:
-            # with no known kind of work for the sub, the stock caption put
-            # "Plumbing installed" under an insulation crew.
-            seen = str(v.get("work") or "none")
-            good.append({**c, "score": float(v.get("score") or 0),
-                         "caption": WORK_CAPTION.get(seen, "") if seen == trade_family(c.get("trade"), c.get("sub")) else "",
+            fam = photo_family(c, v)
+            seen = VISION_FAMILIES.get(str(v.get("work") or "none"))
+            good.append({**c, "score": float(v.get("score") or 0), "family": fam,
+                         "family_label": progress_stages.LABEL.get(fam, ""),
+                         "caption": FAMILY_CAPTION.get(fam, "") if fam and seen and fam in seen else "",
                          "work": str(v.get("work") or "none")})
-    by_sub: Dict[str, List[dict]] = defaultdict(list)
+    by_group: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
     for c in good:
-        by_sub[company_key(c["sub"]) or c["sub"]].append(c)
+        by_group[(company_key(c["sub"]) or c["sub"], c["family"])].append(c)
     chosen: List[dict] = []
-    for _, group in sorted(by_sub.items()):
-        # A ROW THAT READS AS PROGRESS: the qualifying photographs in date order,
-        # cut into as many equal stretches as the row has places, the strongest
-        # photograph of each stretch -- never two of one sub, day and place.
-        group = sorted(group, key=lambda c: (str(c["date"]), c["key"]))
-        n = min(MAX_PER_SUB, len(group))
-        row: List[dict] = []
-        for i in range(n):
-            lo, hi = i * len(group) // n, (i + 1) * len(group) // n
-            for c in sorted(group[lo:hi], key=lambda c: (-c["score"], str(c["date"]))):
-                if any(x["date"] == c["date"] and x["where"] == c["where"] for x in row):
-                    continue
-                row.append(c)
-                break
-        chosen += row
+    for _, group in sorted(by_group.items()):
+        # One per sub, work, day and place: the strongest of each.
+        best: Dict[Tuple[str, str], dict] = {}
+        for c in sorted(group, key=lambda c: (-c["score"], str(c["date"]), c["key"])):
+            best.setdefault((str(c["date"]), str(c["where"])), c)
+        # SPREAD OVER THE FLOORS, THEN THE PERIOD: the places in floor order take
+        # turns, each giving its photographs evenly spaced in time.
+        places: Dict[str, List[dict]] = defaultdict(list)
+        for c in sorted(best.values(), key=lambda c: (str(c["date"]), c["key"])):
+            places[str(c["where"])].append(c)
+        order = sorted(places, key=lambda w: _floor_order(places[w][0]))
+        quota = {w: 0 for w in order}
+        left = min(MAX_PER_SUB, sum(len(v) for v in places.values()))
+        while left:
+            for w in order:
+                if left and quota[w] < len(places[w]):
+                    quota[w] += 1
+                    left -= 1
+        for w in order:
+            if quota[w]:
+                chosen += _spread(places[w], quota[w])
     if len(chosen) > most:                 # the page budget: the weakest go first
         chosen = sorted(chosen, key=lambda c: -c["score"])[:most]
     chosen.sort(key=lambda c: (c["date"], c["sub"]))
@@ -949,7 +1026,8 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
             dob_rows: Iterable[dict] = (), dot_rows: Iterable[dict] = (),
             events: Iterable[dict] = (), schedule: Optional[Dict[str, Any]] = None,
             schedule_meta: Optional[Dict[str, Any]] = None, financials: Optional[Dict[str, Any]] = None, sync: Optional[Dict[str, Any]] = None,
-            first_activity: Optional[date] = None, project_bins: Iterable[Any] = (), **_ignored: Any) -> Dict[str, Any]:
+            first_activity: Optional[date] = None, project_bins: Iterable[Any] = (),
+            history: Iterable[dict] = (), **_ignored: Any) -> Dict[str, Any]:
     """Everything of one job's report for [start, end], from its rows.
 
     `checkins` and `logbooks` span the period AND the previous period of the
@@ -999,6 +1077,11 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
         except Exception:                      # a schedule that cannot be read is no schedule
             plan = None
     insp = inspections(logs, start, end)
+    # THE PROGRESS BOARD reads the job's whole filed history to the end of the
+    # period (`history`, chain heads the server picked); without it, the
+    # period and the previous one.
+    hist = effective_logs(history)["items"] if history else logs
+    board = progress_stages.build(_log_activities(hist, date(1900, 1, 1), end), end=end, period_start=start)
     rep: Dict[str, Any] = {
         "engine": ENGINE_VERSION, "kind": kind or "custom",
         "job": job_title(job), "job_full": job, "address": address, "gc": gc,
@@ -1013,7 +1096,9 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
                  "basis": report_calendar.BASIS_NOTE,
                  "holidays": report_calendar.holiday_names(start, last)},
         "prev": {**prev_stats, "possible": len(prev_possible), "worked": len(prv["worked"])},
-        "regulatory": reg, "inspections": insp, "schedule": plan, "financials": _financials(financials),
+        "regulatory": reg, "inspections": insp, "schedule": plan, "progress": board,
+        # Ruled 2026-11-18: no financial card or section (nothing collects the figures).
+        "financials": None,
         "photo_candidates": photo_candidates(cur_acts, start, end), "photos": [],
         "log_set": {"filed": len([lg for lg in logs if start <= (base._d(lg.get("date")) or start) <= end]),
                     "amended": [d for d in log_set["amended"] if d and start <= d <= end],
@@ -1257,10 +1342,41 @@ def overview(rep: Dict[str, Any]) -> List[str]:
             parts.append(f"forecast finish {_dayy(proj['forecast_finish'])} against an original "
                          f"{_dayy(proj['baseline_finish'])}")
         out.append(s + (": " + _join(parts) if parts else ".") + ("." if parts else ""))
-    else:
-        out.append("Schedule — no confirmed project schedule is on file, so schedule status and "
-                   "completion are not reported.")
+    line = progress_line(rep.get("progress"))
+    if line:
+        out.append(line)
     return out
+
+
+def progress_line(board: Optional[Dict[str, Any]], most: int = 4) -> str:
+    """"Progress — framing in progress on floors 1–4; HVAC / ductwork rough-in
+    appears complete on floors 1–4; ..." for the overview: the kinds of work of
+    this period, their stage in words. The estimates are on the progress page."""
+    if not board or not board.get("trades"):
+        return ""
+    keys = board.get("worked_in_period") or list(board["trades"])
+    bits = []
+    for k in keys[:most]:
+        t = board["trades"][k]
+        by: Dict[str, List[int]] = defaultdict(list)
+        for f, c in t["cells"].items():
+            by[c["stage"]].append(f)
+        words = []
+        if by.get(progress_stages.DONE):
+            words.append(f"appears complete on {progress_stages.floors_words(by[progress_stages.DONE])}")
+        if by.get(progress_stages.ACTIVE):
+            words.append(f"in progress on {progress_stages.floors_words(by[progress_stages.ACTIVE])}")
+        if not words and t.get("elsewhere"):
+            words.append(progress_stages.STAGE_LABEL[t["elsewhere"]["stage"]].lower())
+        if not words and by.get(progress_stages.STARTED):
+            words.append(f"started on {progress_stages.floors_words(by[progress_stages.STARTED])}")
+        if words:
+            bits.append(f"{lc_first(t['label'])} {', '.join(words)}")
+    if not bits:
+        return ""
+    more = len(keys) - min(len(keys), most)
+    tail = f" (and {_n(more, 'more kind of work', 'more kinds of work')} on the progress page)" if more > 0 else ""
+    return "Progress — " + "; ".join(bits) + tail + ", as read from the daily logs."
 
 
 def limitations(rep: Dict[str, Any]) -> List[str]:
@@ -1268,15 +1384,13 @@ def limitations(rep: Dict[str, Any]) -> List[str]:
     short and printed once, at the end."""
     out = []
     if not (rep["schedule"] and rep["schedule"].get("usable")):
-        out.append("No confirmed project schedule is on file: completion percentages, planned-versus-actual "
-                   "progress and milestone status are not reported.")
+        out.append("No project schedule file is on file: planned-versus-actual dates and milestones are not "
+                   "reported.")
     else:
         out.extend(rep["schedule"].get("limitations") or [])
-    if not rep["financials"]:
-        out.append("No confirmed financial data is on file: budget, change-order, cost and draw information "
-                   "is not reported.")
-    out.append("Progress is as reported in the daily logs and site check-ins. It is not independently "
-               "verified, and no percent complete is derived from headcount, log wording or photographs.")
+    out.append("Progress stages and estimates are read from the filed daily logs by the fixed rules on the "
+               "progress page. They are not measured or independently verified on site, and no figure is "
+               "derived from headcount.")
     out.append("Photographs are supplied in the filed daily logs; their location and date are as filed and "
                "are not independently verified.")
     out.append("Internal GC coordination (messages, reminders, punch-list assignments, free-text site "
@@ -1470,10 +1584,11 @@ def snapshot(rep: Dict[str, Any]) -> Dict[str, Any]:
         return v
     keep = ("engine", "kind", "job", "job_full", "address", "gc", "start", "end", "generated", "length",
             "prev_start", "prev_end", "grain", "subs", "work", "site", "prev", "regulatory", "inspections",
-            "schedule", "financials", "photos", "log_set", "recon", "mobilization", "upcoming", "risks",
+            "schedule", "progress", "photos", "log_set", "recon", "mobilization", "upcoming", "risks",
             "status", "changes", "overview", "limitations", "data_notes", "evidence", "floor_matrix")
     snap = {k: clean(rep.get(k)) for k in keep}
-    snap["photos"] = [{k: clean(v) for k, v in p.items() if k in ("key", "date", "sub", "trade", "where", "caption", "log_id")}
+    snap["photos"] = [{k: clean(v) for k, v in p.items()
+                       if k in ("key", "date", "sub", "trade", "where", "caption", "log_id", "family")}
                       for p in rep.get("photos") or []]
     return snap
 
@@ -1493,11 +1608,14 @@ def photo_review(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]
         elif not v.get("ok"):
             why = f"not installed work ({v.get('kind')})"
         elif not _consistent(c, v):
-            why = f"trade mismatch (sub: {c.get('trade') or c.get('sub')}; photo shows: {v.get('work')})"
+            label = f"{c.get('trade') or ''} {c.get('sub') or ''}".lower()
+            why = (f"crew installs nothing ({c.get('trade') or c.get('sub')})"
+                   if any(w in label for w in _NON_INSTALL) else
+                   f"trade mismatch (line: {', '.join(_line_families(c)) or c.get('trade')}; photo shows: {v.get('work')})")
         elif float(v.get("score") or 0) < MIN_SCORE:
             why = f"score {float(v.get('score') or 0):g} below {MIN_SCORE:g}"
         else:
-            why = "not needed (per-sub / per-day limit or page full)"
+            why = "not needed (per-trade / per-day limit or page full)"
         out.append({"sub": c["sub"], "trade": c.get("trade") or "", "date": c["date"], "where": c.get("where") or "",
                     "kind": v.get("kind"), "work": v.get("work"), "score": float(v.get("score") or 0), "why": why})
     seen, unique = set(), []
