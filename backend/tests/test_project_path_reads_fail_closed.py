@@ -34,6 +34,7 @@ is exactly the kind of change that gets blamed on the wrong PR later.
     python backend/tests/test_project_path_reads_fail_closed.py
 """
 
+import importlib
 import ast
 import io
 import os
@@ -277,7 +278,7 @@ class TheHelperCoversItsCallers(unittest.TestCase):
 class TheSweepAgrees(unittest.TestCase):
 
     def test_the_sweep_matches_the_single_pinned_total(self):
-        mod = __import__("test_pm_load_project_fails_closed")
+        mod = importlib.import_module("tests.test_pm_load_project_fails_closed")
         self.assertEqual(len(mod.sweep_bypass_sites()),
                          mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL)
 
@@ -287,7 +288,7 @@ class TheSweepAgrees(unittest.TestCase):
         get_project_required_logbooks as still bypassed when the hit actually
         belonged to the DELETE route below it -- a false positive that would
         have sent the next reader hunting a fix that was already in."""
-        mod = __import__("test_pm_load_project_fails_closed")
+        mod = importlib.import_module("tests.test_pm_load_project_fails_closed")
         owner = {}
         for node in ast.walk(TREE):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -313,7 +314,7 @@ class TheSweepAgrees(unittest.TestCase):
         refuses) and the WhatsApp group config write. All reported; none
         silently absorbed by this sweep.
         """
-        mod = __import__("test_pm_load_project_fails_closed")
+        mod = importlib.import_module("tests.test_pm_load_project_fails_closed")
         self.assertGreater(mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL, 0)
         self.assertEqual(len(mod.sweep_bypass_sites()),
                          mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL)

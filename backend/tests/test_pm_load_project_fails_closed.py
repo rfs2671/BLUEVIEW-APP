@@ -249,6 +249,8 @@ class TheSweepCountOnlyGoesDOWN(unittest.TestCase):
     #   -3  the double-permissive lines (one _same_company_or_403 helper)
     #   -2  group D: the /admin/site-devices LIST (scoped at the query, not
     #       guarded) and PUT /whatsapp/groups/{id}/config
+    #   +1  PUT /projects/{id}/site-device-files (#1048) re-added the pattern,
+    #   -1  and was moved onto project_access_ok in the next change
     EXPECTED_TOTAL = 10
 
     def test_the_sweep_finds_the_expected_number(self):

@@ -32,6 +32,7 @@ TWO ROUTES THAT FIT NO DEPENDENCY.
     python backend/tests/test_group_d_scoped_at_the_query.py
 """
 
+import importlib
 import ast
 import asyncio
 import os
@@ -253,7 +254,7 @@ class TheGroupConfigWriteIsScoped(unittest.TestCase):
 class TheSweepIsDown(unittest.TestCase):
 
     def test_the_sweep_matches_the_single_pinned_total(self):
-        mod = __import__("test_pm_load_project_fails_closed")
+        mod = importlib.import_module("tests.test_pm_load_project_fails_closed")
         self.assertEqual(len(mod.sweep_bypass_sites()),
                          mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL)
 
@@ -266,7 +267,7 @@ class TheSweepIsDown(unittest.TestCase):
         fail-closed tenancy dependency, so the conditional is redundant rather
         than load-bearing. That is the end state this series was aiming at:
         nothing left where the short-circuit is the only control."""
-        mod = __import__("test_pm_load_project_fails_closed")
+        mod = importlib.import_module("tests.test_pm_load_project_fails_closed")
         src = (BACKEND / "server.py").read_text(encoding="utf-8-sig")
         tree = ast.parse(src)
         owner = {}
