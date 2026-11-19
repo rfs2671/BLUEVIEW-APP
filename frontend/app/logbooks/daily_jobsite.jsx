@@ -90,6 +90,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useEsraConsent } from '../../src/hooks/useEsraConsent';
 import {
   composeChipBands, searchChips,
+  searchCatalog, catalogTradeChips, claimantsIndex, workTradesFor, crewChipKey,
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, newActivityId, buildCrewsFromRoster,
   rosterIdIndex,
   composeSelection, cameraReady,
@@ -474,6 +475,11 @@ export default function DailyJobsiteLog() {
   const [tradeVocab, setTradeVocab] = useState(null);
   const [expandedChips, setExpandedChips] = useState({});   // activity_id -> bool
   const [chipSearch, setChipSearch] = useState({});           // activity_id -> what was typed
+  // EVERY CATALOG TRADE'S WORK, for "More work" on a card: [{trade, aliases,
+  // activities}]. Fetched once with the unfiltered list. [] until it lands, and
+  // on a failure -- the card's own and its company's trades still render.
+  const [tradeCatalog, setTradeCatalog] = useState([]);
+  const [moreWork, setMoreWork] = useState({});               // activity_id -> { open, trade }
   const [equipmentOpen, setEquipmentOpen] = useState(false);
 
   const rosterIdsRef = useRef(new Map());
@@ -895,19 +901,30 @@ export default function DailyJobsiteLog() {
     // present on site and is not a unit of work, so he gets no activity card
     // and there is no crew trade to fetch a list for. Restored now that the
     // helper is on main — it was left out only to avoid stacking on an open PR.
-    const wanted = [...new Set(
-      workRows(rows).map((a) => String(a.trade || '').trim()),
-    )];
+    // ONE FETCH PER DISTINCT (trade, company), keyed by crewChipKey: the
+    // company's OTHER rostered trades join its card (one company frames, hangs
+    // sheetrock, tapes and paints -- operator, 2026-11-18), so two Framing
+    // crews of two companies can need two lists.
+    const crewOf = new Map();
+    workRows(rows).forEach((a) => {
+      const k = crewChipKey(a.trade, a.company);
+      if (!crewOf.has(k)) crewOf.set(k, { trade: String(a.trade || '').trim(), company: a.company || '' });
+    });
+    const wanted = [...new Set(crewOf.keys())];
     // ALWAYS the unfiltered list too. A trade-filtered response contains only
     // that trade's activities, so without this there is no "everything else"
     // to put behind the catalogue toggle — and the toggle would repeat the
-    // chips already shown inline. Keyed on '' and cached like any other.
+    // chips already shown inline. Keyed on '' and cached like any other. It
+    // also carries the whole trade catalogue for "More work".
     if (!wanted.includes('')) wanted.push('');
     await Promise.all(wanted.map(async (tr) => {
+      const crew = crewOf.get(tr) || { trade: tr, company: '' };
       try {
-        const res = await logbooksAPI.getActivityChips(projectId, date, tr || null);
+        const res = await logbooksAPI.getActivityChips(projectId, date, crew.trade || null,
+          { company: crew.company || null, catalog: tr === '' });
         setChipsByTrade((p) => ({ ...p, [tr]: Array.isArray(res?.chips) ? res.chips : [] }));
         setChipsMetaByTrade((p) => ({ ...p, [tr]: res || null }));
+        if (tr === '' && Array.isArray(res?.trade_catalog)) setTradeCatalog(res.trade_catalog);
       } catch (_e) {
         // Chips never block an entry. With no ranking the CP still has
         // "Other", which is free text, so the day can always be logged.
@@ -917,8 +934,8 @@ export default function DailyJobsiteLog() {
     }));
   };
 
-  /** The chip list for one crew — its own trade's, never another's. */
-  const chipsFor = (a) => chipsByTrade[String(a?.trade || '').trim()] || [];
+  /** The chip list for one crew — its trade's and its company's other trades'. */
+  const chipsFor = (a) => chipsByTrade[crewChipKey(a?.trade, a?.company)] || [];
 
   /**
    * The chips this crew sees ON THE CARD, in order, and the remainder behind
@@ -948,11 +965,12 @@ export default function DailyJobsiteLog() {
   // they reach the crews whose taxonomy holds them, so the four slots are the
   // only thing that ever competed for.
   const chipBandsFor = (a) => {
-    const meta = chipsMetaByTrade[String(a?.trade || '').trim()];
+    const meta = chipsMetaByTrade[crewChipKey(a?.trade, a?.company)];
     return composeChipBands({
       chips: chipsFor(a),
       allChips: chipsByTrade[''],
       resolvedTrades: meta?.resolved_trades,
+      companyTrades: meta?.company_trades,
       priorDate: meta?.prior_date,
     });
   };
@@ -1086,9 +1104,34 @@ export default function DailyJobsiteLog() {
   );
   const chipLabels = useMemo(() => {
     const m = new Map();
+    // "More work" activities first, so a ranked chip's label wins on an id
+    // both carry; a picked catalogue activity still composes into the sentence.
+    tradeCatalog.forEach((g) => (g?.activities || []).forEach((c) => {
+      if (c && c.id && c.label) m.set(c.id, c.label);
+    }));
     allChips.forEach((c) => m.set(c.id, c.label));
     return m;
-  }, [allChips]);
+  }, [allChips, tradeCatalog]);
+
+  // chip id -> the catalog trades claiming it, for `work_trades` on the row.
+  const chipClaimants = useMemo(
+    () => claimantsIndex(Object.values(chipsByTrade), tradeCatalog),
+    [chipsByTrade, tradeCatalog],
+  );
+
+  /**
+   * `work_trades` for one row (see workTradesFor -- the progress report's
+   * contract). Context, in order: what the row already recorded, the trade the
+   * CP just picked from (a "More work" group), the card's own trade, then its
+   * company's other rostered trades. The server recomputes it on every save.
+   */
+  const rowWorkTrades = (a, ids, pickedTrade) => {
+    const meta = chipsMetaByTrade[crewChipKey(a?.trade, a?.company)];
+    const own = meta?.resolved_trades || [];
+    const context = [...(a?.work_trades || []), ...(pickedTrade ? [pickedTrade] : []),
+      ...own, ...(meta?.company_trades || [])];
+    return workTradesFor(ids, chipClaimants, context, own);
+  };
 
   // chip id -> the WorkPackage's trade, newly carried on ActivityChip. This is
   // the only grouping signal the client has; see deriveGeneralDescription.
@@ -1151,7 +1194,7 @@ export default function DailyJobsiteLog() {
    * reaches the record. NOTHING is pre-selected — a chip is only ever in
    * `activity_ids` because the CP tapped it.
    */
-  const toggleActivityChip = (index, chipId) => {
+  const toggleActivityChip = (index, chipId, pickedTrade = null) => {
     if (chipId === OTHER_ACTIVITY_ID) {
       setOtherPrompt({ index, kind: 'activity', value: '' });
       return;
@@ -1166,6 +1209,7 @@ export default function DailyJobsiteLog() {
         ...a,
         activity_ids: ids,
         work_description: composeSelection(ids, mergedActivityLabels(a)),
+        work_trades: rowWorkTrades(a, ids, has ? null : pickedTrade),
       };
     }));
   };
@@ -1219,6 +1263,7 @@ export default function DailyJobsiteLog() {
         return {
           ...a, custom_activity_labels: labels, activity_ids: ids,
           work_description: composeSelection(ids, m),
+          work_trades: rowWorkTrades(a, ids),
         };
       }
       const labels = { ...(a.custom_location_labels || {}), [id]: label };
@@ -1664,6 +1709,10 @@ export default function DailyJobsiteLog() {
     const payloadActivities = _uploaded.activities.map((act) => ({
       ...act,
       photos: (act.photos || []).map(photoForPayload).filter(Boolean),
+      // THE PROGRESS REPORT'S CONTRACT, on every row that is filed -- a row
+      // hydrated from a log older than the field gets it here. The server
+      // recomputes it from activity_ids on the same save.
+      work_trades: rowWorkTrades(act, act.activity_ids || []),
     }));
 
     const data = {
@@ -2218,7 +2267,7 @@ export default function DailyJobsiteLog() {
         if (isUnassignedWorkerRow(a)) return null;
         // THIS crew's chips, not the project's. An electrical crew must never
         // be offered drywall.
-        const { primary, rest, basis } = chipBandsFor(a);
+        const { primary, rest, restGroups, basis } = chipBandsFor(a);
         const open = !!expandedChips[a.activity_id];
         const ready = cameraReady(a);
         const customA = Object.entries(a.custom_activity_labels || {});
@@ -2353,25 +2402,86 @@ export default function DailyJobsiteLog() {
                   >
                     <Text style={s.secondaryBtnText}>{t('chipsCatalog')}</Text>
                   </Pressable>
-                  {open && (
-                    <View style={s.chipWrap}>
-                      {rest.map((c) => (
-                        <Chip
-                          key={c.id} label={c.label}
-                          selected={(a.activity_ids || []).includes(c.id)}
-                          onPress={() => toggleActivityChip(i, c.id)}
-                        />
-                      ))}
+                  {/* GROUPED BY TRADE when the company's other rostered
+                      trades joined the card (framing, then drywall, then
+                      painting): the CP scans for "taping" under Drywall. A
+                      single group renders exactly as the flat list did. */}
+                  {open && restGroups.map((g) => (
+                    <View key={`grp:${g.trade}`}>
+                      {restGroups.length > 1 && g.trade !== '' && (
+                        <Text style={s.chipBasisNote}>{g.trade}</Text>
+                      )}
+                      <View style={s.chipWrap}>
+                        {g.chips.map((c) => (
+                          <Chip
+                            key={c.id} label={c.label}
+                            selected={(a.activity_ids || []).includes(c.id)}
+                            onPress={() => toggleActivityChip(i, c.id, c.work_trade)}
+                          />
+                        ))}
+                      </View>
                     </View>
+                  ))}
+                </>
+              )}
+
+              {/* MORE WORK — ANY TRADE. The card offers this crew's trade and
+                  its company's other rostered trades; a company whose roster
+                  says only "Framing" still tapes and paints (operator,
+                  2026-11-18). Pick a trade, then its work. Nothing is listed
+                  until he opens it, so the default four stay the card. */}
+              {tradeCatalog.length > 0 && (
+                <>
+                  <Pressable
+                    style={s.secondaryBtn}
+                    accessibilityRole="button"
+                    onPress={() => setMoreWork((p) => ({
+                      ...p, [a.activity_id]: { ...(p[a.activity_id] || {}), open: !p[a.activity_id]?.open },
+                    }))}
+                  >
+                    <Text style={s.secondaryBtnText}>{t('chipsMoreWork')}</Text>
+                  </Pressable>
+                  {moreWork[a.activity_id]?.open && (
+                    <>
+                      <Text style={s.chipBasisNote}>{t('chipsMoreWorkPick')}</Text>
+                      <View style={s.chipWrap}>
+                        {tradeCatalog.map((g) => (
+                          <Chip
+                            key={`trade:${g.trade}`} label={g.trade}
+                            selected={moreWork[a.activity_id]?.trade === g.trade}
+                            onPress={() => setMoreWork((p) => ({
+                              ...p,
+                              [a.activity_id]: {
+                                open: true,
+                                trade: p[a.activity_id]?.trade === g.trade ? null : g.trade,
+                              },
+                            }))}
+                          />
+                        ))}
+                      </View>
+                      {!!moreWork[a.activity_id]?.trade && (
+                        <View style={s.chipWrap}>
+                          {catalogTradeChips(tradeCatalog, moreWork[a.activity_id].trade).map((c) => (
+                            <Chip
+                              key={`more:${c.id}`} label={c.label}
+                              selected={(a.activity_ids || []).includes(c.id)}
+                              onPress={() => toggleActivityChip(i, c.id, c.work_trade)}
+                            />
+                          ))}
+                        </View>
+                      )}
+                    </>
                   )}
                 </>
               )}
 
-              {/* SEARCH EVERY ACTIVITY. The card offers this crew's own trade
-                  (operator ruling), which put other trades' work out of reach
-                  except as free text. Nothing is listed until two letters are
-                  typed; the default four and the trade's list are untouched. */}
-              {(chipsByTrade[''] || []).length > 0 && (
+              {/* SEARCH EVERY ACTIVITY OF EVERY TRADE. Searched the unfiltered
+                  list, which is the sequence graph only -- "hang board", "skim
+                  coat", "prime" were in it for no query, and "sheetrock" or
+                  "compound" matched no label. Now the whole catalogue, by label
+                  or by trade word ("sheetrock", "masilla", "pintura"). Nothing
+                  is listed until two letters are typed. */}
+              {(tradeCatalog.length > 0 || (chipsByTrade[''] || []).length > 0) && (
                 <>
                   <TextInput
                     style={s.chipSearchInput}
@@ -2386,7 +2496,10 @@ export default function DailyJobsiteLog() {
                   />
                   {(() => {
                     const typed = chipSearch[a.activity_id] || '';
-                    const found = searchChips(chipsByTrade[''], typed, [...primary, ...rest].map((c) => c.id));
+                    const onCard = [...primary, ...rest].map((c) => c.id);
+                    const found = tradeCatalog.length > 0
+                      ? searchCatalog(tradeCatalog, typed, onCard)
+                      : searchChips(chipsByTrade[''], typed, onCard);
                     if (typed.trim().length < 2) return null;
                     return found.length > 0 ? (
                       <View style={s.chipWrap}>
@@ -2394,7 +2507,7 @@ export default function DailyJobsiteLog() {
                           <Chip
                             key={c.id} label={c.label}
                             selected={(a.activity_ids || []).includes(c.id)}
-                            onPress={() => toggleActivityChip(i, c.id)}
+                            onPress={() => toggleActivityChip(i, c.id, c.work_trade)}
                           />
                         ))}
                       </View>

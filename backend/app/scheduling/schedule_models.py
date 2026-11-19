@@ -121,6 +121,14 @@ class ActivityChip(BaseModel):
     # from this crew's own history on this project; None for a chip placed by
     # the rule table alone. Informational: it never selects or blocks a chip.
     reason: Optional[str] = None
+    # THE CATALOG TRADES (trade_taxonomy_v1.TRADES keys) that claim this
+    # activity, in TRADES order, and the ONE this card's work counts toward
+    # (`work_trade`: the first claimant in the request's context -- the crew's
+    # roster trade, then its company's other rostered trades). `trade` above is
+    # the sequence author's node trade ("taxonomy" on every new node), which
+    # says nothing a report can group by. Empty / None for free text.
+    catalog_trades: List[str] = Field(default_factory=list)
+    work_trade: Optional[str] = None
 
 
 class ActivityRanking(BaseModel):

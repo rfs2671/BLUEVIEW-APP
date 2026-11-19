@@ -75,7 +75,7 @@ TRADE_STAGES: Dict[str, List[List[str]]] = {
         ["bracing", "cfs_roof_framing_deck", "cfs_bulkheads_parapets"],
     ],
     "Interior framing": [
-        ["interior_framing", "iframe_shaft_walls", "iframe_door_bucks"],
+        ["interior_framing", "iframe_metal_stud", "iframe_shaft_walls", "iframe_door_bucks"],
         ["blocking", "furring"],
         ["iframe_ceiling_drops", "iframe_soffits_bulkheads"],
     ],
@@ -107,7 +107,7 @@ TRADE_STAGES: Dict[str, List[List[str]]] = {
     ],
     "Drywall": [
         ["dry_hang_board", "drywall", "dry_ceiling_board"],
-        ["dry_corner_bead", "taping"],
+        ["dry_corner_bead", "taping", "dry_spackle_compound"],
         ["dry_skim_coat", "patching"],
         ["dry_sand"],
     ],

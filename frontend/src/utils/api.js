@@ -1527,7 +1527,7 @@ export const logbooksAPI = {
    * being logged; priors are read from the most recent daily_jobsite log
    * STRICTLY BEFORE it.
    */
-  getActivityChips: async (projectId, date = null, trade = null) => {
+  getActivityChips: async (projectId, date = null, trade = null, opts = {}) => {
     const params = {};
     if (date) params.date = date;
     // The CREW's roster trade. Without it the whole catalogue comes back, as
@@ -1535,6 +1535,12 @@ export const logbooksAPI = {
     // an electrical crew was being offered drywall because the ranking keyed
     // off the PROJECT's prior day and nothing else.
     if (trade) params.trade = trade;
+    // The crew's COMPANY: its other rostered trades on this project join the
+    // catalog band after the crew's own (one company frames, hangs sheetrock,
+    // tapes and paints). `catalog` adds every catalog trade's work for the
+    // card's "More work" picker.
+    if (opts && opts.company) params.company = opts.company;
+    if (opts && opts.catalog) params.catalog = true;
     const response = await apiClient.get(
       `/api/projects/${projectId}/activity-chips`, { params },
     );

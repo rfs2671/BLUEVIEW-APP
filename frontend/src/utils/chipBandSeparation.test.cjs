@@ -55,8 +55,10 @@ ok(/chipOther/.test(src), 'Other survives the band it happened to live in');
   ok(/primary = suggested\.slice\(0, CHIP_SLOTS\)/.test(model)
     && /primary = tradeCatalog\.slice\(0, CHIP_SLOTS\)/.test(model),
     'the four-slot cap is unchanged on every branch');
-  ok(/return \{ primary, rest, basis, hidden: rest\.length \};/.test(model),
-    'composeChipBands returns { primary, rest, basis } — always is gone');
+  // restGroups joined the shape (the company's other trades, grouped by trade
+  // in the expander); `always` is still gone from it.
+  ok(/return \{ primary, rest, restGroups, basis, hidden: rest\.length \};/.test(model),
+    'composeChipBands returns { primary, rest, restGroups, basis } — always is gone');
   ok(!/band === .always_available./.test(model),
     "and nothing filters on the dead band, which would hide a crew's own work");
 }

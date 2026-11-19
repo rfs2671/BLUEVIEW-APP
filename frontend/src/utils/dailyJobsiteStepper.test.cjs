@@ -252,15 +252,17 @@ ok(/setChipsByTrade\(\(p\) => \(\{ \.\.\.p, \[tr\]: \[\] \}\)\)/.test(src),
 // ── CHIPS ARE PER TRADE ──────────────────────────────────────────────────────
 // An electrical crew was offered drywall because ONE list was fetched for the
 // whole project and the ranking keyed off the project's prior day.
-ok(/getActivityChips\(projectId, date, tr \|\| null\)/.test(code),
-  'the crew trade is sent to the endpoint');
+// AND THE CREW'S COMPANY: its other rostered trades join its card (one
+// company frames, hangs sheetrock, tapes and paints -- operator, 2026-11-18).
+ok(/getActivityChips\(projectId, date, crew\.trade \|\| null,\s*\{ company: crew\.company \|\| null, catalog: tr === '' \}\)/.test(code),
+  'the crew trade AND company are sent to the endpoint; the unfiltered fetch asks for the catalogue');
 // A crew with no trade keys on '', which is the UNFILTERED list — the right
 // list for a crew whose trade nobody recorded.
 ok(/if \(!wanted\.includes\(''\)\) wanted\.push\(''\)/.test(code),
   'the unfiltered list is ALWAYS fetched too, so "All activities" can mean all');
-ok(/const chipsFor = \(a\) => chipsByTrade\[String\(a\?\.trade \|\| ''\)\.trim\(\)\]/.test(code),
-  'each crew reads its OWN trade list, keyed on its trade');
-ok(/const \{ primary, rest, basis \} = chipBandsFor\(a\);/.test(code),
+ok(/const chipsFor = \(a\) => chipsByTrade\[crewChipKey\(a\?\.trade, a\?\.company\)\]/.test(code),
+  'each crew reads its OWN list, keyed on its trade and company');
+ok(/const \{ primary, rest, restGroups, basis \} = chipBandsFor\(a\);/.test(code),
   'Step 2 renders that list, not a shared one');
 
 // ── THE COMPOSITION MOVED INTO THE MODEL ────────────────────────────────────
@@ -290,7 +292,9 @@ ok(/basis === 'trade' && \(/.test(step2band) && /chipsFromTrade/.test(step2band)
 // Only when a trade actually resolved — a crew with no trade would otherwise
 // get the ENTIRE catalogue inlined onto its card.
 const MODEL = fs.readFileSync(path.join(__dirname, 'dailyJobsiteModel.js'), 'utf8');
-ok(/const filtered = Array\.isArray\(resolvedTrades\) && resolvedTrades\.length > 0;/.test(MODEL),
+// ...or the company's rostered trades having resolved (a crew typed "Laborer"
+// whose company is rostered for drywall and painting is narrowed to those).
+ok(/const filtered = \(Array\.isArray\(resolvedTrades\) && resolvedTrades\.length > 0\)\s*\|\| \(Array\.isArray\(companyTrades\) && companyTrades\.length > 0\);/.test(MODEL),
   'promotion is gated on the trade having RESOLVED, not merely being non-empty');
 ok(/const tradeCatalog = filtered/.test(MODEL),
   'so an untraded crew keeps the collapsed catalogue it had');
@@ -314,7 +318,7 @@ ok(/\[\.\.\.new Set\(/.test(code) && /wanted\.map/.test(code),
 // An unassigned worker gets no activity card, so there is no crew trade to
 // fetch a list for. This call was dropped once, when the helper lived only on
 // an unmerged branch; it is asserted so it cannot be dropped silently again.
-ok(/workRows\(rows\)\.map\(/.test(code),
+ok(/workRows\(rows\)\.forEach\(/.test(code),
   'and the unassigned workers are not fetched for at all');
 
 // ── EVERY MODEL HELPER THE SCREEN CALLS IS IMPORTED ──────────────────────────
