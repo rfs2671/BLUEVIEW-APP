@@ -149,24 +149,17 @@ walk(filesTree, (n) => {
 ok(!claimsSynced, 'files: no "N files synced" label survives');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 3. handleSync: the response's file_count is still used for the TOAST --
-//    "Copying 412 files from Dropbox" is a statement about the TARGET, not
-//    about the tree, and it is the honest thing to say while the copy runs.
-//    The screen still re-reads the LIST, because it renders rows.
+// 3. handleSync: there is no pop-up at all.
+//    It used to toast "Copying N files from Dropbox" from the response's
+//    file_count. The sync button now spins while it runs and turns green when
+//    it is done, so the screen says nothing it cannot know -- and the
+//    mid-sync list read still renders rows, not a count.
 // ═══════════════════════════════════════════════════════════════════════════
 const plansTree = ast(PLANS);
 const cpSync = findFn(plansTree, 'handleSync');
 
-let cpCaptured = false;
-walk(cpSync, (n) => {
-  if (n.type !== 'VariableDeclarator' || !n.init) return;
-  walk(n.init, (c) => {
-    if (c.type === 'CallExpression'
-        && c.callee.type === 'MemberExpression'
-        && c.callee.property.name === 'syncProject') cpCaptured = true;
-  });
-});
-ok(cpCaptured, 'plans: syncProject result is captured');
+ok(callsTo(cpSync, 'syncProject').length === 1,
+  'plans: handleSync starts the sync exactly once');
 
 let cpUsesFileCount = false;
 walk(cpSync, (n) => {
@@ -174,7 +167,8 @@ walk(cpSync, (n) => {
     cpUsesFileCount = true;
   }
 });
-ok(cpUsesFileCount, 'plans: the sync message uses file_count');
+ok(!cpUsesFileCount,
+  'plans: handleSync does not read file_count -- no message is built from it');
 
 ok(callsTo(cpSync, 'getProjectFiles').length === 1,
   'plans: still reads the list once -- it renders rows, not a count');

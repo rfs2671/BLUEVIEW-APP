@@ -110,6 +110,12 @@ const server = http.createServer((req, res) => {
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const JWT = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ exp: 4102444800, sub: 'u1' })}.x`;
 const ME = { id: 'u1', email: 'admin@test.local', full_name: 'Admin', name: 'Admin', role: 'admin', company_name: 'Acme', company_id: 'c1', account_status: 'approved' };
+// WHO IS SIGNED IN CHANGES PARTWAY. /admin/users is an admin's screen, but since
+// #1052 only the superintendent and the CP FILE a log: an admin who opens the
+// scaffold stepper is shown "Not filed yet" and no fields. So the stepper half
+// of this probe signs in as a CP, and this is what /api/auth/me answers with.
+let ME_NOW = ME;
+const AS_CP = { ...ME, id: 'u2', email: 'cp@test.local', full_name: 'CP', name: 'CP', role: 'cp' };
 
 // THE PRODUCTION ROW, as the list endpoint returns it: the stored string, and
 // the server's `unreadable` verdict carrying it back verbatim.
@@ -148,7 +154,7 @@ function stub(page, writes) {
       return route.fulfill({ status: 200, headers: cors, body: JSON.stringify({ ...MICHAEL, ...(body || {}) }) });
     }
     let body = {};
-    if (url.includes('/api/auth/me')) body = ME;
+    if (url.includes('/api/auth/me')) body = ME_NOW;
     else if (url.includes('feature-flags')) body = { flags: {} };
     else if (url.includes('/api/version')) body = { client_minimum_supported: null };
     else if (/\/api\/admin\/users(\?|$)/.test(url)) body = ROSTER;
@@ -190,11 +196,17 @@ const clickInDialog = (page, name) => page.evaluate((needle) => {
 const readField = (page, placeholder, scope = '[role="dialog"] ') => page.evaluate(([ph, sc]) => {
   const input = document.querySelector(`${sc}input[placeholder="${ph}"]`);
   if (!input) return { found: false };
-  // The message is the Text rendered right after the input's own wrapper.
-  let wrap = input;
-  while (wrap.parentElement && wrap.parentElement.children.length === 1) wrap = wrap.parentElement;
-  const holder = wrap.parentElement;
-  const msgEl = holder ? [...holder.children].find((c) => c !== wrap && (c.innerText || '').trim()) : null;
+  // The message is the Text rendered right AFTER the input's own box. The soft
+  // field surfaces (#978-#981) wrap the input in layers of their own, so the
+  // box is not a fixed number of parents up: climb until some ancestor has a
+  // later sibling that carries text, and stop at the dialog or page.
+  let msgEl = null;
+  for (let n = input; n && n.parentElement && !msgEl; n = n.parentElement) {
+    if (n.getAttribute && n.getAttribute('role') === 'dialog') break;
+    for (let sib = n.nextElementSibling; sib; sib = sib.nextElementSibling) {
+      if ((sib.innerText || '').trim()) { msgEl = sib; break; }
+    }
+  }
   const rgb = (s) => (s.match(/[\d.]+/g) || []).map(Number);
   const lum = ([r, g, b]) => {
     const f = (v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
@@ -237,6 +249,7 @@ const readField = (page, placeholder, scope = '[role="dialog"] ') => page.evalua
   };
 
   for (const theme of ['light', 'dark']) {
+    ME_NOW = ME;
     console.log(`\n=== ${theme} · ${WIDTH}x${HEIGHT} ===`);
     const ctx = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT } });
     await ctx.addInitScript(([t, u, th]) => {
@@ -383,6 +396,7 @@ const readField = (page, placeholder, scope = '[role="dialog"] ') => page.evalua
     check('SAVED     carrying the ISO date, not the typed text', sent === '2029-07-21', `sent ${JSON.stringify(sent)}`);
 
     // PINNED
+    ME_NOW = AS_CP;
     await page.goto(`http://localhost:${PORT}/logbooks/scaffold_maintenance?projectId=p1`,
       { waitUntil: 'networkidle', timeout: 45000 });
     await page.waitForTimeout(2200);

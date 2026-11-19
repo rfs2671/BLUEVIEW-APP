@@ -40,13 +40,13 @@ const SCREENS = [
   {
     file: 'app/login.jsx',
     linkPush: "router.push('/register')",
-    linkText: "Don't have an account?",
+    linkText: 'Create account',
     what: 'signup link',
   },
   {
     file: 'app/register.jsx',
     linkPush: "router.push('/login')",
-    linkText: 'Already have an account?',
+    linkText: 'Sign in',
     what: 'sign-in link',
   },
 ];

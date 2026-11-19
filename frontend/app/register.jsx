@@ -230,7 +230,7 @@ function buildStyles(colors, isDark) {
     welcomeSection: { marginBottom: spacing.xl },
     welcomeLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.xs },
     welcomeTitle: { fontSize: 28, fontFamily: typography.display, fontWeight: '800', color: colors.text.primary },
-    form: { gap: 18 },
+    form: { gap: spacing.md },
     inputGroup: { gap: spacing.xs },
     inputLabel: { ...typography.label, color: colors.text.muted },
     errorText: { fontSize: 13, color: colors.error || semantic.criticalText, textAlign: 'center' },

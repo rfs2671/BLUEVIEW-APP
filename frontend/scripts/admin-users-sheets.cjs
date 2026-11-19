@@ -253,6 +253,10 @@ const clickAddOpener = (page) => page.evaluate(() => {
   };
   const icons = [...document.querySelectorAll('[tabindex="0"]')]
     .filter((n) => !(n.innerText || '').trim() && n.querySelector('svg'))
+    // The corner Settings gear (#1019) is a third icon in this header and the
+    // rightmost one, so "the last icon" stopped meaning Add. It is the one icon
+    // here that CARRIES a name ("Settings"); Add and Back are the unnamed two.
+    .filter((n) => !n.getAttribute('aria-label'))
     .filter((n) => !inAScroller(n))
     .map((n) => ({ n, r: n.getBoundingClientRect() }))
     .filter((x) => x.r.top >= 0 && x.r.top < 80 && x.r.width > 20);

@@ -28,15 +28,15 @@ ok(/Easing\.out\(/.test(sheen) && /IN_MS\s*=\s*260/.test(sheen) && /SWEEP_MS\s*=
 ok(/HOLD_MS\s*=\s*420/.test(sheen) && /setTimeout\(\(\) => setHeld\(false\), HOLD_MS\)/.test(sheen), 'a press is held 420ms after it ends so a quick tap shows the whole of it');
 ok(/intro/.test(sheen) && /Animated\.sequence\(/.test(sheen) && /introDelay/.test(sheen), 'with `intro` the card plays it once, a beat after it appears, staggered');
 ok(/useNativeDriver:\s*native/.test(sheen) && /Platform\.OS\s*!==\s*'web'/.test(sheen), 'it uses the native driver wherever there is one');
-ok(/prefers-reduced-motion/.test(sheen) && /isReduceMotionEnabled/.test(sheen) && /lit\.setValue\(on \? 1 : 0\)/.test(sheen) && /if \(!intro \|\| reduce\)/.test(sheen) && /if \(!on \|\| reduce\)/.test(sheen), 'reduced motion: no sweep, no intro, the state just changes');
+ok(/prefers-reduced-motion/.test(sheen) && /isReduceMotionEnabled/.test(sheen) && /lit\.setValue\(on \? 1 : 0\)/.test(sheen) && /if \(!intro \|\| reduce \|\| hasHover\(\)\)/.test(sheen) && /if \(!on \|\| reduce\)/.test(sheen), 'reduced motion: no sweep, no intro, the state just changes');
 ok(/run\.stop\(\)/.test(sheen), 'a running animation is stopped when the state changes, so it re-targets from where it is');
 ok(/pointerEvents="none"/.test(sheen) && /importantForAccessibility="no-hide-descendants"/.test(sheen), 'it still takes no touches and is hidden from assistive tech');
 
 console.log('\n── Every card tells the sheen when it is hovered ──');
 const glass = read('src/components/GlassCard.js');
 ok(/<CardSheen radius=\{borderRadius\.xxl\} active=\{isHovered && hoverEffect\} intro \/>/.test(glass), 'GlassCard (respecting hoverEffect={false}), and it announces itself');
-ok(/export const StatCard[\s\S]*?translateY: -3[\s\S]*?<PanelSurface kind="card" anim=\{anim\} \/>/.test(glass), 'StatCard is a soft panel and lifts when hovered (the sheen is retired on soft surfaces)');
-ok(/export const GlassListItem[\s\S]*?translateY: -2[\s\S]*?<PanelSurface kind="card" anim=\{anim\} \/>/.test(glass), 'GlassListItem is a soft panel and lifts when hovered');
+ok(/const SoftStatCard[\s\S]*?translateY: -3[\s\S]*?<PanelSurface kind="card" anim=\{anim\} \/>/.test(glass), 'StatCard is a soft panel and lifts when hovered (the sheen is retired on soft surfaces)');
+ok(/const SoftGlassListItem[\s\S]*?translateY: -2[\s\S]*?<PanelSurface kind="card" anim=\{anim\} \/>/.test(glass), 'GlassListItem is a soft panel and lifts when hovered');
 const dash = read('app/index.jsx');
 ok(/const ActionTile[\s\S]*?isHovered && !fingerDown && \{ transform: \[\{ translateY: -2 \}\] \}[\s\S]*?<PanelSurface kind="card" anim=\{anim\} \/>/.test(dash), 'the dashboard tool tile (phone) is a soft raised tile that lifts when lit');
 ok(/body = \(active, pressedNow\) =>/.test(dash) && /\{\(\{ hovered, pressed \}\) => body\(!!hovered, !!pressed\)\}/.test(dash) && /\{body\(false, false\)\}/.test(dash), 'the portfolio exposure cards (a zero card has nothing to press)');
@@ -46,7 +46,7 @@ const proj = read('app/project/[id].jsx');
 ok(/<SoftBox\s+key=\{action\.title\}\s+kind="card"/.test(proj), 'the project quick actions are soft cards that sink when pressed');
 const logs = read('app/logbooks/index.jsx');
 ok((logs.match(/<SoftBox\s+kind="card"/g) || []).length === 2, 'both log-book list cards are soft cards');
-ok(/<CardSheen radius=\{borderRadius\.lg\} intro \/>/.test(read('src/components/SyncButton.jsx')), 'the sync card');
+ok(/<SyncIconButton\b/.test(read('src/components/SyncButton.jsx')) && !/CardSheen/.test(read('src/components/SyncButton.jsx')), 'the sync control is the soft icon button, with no sheen of its own');
 
 console.log('\n── Boxes a screen draws itself ──');
 const sv = read('src/components/SheenView.jsx');
