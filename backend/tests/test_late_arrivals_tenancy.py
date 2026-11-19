@@ -17,8 +17,10 @@ ASGI: the real middleware stack, the real dependencies, the real JWT. Only the
 database is replaced (tests/async_fake_mongo.py).
 
 THE SEED IS A ROUTE THAT WOULD WRITE. Company A's project has today's Daily
-Jobsite Log signed, and a worker checked in at the gate who is not on it -- so
-any caller who reaches the body with write authority opens a correction. The
+Jobsite Log signed, and a worker checked in at the gate who is not on it AND
+works for a sub the log has no card for (a same-sub man is only RECORDED, which
+test_late_arrivals_recorded.py covers) -- so any caller who reaches the body
+with write authority opens a correction. The
 control (A's own assigned CP) proves the seed does that; without it, "B wrote
 nothing" could pass on a route that writes for nobody.
 
@@ -94,7 +96,7 @@ def _seed():
     })
     db.checkins.docs.append({
         "_id": ObjectId(), "project_id": str(PROJ_A), "worker_id": str(LATE_WORKER),
-        "worker_name": LATE_NAME, "worker_company": "J&P",
+        "worker_name": LATE_NAME, "worker_company": "Larkin Electric",
         "status": "checked_in", "check_in_time": now, "is_deleted": False,
     })
     for key, extra in USERS.items():

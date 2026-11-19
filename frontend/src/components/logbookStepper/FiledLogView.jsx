@@ -56,6 +56,23 @@ import { outdoor, spacing, borderRadius, typography } from '../../styles/theme';
  * and that screen, not this one, owns the camera, the offline queue and the
  * per-row refusals.
  */
+/**
+ * The gate's check-in time as a New York clock. A value the gate never anchored,
+ * or a runtime without time-zone support, falls back rather than throwing onto a
+ * filed record.
+ */
+function lateClock(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  const opts = { hour: 'numeric', minute: '2-digit' };
+  try {
+    return d.toLocaleTimeString('en-US', { ...opts, timeZone: 'America/New_York' });
+  } catch (e) {
+    return d.toLocaleTimeString('en-US', opts);
+  }
+}
+
 export default function FiledLogView({
   s,
   // The SERVER's document. Optional: when absent and a logId is present this
@@ -68,6 +85,7 @@ export default function FiledLogView({
 }) {
   const router = useRouter();
   const t = useT('logbookPhotos');
+  const tLate = useT('lateArrivals');
   const [fetched, setFetched] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   const [readFailed, setReadFailed] = React.useState(false);
@@ -127,6 +145,8 @@ export default function FiledLogView({
   const att = filedAttestation(doc);
   const { fields, groups } = summarizeFiledLog(doc);
   const photos = photographsSection({ ...doc, log_type: effectiveType });
+  const lateRows = Array.isArray(doc.late_arrivals)
+    ? doc.late_arrivals.filter((r) => r && typeof r === 'object') : [];
   const openPhotos = () => router.push(
     `/logbooks/photos?logbookId=${encodeURIComponent(String(doc.id || doc._id || logId))}`,
   );
@@ -188,6 +208,29 @@ export default function FiledLogView({
           ))}
         </Card>
       ))}
+
+      {/* ── ARRIVED AFTER SIGNING ───────────────────────────────────────
+          Workers whose crew was already on the log and who checked in after the
+          CP signed (backend/lib/late_arrivals.py). Kept OUTSIDE `data` and
+          drawn apart from the filed fields: it is the gate's record, copied,
+          and the note says it is not part of what was attested to. Absent
+          entirely when nobody arrived late. */}
+      {lateRows.length > 0 && (
+        <Card s={s} style={fs.card}>
+          <Text style={fs.sectionTitle}>{tLate('sectionTitle')}</Text>
+          <Text style={fs.body}>{tLate('sectionNote')}</Text>
+          {lateRows.map((r, i) => (
+            <View key={`late_${r.worker_id || i}`} style={fs.fieldRow}>
+              <Text style={fs.fieldLabel}>
+                {[r.worker_name, r.company, r.trade].filter(Boolean).join(' · ')}
+              </Text>
+              <Text style={fs.fieldValue}>
+                {lateClock(r.checked_in_at) ? `${tLate('checkedIn')} ${lateClock(r.checked_in_at)}` : ''}
+              </Text>
+            </View>
+          ))}
+        </Card>
+      )}
 
       {/* ── PHOTOGRAPHS: PRESENT, OR ABSENT ENTIRELY ──────────────────── */}
       {/* `photos === null` is state 1 and renders NOTHING. Not an empty
