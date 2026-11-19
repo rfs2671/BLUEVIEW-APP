@@ -33,6 +33,7 @@ create_annotation.
     python backend/tests/test_body_project_id_fails_closed.py
 """
 
+import importlib
 import asyncio
 import os
 import re
@@ -268,12 +269,12 @@ class TheseTwoRoutesLeftTheSweep(unittest.TestCase):
     """
 
     def test_the_sweep_agrees_with_the_single_pinned_total(self):
-        mod = __import__("test_pm_load_project_fails_closed")
+        mod = importlib.import_module("tests.test_pm_load_project_fails_closed")
         self.assertEqual(len(mod.sweep_bypass_sites()),
                          mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL)
 
     def test_neither_route_is_still_in_the_sweep(self):
-        mod = __import__("test_pm_load_project_fails_closed")
+        mod = importlib.import_module("tests.test_pm_load_project_fails_closed")
         hits = set(mod.sweep_bypass_sites())
         src = (BACKEND / "server.py").read_text(encoding="utf-8-sig").splitlines()
         for hit in hits:

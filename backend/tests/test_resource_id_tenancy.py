@@ -42,6 +42,7 @@ therefore not worth making.
     python backend/tests/test_resource_id_tenancy.py
 """
 
+import importlib
 import ast
 import asyncio
 import os
@@ -277,13 +278,13 @@ class TheSweepCountWentDownBySEVEN(unittest.TestCase):
         broke it -- the same flaw this series already fixed once, reintroduced.
         The total is DESIGNED to keep falling, so it is pinned in exactly one
         place and every other file asserts agreement with it."""
-        mod = __import__("test_pm_load_project_fails_closed")
+        mod = importlib.import_module("tests.test_pm_load_project_fails_closed")
         self.assertEqual(len(mod.sweep_bypass_sites()),
                          mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL)
 
     def test_permit_renewal_contributes_nothing_to_the_sweep(self):
         """All six were in it. None should remain."""
-        mod = __import__("test_pm_load_project_fails_closed")
+        mod = importlib.import_module("tests.test_pm_load_project_fails_closed")
         remaining = [h for h in mod.sweep_bypass_sites()
                      if h.startswith("permit_renewal.py")]
         self.assertEqual(remaining, [])
