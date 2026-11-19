@@ -43,7 +43,8 @@ from fastapi import HTTPException  # noqa: E402
 
 import server  # noqa: E402
 
-ADMIN = {"_id": "u1", "id": "u1", "role": "admin", "company_id": "companyA",
+# The superintendent files (operator ruling 2026-11-18: an admin reads only).
+FILER = {"_id": "u1", "id": "u1", "role": "superintendent", "company_id": "companyA",
          "account_status": "approved", "assigned_projects": ["projA"]}
 PROJECT = {"_id": "projA", "company_id": "companyA", "name": "588 Thomas"}
 
@@ -109,7 +110,7 @@ class _Store:
             try:
                 asyncio.run(server.update_logbook(
                     logbook_id="lb1", data=server.LogbookUpdate(**body),
-                    current_user=ADMIN))
+                    current_user=FILER))
                 return 200
             except HTTPException as e:
                 d = e.detail

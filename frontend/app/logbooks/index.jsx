@@ -122,7 +122,9 @@ export default function LogBooksScreen() {
   // read ["admin", "owner"] on both sides; the role is retired and the
   // platform operator now arrives on the flag instead, here and there.
   const isAdminUser = isCompanyAdmin(user);
-  // A PM arrives from his project's Log Books tile with ?projectId= and reads.
+  // A PM arrives from his project's Log Books tile with ?projectId= and reads;
+  // so does an admin (ruling 2026-11-18: only the superintendent and the CP
+  // file). Either may add photographs to a filed log.
   const readOnly = readsLogbooksOnly(user);
   const { projectId: requestedProjectId } = useLocalSearchParams();
   const { isDark, colors } = useTheme();
@@ -948,8 +950,11 @@ export default function LogBooksScreen() {
                 LOGBOOK_TYPE_REGISTRY, so a fifth conditional type appears here
                 on its own. Was a single hardcoded scaffold row. */}
             {/* The site switches are the CP's and the office's to set; a
-                read-only viewer sees what is on through the tiles below. */}
-            {!readOnly && selectedProject && activations.length > 0 && (
+                read-only viewer sees what is on through the tiles below.
+                AN ADMIN READS LOGS AND STILL SETS THE SWITCHES: turning a log
+                type on is configuring the job, not filling a log in, so
+                `isAdminUser` (admin, or a "Same as admin" PM) keeps them. */}
+            {(!readOnly || isAdminUser) && selectedProject && activations.length > 0 && (
               <>
                 <View style={styles.heroDivider} />
                 <Text style={styles.toggleGroupTitle}>On site today</Text>

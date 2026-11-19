@@ -39,7 +39,8 @@ os.environ.setdefault("QWEN_API_KEY", "")
 
 import server  # noqa: E402
 
-USER = {"_id": "u1", "id": "u1", "role": "admin", "company_id": "companyA",
+# The superintendent files (operator ruling 2026-11-18: an admin reads only).
+USER = {"_id": "u1", "id": "u1", "role": "superintendent", "company_id": "companyA",
         "account_status": "approved", "assigned_projects": ["projA"]}
 PROJECT = {"_id": "projA", "company_id": "companyA", "name": "588 Thomas"}
 
@@ -62,6 +63,9 @@ def _run(update_body, stored_after):
         if state["written"]:
             return dict(stored_after)
         before = dict(stored_after)
+        # ON HIS PROJECT: the actor is a superintendent (an admin reads only,
+        # ruling 2026-11-18), and the write gate admits him by assignment.
+        before.setdefault("project_id", "projA")
         before["is_locked"] = False      # not yet frozen; this write is what freezes it
         before["status"] = "draft"
         # SUBMIT_NO_CONTENT is a separate, real guard: a submit whose effective

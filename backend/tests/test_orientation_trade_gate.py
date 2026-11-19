@@ -41,7 +41,7 @@ import server  # noqa: E402
 
 PROJECT = {"_id": "proj1", "name": "857 Prescott Pl", "company_id": "co_a"}
 USER = {
-    "_id": "u1", "id": "u1", "role": "admin", "company_id": "co_a",
+    "_id": "u1", "id": "u1", "role": "superintendent", "company_id": "co_a",  # files (ruling 2026-11-18)
     "assigned_projects": ["proj1"], "full_name": "Ada Admin",
 }
 ORIENT = "subcontractor_orientation"

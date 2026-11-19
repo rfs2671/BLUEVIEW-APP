@@ -63,8 +63,9 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
   // Finalize as their explicit end-of-day Submit & Sign.
   const signFreezes = isImmediateLog(logType);
   const toast = useToast();
-  // A Site Manager / PM may not amend or finalize (the server's read-only
-  // ruling), so neither button is offered to him.
+  // A Site Manager / PM (either level) and an admin may not amend or
+  // finalize (only the superintendent and the CP file, ruling 2026-11-18), so
+  // neither button is offered to them.
   const { user } = useAuth();
   const readOnly = readsLogbooksOnly(user);
   const t = useT('finalize');

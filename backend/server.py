@@ -8407,44 +8407,94 @@ def assert_role_assignable_by(role, actor) -> str:
 # capability flag on the user document, because a flag is a second place the
 # answer lives and the role string is already the first.
 #
-#   NO SIGNING. A signature is an attestation by a named person in a named
-#   capacity; the PM holds neither a DOB licence nor the competent-person
-#   designation, so there is no capacity for him to sign in. Enforced in
-#   record_signature_event.
-#
-#   DAILY LOGS ARE VIEW-ONLY. He may read a log and append a PHOTOGRAPH to it
-#   -- append_activity_photo already stamps `added_by`, `added_by_name` and
-#   `added_at` on every photo row, which is exactly the record the ruling asks
-#   for -- and he may not create, edit, finalize, amend or delete one.
+#   NO SIGNING, AND DAILY LOGS ARE VIEW-ONLY. Both now follow from the filing
+#   rule below, which names who MAY fill a log in rather than who may not.
 #
 #   NO PROJECT CREATION. POST /projects keeps `get_admin_user`, which does not
 #   admit him. Stated here as well because "cannot create projects" is a rule
 #   about the role and not a property of one route's dependency list.
-ROLES_WITHOUT_SIGNING_AUTHORITY = (ROLE_PM,)
-ROLES_WITH_READ_ONLY_LOGBOOKS = (ROLE_PM,)
+#
+# ── WHO FILLS IN A LOG: THE SUPERINTENDENT AND THE CP, AND NOBODY ELSE ──────
+#
+# OPERATOR RULING, 2026-11-18: "only super should have access [to fill in log
+# books]; sm or pm can only view it and add photos." Confirmed: the
+# superintendent and the CP fill in and sign a log. A Site Manager / PM AT
+# EITHER LEVEL -- "Assigned jobs only" and "Same as admin" -- and a company
+# admin READ a log and ADD PHOTOGRAPHS to it.
+#
+# AN ALLOW-LIST, AND THAT IS THE FIX. The rule used to be a deny-list,
+# `ROLES_WITH_READ_ONLY_LOGBOOKS = (ROLE_PM,)`, which additionally exempted a PM
+# on "Same as admin" (pm_has_full_access). So it held for one population, the
+# assigned-jobs PM, and every other reader the ruling names -- the full PM, the
+# admin -- filed and signed; in production a full-access PM filed a Daily
+# Jobsite Log. A deny-list also files for every role nobody thought to list
+# ("owner", "worker", whatever comes next). This answers yes for two roles.
+#
+# THE SITE DEVICE IS UNCHANGED, deliberately. The ruling is about people. The
+# gate tablet passed this check before and passes it now; what it may actually
+# touch is decided by the gates after this one (project_access_ok on create
+# and signing; user_can_act_on_project, which refuses it, on every by-id
+# write), exactly as before.
+#
+# DELETE IS THE ONE ADMIN EXCEPTION. Removing a log filed in error is an
+# administrative act, not filling one in; a company admin (holds_rank, so not
+# a "Same as admin" PM) keeps it. delete_logbook's own rule -- an admin, or the
+# author -- still decides within the project.
+ROLES_THAT_FILE_LOGBOOKS = (ROLE_SUPERINTENDENT, "cp")
+LOGBOOK_DEVICE_ROLE = "site_device"
 
 
-def refuse_if_logbooks_are_read_only(current_user) -> None:
-    """403 if this role may read a log and not change it.
+def may_file_logbooks(current_user) -> bool:
+    """True for a principal who may fill in, finalize, amend and sign a log."""
+    role = str((current_user or {}).get("role") or "").strip().lower()
+    return role in ROLES_THAT_FILE_LOGBOOKS or role == LOGBOOK_DEVICE_ROLE
 
-    APPLIED AT THE FOUR WRITE GATES, NOT AT THE PROJECT GATE. A Site Manager is
-    assigned to the project precisely so that he CAN see its logs, append a
+
+LOGBOOK_READ_ONLY_DETAIL = (
+    "Logs are filled in and signed by the superintendent or the CP. "
+    "You may read this log and add photographs to it, but may not create, "
+    "edit, sign, finalize or amend one."
+)
+
+
+def refuse_if_logbooks_are_read_only(current_user, *, deleting: bool = False) -> None:
+    """403 unless this principal fills in logs (see ROLES_THAT_FILE_LOGBOOKS).
+
+    APPLIED AT THE WRITE GATES, NOT AT THE PROJECT GATE. A Site Manager or an
+    admin is on the project precisely so that he CAN see its logs, append a
     photograph and receive its alerts; the restriction is on the ACT, so it is
     checked where the act is.
+
+    `deleting=True` is delete_logbook's: a company admin may remove a log
+    filed in error. A PM may not, at either level.
 
     THE PHOTOGRAPH ROUTE MUST NOT CALL THIS. `append_activity_photo` is guarded
     by `_authorize_logbook_view` on a ruling of its own -- anyone who can see
     the log may add a photograph to it -- and it already stamps `added_by`,
     `added_by_name` and `added_at` on the row, which is exactly the record the
-    Site Manager ruling asks for. Adding this refusal there would take away the
-    one write the ruling grants him.
+    ruling asks for. Adding this refusal there would take away the one write
+    the ruling grants a reader.
     """
-    if (str((current_user or {}).get("role") or "").strip().lower() in ROLES_WITH_READ_ONLY_LOGBOOKS
-            and not pm_has_full_access(current_user)):
+    if may_file_logbooks(current_user):
+        return
+    if deleting and holds_rank(current_user, COMPANY_ADMIN_ROLES):
+        return
+    raise HTTPException(status_code=403, detail=LOGBOOK_READ_ONLY_DETAIL)
+
+
+def refuse_if_no_signing_capacity(current_user) -> None:
+    """403 unless this principal may sign a log: the same two roles that file.
+
+    A signature is an attestation by a named person IN A NAMED CAPACITY --
+    "Competent Person", "Construction Superintendent". Neither a Site Manager
+    nor an admin holds one, so `acting_capacity` would have to be invented for
+    him, and an invented capacity on a statutory record is a false statement.
+    """
+    if not may_file_logbooks(current_user):
         raise HTTPException(
             status_code=403,
-            detail="A Site Manager may read a log and add photographs to it, "
-                   "but may not create, edit, finalize, amend or delete one.",
+            detail="Only the superintendent or the CP signs a log. "
+                   "You have no signing capacity on this record.",
         )
 
 
@@ -25751,7 +25801,11 @@ async def record_signature_event(
     """Record a signature event from any frontend signature capture.
     Returns the event_id to be stored as a reference on the parent document."""
 
-    # ── A SITE MANAGER SIGNS NOTHING ────────────────────────────────────────
+    # ── ONLY THE SUPERINTENDENT AND THE CP SIGN ─────────────────────────────
+    #
+    # A Site Manager (either level) and an admin sign nothing: the operator's
+    # ruling of 2026-11-18 -- see ROLES_THAT_FILE_LOGBOOKS. An allow-list now;
+    # the deny-list this replaced let a "Same as admin" PM and an admin sign.
     #
     # OPERATOR RULING, AND IT IS ABOUT CAPACITY RATHER THAN TRUST. Every
     # signature in this system is an attestation by a named person IN A NAMED
@@ -25764,12 +25818,7 @@ async def record_signature_event(
     # ON THE SERVER, NOT ON THE SCREEN. The editors would not offer him the
     # button, but this is the one endpoint that writes the ledger, and a signed
     # record produced by a caller with no capacity is the failure this refuses.
-    if (str(current_user.get("role") or "").strip().lower() in ROLES_WITHOUT_SIGNING_AUTHORITY
-            and not pm_has_full_access(current_user)):
-        raise HTTPException(
-            status_code=403,
-            detail="A Site Manager has no signing capacity on this record.",
-        )
+    refuse_if_no_signing_capacity(current_user)
 
     user_id = current_user.get("id")
     ip_address = request.client.host if request.client else None
@@ -32637,8 +32686,9 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         if data.project_id not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
 
-    # DAILY LOGS ARE VIEW-ONLY FOR A SITE MANAGER, and creating one is the
-    # write the other four gates cannot see: `_authorize_logbook_write` takes a
+    # DAILY LOGS ARE VIEW-ONLY FOR A SITE MANAGER AND AN ADMIN (only the
+    # superintendent and the CP file), and creating one is the write the
+    # by-id gates cannot see: `_authorize_logbook_write` takes a
     # logbook id, and this route takes a project id in the body.
     refuse_if_logbooks_are_read_only(current_user)
 
@@ -33061,7 +33111,8 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     await _remember_other_locations(data.project_id, data.data)
     return serialize_id(created)
 
-async def _authorize_logbook_write(logbook_id: str, current_user: dict) -> dict:
+async def _authorize_logbook_write(logbook_id: str, current_user: dict, *,
+                                   deleting: bool = False) -> dict:
     """Load the logbook, load ITS project, then authorize. Returns the doc.
 
     THE GAP THIS CLOSES. update / finalize / amend each gated `cp` on
@@ -33102,13 +33153,14 @@ async def _authorize_logbook_write(logbook_id: str, current_user: dict) -> dict:
     Reads the ACTIVE doc only, matching every call site's existing find_one —
     a soft-deleted logbook was already a 404 on all four.
     """
-    # THE READ-ONLY ROLE IS REFUSED FIRST, BEFORE THE TWO READS. This guard has
-    # four call sites -- update, finalize, amend, delete -- and every one of
-    # them changes or destroys the statutory content of a compliance record.
-    # A Site Manager passes `user_can_act_on_project` on an assigned project
-    # (its second branch is the assignment list), so without this he would hold
-    # all four.
-    refuse_if_logbooks_are_read_only(current_user)
+    # THE READ-ONLY ROLES ARE REFUSED FIRST, BEFORE THE TWO READS. Every call
+    # site -- update, finalize, amend, withdraw, late arrivals, delete --
+    # changes or destroys the statutory content of a compliance record. A Site
+    # Manager passes `user_can_act_on_project` on an assigned project and an
+    # admin (or a "Same as admin" PM) on every project of his company, so
+    # without this they would hold all of them. `deleting` lets a company admin
+    # through for delete_logbook only.
+    refuse_if_logbooks_are_read_only(current_user, deleting=deleting)
     logbook = await db.logbooks.find_one({
         "_id": to_query_id(logbook_id), "is_deleted": {"$ne": True},
     })
@@ -35491,7 +35543,10 @@ async def delete_logbook(logbook_id: str, current_user = Depends(get_current_use
     # first and narrows "any" to "any on a project this user can act on"; the
     # created_by rule below is unchanged and still decides who, WITHIN that
     # project, may delete a log they did not write.
-    logbook = await _authorize_logbook_write(logbook_id, current_user)
+    # deleting=True: a company admin removes a log filed in error -- an
+    # administrative act, not filling one in (ruling of 2026-11-18). A PM, at
+    # either level, may not.
+    logbook = await _authorize_logbook_write(logbook_id, current_user, deleting=True)
 
     # Authorization: a company admin deletes any on this project, others only
     # their own.
@@ -36208,6 +36263,9 @@ async def get_scaffold_info(project_id: str, current_user = Depends(get_current_
 @api_router.put("/logbooks/project/{project_id}/scaffold-info", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_user = Depends(get_current_user)):
     """Save scaffold info to project so it's remembered"""
+    # PART OF FILLING IN THE SCAFFOLD LOG -- its editor is the only caller --
+    # so the same people who fill the log in save it (ruling of 2026-11-18).
+    refuse_if_logbooks_are_read_only(current_user)
     update = {
         "scaffold_erector": data.get("scaffold_erector"),
         "permit_number": data.get("permit_number"),

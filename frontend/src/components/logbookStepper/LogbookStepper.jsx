@@ -179,7 +179,8 @@ export default function LogbookStepper({
   // not read.
   unavailable: unavailableProp = null,
 }) {
-  // A Site Manager / PM reads logs; he does not compose one. Any link that
+  // A Site Manager / PM (either level) and an admin read logs; they do not
+  // compose one -- only the superintendent and the CP file. Any link that
   // lands him on an unfiled log (a deep link, an old notification) shows
   // why instead of a form the server refuses to save.
   // It is the same notice as `unavailable` below: no fields, no footer, no

@@ -644,10 +644,12 @@ class AFiledCorrectionIsARecord(unittest.TestCase):
             return
         self.fail(f"the withdraw went through on a filed amendment: {state}")
 
-    def test_an_ADMIN_is_refused_too(self):
+    def test_a_COLLEAGUE_is_refused_too(self):
         """A filed correction is a record whoever is asking. The answer must
-        not depend on who asks."""
-        e = self._refused(_child(is_locked=True), user=ADMIN)
+        not depend on who asks. (This asked it of an ADMIN; since the ruling of
+        2026-11-18 an admin withdraws nothing -- 403 before the 423 -- so the
+        same question is put to another assigned filer.)"""
+        e = self._refused(_child(is_locked=True), user=OTHER_CP)
         self.assertEqual(e.status_code, 423)
 
     def test_a_SIGNED_BUT_UNFILED_draft_is_still_withdrawable(self):
@@ -718,9 +720,13 @@ class AnyAdminOrCPWithProjectAccess(unittest.TestCase):
         _, state = _run(SUPER, _child())
         self.assertEqual(state["store"]["status"], server.WITHDRAWN_STATUS)
 
-    def test_an_admin_may(self):
-        _, state = _run(ADMIN, _child())
-        self.assertEqual(state["store"]["withdrawn_by"], "u-admin")
+    def test_an_admin_may_NOT(self):
+        """SUPERSEDED for the admin by the ruling of 2026-11-18: only the
+        superintendent and the CP fill in a log, and withdrawing a correction
+        is a signed statement about one. An admin reads it and adds photos."""
+        with self.assertRaises(HTTPException) as c:
+            _run(ADMIN, _child())
+        self.assertEqual(c.exception.status_code, 403)
 
     def test_an_ASSIGNED_CP_who_is_NOT_the_author_may(self):
         """The ruling, in one line. `created_by` is "u-super"; this is not
@@ -822,7 +828,7 @@ class TheSecondTapChangesNothing(unittest.TestCase):
         self.assertEqual(out["status"], "withdrawn")
 
     def test_the_first_withdrawals_attestation_stands(self):
-        _, state = _run(ADMIN, dict(self.ALREADY))
+        _, state = _run(OTHER_CP, dict(self.ALREADY))
         self.assertEqual(state["store"]["withdrawn_by"], "u-super")
         self.assertEqual(state["store"]["withdrawn_at"], T0 + timedelta(minutes=1))
 

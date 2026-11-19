@@ -63,7 +63,8 @@ import server  # noqa: E402
 
 SRC = (Path(__file__).resolve().parent.parent / "server.py").read_text(encoding="utf-8")
 
-ADMIN = {"_id": "u1", "id": "u1", "role": "admin", "company_id": "companyA",
+# The superintendent files (operator ruling 2026-11-18: an admin reads only).
+FILER = {"_id": "u1", "id": "u1", "role": "superintendent", "company_id": "companyA",
          "account_status": "approved", "assigned_projects": ["projA"]}
 PROJECT = {"_id": "projA", "company_id": "companyA", "name": "588 Thomas"}
 DATA = {"entries": [{"topic": "ladders"}]}
@@ -113,7 +114,7 @@ def _create(sig, status="submitted", data=DATA):
          patch.object(server, "audit_log", AsyncMock()), \
          patch.object(server, "_remember_other_activities", AsyncMock()), \
          patch.object(server, "_enhance_logbook_photos", AsyncMock()):
-        return asyncio.run(server.create_logbook(data=body, current_user=ADMIN))
+        return asyncio.run(server.create_logbook(data=body, current_user=FILER))
 
 
 def _update(stored, body_kwargs):
@@ -136,7 +137,7 @@ def _update(stored, body_kwargs):
          patch.object(server, "audit_log", AsyncMock()), \
          patch.object(server, "_remember_other_activities", AsyncMock()):
         asyncio.run(server.update_logbook(logbook_id="lb1", data=body,
-                                          current_user=ADMIN))
+                                          current_user=FILER))
     return written["yes"]
 
 

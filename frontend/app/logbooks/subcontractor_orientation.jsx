@@ -237,8 +237,9 @@ export default function SubcontractorOrientation() {
   const consent = useEsraConsent();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
-  // A Site Manager / PM on "Assigned jobs only" reads these records; he does
-  // not add, sign or assign a trade on one (the server refuses all three).
+  // A Site Manager / PM (either level) and an admin read these records; they
+  // do not add, sign or assign a trade on one (the server refuses all three).
+  // Only the superintendent and the CP file (ruling 2026-11-18).
   const readOnly = readsLogbooksOnly(user);
   const toast = useToast();
   const { cpName: newCpName, setCpName: setNewCpName, cpSignature: newCpSignature, setCpSignature: setNewCpSignature, autoSave } = useCpProfile();

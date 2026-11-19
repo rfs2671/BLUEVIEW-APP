@@ -54,7 +54,8 @@ from fastapi import HTTPException  # noqa: E402
 
 import server  # noqa: E402
 
-ADMIN = {"_id": "u1", "id": "u1", "role": "admin", "company_id": "companyA",
+# The superintendent files (operator ruling 2026-11-18: an admin reads only).
+FILER = {"_id": "u1", "id": "u1", "role": "superintendent", "company_id": "companyA",
          "account_status": "approved", "assigned_projects": ["projA"]}
 CP = {"_id": "u2", "id": "u2", "role": "cp", "company_id": "companyA",
       "account_status": "approved", "assigned_projects": ["projA"]}
@@ -66,7 +67,7 @@ INHERITED = {"paths": "p", "timestamp": "2026-08-19T15:01:10.726Z",
              "affirmedLang": "en"}
 
 
-def _call(stored, update_body, user=ADMIN):
+def _call(stored, update_body, user=FILER):
     """Drive update_logbook against doubles. Returns the captured $set, or
     raises whatever the handler raised."""
     captured = {}

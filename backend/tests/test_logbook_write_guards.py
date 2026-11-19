@@ -284,7 +284,9 @@ class AForeignCallerTouchesNothing(Base):
         for name, fn in self.all_four():
             with self.subTest(endpoint=name):
                 self.db.logbooks.docs[:] = [copy.deepcopy(self.before)]
-                self.refused(fn, _user("admin", "coA"))
+                # A FILER, so the refusal is the missing project's and not
+                # the role gate's (an admin files nothing since 2026-11-18).
+                self.refused(fn, _user("superintendent", "coA", assigned_projects=[A_PROJECT]))
                 self.assert_untouched()
 
 
@@ -292,8 +294,11 @@ class TheLegitimateWritesStillWork(Base):
     """The control. Without these, every assertion above would also pass on a
     server that refused everyone."""
 
-    def test_a_same_company_admin_can_still_update(self):
-        self.do_update(_user("admin", "coA"))
+    # THE FILER IS THE SUPERINTENDENT (or the CP): operator ruling 2026-11-18.
+    # These read "a same-company admin" until then; the admin now reads only,
+    # and his refusal is the next test.
+    def test_an_assigned_superintendent_can_still_update(self):
+        self.do_update(_user("superintendent", "coA", assigned_projects=[A_PROJECT]))
         self.assertEqual(self.db.logbooks.docs[0]["data"], {"note": "overwritten"})
 
     def test_an_assigned_cp_can_still_update(self):
@@ -311,12 +316,22 @@ class TheLegitimateWritesStillWork(Base):
         self.assertEqual(e.status_code, 403)
         self.assert_untouched()
 
-    def test_a_same_company_admin_can_still_finalize(self):
-        self.do_finalize(_user("admin", "coA"))
+    def test_a_same_company_admin_reads_only(self):
+        """Update, finalize and amend refuse him; delete (below) does not."""
+        for name, fn in (("update", self.do_update), ("finalize", self.do_finalize),
+                         ("amend", self.do_amend)):
+            with self.subTest(endpoint=name):
+                self.db.logbooks.docs[:] = [copy.deepcopy(self.before)]
+                e = self.refused(fn, _user("admin", "coA"))
+                self.assertEqual(e.status_code, 403)
+                self.assert_untouched()
+
+    def test_an_assigned_superintendent_can_still_finalize(self):
+        self.do_finalize(_user("superintendent", "coA", assigned_projects=[A_PROJECT]))
         self.assertTrue(self.db.logbooks.docs[0]["is_locked"])
 
-    def test_a_same_company_admin_can_still_amend(self):
-        self.do_amend(_user("admin", "coA"))
+    def test_an_assigned_superintendent_can_still_amend(self):
+        self.do_amend(_user("superintendent", "coA", assigned_projects=[A_PROJECT]))
         self.assertEqual(len(self.db.logbooks.docs), 2, "the amendment child was created")
         self.assertTrue(self.db.logbooks.docs[1].get("is_amendment"))
 
@@ -394,7 +409,9 @@ class EveryLogbookIdWriterGoesThroughTheOneGuard(unittest.TestCase):
             _close = body.index('"""', _open + 3) + 3
             body = body[_close:_close + 2000]
             with self.subTest(endpoint=fn):
-                self.assertIn("_authorize_logbook_write(logbook_id, current_user)", body)
+                # No closing paren: delete_logbook passes `deleting=True` (an
+                # admin removes a mistaken log; ruling of 2026-11-18).
+                self.assertIn("_authorize_logbook_write(logbook_id, current_user", body)
 
     def test_the_photo_append_uses_the_view_guard_and_only_it(self):
         """And it is the ONLY route that does — a second call site would be a

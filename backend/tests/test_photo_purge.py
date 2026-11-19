@@ -438,7 +438,8 @@ class PurgeConditionsTest(unittest.TestCase):
 
 def _finalize(doc, r2, bucket="bv-bucket"):
     db = _db_with(doc)
-    user = {"_id": "u1", "id": "u1", "role": "admin", "company_id": "co_a",
+    # The superintendent files (operator ruling 2026-11-18: an admin reads only).
+    user = {"_id": "u1", "id": "u1", "role": "superintendent", "company_id": "co_a",
             "full_name": "Ada Admin", "assigned_projects": ["proj1"]}
 
     async def _fake_user():

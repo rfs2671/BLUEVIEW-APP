@@ -125,7 +125,11 @@ def _mk_db(*, project=_PROJECT, existing_log=_LOG, duplicate=None):
     return db
 
 
-def _client(*, role="admin", company_id="co_a", user_id="u1",
+# THE DEFAULT CALLER FILES: a superintendent of the company, unassigned, so he
+# keeps the company view (project_access_ok branch 2). It was an admin until
+# the operator's ruling of 2026-11-18 -- only the superintendent and the CP
+# fill in a log; an admin reads it. The admin's refusal is asserted below.
+def _client(*, role="superintendent", company_id="co_a", user_id="u1",
             assigned_projects=None, site_mode=False, device_project_id=None):
     user = {
         "_id": user_id, "id": user_id, "role": role, "company_id": company_id,
@@ -166,11 +170,17 @@ class CreateDailyLogAccessTest(unittest.TestCase):
         # Nothing was written.
         self.assertEqual(db.daily_logs.inserted, [])
 
-    def test_own_company_admin_succeeds(self):
+    def test_own_company_filer_succeeds(self):
         db = _mk_db()
         resp = _call(db, "post", "/api/daily-logs", _NEW_LOG)
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(len(db.daily_logs.inserted), 1)
+
+    def test_own_company_admin_is_refused(self):
+        db = _mk_db()
+        resp = _call(db, "post", "/api/daily-logs", _NEW_LOG, role="admin")
+        self.assertEqual(resp.status_code, 403, resp.text)
+        self.assertEqual(db.daily_logs.inserted, [])
 
     def test_assigned_cross_company_user_succeeds(self):
         """Branch 3 of the guard — assigned contractors keep working."""
@@ -226,11 +236,17 @@ class UpdateDailyLogAccessTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 403, resp.text)
         self.assertEqual(db.daily_logs.updated, [])
 
-    def test_own_company_admin_succeeds(self):
+    def test_own_company_filer_succeeds(self):
         db = _mk_db()
         resp = _call(db, "put", "/api/daily-logs/dl1", {"notes": "edited"})
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(db.daily_logs.last_set()["notes"], "edited")
+
+    def test_own_company_admin_is_refused(self):
+        db = _mk_db()
+        resp = _call(db, "put", "/api/daily-logs/dl1", {"notes": "edited"}, role="admin")
+        self.assertEqual(resp.status_code, 403, resp.text)
+        self.assertEqual(db.daily_logs.updated, [])
 
     def test_assigned_cross_company_user_succeeds(self):
         db = _mk_db()
@@ -301,7 +317,7 @@ class ReadDailyLogAccessTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 403, resp.text)
 
     def test_own_company_admin_reads_the_log(self):
-        resp = _get(_mk_db(), "/api/daily-logs/dl1")
+        resp = _get(_mk_db(), "/api/daily-logs/dl1", role="admin")
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(resp.json()["notes"], "original")
 
