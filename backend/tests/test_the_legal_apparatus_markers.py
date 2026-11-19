@@ -157,6 +157,17 @@ def _appended_photo_record():
     return r
 
 
+def _late_arrival_record():
+    """A signed log with a man recorded on it who checked in after signing
+    (lib/late_arrivals.py, ruling 2026-11-18). Stored OUTSIDE `data`."""
+    r = _base("daily_jobsite", general_description="plumbing")
+    r["late_arrivals"] = [{
+        "worker_id": "w-late", "worker_name": "Larry Late", "company": "Quality Plumbing",
+        "trade": "Plumbing", "checked_in_at": "2026-09-09T19:12:00+00:00",
+    }]
+    return r
+
+
 def _affirmed_record():
     r = _base("daily_jobsite", general_description="framing")
     r["cp_signature"] = copy.deepcopy(_AFFIRMED)
@@ -170,6 +181,8 @@ def _unaffirmed_record():
 MARKERS = (
     ("the appended-photograph notice",
      server._PHOTO_ADDED_AFTER_FILING_LABEL, _appended_photo_record),
+    ("the arrived-after-signing block",
+     "Arrived after signing", _late_arrival_record),
     ("the affirmation banner",
      "AFFIRMED for this document", _affirmed_record),
     ("the unaffirmed warning",

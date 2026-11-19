@@ -161,6 +161,14 @@ class AsyncFakeCollection:
                     cur[parts[-1]] = v
                 for k in (update.get("$unset") or {}):
                     d.pop(k, None)
+                # $push, with or without $each, on a top-level or dotted list.
+                for k, v in (update.get("$push") or {}).items():
+                    cur = d
+                    parts = k.split(".")
+                    for p in parts[:-1]:
+                        cur = cur.setdefault(p, {})
+                    items = v["$each"] if isinstance(v, dict) and "$each" in v else [v]
+                    cur.setdefault(parts[-1], []).extend(copy.deepcopy(items))
                 self.writes.append(("update", d.get("_id")))
                 return _Result(matched_count=1, modified_count=1, upserted_id=None)
         return _Result(matched_count=0, modified_count=0, upserted_id=None)

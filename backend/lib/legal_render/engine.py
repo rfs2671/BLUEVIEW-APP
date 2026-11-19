@@ -53,6 +53,7 @@ from .primitives import (_BODY, _RULE, PRIMITIVE_FNS, _empty_note,
                          _row_survives,
                          _get, _has,
                          _section_close, _section_open, appended_photographs,
+                         arrived_after_signing,
                          filing_state)
 from .schema import SCHEMAS
 
@@ -373,6 +374,9 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
         + str(ctx.get("amendment_html") or "")
         + "".join(body)
         + appended_photographs(ctx.get("appended_photographs") or [])
+        # ALSO BELOW THE SIGNATURES, for the same reason: these workers arrived
+        # after the CP signed and are outside what he attested to.
+        + arrived_after_signing(ctx.get("late_arrivals") or [])
         # A SCOPE LINE, BELOW THE SIGNATURE AND UNNUMBERED. Declared on the
         # TYPE rather than as a section, because numbering it would read as
         # part of the record and attaching it to the signature would read as

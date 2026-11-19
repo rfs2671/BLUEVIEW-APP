@@ -265,4 +265,17 @@ export default {
     title: 'Cuenta restaurada',
     body: 'Esta persona tenía una cuenta eliminada en su empresa. Ya está de vuelta, con el rol y los datos que ingresó y con su historial.',
   },
+
+  lateArrivals: {
+    recordedTitle: '{n} llegaron después de firmar el registro',
+    recordedTitleOne: '1 llegó después de firmar el registro',
+    recordedBody: 'Trabajan para cuadrillas que ya están en el Registro Diario de Obra de hoy, así que no hay que firmar de nuevo. Figuran en el registro firmado como llegados después de la firma.',
+    correctionTitle: '{n} trabajadores llegaron después de firmar el Registro Diario de Obra',
+    correctionTitleOne: '1 trabajador llegó después de firmar el Registro Diario de Obra',
+    correctionBody: '{crews} se agregaron a una corrección del registro de hoy. Toque para revisarla y firmarla.',
+    newCrews: 'Cuadrillas nuevas',
+    sectionTitle: 'Llegaron después de la firma',
+    sectionNote: 'Registraron entrada en la puerta después de firmar este registro. No forman parte de lo que se certificó al firmar.',
+    checkedIn: 'Entrada',
+  },
 };

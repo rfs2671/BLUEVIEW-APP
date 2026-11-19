@@ -65,7 +65,7 @@ from __future__ import annotations
 import html as _html
 from typing import Any, Dict, List
 
-from .formatters import FORMATTERS, NOT_RECORDED
+from .formatters import FORMATTERS, NOT_RECORDED, roster_clock
 from .schema import LABEL_SETS, ROW_FORMATTERS
 
 # THE ATTESTATION REGISTRY IS A LEAF -- typing only, no server import -- so the
@@ -740,6 +740,53 @@ def appended_photographs(rows: List) -> str:
         f'and are not part of what was attested to at signing.</div>'
         f'<table style="width:100%;border-collapse:collapse;'
         f'border:{_RULE};">{items}</table></div>')
+
+
+def arrived_after_signing(rows: List) -> str:
+    """Workers who checked in at the gate AFTER the log was signed.
+
+    OPERATOR RULING 2026-11-18. A man whose sub and trade are already on the log
+    changes one headcount and none of the work the CP described, so the CP is not
+    asked to re-sign a whole log for him. He is recorded on the signed record
+    instead (`late_arrivals`, outside `data`) and this says so.
+
+    THE SAME STANDARD AS `appended_photographs`, WHICH IT SITS BESIDE: a
+    statement of what happened after signing, drawn BELOW the signatures because
+    it is outside what the CP attested to, and in the sheet's own type. The
+    record's own content is not altered, hidden or restated.
+
+    THE ROWS ARE THE GATE'S FACTS, copied -- name, sub, trade, time. Nothing here
+    is a claim the CP made, and the sentence says so in as many words. The time
+    is New York's and carries its zone (`roster_clock`); a value the gate never
+    anchored prints as it was written.
+    """
+    if not rows:
+        return ""
+    body = ""
+    for row in rows:
+        who = _html.escape(str(row.get("worker_name") or "").strip() or "Unnamed worker")
+        sub = " &middot; ".join(_html.escape(str(x).strip()) for x in
+                                (row.get("company"), row.get("trade")) if str(x or "").strip())
+        when = _html.escape(roster_clock(row.get("checked_in_at")))
+        body += (f'<tr><td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+                 f'width:34%;">{who}</td>'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;">{sub}</td>'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+                 f'width:20%;">{when}</td></tr>')
+    return (
+        f'<div style="break-inside:avoid;margin:0 0 10px 0;">'
+        f'<div style="{_LABEL};color:#000;text-transform:uppercase;'
+        f'border-top:{_RULE};padding:4px 6px 2px;">'
+        # THE WORDS ARE REGISTERED in tests/test_the_legal_apparatus_markers.py,
+        # present here and absent from the investor report.
+        f'Arrived after signing</div>'
+        f'<div style="{_BODY};padding:0 6px 4px;line-height:1.45;">'
+        f'The workers below checked in at the gate after this log was signed. '
+        f'Each works for a subcontractor and trade already described on this '
+        f'record. They are listed from the gate record and are not part of what '
+        f'was attested to at signing.</div>'
+        f'<table style="width:100%;border-collapse:collapse;'
+        f'border:{_RULE};">{body}</table></div>')
 
 
 def question_answers(sec: Dict, rec: Any, ctx: Dict) -> str:

@@ -2348,4 +2348,20 @@ export default {
     title: 'Account restored',
     body: 'This person had a removed account in your company. It is back, with the role and details you entered and its history kept.',
   },
+
+  // ── Workers who check in after the Daily Jobsite Log is signed ────────────
+  // (backend/lib/late_arrivals.py, ruling 2026-11-18.) A man whose crew is on
+  // the log is RECORDED on it; a crew with no card opens a correction.
+  lateArrivals: {
+    recordedTitle: '{n} arrived after the log was signed',
+    recordedTitleOne: '1 arrived after the log was signed',
+    recordedBody: "They work for crews already on today's Daily Jobsite Log, so nothing needs to be signed again. They are listed on the signed log as arrived after signing.",
+    correctionTitle: '{n} workers arrived after the Daily Jobsite Log was signed',
+    correctionTitleOne: '1 worker arrived after the Daily Jobsite Log was signed',
+    correctionBody: "{crews} added to a correction of today's log. Tap to review and sign it.",
+    newCrews: 'New crews',
+    sectionTitle: 'Arrived after signing',
+    sectionNote: 'Checked in at the gate after this log was signed. Not part of what was attested to at signing.',
+    checkedIn: 'Checked in',
+  },
 };

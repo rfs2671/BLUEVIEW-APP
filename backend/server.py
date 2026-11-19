@@ -27150,6 +27150,10 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             # on a flag and reads a UTC instant as a New York day; the engine
             # learns none of that for one block on one sheet.
             "appended_photographs": _appended_photo_rows(data),
+            # WORKERS WHO CHECKED IN AFTER THE CP SIGNED, recorded outside
+            # `data` (lib/late_arrivals.py). Resolved nowhere: the rows are the
+            # gate's own and the primitive draws them.
+            "late_arrivals": late_arrivals_lib.recorded_rows(logbook),
             **_ctx_extra,
             # CONTENT, NOT CHROME. Composed above this switch for the reason
             # written there.
@@ -34694,6 +34698,26 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
 #
 # IDEMPOTENT. An unsigned correction already open on the chain is reused, never
 # a second one -- the forks open_amendment_head exists to prevent.
+#
+# OPERATOR RULING 2026-11-18, which narrows the above: a correction is the right
+# instrument only for a crew the signed log has NO card for. A late man whose sub
+# and trade are already on the log changes one headcount and none of the work the
+# CP described, so he is RECORDED on the signed log (`late_arrivals`, outside
+# `data`, printed as "Arrived after signing") and nobody signs anything. The rule
+# that separates the two lives in lib/late_arrivals.py, with the reasoning.
+from lib import late_arrivals as late_arrivals_lib
+
+
+def _late_arrival_public_rows(rows) -> list:
+    """What the screen is told about workers recorded on the signed log.
+    Plain strings only: the stored row carries a datetime."""
+    return [
+        {"worker_id": r.get("worker_id"), "worker_name": r.get("worker_name") or "",
+         "company": r.get("company") or "", "trade": r.get("trade") or "",
+         "checked_in_at": r.get("checked_in_at") or ""}
+        for r in (rows or []) if isinstance(r, dict)
+    ]
+
 
 def _daily_log_worker_ids(log: dict) -> set:
     out = set()
@@ -34710,9 +34734,15 @@ async def sync_daily_jobsite_late_arrivals(
     current_user = Depends(get_current_user),
     _proj = Depends(require_project_access),
 ):
-    """Open a correction of today's SIGNED Daily Jobsite Log when workers have
-    checked in since it was signed. Returns {late_workers, amendment_id,
-    created}. Safe to call on every load of the CP's home."""
+    """Put workers who checked in after today's Daily Jobsite Log was signed on
+    the books. A man whose crew card is already on the log is RECORDED on it as
+    arrived-after-signing (no signature); a crew the log has no card for opens a
+    correction for the CP to write and sign.
+
+    Returns {late_workers, amendment_id, created, recorded_workers}:
+    `late_workers` are the ones waiting on a correction, `recorded_workers`
+    everyone already recorded on the signed log. Safe to call on every load of
+    the CP's home."""
     day = eastern_today()
     logs = await db.logbooks.find({
         "project_id": project_id,
@@ -34722,7 +34752,8 @@ async def sync_daily_jobsite_late_arrivals(
         **WITHDRAWN_EXCLUDED,
     }).to_list(100)
     if not logs:
-        return {"late_workers": [], "amendment_id": None, "created": False}
+        return {"late_workers": [], "amendment_id": None, "created": False,
+                "recorded_workers": []}
 
     def _signed(l):
         return bool(l.get("is_locked") or l.get("status") == "submitted" or l.get("cp_signature"))
@@ -34734,7 +34765,8 @@ async def sync_daily_jobsite_late_arrivals(
     signed = [l for l in logs if _signed(l)]
     if not signed:
         # Nothing filed yet: the open log reconciles with the gate by itself.
-        return {"late_workers": [], "amendment_id": None, "created": False}
+        return {"late_workers": [], "amendment_id": None, "created": False,
+                "recorded_workers": []}
     head = max(signed, key=_order)
 
     roster = await get_project_checkins_today(
@@ -34744,32 +34776,76 @@ async def sync_daily_jobsite_late_arrivals(
     if isinstance(roster, dict):
         roster = roster.get("workers") or []
     on_log = _daily_log_worker_ids(head)
-    late = [
+    already = late_arrivals_lib.recorded_ids(head)
+    recorded_now = _late_arrival_public_rows(late_arrivals_lib.recorded_rows(head))
+    # EVERYONE the signed log does not show, then the ones not yet recorded.
+    # A man recorded earlier is still not on the log's crew cards, so a
+    # correction opened later has to name him too; but he is not "late" again.
+    behind = [
         {"worker_id": str(w.get("worker_id")), "worker_name": w.get("worker_name") or "",
-         "company": w.get("company") or ""}
+         "company": w.get("company") or "", "trade": w.get("trade") or "",
+         "check_in_time": w.get("check_in_time") or ""}
         for w in (roster or [])
         if isinstance(w, dict) and w.get("worker_id") and w.get("blocked") is not True
         and str(w.get("worker_id")) not in on_log
     ]
+    late = [w for w in behind if w["worker_id"] not in already]
     if not late:
-        return {"late_workers": [], "amendment_id": None, "created": False}
+        return {"late_workers": [], "amendment_id": None, "created": False,
+                "recorded_workers": recorded_now}
 
     # A correction already open anywhere on today's chain is the one to use.
+    # It reconciles with the gate when it opens, so it takes everyone in.
     open_one = open_amendment_head([l for l in logs if l.get("is_amendment")])
     if open_one is not None:
-        return {"late_workers": late, "amendment_id": str(open_one["_id"]), "created": False}
+        return {"late_workers": behind, "amendment_id": str(open_one["_id"]),
+                "created": False, "recorded_workers": recorded_now}
 
     try:
         await _authorize_logbook_write(str(head["_id"]), current_user)
     except HTTPException:
         # Not this user's to correct (e.g. an admin's view of a CP's log):
-        # report, open nothing.
-        return {"late_workers": late, "amendment_id": None, "created": False}
+        # report, record and open nothing.
+        return {"late_workers": late, "amendment_id": None, "created": False,
+                "recorded_workers": recorded_now}
 
-    names = ", ".join(sorted({w["worker_name"] for w in late if w["worker_name"]}))[:300]
-    reason = (f"Added automatically: {len(late)} worker{'s' if len(late) != 1 else ''} "
-              f"checked in after this log was signed ({names}).")
     now = datetime.now(timezone.utc)
+    joins, needs_card = late_arrivals_lib.split_late(head, late)
+    if not needs_card:
+        # EVERY LATE MAN BELONGS TO A CREW THE CP ALREADY DESCRIBED. Record them
+        # on the signed log, outside `data` and outside what the signature
+        # covers, and ask nobody to sign.
+        #
+        # THE FILTER IS THE IDEMPOTENCY. `$nin` over the array's worker_id makes
+        # a second device that read the same roster a moment ago match nothing,
+        # instead of listing the same man twice on a signed record; it then
+        # reads back what the winner wrote.
+        rows = [late_arrivals_lib.record_row(w, now) for w in joins]
+        result = await db.logbooks.update_one(
+            {"_id": head["_id"],
+             "late_arrivals.worker_id": {"$nin": [r["worker_id"] for r in rows]}},
+            # `updated_at` MOVES, as it does for a photograph added after filing:
+            # it is what the tablet's offline copy and the thumbnail are keyed
+            # on, and the sheet now prints something it did not.
+            {"$push": {"late_arrivals": {"$each": rows}}, "$set": {"updated_at": now}},
+        )
+        if getattr(result, "matched_count", 0):
+            await audit_log("logbook_late_arrivals_recorded",
+                            str(current_user.get("id", "")), "logbook", str(head["_id"]),
+                            {"workers": len(rows), "worker_ids": [r["worker_id"] for r in rows]})
+            recorded_now = recorded_now + _late_arrival_public_rows(rows)
+        else:
+            fresh = await db.logbooks.find_one({"_id": head["_id"]}) or head
+            recorded_now = _late_arrival_public_rows(late_arrivals_lib.recorded_rows(fresh))
+        return {"late_workers": [], "amendment_id": None, "created": False,
+                "recorded_workers": recorded_now}
+
+    # A CREW THE LOG HAS NO CARD FOR. Its work has to be written and signed by a
+    # person, so the correction is opened -- and it takes everyone in, the men
+    # who would have been recorded included, because it reconciles with the gate.
+    names = ", ".join(sorted({w["worker_name"] for w in behind if w["worker_name"]}))[:300]
+    reason = (f"Added automatically: {len(behind)} worker{'s' if len(behind) != 1 else ''} "
+              f"checked in after this log was signed ({names}).")
     child = {
         "project_id": head.get("project_id"),
         "project_name": head.get("project_name", ""),
@@ -34800,12 +34876,14 @@ async def sync_daily_jobsite_late_arrivals(
             "parent_logbook_id": str(head["_id"]), "is_deleted": {"$ne": True}, **WITHDRAWN_EXCLUDED,
         }).to_list(50)
         winner = open_amendment_head(raced)
-        return {"late_workers": late, "amendment_id": str(winner["_id"]) if winner else None, "created": False}
+        return {"late_workers": behind, "amendment_id": str(winner["_id"]) if winner else None,
+                "created": False, "recorded_workers": recorded_now}
     await audit_log("logbook_amend_auto_late_arrivals", str(current_user.get("id", "")), "logbook",
-                    str(result.inserted_id), {"parent_logbook_id": str(head["_id"]), "late": len(late)})
+                    str(result.inserted_id), {"parent_logbook_id": str(head["_id"]), "late": len(behind)})
     created_child = await db.logbooks.find_one({"_id": result.inserted_id})
     await ensure_signature_ledger_row(created_child, written_by="auto_late_arrivals")
-    return {"late_workers": late, "amendment_id": str(result.inserted_id), "created": True}
+    return {"late_workers": behind, "amendment_id": str(result.inserted_id), "created": True,
+            "recorded_workers": recorded_now}
 
 
 @api_router.post("/logbooks/{logbook_id}/withdraw")

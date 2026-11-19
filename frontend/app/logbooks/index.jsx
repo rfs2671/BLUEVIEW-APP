@@ -131,6 +131,7 @@ export default function LogBooksScreen() {
   // the server names by code. Read here so the tile's explanation and the
   // refusal he would have met after signing are the SAME sentence.
   const tFinalize = useT('finalize');
+  const tLate = useT('lateArrivals');
   const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(true);
@@ -327,7 +328,11 @@ export default function LogBooksScreen() {
       // open. A failure costs only the card; nothing else waits on it.
       if (!readOnly) {
         const late = await logbooksAPI.syncLateArrivals(projectId).catch(() => null);
-        setLateArrivals(late && Array.isArray(late.late_workers) && late.late_workers.length ? late : null);
+        // Either half is worth a card: men waiting on a correction the CP must
+        // sign, or men already RECORDED on the signed log (nothing to sign).
+        const waiting = late && Array.isArray(late.late_workers) ? late.late_workers.length : 0;
+        const recorded = late && Array.isArray(late.recorded_workers) ? late.recorded_workers.length : 0;
+        setLateArrivals(waiting || recorded ? late : null);
       } else {
         setLateArrivals(null);
       }
@@ -1222,20 +1227,41 @@ export default function LogBooksScreen() {
             </Pressable>
           )}
 
-          {/* LATE ARRIVALS. Workers who checked in after today's Daily Jobsite
-              Log was signed are added to a correction automatically; this is
-              the one tap left -- open it, check it, sign it. */}
-          {lateArrivals && (
+          {/* LATE ARRIVALS, two cases (backend/lib/late_arrivals.py).
+              A crew the signed Daily Jobsite Log has NO card for opens a
+              correction, and this is the one tap left: open it, check it,
+              sign it. A man whose crew IS on the log is already RECORDED on the
+              signed log as arrived-after-signing, and that card only says so --
+              it has nothing to tap because there is nothing to sign. */}
+          {lateArrivals && (lateArrivals.late_workers || []).length > 0 && (
             <GlassCard onPress={() => handleOpenLog('daily_jobsite')} style={styles.notifCard}>
               <View style={styles.notifHeader}>
                 <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
                 <Text style={styles.notifTitle}>
-                  {lateArrivals.late_workers.length} worker{lateArrivals.late_workers.length > 1 ? 's' : ''} arrived after the Daily Jobsite Log was signed
+                  {lateArrivals.late_workers.length === 1
+                    ? tLate('correctionTitleOne')
+                    : tLate('correctionTitle').replace('{n}', String(lateArrivals.late_workers.length))}
                 </Text>
               </View>
               <Text style={styles.notifWorker}>
-                {[...new Set(lateArrivals.late_workers.map((w) => w.company).filter(Boolean))].join(', ') || 'New crews'} added to a correction of today's log. Tap to review and sign it.
+                {tLate('correctionBody').replace(
+                  '{crews}',
+                  [...new Set(lateArrivals.late_workers.map((w) => w.company).filter(Boolean))].join(', ') || tLate('newCrews'),
+                )}
               </Text>
+            </GlassCard>
+          )}
+          {lateArrivals && (lateArrivals.late_workers || []).length === 0
+            && (lateArrivals.recorded_workers || []).length > 0 && (
+            <GlassCard style={styles.notifCard}>
+              <View style={styles.notifHeader}>
+                <Text style={styles.notifTitle}>
+                  {lateArrivals.recorded_workers.length === 1
+                    ? tLate('recordedTitleOne')
+                    : tLate('recordedTitle').replace('{n}', String(lateArrivals.recorded_workers.length))}
+                </Text>
+              </View>
+              <Text style={styles.notifWorker}>{tLate('recordedBody')}</Text>
             </GlassCard>
           )}
 
