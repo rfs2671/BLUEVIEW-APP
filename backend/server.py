@@ -28742,8 +28742,11 @@ async def set_site_device_folder_files(
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE SHARED RULE, as the GET sibling above uses. This was the conditional
+    # company comparison whose `and` short-circuits for a company-less caller
+    # -- the pattern test_pm_load_project_fails_closed.py counts and only lets
+    # go down.
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Access denied to this project")
     folder = data.get("folder")
     hidden = data.get("hidden")

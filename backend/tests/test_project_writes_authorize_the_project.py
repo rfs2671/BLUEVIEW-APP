@@ -41,6 +41,7 @@ import ast
 import os
 import re
 import sys
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -84,10 +85,41 @@ _BODY_GUARDS = (
 )
 
 
-def _project_write_routes():
+#: The project gates FastAPI resolves from the path's {project_id}. Either may
+#: sit on the decorator (`dependencies=[Depends(...)]`) or be a PARAMETER of
+#: the handler (`_proj = Depends(...)`); FastAPI runs both the same way.
+_PROJECT_DEPENDENCIES = ("require_project_access", "require_project_admin_access")
+
+
+def _parameter_dependency(fn):
+    """The project gate declared as a handler PARAMETER, or None.
+
+    THE CENSUS USED TO MISS THIS SHAPE. It looked for the gate on the
+    decorator, then for a CALL `require_project_access(` in the body -- and a
+    parameter default reads `Depends(require_project_access)`, the name followed
+    by `)`, not `(`. So `_proj = Depends(require_project_access)`, which is used
+    on 21 handlers in server.py, was reported as "no authorization" the first
+    time it appeared on a mutating route (#1049, late-arrivals).
+
+    READ FROM THE AST, NOT THE TEXT: only a default that IS a `Depends(<gate>)`
+    call counts. A comment or a string naming the gate is not a dependency, and
+    the classifier tests below hold that.
+    """
+    args = fn.args
+    for default in list(args.defaults) + [d for d in args.kw_defaults if d is not None]:
+        if not (isinstance(default, ast.Call) and isinstance(default.func, ast.Name)
+                and default.func.id == "Depends" and default.args):
+            continue
+        target = default.args[0]
+        if isinstance(target, ast.Name) and target.id in _PROJECT_DEPENDENCIES:
+            return target.id
+    return None
+
+
+def _project_write_routes(tree=None):
     """(function name, path, line, how it authorizes or None)."""
     out = []
-    for fn in ast.walk(_TREE):
+    for fn in ast.walk(_TREE if tree is None else tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for dec in fn.decorator_list:
@@ -111,6 +143,8 @@ def _project_write_routes():
             if ("require_project_access" in decorator_src
                     or "require_project_admin_access" in decorator_src):
                 how = "dependency"
+            elif _parameter_dependency(fn):
+                how = f"parameter:{_parameter_dependency(fn)}"
             else:
                 for g in _BODY_GUARDS:
                     if g in decorator_src:
@@ -183,6 +217,58 @@ class EveryProjectWriteAuthorizesTheProject(unittest.TestCase):
             with self.subTest(name):
                 self.assertGreater(len(reason), 60,
                                    "an exemption without a reason is a hole")
+
+
+class TheParameterDependencyIsReadFromTheAst(unittest.TestCase):
+    """The classifier, on handlers written for it. A census that learned a new
+    pattern has to be shown still refusing the shapes that are NOT that
+    pattern, or it has only learned to say yes."""
+
+    @staticmethod
+    def _how(src):
+        routes = _project_write_routes(ast.parse(textwrap.dedent(src)))
+        assert len(routes) == 1, routes
+        return routes[0][3]
+
+    def test_a_parameter_dependency_is_authorization(self):
+        self.assertEqual(self._how('''
+            @api_router.post("/p/{project_id}/x")
+            async def h(project_id: str, current_user = Depends(get_current_user),
+                        _proj = Depends(require_project_access)):
+                pass
+        '''), "parameter:require_project_access")
+
+    def test_the_admin_variant_is_authorization_too(self):
+        self.assertEqual(self._how('''
+            @api_router.put("/p/{project_id}/x")
+            async def h(project_id: str, *, p = Depends(require_project_admin_access)):
+                pass
+        '''), "parameter:require_project_admin_access")
+
+    def test_only_authentication_is_NOT(self):
+        self.assertIsNone(self._how('''
+            @api_router.post("/p/{project_id}/x")
+            async def h(project_id: str, current_user = Depends(get_admin_user)):
+                pass
+        '''))
+
+    def test_naming_the_gate_in_a_string_or_comment_is_NOT(self):
+        self.assertIsNone(self._how('''
+            @api_router.post("/p/{project_id}/x")
+            async def h(project_id: str, current_user = Depends(get_current_user),
+                        note: str = "Depends(require_project_access)"):
+                # _proj = Depends(require_project_access)
+                pass
+        '''))
+
+    def test_late_arrivals_is_authorized_by_its_parameter(self):
+        """The route that exposed the gap. That the dependency really refuses
+        another tenant is proved with requests in
+        test_late_arrivals_tenancy.py; this pins that the census sees it."""
+        hit = [r for r in _project_write_routes()
+               if r[0] == "sync_daily_jobsite_late_arrivals"]
+        self.assertEqual(len(hit), 1, "the route vanished")
+        self.assertEqual(hit[0][3], "parameter:require_project_access")
 
 
 class TheGuardItselfIsRealAndReachable(unittest.TestCase):

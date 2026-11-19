@@ -35,6 +35,7 @@ unreachable and no backfill is needed.
     python backend/tests/test_unowned_documents_fail_closed.py
 """
 
+import importlib
 import ast
 import asyncio
 import os
@@ -385,7 +386,7 @@ class NoDoublePermissiveLineSurvives(unittest.TestCase):
 class TheSweepIsDown(unittest.TestCase):
 
     def test_the_sweep_matches_the_single_pinned_total(self):
-        mod = __import__("test_pm_load_project_fails_closed")
+        mod = importlib.import_module("tests.test_pm_load_project_fails_closed")
         self.assertEqual(len(mod.sweep_bypass_sites()),
                          mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL)
 

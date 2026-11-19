@@ -372,12 +372,27 @@ class EveryLogbookIdWriterGoesThroughTheOneGuard(unittest.TestCase):
     watched for, and the way this file catches it is by the census below failing
     until somebody comes here and says which writer was added, and which of the
     two guards it belongs behind.
+
+    THE SIXTH (#1049): `sync_daily_jobsite_late_arrivals`. It takes a PROJECT
+    id, not a logbook id, but it writes the same thing `amend_logbook` does --
+    a correction of a signed compliance record -- so it belongs behind the
+    WRITE guard, and it is: it authorizes the signed log it is about to correct
+    before the insert, and answers "not yours to correct" with a report and no
+    write. Its project gate is the parameter dependency proved by requests in
+    test_late_arrivals_tenancy.py; this guard is the narrower rule on top.
     """
 
     SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
 
-    def test_one_definition_and_five_call_sites(self):
-        self.assertEqual(self.SRC.count("_authorize_logbook_write("), 6)
+    def test_one_definition_and_six_call_sites(self):
+        self.assertEqual(self.SRC.count("_authorize_logbook_write("), 7)
+
+    def test_the_late_arrivals_writer_authorizes_before_it_inserts(self):
+        """Named, so the seventh occurrence is THIS call and not a mention."""
+        i = self.SRC.index("async def sync_daily_jobsite_late_arrivals(")
+        body = self.SRC[i:self.SRC.index("\n@api_router", i)]
+        guard = body.index('await _authorize_logbook_write(str(head["_id"]), current_user)')
+        self.assertLess(guard, body.index("await db.logbooks.insert_one("))
 
     def test_none_of_them_kept_a_bare_unauthorized_fetch(self):
         """The exact shape that was there before: load the doc, check nothing."""
