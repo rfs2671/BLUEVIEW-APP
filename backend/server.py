@@ -57118,6 +57118,20 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
         h["_competing"] = len(chain["competing"])
         h["_amendment_reason"] = head.get("amendment_reason") if head.get("is_amendment") else None
         heads.append(h)
+    # THE PROGRESS BOARD reads the job's whole filed history up to the end of
+    # the period (lib/progress_stages): the stage of each kind of work on each
+    # floor depends on what came before the period. Same chain resolution.
+    hist_rows = await _q(db.logbooks, {"project_id": pid, "log_type": "daily_jobsite",
+                                       "is_deleted": {"$ne": True}, "date": {"$lte": end.isoformat()}},
+                         6000,
+                         projection={"date": 1, "data.activities": 1, "is_amendment": 1, "parent_logbook_id": 1,
+                                     "status": 1, "is_locked": 1, "log_type": 1, "created_at": 1,
+                                     "updated_at": 1, "amendment_reason": 1})
+    history = []
+    for chain in collapse_amendment_chains(hist_rows):
+        head = chain["head"]
+        if logbook_is_filed(head) and not logbook_is_withdrawn(head):
+            history.append({**head, "_chain_length": chain["length"]})
     dob_rows = await _q(db.dob_logs, {"project_id": pid, "is_deleted": {"$ne": True}}, 5000)
     dot_rows = _dot_confirmed_rows(await _q(db.dot_logs, {"project_id": pid}, 5000))
     # City dates only: a date a model read out of a chat message is a guess an
@@ -57127,7 +57141,7 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
     sched = (await _q(db[PROJECT_SCHEDULES], {"company_id": cf, "project_id": pid, "status": "confirmed"}, 1)
              or [None])[0]
     fin = (await _q(db[PROJECT_FINANCIALS], {"_id": pid, "company_id": cf}, 1) or [None])[0]
-    return {"checkins": in_window, "logbooks": heads, "dob_rows": dob_rows, "dot_rows": dot_rows,
+    return {"checkins": in_window, "logbooks": heads, "history": history, "dob_rows": dob_rows, "dot_rows": dot_rows,
             "events": events, "sync": _report_sync(project, state),
             # The building(s) this job is: its own BIN plus any a person added.
             # DOB records for another BIN are left out of the report (and listed
@@ -57153,7 +57167,10 @@ def _report_pdf(html_text: str) -> bytes:
 
 REPORT_PHOTO_VERDICTS = "report_photo_verdicts"
 #: Photos sent to vision per report (each is one call, cached by photo).
-REPORT_JUDGE_MAX = 100
+#: Up to eight photographs per sub and kind of work (ruled 2026-11-18) need more
+#: judged: about $0.0005 each, and the filing-time pipeline has usually judged
+#: them already, so this is the ceiling, not the typical spend.
+REPORT_JUDGE_MAX = 240
 REPORT_JUDGE_AT_ONCE = 8
 
 
@@ -57746,9 +57763,11 @@ def _report_image(c: dict) -> Optional[str]:
         with Image.open(io.BytesIO(raw)) as im:
             im = ImageOps.exif_transpose(im).convert("RGB")
             im = report_image.trim_black_bars(im)       # padding, never picture
-            im.thumbnail((900, 900))
+            # up to ~100 photographs now: 800 px at quality 74 keeps the PDF
+            # near 8 MB, under every mail and WhatsApp attachment limit
+            im.thumbnail((800, 800))
             out = io.BytesIO()
-            im.save(out, "JPEG", quality=78)
+            im.save(out, "JPEG", quality=74)
         return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode()
     except Exception:
         return None
