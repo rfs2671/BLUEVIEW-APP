@@ -74,14 +74,23 @@ for (const nav of NAVS) {
   // impossible (it is created once at module load, before any inset exists),
   // so a fix that "looks right" in the stylesheet would silently be a constant.
   const PAD = '([A-Z][A-Z0-9_]*_(?:PADDING|OFFSET))';
-  const inline = code.match(new RegExp(`paddingBottom: insets\\.bottom \\+ ${PAD}`));
+  // Either spelling is the same rule: the sum inline, or the sum named once
+  // per render (`const barBottom = insets.bottom + NAV_BOTTOM_PADDING`, which
+  // FloatingNav also needs for the bar's total height) and then applied.
+  let inline = code.match(new RegExp(`paddingBottom: insets\\.bottom \\+ ${PAD}`));
+  if (!inline) {
+    const named = code.match(new RegExp(`const (\\w+) = insets\\.bottom \\+ ${PAD};`));
+    const use = named && code.match(new RegExp(`paddingBottom: ${named[1]}\\b`));
+    if (use) inline = Object.assign([use[0], named[2]], { index: use.index });
+  }
   ok(!!inline,
     "the bar's paddingBottom is overridden per render as insets.bottom + a "
     + 'named constant — a StyleSheet is built once at module load, before any '
     + 'inset exists');
-  ok(!!inline && /styles\.container/.test(
+  ok(!!inline && /styles\.(?:container|row)/.test(
       code.slice(Math.max(0, inline.index - 220), inline.index)),
-    'and that override is on the same element as styles.container, the bar');
+    'and that override is on the same element as the bar (styles.container, '
+    + 'or styles.row where the bar is drawn around a notch)');
 
   // The StyleSheet must not try to carry the inset: it cannot, and reading
   // `insets` there would make the "per render" claim above a constant.

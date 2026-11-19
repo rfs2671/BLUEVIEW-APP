@@ -482,7 +482,7 @@ function buildStyles(colors, isDark) {
     fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
   },
-  form: { gap: 18 },
+  form: { gap: spacing.md },
   inputGroup: { gap: spacing.xs },
   inputLabel: {
     ...typography.label,
