@@ -223,6 +223,7 @@ def test_floor_wording_the_readers_only_half_understand_gives_no_floor_at_all():
         assert s["kind"] == "flooring"
         assert s["floors"] == [] and s["floors_unclear"] is True and s["days_per_floor"] is None
     assert res["counts"]["floors_unclear"] == 2
+    assert H.unclear_floor_names(res["samples"]) == ["tile 2nd & 3rd floors", "tile floors 2, 3 & 4"]
 
 
 def test_no_floor_stated_means_no_per_floor_figure_even_when_storeys_are_known():
@@ -428,7 +429,7 @@ def test_unclassified_and_two_kind_activities_are_counted_beside_the_summary_nev
     ss = samples([done("1", "Install doors 2nd floor"), done("2", "Frame and sheetrock 2nd floor"),
                   done("3", "Deliver windows"), done("4", "Framing 2nd floor")])
     summ = H.summarise(ss)
-    assert summ["samples"] == 4 and summ["classified"] == 1
+    assert summ["samples"] == 4 and summ["classified"] == 1 and summ["from_pdf"] == 0
     assert summ["not_summarised"] == {H.SEVERAL: 1, H.NOT_BUILDING: 1, H.UNCLASSIFIED: 1}
     assert sum(k["samples"] for k in summ["kinds"]) == 1
 

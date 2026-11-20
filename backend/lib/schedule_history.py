@@ -494,6 +494,15 @@ def common_names(samples: Iterable[Dict[str, Any]], status: str, top: int = 30,
     return [{"name": n, "count": k} for n, k in sorted(c.items(), key=lambda x: (-x[1], x[0]))[:top]]
 
 
+def unclear_floor_names(samples: Iterable[Dict[str, Any]], top: int = 10) -> List[str]:
+    """The most common names whose floor wording the readers did not understand."""
+    c: Counter = Counter()
+    for s in samples:
+        if s["floors_unclear"]:
+            c[" ".join(s["name"].lower().split())] += 1
+    return [n for n, _k in sorted(c.items(), key=lambda x: (-x[1], x[0]))[:top]]
+
+
 def summarise(samples: Iterable[Dict[str, Any]], *, min_samples: int = MIN_SAMPLES,
               min_jobs: int = MIN_JOBS) -> Dict[str, Any]:
     """Per kind of work: how many examples, from how many jobs, and for each
@@ -552,6 +561,7 @@ def summarise(samples: Iterable[Dict[str, Any]], *, min_samples: int = MIN_SAMPL
         "jobs": len({s["job"] for s in samples}),
         "samples": len(samples),
         "classified": sum(len(v) for v in by_kind.values()),
+        "from_pdf": sum(k["from_pdf"] for k in kinds),
         "kinds": kinds,
         "too_few": too_few,
         "not_summarised": {st: sum(1 for s in samples if s["status"] == st) for st in STATUSES if st != CLASSIFIED},

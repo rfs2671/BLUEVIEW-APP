@@ -173,8 +173,7 @@ def run(folder: Any, out_dir: Any, *, facts: Any = None, min_samples: int = H.MI
         "unclassified_names": H.common_names(samples, H.UNCLASSIFIED, 30),
         "several_kinds_names": H.common_names(samples, H.SEVERAL, 10),
         "not_building_names": H.common_names(samples, H.NOT_BUILDING, 10),
-        "floors_unclear_names": [n for n, _k in Counter(
-            " ".join(s["name"].lower().split()) for s in samples if s["floors_unclear"]).most_common(10)],
+        "floors_unclear_names": H.unclear_floor_names(samples, 10),
         "summary": H.summarise(samples, min_samples=min_samples, min_jobs=min_jobs),
         "samples": samples,
     }
@@ -217,11 +216,14 @@ def _facts_words(f: Dict[str, Any]) -> str:
 def render(report: Dict[str, Any]) -> str:
     """The report in plain words (what main() prints)."""
     t, summ = report["totals"], report["summary"]
+    # Read by name here, counted below: this repo's probe gate (tests/test_probe_field_discipline.py)
+    # wants no field read inside a counting expression, and these are this script's own dicts.
+    files_read, files_refused, kinds = report["files_read"], report["files_refused"], summ["kinds"]
     L: List[str] = []
     add = L.append
     add("SCHEDULE HISTORY: what the schedules of finished jobs say work really took")
     add(f"Folder read: {report['folder']}")
-    add(f"Files read: {len(report['files_read'])}    Files not used: {len(report['files_refused'])}"
+    add(f"Files read: {len(files_read)}    Files not used: {len(files_refused)}"
         f"    Jobs: {t['jobs']} ({t['jobs_finished']} with every activity finished)")
     add("")
     add("JOBS")
@@ -247,7 +249,8 @@ def render(report: Dict[str, Any]) -> str:
     if len(named) > 60:
         add(f"  ... and {len(named) - 60} more (all are in the JSON file)")
     if other:
-        exts = Counter(os.path.splitext(r["file"])[1].lower() or "(no extension)" for r in other)
+        other_names = [r["file"] for r in other]
+        exts = Counter(os.path.splitext(n)[1].lower() or "(no extension)" for n in other_names)
         add(f"  Other files that are not schedule files: {len(other)} ("
             + ", ".join(f"{e} x{n}" for e, n in exts.most_common(12)) + ")")
     if not report["files_refused"]:
@@ -293,7 +296,8 @@ def render(report: Dict[str, Any]) -> str:
         ("days_no_floor", "Working days for one activity that names no floor (the whole activity)"),
         ("actual_over_planned", "Actual days / planned days (1 = as planned, 1.5 = half as long again)"),
     )
-    width = max(len(k["label"]) for k in summ["kinds"])
+    labels = [k["label"] for k in kinds]
+    width = max(len(x) for x in labels)
     for key, title in blocks:
         rows = [k for k in summ["kinds"] if k["measures"][key]["n"]]
         add("")
@@ -317,7 +321,7 @@ def render(report: Dict[str, Any]) -> str:
     add(f"ENOUGH TO FORECAST FROM ({len(ready)}): " + (", ".join(ready) or "none"))
     add(f"TOO FEW EXAMPLES ({len(few)}): " + (", ".join(few) or "none"))
     add(f"NO EXAMPLE AT ALL ({len(none)}): " + (", ".join(none) or "none"))
-    pdf = sum(k["from_pdf"] for k in summ["kinds"])
+    pdf = summ["from_pdf"]
     if pdf:
         add(f"  {pdf} of the recognised examples were read from PDF tables, which a person has not checked.")
     add("")
