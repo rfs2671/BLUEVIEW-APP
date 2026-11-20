@@ -539,7 +539,9 @@ def test_the_report_reads_a_folder_and_writes_one_json_file_elsewhere(tmp_path):
                                                                   "building_type": "residential"}}), encoding="utf-8")
     before = _tree(src)
 
-    report = R.run(src, out, min_samples=10, min_jobs=2)
+    opened = []
+    report = R.run(src, out, min_samples=10, min_jobs=2, progress=opened.append)
+    assert opened == ["12 Elm St/final.csv", "40 Oak Ave/final.csv", "40 Oak Ave/old.mpp", "notes.txt"]
 
     assert _tree(src) == before  # the operator's folder is read, never changed
     written = list(out.iterdir())

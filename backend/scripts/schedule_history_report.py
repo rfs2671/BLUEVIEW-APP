@@ -38,7 +38,7 @@ import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -75,8 +75,9 @@ def _load_facts(path: Optional[Path]) -> Dict[str, Dict[str, Any]]:
 
 
 def run(folder: Any, out_dir: Any, *, facts: Any = None, min_samples: int = H.MIN_SAMPLES,
-        min_jobs: int = H.MIN_JOBS) -> Dict[str, Any]:
-    """Read `folder`, write one JSON file into `out_dir`, return what was written."""
+        min_jobs: int = H.MIN_JOBS, progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    """Read `folder`, write one JSON file into `out_dir`, return what was written.
+    `progress` is told each file as it is opened (a PDF can take a while)."""
     folder, out_dir = Path(folder), Path(out_dir)
     if not folder.is_dir():
         raise SystemExit(f"Not a folder: {folder}")
@@ -97,6 +98,8 @@ def run(folder: Any, out_dir: Any, *, facts: Any = None, min_samples: int = H.MI
         shown = rel.as_posix()
         if path.resolve() == facts_path.resolve() or path.name.startswith(("~$", ".")):
             continue
+        if progress:
+            progress(shown)
         try:
             size = path.stat().st_size
             if size > I.MAX_BYTES:
@@ -332,11 +335,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--min-jobs", type=int, default=H.MIN_JOBS,
                     help=f"fewest jobs those examples must come from (default {H.MIN_JOBS})")
     a = ap.parse_args(argv)
-    report = run(a.folder, a.out, facts=a.facts, min_samples=a.min_samples, min_jobs=a.min_jobs)
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-    except (AttributeError, ValueError):
-        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
+    report = run(a.folder, a.out, facts=a.facts, min_samples=a.min_samples, min_jobs=a.min_jobs,
+                 progress=lambda name: print(f"reading {name}", file=sys.stderr, flush=True))
     print(render(report))
     return 0
 
