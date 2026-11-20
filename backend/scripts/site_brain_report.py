@@ -66,7 +66,7 @@ async def main(a):
     for t in s["trades"]:
         st = "on site" if t["on_site"] else f"last here {t['since_last']} working days ago"
         print(f"  {t['label'][:27]:<28}{t['share']:>6.0%}{t['worker_days']:>8g}{t['days']:>6}{t['crew']:>6g}"
-              f"{len(t['visits']):>7}{t['away']:>6}  {st}")
+              f"{t['visit_count']:>7}{t['away']:>6}  {st}")
     print("\nWHERE THE RECORD SHOWS TIME GOING (counts only; the logs do not say why)")
     for f in SH.time_lost(rows, end, weather) or [{"text": "nothing above the thresholds"}]:
         print(f"  - {f['text']}")

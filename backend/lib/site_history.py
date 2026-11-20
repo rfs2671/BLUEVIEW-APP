@@ -133,7 +133,7 @@ def runs(rows: Iterable[Dict[str, Any]], end: date) -> Dict[str, Dict[str, Any]]
             "crew": round(median(crews), 1), "crew_max": round(max(crews), 1),
             "visits": [{"first": v[0], "last": v[-1], "days": len(v),
                         "worker_days": round(sum(by[fam][d] for d in v), 1)} for v in visits],
-            "span": span, "away": span - len(days), "longest_gap": max(gaps, default=0),
+            "visit_count": len(visits), "span": span, "away": span - len(days), "longest_gap": max(gaps, default=0),
             "since_last": since, "on_site": since < NOW_DAYS,
             "last_10": round(sum(by[fam].get(d, 0.0) for d in recent), 1),
             "companies": [c for c, _n in who[fam].most_common(2)],

@@ -69,6 +69,7 @@ class Runs(unittest.TestCase):
         self.assertEqual(len(H.runs(same, END)["hvac"]["visits"]), 1)
         t = H.runs(back, END)["hvac"]
         self.assertEqual((len(t["visits"]), t["span"], t["away"], t["longest_gap"]), (2, 5, 3, 3))
+        self.assertEqual(t["visit_count"], 2)
 
     def test_a_federal_holiday_is_not_a_day_away(self):
         # Mon Oct 12 2026 is Columbus Day: Fri Oct 9 then Tue Oct 13 is consecutive working days.
