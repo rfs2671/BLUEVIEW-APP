@@ -77,15 +77,33 @@ def floors_of_text(text: Any) -> List[int]:
     return sorted(set(n for n in out if 0 < n < 100))
 
 
+def floor_runs(floors: Iterable[int]) -> List[str]:
+    """[1, 2, 3, 7, 9, 10] -> ["1–3", "7", "9–10"]: each run of consecutive
+    floors once. A tower's "floors 26, 27, 28, 29, 34, 35 and 36" is
+    "floors 26–29 and 34–36"."""
+    fs = sorted(set(floors))
+    runs: List[List[int]] = []
+    for f in fs:
+        if runs and f == runs[-1][1] + 1:
+            runs[-1][1] = f
+        else:
+            runs.append([f, f])
+    out = []
+    for a, b in runs:
+        out.append(str(a) if a == b else f"{a}–{b}")
+    return out
+
+
 def floors_words(floors: Iterable[int]) -> str:
     fs = sorted(set(floors))
     if not fs:
         return ""
     if len(fs) == 1:
         return f"floor {fs[0]}"
-    if fs == list(range(fs[0], fs[-1] + 1)):
-        return f"floors {fs[0]}–{fs[-1]}"
-    return "floors " + ", ".join(str(f) for f in fs[:-1]) + f" and {fs[-1]}"
+    runs = floor_runs(fs)
+    if len(runs) == 1:
+        return f"floors {runs[0]}"
+    return "floors " + ", ".join(runs[:-1]) + f" and {runs[-1]}"
 
 
 # ── THE KINDS OF WORK ────────────────────────────────────────────────────────

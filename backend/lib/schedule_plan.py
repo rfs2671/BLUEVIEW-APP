@@ -183,6 +183,11 @@ def assess(
     out: Dict[str, Any] = {
         "as_of": data_date,
         "stale_days": stale,
+        # A schedule NEWER than the period (a report asked for last month, with
+        # this week's file on record): its counts, percent and forecast are as
+        # of its own data date, and every place that prints them says so.
+        "after_period_days": (-stale if stale is not None and stale < 0 else 0),
+        "after_today_days": ((data_date - today).days if data_date and today and data_date > today else 0),
         "usable": False,
         "limitations": limits,
         "project": {"baseline_finish": None, "forecast_finish": None, "variance_days": None,
@@ -217,7 +222,14 @@ def assess(
             )
         elif stale is not None and stale < 0:
             limits.append(
-                f"The schedule's data date ({data_date.isoformat()}) is after the end of this period."
+                f"The schedule's data date ({data_date.isoformat()}) is {-stale} day{'' if stale == -1 else 's'} after "
+                "the end of this period: its activity counts, percent complete and forecast finish are as of that "
+                "later date, not as of the period's last day."
+            )
+        if today and data_date > today:
+            limits.append(
+                f"The schedule's data date ({data_date.isoformat()}) is after the day this report was prepared; "
+                "the status date in the file should be checked."
             )
         if today and (today - data_date).days >= OLD_FOR_TODAY_DAYS:
             limits.append(
@@ -297,6 +309,7 @@ def assess(
             })  # fmt: skip
     sched.sort(key=lambda s: (s["start"], s["finish"], str(s["name"])))
     out["scheduled_in_period"] = sched[:MAX_SCHEDULED]
+    out["scheduled_total"] = len(sched)
 
     # --- deviations ----------------------------------------------------
     devs: List[Dict[str, Any]] = []
@@ -313,6 +326,7 @@ def assess(
                          "baseline": bs, "current": ast, "days": (ast - bs).days})  # fmt: skip
     devs.sort(key=lambda x: (-x["days"], str(x["name"])))
     out["deviations"] = devs[:MAX_DEVIATIONS]
+    out["deviations_total"] = len(devs)
 
     # --- groups: top-level summary rows and the activities under them ---
     group_level = 1 if proj_row is not None else 0
