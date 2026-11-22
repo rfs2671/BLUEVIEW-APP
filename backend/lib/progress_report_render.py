@@ -94,7 +94,13 @@ th { text-align: left; font-size: 7.5pt; letter-spacing: .6px; text-transform: u
 td { padding: 4px 5px; border-bottom: 1px solid #e3e7ee; vertical-align: top; }
 td.n, th.n { text-align: right; white-space: nowrap; }
 tr { page-break-inside: avoid; }
-table.wf td:first-child { white-space: nowrap; }
+table.wf { table-layout: fixed; }
+table.wf th:nth-child(1) { width: 27%; } table.wf th:nth-child(2) { width: 13%; } table.wf th:nth-child(3) { width: 14%; }
+table.wf th:nth-child(4) { width: 12%; } table.wf th:nth-child(5) { width: 9%; } table.wf th:nth-child(6) { width: 9%; }
+table.wf th:nth-child(7) { width: 9%; } table.wf th:nth-child(8) { width: 7%; }
+table.wf th { letter-spacing: .2px; }
+table.wf td, table.wf th { overflow-wrap: break-word; word-wrap: break-word; }
+table.wf th.n, table.wf td.n { white-space: normal; }
 table.ev td { padding: 2px 5px; font-size: 8pt; }
 table.ev td:nth-child(1) { width: 5%; } table.ev td:nth-child(2) { width: 27%; }
 .chip { display: inline-block; font-size: 7pt; font-weight: 700; padding: 1px 6px; border-radius: 8px;
@@ -156,6 +162,25 @@ td.est b { font-size: 9pt; color: #12263F; }
 .card .prow span { flex: 1 1 auto; min-width: 0; }
 .card .prow .bar { flex: 0 0 52px; height: 5px; background: #e3e7ee; border-radius: 3px; }
 .card .prow .bar i { display: block; height: 5px; background: #2A7F8E; border-radius: 3px; }
+table.est { table-layout: fixed; }
+table.est th.work { width: 36%; text-align: left; } table.est th.est { width: 20%; text-align: left; }
+table.est th.trend { width: 14%; text-align: left; } table.est th.else { text-align: left; }
+table.est td { vertical-align: middle; padding: 3px 5px; }
+table.est td.work { font-size: 8.3pt; } table.est td.work .who { display: block; font-size: 7.3pt; color: #5b6676; }
+table.est td.else { font-size: 8pt; color: #5b6676; }
+.bandhead { page-break-after: avoid; font-size: 7.5pt; color: #5b6676; letter-spacing: .6px; text-transform: uppercase;
+            margin: 8px 0 1px; font-weight: 700; }
+table.band { table-layout: fixed; margin: 0 0 6px; page-break-inside: avoid; }
+table.band th { text-align: center; padding: 2px 0; font-size: 6.6pt; letter-spacing: 0; border-bottom: 1px solid #12263F; }
+table.band th.work { text-align: left; padding-left: 5px; }
+table.band td { padding: 2px 0; border-bottom: 1px solid #fff; vertical-align: middle; }
+table.band td.work { font-size: 7.6pt; padding: 2px 6px 2px 5px; border-bottom: 1px solid #e3e7ee; overflow-wrap: break-word;
+                     word-wrap: break-word; }
+table.band td.cell { text-align: center; font-size: 6.6pt; font-weight: 700; border-left: 1.5px solid #fff; }
+table.band td.pad { background: none; }
+table.byfloor { table-layout: fixed; }
+table.byfloor th, table.byfloor td { padding: 3px 2px; }
+table.byfloor th.n, table.byfloor td.n { white-space: normal; font-size: 8pt; }
 ul.plain { margin: 0 0 6px; padding-left: 14px; font-size: 8.9pt; }
 ul.plain li { margin: 0 0 3px; }
 .photos { page-break-inside: avoid; }
@@ -246,7 +271,14 @@ def workforce_svg(rep: Dict[str, Any], width: int = 700, height: int = 190, comp
             out.append(f'<rect x="{cx - bw / 2:.1f}" y="{base_y - h:.1f}" width="{bw:.1f}" height="{h:.1f}" '
                        f'rx="1.5" fill="{NAVY}"/>')
             if n <= 16 and not (compact and n > 12):
-                out.append(f'<text x="{cx:.1f}" y="{base_y - h - 3:.1f}" font-size="8" text-anchor="middle" '
+                # above the bar AND above the previous period's marker when the two
+                # are close (the marker was drawn through the number)
+                top_y = base_y - h
+                if i < len(prev) and prev[i]["days"]:
+                    mark_y = base_y - plot_h * prev[i]["avg"] / ymax - 1.2
+                    if -11 < mark_y - top_y < 3:
+                        top_y = min(top_y, mark_y)
+                out.append(f'<text x="{cx:.1f}" y="{max(8.0, top_y - 3):.1f}" font-size="8" text-anchor="middle" '
                            f'fill="#1c2430">{b["avg"]:g}</text>')
         if i < len(prev) and prev[i]["days"]:
             py = base_y - plot_h * prev[i]["avg"] / ymax
@@ -277,6 +309,8 @@ def _mast(rep: Dict[str, Any]) -> str:
             f"{' · ' + _e(rep['gc']) if rep['gc'] else ''}</div></div>"
             f"<div class='right'><div class='period'>{_e(rep['period'])}</div>"
             f"<div class='meta'>{kind} · prepared {_e(_fmt(rep['generated'].astimezone(P.NY), '%b %-d, %Y'))}</div>"
+            + (f"<div class='meta'>Period in progress · records through {_e(_fmt(rep['through'], '%b %-d'))}</div>"
+               if rep.get("in_progress") and rep.get("through") else "") +
             f"<span class='flag' style='background:{LEVEL_COLOR[st['level']]}'>{_e(st['label'])}</span></div>"
             f"</div></div>")
 
@@ -366,6 +400,8 @@ def _schedule_card(rep: Dict[str, Any]) -> str:
                      f"{_e(_fmt(proj['baseline_finish'], '%b %-d, %Y'))}"
                      + (f" ({'+' if v > 0 else ''}{v} days)" if v is not None else ""))
     asof = f"Per schedule data date {_e(_fmt(plan['as_of'], '%b %-d, %Y'))}" if plan.get("as_of") else "Per imported schedule"
+    if P.schedule_date_words(plan):
+        asof += f" — {_e(P.schedule_date_words(plan))}"
     return (f"<div class='card'><h4>Schedule {_tag('S')}</h4>" + "<br>".join(lines)
             + f"<div class='muted'>{asof}</div></div>")
 
@@ -536,20 +572,48 @@ def _trend_svg(points: List[Optional[int]], width: int = 64, height: int = 16) -
             f"<circle cx='{lx}' cy='{ly}' r='1.8' fill='#2A7F8E'/></svg>")
 
 
-def _board_section(rep: Dict[str, Any]) -> str:
-    """THE PROGRESS PAGE: in plain English, then the stage of each kind of
-    work on each floor, its estimate and how the estimate has moved week by
-    week. Everything here is read from the filed daily logs by the fixed rules
-    of lib/progress_stages, and printed as an estimate."""
-    board = rep.get("progress") or {}
-    trades = board.get("trades") or {}
-    if not trades:
-        return ""
-    floors = board.get("floors") or []
-    order = list(board.get("worked_in_period") or []) + [k for k in trades if k not in (board.get("worked_in_period") or [])]
-    hist = board.get("history") or []
-    plain = "".join(f"<li>{_e(ST.sentence(trades[k], floors))}</li>" for k in order)
-    other = any(trades[k].get("elsewhere") for k in order)
+#: The board prints as ONE table (stage words in the cells) while it has at most
+#: this many floor columns; a taller building is printed in bands of floors.
+#: MEASURED 2026-11-22: at 9 columns the words "Started" / "Active" ran over
+#: their cells, and at 42 floors every cell overprinted its neighbours (a
+#: fixed-layout table shares 41% of the page between all floor columns).
+BOARD_ONE_TABLE_MAX = 7
+#: A band of floors holds at most this many columns with the stage as a WORD,
+#: or this many with the stage as a LETTER (D / A / S).
+BAND_WORDS_MAX = 10
+BAND_LETTERS_MAX = 30
+_STAGE_LETTER = {ST.DONE: "D", ST.ACTIVE: "A", ST.STARTED: "S", ST.NONE: "·"}
+_PAD_CELL = "<td class='pad'></td>"
+
+
+def board_bands(floors: List[Any]) -> List[List[Any]]:
+    """The floors of the board, in bands that each fit the page: one band up
+    to BAND_LETTERS_MAX floors, otherwise the fewest bands, of equal length
+    (42 floors -> 21 + 21, 60 -> 30 + 30, 61 -> 21 + 20 + 20)."""
+    floors = list(floors)
+    if not floors:
+        return []
+    n = -(-len(floors) // BAND_LETTERS_MAX)
+    per = -(-len(floors) // n)
+    return [floors[i:i + per] for i in range(0, len(floors), per)]
+
+
+def _board_legend(letters: bool = False) -> str:
+    items = (("#12263F", "D", "Done — appears complete"), ("#2A7F8E", "A", "Active — worked in the last 7 days"),
+             ("#cfe0ef", "S", "Started — worked earlier"), ("#f3f5f8", "·", "Not reported on that floor"))
+    return ("<div class='legend'>" + "&nbsp;&nbsp;".join(
+        f"<span class='dot' style='background:{c}'></span>{('<b>' + k + '</b> ') if letters else ''}{_e(lbl)}"
+        for c, k, lbl in items) + "</div>")
+
+
+def _est_cell(t: Dict[str, Any]) -> str:
+    est = t.get("estimate")
+    return (f"<b>{_est_words(est)}</b><div class='bar'><i style='width:{est}%'></i></div>" if est is not None
+            else "<span class='muted'>not tied to a floor</span>")
+
+
+def _board_one_table(trades: Dict[str, Any], order: List[str], floors: List[Any], hist: List[Dict[str, Any]],
+                     other: bool) -> str:
     head = ("<tr><th class='work'>Kind of work</th>" + "".join(f"<th>Fl {f}</th>" for f in floors)
             + ("<th>Other</th>" if other else "") + "<th class='est'>Estimate</th>"
             + ("<th class='trend'>Week by week</th>" if len(hist) > 1 else "") + "</tr>")
@@ -562,26 +626,87 @@ def _board_section(rep: Dict[str, Any]) -> str:
             ew = t.get("elsewhere")
             cells += (f"<td class='cell {_STAGE_CLS[ew['stage']]}'>{_STAGE_SHORT[ew['stage']]}</td>" if ew
                       else "<td class='cell st-none'>–</td>")
-        est = t.get("estimate")
-        est_html = (f"<b>{_est_words(est)}</b><div class='bar'><i style='width:{est}%'></i></div>" if est is not None
-                    else "<span class='muted'>not tied to a floor</span>")
         trend = (f"<td class='trend'>{_trend_svg([h['estimates'].get(k) for h in hist])}</td>" if len(hist) > 1 else "")
         who = f"<span class='who'>{_e(', '.join(t['companies']))}</span>" if t.get("companies") else ""
-        rows.append(f"<tr><td class='work'>{_e(t['label'])}{who}</td>{cells}<td class='est'>{est_html}</td>{trend}</tr>")
-    legend = ("<div class='legend'>"
-              + "&nbsp;&nbsp;".join(f"<span class='dot' style='background:{c}'></span>{_e(lbl)}"
-                                    for c, lbl in (("#12263F", "Done — appears complete"),
-                                                   ("#2A7F8E", "Active — worked in the last 7 days"),
-                                                   ("#cfe0ef", "Started — worked earlier"),
-                                                   ("#f3f5f8", "Not reported on that floor")))
-              + "</div>")
+        rows.append(f"<tr><td class='work'>{_e(t['label'])}{who}</td>{cells}<td class='est'>{_est_cell(t)}</td>{trend}</tr>")
+    return f"<table class='board'>{head}{''.join(rows)}</table>{_board_legend()}"
+
+
+def _board_banded(trades: Dict[str, Any], order: List[str], floors: List[Any], hist: List[Dict[str, Any]]) -> str:
+    """A building of many floors: the estimate of each kind of work in one
+    table, then the floors in bands that fit the page, the same kinds of work
+    in the same order in every band. No cell is ever narrower than its text."""
+    trend_col = len(hist) > 1
+    other = any(trades[k].get("elsewhere") for k in order)
+    erows = []
+    for k in order:
+        t = trades[k]
+        who = f"<span class='who'>{_e(', '.join(t['companies']))}</span>" if t.get("companies") else ""
+        ew = t.get("elsewhere")
+        ew_html = ""
+        if other:
+            words = (ST.STAGE_LABEL[ew["stage"]] + " at " + (" and ".join(ew.get("places") or [])
+                                                              or "areas not tied to a floor")) if ew else "—"
+            ew_html = f"<td class='else'>{_e(words)}</td>"
+        trend = (f"<td class='trend'>{_trend_svg([h['estimates'].get(k) for h in hist])}</td>" if trend_col else "")
+        erows.append(f"<tr><td class='work'>{_e(t['label'])}{who}</td><td class='est'>{_est_cell(t)}</td>{trend}{ew_html}</tr>")
+    est_table = ("<table class='board est'><tr><th class='work'>Kind of work</th><th class='est'>Estimate</th>"
+                 + ("<th class='trend'>Week by week</th>" if trend_col else "")
+                 + ("<th class='else'>Not tied to a floor</th>" if other else "") + f"</tr>{''.join(erows)}</table>")
+    on_floors = [k for k in order if any(c["stage"] != ST.NONE for c in trades[k]["cells"].values())]
+    bands = board_bands(floors)
+    if not on_floors or not bands:
+        return est_table
+    per = max(len(b) for b in bands)
+    letters = per > BAND_WORDS_MAX
+    short = _STAGE_LETTER if letters else _STAGE_SHORT
+    work_w = 24.0
+    col_w = (100.0 - work_w) / per
+    cols = f"<col style='width:{work_w:g}%'>" + f"<col style='width:{col_w:.3f}%'>" * per
+    out = []
+    for band in bands:
+        pad = per - len(band)
+        head = "<tr><th class='work'>Floor</th>" + "".join(f"<th>{f}</th>" for f in band) + "<th></th>" * pad + "</tr>"
+        rows = []
+        for k in on_floors:
+            t = trades[k]
+            cells = "".join(f"<td class='cell {_STAGE_CLS[t['cells'][f]['stage']]}'>{short[t['cells'][f]['stage']]}</td>"
+                            for f in band)
+            rows.append(f"<tr><td class='work'>{_e(t['label'])}</td>{cells}{_PAD_CELL * pad}</tr>")
+        label = f"Floors {band[0]}–{band[-1]}" if len(band) > 1 else f"Floor {band[0]}"
+        out.append(f"<div class='keep'><div class='bandhead'>{label}</div>"
+                   f"<table class='board band'><colgroup>{cols}</colgroup>{head}{''.join(rows)}</table></div>")
+    return est_table + "".join(out) + _board_legend(letters)
+
+
+def _board_section(rep: Dict[str, Any]) -> str:
+    """THE PROGRESS PAGE: in plain English, then the stage of each kind of
+    work on each floor, its estimate and how the estimate has moved week by
+    week. Everything here is read from the filed daily logs by the fixed rules
+    of lib/progress_stages, and printed as an estimate.
+
+    Up to BOARD_ONE_TABLE_MAX floor columns it is one table. Above that it is
+    the estimate table and the floors in bands (`_board_banded`): the single
+    table overprinted its own cells on any building taller than that."""
+    board = rep.get("progress") or {}
+    trades = board.get("trades") or {}
+    if not trades:
+        return ""
+    floors = board.get("floors") or []
+    order = list(board.get("worked_in_period") or []) + [k for k in trades if k not in (board.get("worked_in_period") or [])]
+    hist = board.get("history") or []
+    plain = "".join(f"<li>{_e(ST.sentence(trades[k], floors))}</li>" for k in order)
+    other = any(trades[k].get("elsewhere") for k in order)
+    if len(floors) + (1 if other else 0) <= BOARD_ONE_TABLE_MAX:
+        table = _board_one_table(trades, order, floors, hist, other)
+    else:
+        table = _board_banded(trades, order, floors, hist)
     span = (f" Week by week: the estimate at the end of each of the last {len(hist)} weeks, read from the logs "
             "filed up to that day." if len(hist) > 1 else "")
     return (f"<section class='pg'><h2>Progress by trade and floor (estimated) {_tag('L')}</h2>"
             f"<p class='muted'>How far each kind of work has got on each floor, read from the filed daily logs "
-            f"and their photographs up to {_e(_fmt(rep['end'], '%b %-d, %Y'))}.{_e(span)}</p>"
-            f"<ul class='plain'>{plain}</ul>"
-            f"<table class='board'>{head}{''.join(rows)}</table>{legend}"
+            f"and their photographs up to {_e(_fmt(rep.get('through') or rep['end'], '%b %-d, %Y'))}.{_e(span)}</p>"
+            f"<ul class='plain'>{plain}</ul>{table}"
             f"<div class='strip'><b>How the estimate is made.</b> {_e(ST.BASIS)}</div></section>")
 
 
@@ -598,12 +723,14 @@ def _schedule_section(rep: Dict[str, Any]) -> str:
         return (f"<tr><td>{_e(m.get('name'))}</td><td class='n'>{_e(_fmt(base_f, '%b %-d, %Y')) if base_f else '—'}</td>"
                 f"<td class='n'>{_e(_fmt(fin, '%b %-d, %Y')) if fin else '—'}</td>"
                 f"<td><span class='chip {cls}'>{status}</span></td></tr>")
-    rows = ("".join(mrow(m, "COMPLETE", "new") for m in ms["completed_in_period"][:6])
-            + "".join(mrow(m, "PAST DUE", "crit") for m in ms["overdue"][:6])
-            + "".join(mrow(m, "UPCOMING", "adv") for m in ms["upcoming"][:6])
-            + "".join(mrow(m, "NOT UPDATED", "soft") for m in ms["unconfirmed"][:4]))
+    shown = (("completed_in_period", "COMPLETE", "new", 6, "completed in the period"), ("overdue", "PAST DUE", "crit", 6, "past due"),
+             ("upcoming", "UPCOMING", "adv", 6, "upcoming"), ("unconfirmed", "NOT UPDATED", "soft", 4, "not updated"))
+    rows = "".join(mrow(m, status, cls) for key, status, cls, most, _w in shown for m in ms[key][:most])
+    cut = [f"{len(ms[key]) - most} more {words}" for key, _s, _c, most, words in shown if len(ms[key]) > most]
     mtable = ("<h3>Milestones</h3><table class='keep'><tr><th>Milestone</th><th class='n'>Original</th>"
-              "<th class='n'>Current / actual</th><th>Status</th></tr>" + rows + "</table>") if rows else ""
+              "<th class='n'>Current / actual</th><th>Status</th></tr>" + rows + "</table>"
+              + (f"<div class='muted'>Not listed here: {_e(', '.join(cut))}. They are in the schedule file.</div>"
+                 if cut else "")) if rows else ""
     dev = ""
     if plan["deviations"]:
         dev = ("<h3>Schedule changes shown in the file</h3><table class='keep'><tr><th>Activity</th><th class='n'>Original</th>"
@@ -612,13 +739,19 @@ def _schedule_section(rep: Dict[str, Any]) -> str:
                          f"<td class='n'>{_e(_fmt(base._d(d['current']), '%b %-d'))}</td>"
                          f"<td class='n'>{'+' if d['days'] > 0 else ''}{d['days']} d</td></tr>"
                          for d in plan["deviations"][:6]) + "</table>"
-               "<div class='muted'>Dates as they appear in the schedule file; no cause is inferred.</div>")
+               "<div class='muted'>"
+               + (f"The {min(6, len(plan['deviations']))} largest of {plan['deviations_total']} shifts in the file. "
+                  if (plan.get("deviations_total") or 0) > 6 else "")
+               + "Dates as they appear in the schedule file; no cause is inferred.</div>")
     planned = ""
     if plan["scheduled_in_period"]:
         planned = ("<h3>Scheduled for this period vs. reported</h3><div class='two'><div><h4>Scheduled in the schedule</h4>"
                    "<ul class='tight'>" + "".join(f"<li>{_e(a['name'])} <span class='muted'>({_e(_fmt(base._d(a['start']), '%b %-d'))}"
                                                  f"–{_e(_fmt(base._d(a['finish']), '%b %-d'))})</span></li>"
-                                                 for a in plan["scheduled_in_period"][:4]) + "</ul></div>"
+                                                 for a in plan["scheduled_in_period"][:4])
+                   + (f"<li class='muted'>and {(plan.get('scheduled_total') or len(plan['scheduled_in_period'])) - 4} more "
+                      "scheduled in this period</li>"
+                      if (plan.get("scheduled_total") or len(plan["scheduled_in_period"])) > 4 else "") + "</ul></div>"
                    "<div><h4>Reported in daily logs</h4><ul class='tight'>"
                    + "".join(f"<li>{_e(w['name'])}: {_e(w['items'][0]['work'])}</li>" for w in rep["work"] if w["items"])
                    + "</ul></div></div><div class='muted'>Shown side by side for comparison; the report draws no "
@@ -632,10 +765,17 @@ def _schedule_section(rep: Dict[str, Any]) -> str:
                             for g in plan["groups"][:10]) + "</table>")
     floors = ""
     if plan["floors"]:
-        fl = plan["floors"][:14]
-        floors = ("<h3>By floor (activities named for a floor)</h3><table class='keep'><tr><th>Floor</th>"
-                  + "".join(f"<th class='n'>{_e(f['floor'])}</th>" for f in fl) + "</tr><tr><td>Activities complete</td>"
-                  + "".join(f"<td class='n'>{f['complete']} of {f['total']}</td>" for f in fl) + "</tr></table>")
+        per = 14
+        cols = "<col style='width:16%'>" + f"<col style='width:{84.0 / per:.3f}%'>" * per
+        floors = "<h3>By floor (activities named for a floor)</h3>"
+        for i in range(0, len(plan["floors"]), per):
+            fl = plan["floors"][i:i + per]
+            pad = per - len(fl)
+            floors += (f"<table class='keep byfloor'><colgroup>{cols}</colgroup><tr><th>Floor</th>"
+                       + "".join(f"<th class='n'>{_e(f['floor'])}</th>" for f in fl) + "<th></th>" * pad
+                       + "</tr><tr><td>Complete</td>"
+                       + "".join(f"<td class='n'>{f['complete']} of {f['total']}</td>" for f in fl) + "<td></td>" * pad
+                       + "</tr></table>")
     pct = (f"<p class='lead'>The schedule file reports the project at <b>{proj['reported_percent']:g}% complete</b>.</p>"
            if proj.get("reported_percent") is not None else "")
     head = (f"Per {_e(plan.get('source_name') or 'the imported schedule')}"
@@ -644,6 +784,14 @@ def _schedule_section(rep: Dict[str, Any]) -> str:
     stale = (f"<div class='strip warn'>This schedule is {plan['stale_days']} days older than the end of this "
              "period; progress after its data date is not reflected.</div>"
              if plan.get("stale_days") and plan["stale_days"] > 21 else "")
+    if (plan.get("after_period_days") or 0) > 0:
+        stale += (f"<div class='strip warn'>The schedule on file is dated {_e(_fmt(plan['as_of'], '%b %-d, %Y'))}, "
+                  f"{plan['after_period_days']} day{'' if plan['after_period_days'] == 1 else 's'} after this period "
+                  "ended. Its activity counts, percent complete and forecast finish are as of that later date, not as "
+                  "of the period's last day. Milestones are placed by their own dates.</div>")
+    if (plan.get("after_today_days") or 0) > 0:
+        stale += ("<div class='strip warn'>The schedule's data date is after the day this report was prepared; the "
+                  "status date in the file should be checked.</div>")
     return (f"<section><h2>Schedule and completion {_tag('S')}</h2><p class='muted'>{head} Completion figures are "
             f"those the schedule itself reports; Levelog does not estimate completion.</p>{stale}{pct}"
             f"{mtable}{dev}{planned}{groups}{floors}</section>")
@@ -766,7 +914,8 @@ def _regulatory(rep: Dict[str, Any]) -> str:
         parts.append("<table class='keep'><tr><th>Record</th><th>Number</th><th class='n'>Issued</th>"
                      "<th>Status at period end</th><th></th></tr>" + "".join(rows[:14]) + "</table>")
         if len(rows) > 14:
-            parts.append(f"<div class='muted'>{len(rows) - 14} more records are listed in the evidence index.</div>")
+            parts.append(f"<div class='muted'>{len(rows) - 14} more record{' is' if len(rows) == 15 else 's are'} "
+                         "listed in the evidence index.</div>")
     elif cov["state"] in ("verified", "partial"):
         parts.append("<p>No DOB or DOT violations, stop-work orders or complaints were open at the end of the "
                      "period, and none were issued during it.</p>")
@@ -775,7 +924,9 @@ def _regulatory(rep: Dict[str, Any]) -> str:
                      "as of the end of this period (its status was first refreshed after the period).</div>")
     insp = rep["inspections"]
     if insp["walked"]:
+        more = insp["failed"] - len(insp["failed_items"])
         failed = (" Failed: " + _e(", ".join(f"{f['item']} ({_fmt(f['date'], '%b %-d')})" for f in insp["failed_items"]))
+                  + (f" and {more} earlier in the period" if more > 0 else "")
                   + "." if insp["failed"] else " None failed.")
         parts.append(f"<h3>Daily site inspections {_tag('L')}</h3><p>{insp['walked']} inspection items were walked on "
                      f"{insp['days']} days; {insp['passed']} passed, {insp['failed']} failed.{failed}</p>")
@@ -790,13 +941,25 @@ def _n(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
+def _short_id(log_id: Any) -> str:
+    """The short form of a log's id in the evidence index: its last six
+    characters when the id is a plain token (a database id), otherwise a
+    six-character digest of it. An id that ends in a date ("log-2026-11-05")
+    printed as "(-11-05)", which reads as a broken date."""
+    s = str(log_id or "")
+    tail = s[-6:]
+    if len(tail) == 6 and tail.isalnum() and not tail.isdigit():
+        return tail
+    return hashlib.sha1(s.encode()).hexdigest()[:6] if s else "no id"
+
+
 def _basis(rep: Dict[str, Any], report_id: str) -> str:
     notes = "".join(f"<li>{_e(n)}</li>" for n in rep["data_notes"])
     lim = "".join(f"<li>{_e(n)}</li>" for n in rep["limitations"])
     ev = []
     for e in rep["evidence"]:
         if e["kind"] == "daily_logs":
-            refs = ", ".join(f"{_fmt(r['date'], '%b %-d')} ({r['id'][-6:]}{', amended' if r['amended'] else ''})"
+            refs = ", ".join(f"{_fmt(r['date'], '%b %-d')} ({_short_id(r['id'])}{', amended' if r['amended'] else ''})"
                              for r in e["refs"][:24]) + (f" … +{len(e['refs']) - 24} more" if len(e["refs"]) > 24 else "")
             ev.append(f"<tr><td><b>{e['id']}</b></td><td>{_e(e['label'])}</td><td>{_e(e['detail'])}"
                       f"<div class='muted'>{_e(refs)}</div></td></tr>")

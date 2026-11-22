@@ -58,7 +58,7 @@ from lib import progress_stages, report_calendar, report_regulatory
 from lib.datefmt import strftime as _fmt
 
 NY = base.NY
-ENGINE_VERSION = "2026.10.2"
+ENGINE_VERSION = "2026.11.1"
 UPCOMING_DAYS = 30
 #: Up to EIGHT photographs per sub AND kind of work (operator ruling 2026-11-18:
 #: the Nov 4-17 588 report printed 26 of 223 filed photos at five per sub),
@@ -215,7 +215,7 @@ def floors_label(floors: Iterable[int]) -> str:
         return f"floor {fs[0]}"
     if fs == list(range(fs[0], fs[-1] + 1)):
         return f"floors {fs[0]}–{fs[-1]}"
-    return "floors " + ", ".join(str(f) for f in fs)
+    return "floors " + ", ".join(progress_stages.floor_runs(fs))
 
 
 def _clean_work(text: Any) -> str:
@@ -949,14 +949,19 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
 # ── COMING UP ────────────────────────────────────────────────────────────────
 
 def coming_up(events: Iterable[dict], end: date, plan: Optional[Dict[str, Any]],
-              regulatory: Dict[str, Any]) -> List[Dict[str, Any]]:
+              regulatory: Dict[str, Any], today: Optional[date] = None) -> List[Dict[str, Any]]:
     """What is dated and next, from records with their own date: the city's
     hearing and permit dates, permits that expire, and the schedule's
     upcoming milestones. NOT from chat: a date a model read out of a message
     is a guess an owner would take for a commitment.
 
     The window is anchored on the period's LAST DAY, not on today, so a
-    report for last month shows what was upcoming then."""
+    report for last month shows what was upcoming then. A period that has
+    NOT ENDED when the report is prepared ("November", asked on the 18th) is
+    anchored on the day it was prepared: anchored on the 30th it left out
+    everything dated the 19th to the 30th, the dates nearest the reader."""
+    if today is not None and today < end:
+        end = today
     horizon = end + timedelta(days=UPCOMING_DAYS)
     out: List[Dict[str, Any]] = []
     for e in events:
@@ -977,9 +982,13 @@ def coming_up(events: Iterable[dict], end: date, plan: Optional[Dict[str, Any]],
         dup = bool(num) and any(o["date"] == p["expires"] and num in str(o["what"]).upper() for o in out)
         if p["expires"] and p["expires"] <= horizon and (p["expires"], what) not in seen and not dup:
             out.append({"date": p["expires"], "what": what, "src": "R", "kind": "permit_expiration"})
-    for m in (plan or {}).get("milestones", {}).get("upcoming") or []:
+    ms = (plan or {}).get("milestones", {})
+    # a milestone the file dates between the day the report was prepared and
+    # the period's last day is upcoming too (it sits in `unconfirmed`)
+    for m in list(ms.get("upcoming") or []) + [m for m in ms.get("unconfirmed") or []
+                                               if (base._d(m.get("date")) or end) > end]:
         d = base._d(m.get("date")) or base._d(m.get("current_finish")) or base._d(m.get("baseline_finish"))
-        if d:
+        if d and d <= horizon:
             out.append({"date": d, "what": f"Milestone: {m.get('name')}", "src": "S", "kind": "milestone"})
     out.sort(key=lambda x: (x["date"], x["what"]))
     return out[:8]
@@ -1086,6 +1095,9 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
         "engine": ENGINE_VERSION, "kind": kind or "custom",
         "job": job_title(job), "job_full": job, "address": address, "gc": gc,
         "start": start, "end": end, "today": today, "generated": now, "length": length,
+        # the last day the records can cover: the period's end, or the day the
+        # report was prepared when the period has not ended yet
+        "through": last, "in_progress": last < end,
         "prev_start": prev_start, "prev_end": prev_end, "grain": grain,
         "period": base.period_label(start, end), "period_short": short_period(start, end, now),
         "subs": subs, "work": work, "floor_matrix": _floor_matrix(cur_acts, prev_acts, canon, subs),
@@ -1112,7 +1124,7 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
                          "last": max((d for d, e in s["days"].items() if e["count"] > 0), default=None)}
                         for k, s in prv["per"].items() if any(e["count"] > 0 for e in s["days"].values())]
     rep["mobilization"] = mobilization(rep)
-    rep["upcoming"] = coming_up(list(events), end, plan, reg)
+    rep["upcoming"] = coming_up(list(events), end, plan, reg, today=today)
     rep["risks"] = risks(rep)
     rep["status"] = status(rep)
     rep["changes"] = changes(rep)
@@ -1214,6 +1226,23 @@ def changes(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out[:6]
 
 
+def _failed_words(insp: Dict[str, Any], most: int = 3) -> str:
+    """"Fall protection (Nov 2), Perimeter fence (Nov 6) and 7 more": the list
+    never reads as complete when it is not."""
+    named = sorted({f"{f['item']} ({_day(f['date'])})" for f in insp["failed_items"]})[:most]
+    more = insp["failed"] - len(named)
+    return _join(named[:-1] + [named[-1]]) if more <= 0 else ", ".join(named) + f" and {more} more"
+
+
+def schedule_date_words(plan: Dict[str, Any]) -> str:
+    """How a schedule's data date stands against the period, in words, or ""
+    when it is inside it: a file NEWER than the period reports a later status."""
+    n = plan.get("after_period_days") or 0
+    if n > 0 and plan.get("as_of"):
+        return f"{_n(n, 'day')} after this period ended; its counts and forecast are as of that date"
+    return ""
+
+
 def risks(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Material, project-level risks, from facts only: stop work and vacate
     orders, open DOB/DOT violations, permits about to expire, failed daily
@@ -1232,7 +1261,7 @@ def risks(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "text": f"{_n(len(opens), 'DOB/DOT violation or complaint', 'DOB/DOT violations or complaints')} open: "
                     + _join([f"{r['kind']} {r['number']}".strip() for r in opens[:3]])
                     + (f" and {len(opens) - 3} more" if len(opens) > 3 else "") + "."})
-    soon = [p for p in reg["expiring"] if p["expires"] and (p["expires"] - rep["end"]).days <= 30]
+    soon = [p for p in reg["expiring"] if p["expires"] and (p["expires"] - rep.get("through", rep["end"])).days <= 30]
     if soon:
         out.append({"level": "watch", "src": "R", "ref": ",".join(p["id"] for p in soon[:5]),
                     "refs": [p["id"] for p in soon[:3]],
@@ -1243,7 +1272,7 @@ def risks(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
     if insp["failed"]:
         out.append({"level": "high", "src": "L", "ref": "",
                     "text": f"{_n(insp['failed'], 'daily inspection item')} recorded as failed in the daily logs: "
-                    + _join(sorted({f"{f['item']} ({_day(f['date'])})" for f in insp["failed_items"]})[:3]) + "."})
+                    + _failed_words(insp) + "."})
     plan = rep["schedule"]
     if plan and plan.get("usable"):
         od = plan["milestones"]["overdue"]
@@ -1294,7 +1323,9 @@ def overview(rep: Dict[str, Any]) -> List[str]:
     out: List[str] = []
     if site["worked"]:
         s = (f"{_n(len(subs), 'subcontractor')} worked on site on {site['worked']} of {site['possible']} "
-             f"working days, averaging {site['avg']:g} workers a day with a peak of {site['peak']} on "
+             f"working day{'' if site['possible'] == 1 else 's'}"
+             + (f" to {_day(rep['through'])} (the period has not ended)" if rep.get("in_progress") else "")
+             + f", averaging {site['avg']:g} workers a day with a peak of {site['peak']} on "
              f"{_wday(site['peak_day'])}.")
         if prev["days"]:
             delta = site["avg"] - prev["avg"]
@@ -1330,6 +1361,8 @@ def overview(rep: Dict[str, Any]) -> List[str]:
     if plan and plan.get("usable"):
         proj = plan["project"]
         s = f"Schedule — per the project schedule dated {_dayy(plan['as_of'])}"
+        if schedule_date_words(plan):
+            s += f" ({schedule_date_words(plan)})"
         if plan["as_of"] is None:
             s = "Schedule — per the imported project schedule"
         parts = []
@@ -1428,7 +1461,8 @@ def data_notes(rep: Dict[str, Any], logs: List[dict], checkins: List[dict], work
                                                             rep["end"])]
     if site["worked"]:
         missing = [d for d in worked if d not in {base._d(lg.get("date")) for lg in logs}]
-        out.append(f"Daily logs were filed for {ls['filed']} of the {site['worked']} days with site activity"
+        out.append(f"Daily logs were filed for {ls['filed']} of the {site['worked']} "
+                   f"day{'' if site['worked'] == 1 else 's'} with site activity"
                    + (f" (no filed log on {_join([_day(d) for d in missing[:4]])}"
                       + (f" and {len(missing) - 4} more" if len(missing) > 4 else "") + ")." if missing else "."))
     if ls["amended"]:
@@ -1518,7 +1552,8 @@ def whatsapp_message(rep: Dict[str, Any], *, attached: bool = True, link: Option
     lines = [f"{rep['job']} · {rep['period_short']}"]
     site, prev = rep["site"], rep["prev"]
     if site["worked"]:
-        bit = f"- Site: {_n(len(rep['subs']), 'sub')} · {site['worked']} of {site['possible']} days · " \
+        bit = f"- Site: {_n(len(rep['subs']), 'sub')} · {site['worked']} of {site['possible']} " \
+              f"day{'' if site['possible'] == 1 else 's'} · " \
               f"avg {site['avg']:g} workers/day"
         if prev["days"]:
             bit += f" (previous {prev['avg']:g})"
