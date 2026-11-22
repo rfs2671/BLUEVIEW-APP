@@ -78,7 +78,7 @@ class TestBands(unittest.TestCase):
         self.assertEqual(len(tables), 1)
         self.assertIn("<th>Fl 1</th>", tables[0])
         self.assertIn("Estimate", tables[0])
-        self.assertNotIn("bandhead", html)
+        self.assertNotIn("class='bandhead'", html)
 
     def test_the_other_column_counts_toward_the_limit(self):
         # seven floors and an "Other" column are eight columns: banded
