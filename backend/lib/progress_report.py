@@ -58,7 +58,7 @@ from lib import progress_stages, report_calendar, report_regulatory
 from lib.datefmt import strftime as _fmt
 
 NY = base.NY
-ENGINE_VERSION = "2026.11.1"
+ENGINE_VERSION = "2026.11.2"
 UPCOMING_DAYS = 30
 #: Up to EIGHT photographs per sub AND kind of work (operator ruling 2026-11-18:
 #: the Nov 4-17 588 report printed 26 of 223 filed photos at five per sub),
@@ -258,7 +258,8 @@ waterproofing windows doors painting taping spackle flooring tile layout inspect
 #: never "corrected".
 _REAL_WORDS = frozenset("""wide wipe wise wine wore tile pile pale pole pose post poor door fire hire tire core care
 bore base case cast cost last list lift loft soft roof room tube tune cube dust just must rust bust beam beams team
-seam seat heat head load road lead leak lean mean meat neat wall well will wind wing wood wool word work worn""".split())
+seam seat heat head load road lead leak lean mean meat neat wall well will wind wing wood wool word work worn
+rain rains main mains""".split())      # "Rain" on a rain day's log was printed as "Drain" (found on demo data, 2026-11-23)
 
 
 def spelling_fixes(texts: Iterable[str]) -> Dict[str, str]:
@@ -515,7 +516,12 @@ def _sub_rows(win: Dict[str, Any], prev: Dict[str, Any], canon_names: Dict[str, 
 # ── THE WORK: BY TRADE AND FLOOR, AGAINST THE PREVIOUS PERIOD ────────────────
 
 _PHRASE_SPLIT = re.compile(r"\s*(?:,|;|\s\+\s|\s&\s|\band\b)\s*", re.IGNORECASE)
-_PHRASE_NOISE = frozenset({"install", "installation", "installing", "installed", "work", "works", "the", "of"})
+_PHRASE_NOISE = frozenset({"install", "installation", "installing", "installed", "work", "works", "the", "of",
+                           # "Electrical rough-in" and "Electrical rough-in complete" are one activity on two days
+                           "complete", "completed", "done", "finished"})
+
+
+_DONE_WORD = re.compile(r"\b(?:complete|completed|done|finished)\b", re.I)
 
 
 def work_phrases(text: Any) -> List[str]:
@@ -592,7 +598,12 @@ def _work(cur: List[Dict[str, Any]], prev: List[Dict[str, Any]], canon: Dict[str
         shown: Dict[str, str] = {}
         for k, ph, a in expand(sorted(mine, key=lambda x: x["date"])):
             by_work[k].append(a)
-            shown.setdefault(k, ph)
+            # one activity, worded "… complete" on some days and not on others: the line covers all of
+            # its floors, so it does not say "complete" (the progress page says where it is)
+            if k not in shown:
+                shown[k] = ph
+            elif bool(_DONE_WORD.search(ph)) != bool(_DONE_WORD.search(shown[k])):
+                shown[k] = " ".join(_DONE_WORD.sub("", shown[k]).split()).strip(" ,;-") or shown[k]
         items = []
         for k, rows in by_work.items():
             floors = [] if _NAMES_ITS_PLACE.search(shown[k]) else sorted({f for a in rows for f in a["floors"]})
@@ -968,6 +979,13 @@ def coming_up(events: Iterable[dict], end: date, plan: Optional[Dict[str, Any]],
         if str(e.get("source") or "city") != "city" or e.get("status") in ("cancelled", "dismissed"):
             continue
         d = base._d(e.get("date"))
+        # A report for a past period is prepared from today's rows: an event
+        # LeveLog first recorded AFTER the anchor day (a hearing for a
+        # violation issued later) was not upcoming then, and its record is in
+        # neither the regulatory table nor the evidence index of this report.
+        seen_on = att.local_day(e["created_at"]) if isinstance(e.get("created_at"), datetime) else base._d(e.get("created_at"))
+        if seen_on and seen_on > end:
+            continue
         if d and end < d <= horizon:
             out.append({"date": d, "what": base.no_phone(e.get("title")), "src": "R",
                         "kind": str(e.get("kind") or "")})
@@ -1090,7 +1108,17 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
     # period (`history`, chain heads the server picked); without it, the
     # period and the previous one.
     hist = effective_logs(history)["items"] if history else logs
-    board = progress_stages.build(_log_activities(hist, date(1900, 1, 1), end), end=end, period_start=start)
+    # THE FLOORS IT IS COUNTED OVER. The report is not told how many floors the
+    # job has. With a confirmed, usable schedule, the floors its activities
+    # name ("Concrete floor 22", "Ductwork floors 9-16") are counted too, so a
+    # trade on 17 floors of a 22-floor schedule is not "of 17". Without one,
+    # only the floors a filed log has named, and the report says so.
+    plan_floors: List[int] = []
+    if plan and plan.get("usable"):
+        plan_floors = sorted({f for a in (schedule or {}).get("activities") or []
+                              for f in progress_stages.floors_of_text(a.get("name"))})
+    board = progress_stages.build(_log_activities(hist, date(1900, 1, 1), end), end=end, period_start=start,
+                                  plan_floors=plan_floors)
     rep: Dict[str, Any] = {
         "engine": ENGINE_VERSION, "kind": kind or "custom",
         "job": job_title(job), "job_full": job, "address": address, "gc": gc,
@@ -1106,7 +1134,9 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
                  "series": series(cur["totals"], cur["worked"], start, end, grain),
                  "prev_series": series(prv["totals"], prv["worked"], prev_start, prev_end, grain),
                  "basis": report_calendar.BASIS_NOTE,
-                 "holidays": report_calendar.holiday_names(start, last)},
+                 # a holiday before the job's first day was never a working day of this job: not named
+                 "holidays": report_calendar.holiday_names(max(start, first_activity) if first_activity else start,
+                                                           last, worked=cur["worked"])},
         "prev": {**prev_stats, "possible": len(prev_possible), "worked": len(prv["worked"])},
         "regulatory": reg, "inspections": insp, "schedule": plan, "progress": board,
         # Ruled 2026-11-18: no financial card or section (nothing collects the figures).
@@ -1195,7 +1225,7 @@ def changes(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
     new_issues = [r for r in reg["issued"] if r["type"] in report_regulatory.OPEN_TYPES]
     if new_issues:
         out.append({"src": "R", "refs": [r["id"] for r in new_issues[:3]],
-                    "text": f"{_n(len(new_issues), 'new DOB/DOT violation or order')} issued: "
+                    "text": f"{_n(len(new_issues), 'new DOB/DOT record')} issued: "
                     + _join([f"{r['kind']} {r['number']}".strip() for r in new_issues[:3]]) + "."})
     resolved = [r for r in reg["changed"] if r["closed"] and r["type"] in report_regulatory.OPEN_TYPES
                 and r["id"] not in {x["id"] for x in reg["swo_lifted"]}]
@@ -1302,7 +1332,7 @@ def status(rep: Dict[str, Any]) -> Dict[str, Any]:
     if "critical" in levels:
         label, level = "Needs attention", "critical"
     elif "high" in levels:
-        label, level = "Watch", "high"
+        label, level = "High risk", "high"          # was "Watch" above a risk printed HIGH
     elif levels:
         label, level = "Watch", "watch"
     else:
@@ -1567,7 +1597,8 @@ def whatsapp_message(rep: Dict[str, Any], *, attached: bool = True, link: Option
             i = good[0]
             work.append(f"{lc_first(i['work'])}{' ' + i['place'] if i['place'] else ''} ({short_name(w['name'], i['work'])})")
     if work:
-        lines.append("- Work: " + ", ".join(work))
+        more = len([w for w in rep["work"] if w["items"]]) - len(work)
+        lines.append("- Work: " + ", ".join(work) + (f", +{more} more in the report" if more > 0 else ""))
     reg = rep["regulatory"]
     if reg["coverage"]["state"] in ("verified", "partial"):
         if reg["swo_active"]:

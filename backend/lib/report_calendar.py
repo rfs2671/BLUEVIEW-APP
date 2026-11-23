@@ -105,7 +105,10 @@ def working_days(start: date, end: date, *, first_activity: Optional[date] = Non
     return sorted(days)
 
 
-def holiday_names(start: date, end: date) -> List[str]:
-    """"Labor Day (Sep 7)" for each holiday in the range, for the footnote."""
+def holiday_names(start: date, end: date, *, worked: Iterable[date] = ()) -> List[str]:
+    """"Labor Day (Sep 7)" for each holiday in the range that is left out of
+    the working days, for the footnote. A holiday the site worked is counted
+    as a working day (see `working_days`), so it is not named as excluded."""
+    on = set(worked)
     return [f"{n} ({d.strftime('%b')} {d.day})"
-            for d, n in sorted(holidays_between(start, end).items()) if d.weekday() < 5]
+            for d, n in sorted(holidays_between(start, end).items()) if d.weekday() < 5 and d not in on]

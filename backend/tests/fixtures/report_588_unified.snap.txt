@@ -7,7 +7,7 @@ Progress — framing in progress on floors 1–4; plumbing rough-in in progress 
 
 CHANGES
 [R] Stop Work Order SWO-2026-0041 was lifted on Oct 6, 2026.
-[R] 1 new DOB/DOT violation or order issued: DOB violation 35123456.
+[R] 1 new DOB/DOT record issued: DOB violation 35123456.
 [R] 1 violation resolved: DOB violation 29887711.
 [G] Average workforce rose to 25 workers a day from 11.9 in the previous period.
 [G] Quality Plumbing and Power Direct mobilized this period (not on site in the previous one).
@@ -26,7 +26,6 @@ UPCOMING
 
 DATA NOTES
 Daily logs were filed for 9 of the 10 days with site activity (no filed log on Oct 7).
-Working days exclude Columbus Day (Oct 12).
 
 LIMITATIONS
 Progress stages and estimates are read from the filed daily logs by the fixed rules on the progress page. They are not measured or independently verified on site, and no figure is derived from headcount.
@@ -34,4 +33,4 @@ Photographs are supplied in the filed daily logs; their location and date are as
 Internal GC coordination (messages, reminders, punch-list assignments, free-text site observations) and individual worker information are not included in this report.
 
 STATUS
-Watch: Based on site check-ins, filed daily logs and DOB/DOT records.
+High risk: Based on site check-ins, filed daily logs and DOB/DOT records.

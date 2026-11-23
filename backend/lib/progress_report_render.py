@@ -31,6 +31,8 @@ from urllib.parse import urlsplit
 from lib import progress_report as P
 from lib import progress_stages as ST
 from lib import project_report as base
+from lib import report_regulatory as _REG
+from lib import schedule_plan as _SP
 from lib.datefmt import strftime as _fmt
 
 NAVY, INK, MUTED, LINE = "#12263F", "#1c2430", "#5b6676", "#e3e7ee"
@@ -544,7 +546,8 @@ def _progress(rep: Dict[str, Any], images: Optional[Dict[str, str]] = None) -> s
                     f"<div class='what'>{_e(_work_words(by.get(s['key'])))}</div></td>"
                     f"<td class='bar'>{_gantt_row(s, start, end, photo_days.get(s['key'], set()), ticks)}</td>"
                     f"<td class='n'>{count}&nbsp;{'day' if count == 1 else 'days'}</td></tr>")
-    legend = ("<div class='legend'><span class='dot' style='background:#5b6676'></span>On site"
+    legend = ("<div class='legend'>A coloured bar: days on site, in the subcontractor's colour. A weekend between two "
+              "worked days does not break the bar; a working day with nobody there does."
               + ("&nbsp;&nbsp;<svg width='8' height='8' viewBox='0 0 8 8'><circle cx='4' cy='4' r='3' fill='#fff' "
                  f"stroke='{NAVY}'/></svg> Photo in this report" if photo_days else "") + "</div>")
     return (f"<section class='pg'><h2>Crews on site, day by day {_tag('G')}{_tag('L')}</h2>"
@@ -695,7 +698,10 @@ def _board_section(rep: Dict[str, Any]) -> str:
     floors = board.get("floors") or []
     order = list(board.get("worked_in_period") or []) + [k for k in trades if k not in (board.get("worked_in_period") or [])]
     hist = board.get("history") or []
-    plain = "".join(f"<li>{_e(ST.sentence(trades[k], floors))}</li>" for k in order)
+    def _counts(t: Dict[str, Any]) -> str:
+        w = ST.counts_words(t)
+        return f" <span class='muted'>{_e(w[:1].upper() + w[1:])}.</span>" if w else ""
+    plain = "".join(f"<li>{_e(ST.sentence(trades[k], floors))}{_counts(trades[k])}</li>" for k in order)
     other = any(trades[k].get("elsewhere") for k in order)
     if len(floors) + (1 if other else 0) <= BOARD_ONE_TABLE_MAX:
         table = _board_one_table(trades, order, floors, hist, other)
@@ -705,9 +711,9 @@ def _board_section(rep: Dict[str, Any]) -> str:
             "filed up to that day." if len(hist) > 1 else "")
     return (f"<section class='pg'><h2>Progress by trade and floor (estimated) {_tag('L')}</h2>"
             f"<p class='muted'>How far each kind of work has got on each floor, read from the filed daily logs "
-            f"and their photographs up to {_e(_fmt(rep.get('through') or rep['end'], '%b %-d, %Y'))}.{_e(span)}</p>"
+            f"up to {_e(_fmt(rep.get('through') or rep['end'], '%b %-d, %Y'))}.{(' ' + _e(span)) if span else ''}</p>"
             f"<ul class='plain'>{plain}</ul>{table}"
-            f"<div class='strip'><b>How the estimate is made.</b> {_e(ST.BASIS)}</div></section>")
+            f"<div class='strip'><b>How the estimate is made.</b> {_e(ST.BASIS)} {_e(ST.floors_basis(board))}</div></section>")
 
 
 def _schedule_section(rep: Dict[str, Any]) -> str:
@@ -728,7 +734,7 @@ def _schedule_section(rep: Dict[str, Any]) -> str:
     rows = "".join(mrow(m, status, cls) for key, status, cls, most, _w in shown for m in ms[key][:most])
     cut = [f"{len(ms[key]) - most} more {words}" for key, _s, _c, most, words in shown if len(ms[key]) > most]
     mtable = ("<h3>Milestones</h3><table class='keep'><tr><th>Milestone</th><th class='n'>Original</th>"
-              "<th class='n'>Current / actual</th><th>Status</th></tr>" + rows + "</table>"
+              "<th class='n'>Current, or actual if complete</th><th>Status</th></tr>" + rows + "</table>"
               + (f"<div class='muted'>Not listed here: {_e(', '.join(cut))}. They are in the schedule file.</div>"
                  if cut else "")) if rows else ""
     dev = ""
@@ -742,7 +748,8 @@ def _schedule_section(rep: Dict[str, Any]) -> str:
                "<div class='muted'>"
                + (f"The {min(6, len(plan['deviations']))} largest of {plan['deviations_total']} shifts in the file. "
                   if (plan.get("deviations_total") or 0) > 6 else "")
-               + "Dates as they appear in the schedule file; no cause is inferred.</div>")
+               + f"Finish or start dates {_SP.DEVIATION_MIN_DAYS} days or more later than the original; smaller shifts "
+               "are in the milestone table and the schedule file. Dates as they appear in the schedule file; no cause is inferred.</div>")
     planned = ""
     if plan["scheduled_in_period"]:
         planned = ("<h3>Scheduled for this period vs. reported</h3><div class='two'><div><h4>Scheduled in the schedule</h4>"
@@ -883,11 +890,14 @@ def _workforce(rep: Dict[str, Any]) -> str:
 def _reg_row(r: Dict[str, Any], note: str = "") -> str:
     issued = _e(_fmt(r["issued"], "%b %-d, %Y")) if r.get("issued") else "—"
     status = r["status"] or "not stated"
-    state = ("<span class='chip crit'>OPEN</span> " if r.get("closed") is False and r["type"] in
-             ("violation", "swo", "complaint", "dot_violation") else
-             "<span class='chip soft'>CLOSED</span> " if r.get("closed") else "")
+    word = ("OPEN" if r.get("closed") is False and r["type"] in ("violation", "swo", "complaint", "dot_violation")
+            else "CLOSED" if r.get("closed") else "")
+    state = (f"<span class='chip {'crit' if word == 'OPEN' else 'soft'}'>{word}</span> " if word else "")
+    # the city's own status word beside ours: "OPEN ACTIVE" and "CLOSED CLOSED" read as a stutter
+    city = ("" if word and status.strip().upper() in (word, "ACTIVE" if word == "OPEN" else "RESOLVED")
+            else (f"<span class='muted'>city status:</span> {_e(status)}" if word else _e(status)))
     return (f"<tr><td>{_e(r['kind'])}</td><td>{_e(r['number']) or '—'}</td><td class='n'>{issued}</td>"
-            f"<td>{state}{_e(status)}{note}</td><td>{_tag('R', (r.get('ref_id') or '')[1:])}</td></tr>")
+            f"<td>{state}{city}{note}</td><td>{_tag('R', (r.get('ref_id') or '')[1:])}</td></tr>")
 
 
 def _regulatory(rep: Dict[str, Any]) -> str:
@@ -913,6 +923,9 @@ def _regulatory(rep: Dict[str, Any]) -> str:
     if rows:
         parts.append("<table class='keep'><tr><th>Record</th><th>Number</th><th class='n'>Issued</th>"
                      "<th>Status at period end</th><th></th></tr>" + "".join(rows[:14]) + "</table>")
+        parts.append("<div class='muted'>Listed: records open at the end of the period, records issued or changed "
+                     f"during it, and permits that expire within {_REG.EXPIRY_HORIZON_DAYS} days of its end. A permit in force "
+                     "that expires later is not listed.</div>")
         if len(rows) > 14:
             parts.append(f"<div class='muted'>{len(rows) - 14} more record{' is' if len(rows) == 15 else 's are'} "
                          "listed in the evidence index.</div>")
