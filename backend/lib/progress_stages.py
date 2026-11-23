@@ -294,7 +294,8 @@ def _round5(x: float) -> int:
     return int(x / 5.0 + 0.5) * 5
 
 
-def _board(rows: List[Dict[str, Any]], end: date, floors_fixed: Optional[List[int]] = None) -> Dict[str, Any]:
+def _board(rows: List[Dict[str, Any]], end: date, floors_fixed: Optional[List[int]] = None,
+           plan_floors: Iterable[int] = ()) -> Dict[str, Any]:
     """`floors_fixed`: count the estimate over these floors (the history uses
     the floors known at the end of the period, so a floor first named later
     does not make the earlier weeks look further along)."""
@@ -332,7 +333,8 @@ def _board(rows: List[Dict[str, Any]], end: date, floors_fixed: Optional[List[in
                 worked[(fam, f)].append(d)
                 if ph and _done_word(ph):
                     done[(fam, f)].append(d)
-    floors = sorted(floors_seen) if floors_fixed is None else list(floors_fixed)
+    logged = sorted(floors_seen)
+    floors = sorted(floors_seen | set(plan_floors)) if floors_fixed is None else list(floors_fixed)
     trades: Dict[str, Dict[str, Any]] = {}
     for fam in sorted({f for f, _x in worked}, key=lambda f: (ORDER.get(f, 99), f)):
         cells: Dict[Any, Dict[str, Any]] = {}
@@ -357,19 +359,24 @@ def _board(rows: List[Dict[str, Any]], end: date, floors_fixed: Optional[List[in
                     if floors and on_floors else None)
         trades[fam] = {"key": fam, "label": LABEL.get(fam, fam), "cells": cells, "elsewhere": elsewhere,
                        "estimate": estimate,
+                       "counts": {"done": sum(1 for c in cells.values() if c["stage"] == DONE),
+                                  "under_way": sum(1 for c in cells.values() if c["stage"] in (ACTIVE, STARTED)),
+                                  "of": len(floors)},
                        # who did it: the companies with a real share of the lines, not one stray mention
                        "companies": [c for c, n in who[fam].most_common(3)
                                      if len(who[fam]) == 1 or n >= max(2, 0.2 * who[fam].most_common(1)[0][1])],
                        "photos": photos[fam]}
-    return {"floors": floors, "trades": trades}
+    return {"floors": floors, "trades": trades, "floors_logged": logged,
+            "floors_from_schedule": sorted(set(floors) - set(logged)) if floors_fixed is None else []}
 
 
-def build(rows: Iterable[Dict[str, Any]], *, end: date, period_start: Optional[date] = None) -> Dict[str, Any]:
+def build(rows: Iterable[Dict[str, Any]], *, end: date, period_start: Optional[date] = None,
+          plan_floors: Iterable[int] = ()) -> Dict[str, Any]:
     """The board as of `end`, plus the estimate as it stood at the end of each
     week before (`history`, oldest first, at most HISTORY_POINTS), read from
     the records up to each of those days only."""
     rows = [r for r in rows if isinstance(r.get("date"), date)]
-    b = _board(rows, end)
+    b = _board(rows, end, plan_floors=plan_floors)
     first = min((r["date"] for r in rows if r["date"] <= end and families_of(r)), default=None)
     history: List[Dict[str, Any]] = []
     if first is not None:
@@ -420,7 +427,27 @@ def sentence(t: Dict[str, Any], floors: List[int]) -> str:
     return f"{t['label']}{who}: " + ("; ".join(parts) if parts else "no work reported") + "."
 
 
+def floors_basis(board: Dict[str, Any]) -> str:
+    """What the estimate is counted over, in one sentence."""
+    n, extra = len(board.get("floors") or []), board.get("floors_from_schedule") or []
+    if not n:
+        return ""
+    if extra:
+        return (f"Counted over {n} floors: the {len(board.get('floors_logged') or [])} a filed daily log has named "
+                f"and {len(extra)} more that the confirmed schedule file names ({floors_words(extra)}).")
+    return (f"Counted over the {n} floor{'' if n == 1 else 's'} a filed daily log has named so far. The report is not "
+            "told how many floors the job has, so a floor no log has named yet is not counted.")
+
+
+def counts_words(t: Dict[str, Any]) -> str:
+    """"complete on 14 of 22 floors, under way on 3" -- the count behind a percent."""
+    c = t.get("counts") or {}
+    if not c.get("of") or t.get("estimate") is None:
+        return ""
+    return (f"{c['done']} of {c['of']} floors appear complete" + (f", {c['under_way']} under way" if c["under_way"] else ""))
+
+
 BASIS = ("Estimated from the filed daily logs: on each floor, work the log reports as complete, or that the next "
          "trade in sequence has followed (and the crew has not returned to in a week), counts as complete; work "
-         "reported on that floor counts as half done; floors no log line places the work on count as not started. "
+         "reported on that floor counts as half done; a floor that no log line names for that work counts as not started. "
          "Not measured on site and not taken from a schedule.")
